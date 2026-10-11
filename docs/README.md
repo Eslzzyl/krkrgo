@@ -11,5 +11,7 @@ Each domain guide links the relevant Go source and records current implementatio
 - [Audio and video](audio-video.md)
 - [Graphics composition: CPU vs GPU](graphics-composition.md)
 - [Host, Ebitengine, platforms, and dependencies](host-platform.md)
+- [Verification and cross-cutting gaps](verification-and-gaps.md)
+- [Launcher architecture](launcher.md)
 
 For launch and package navigation, see the [root README](../README.md). Recorded verification scope is in [Verification and cross-cutting gaps](verification-and-gaps.md).
