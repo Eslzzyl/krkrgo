@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/eslzzyl/krkrgo/internal/host"
+	"github.com/eslzzyl/krkrgo/internal/krkrgocli"
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
@@ -12,23 +14,23 @@ func TestParseLaunchArgs(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
-		want launchOptions
+		want krkrgocli.LaunchOptions
 	}{
-		{name: "defaults", want: launchOptions{budget: unlimitedBudget}},
+		{name: "defaults", want: krkrgocli.LaunchOptions{Budget: ^uint64(0)}},
 		{
 			name: "project without diagnostic budget",
 			args: []string{"-project", "/games/sample"},
-			want: launchOptions{project: "/games/sample", budget: unlimitedBudget},
+			want: krkrgocli.LaunchOptions{Project: "/games/sample", Budget: ^uint64(0)},
 		},
 		{
 			name: "project options",
 			args: []string{"-project", "/games/sample", "-save-dir", "/tmp/sample-saves", "-budget", "42"},
-			want: launchOptions{project: "/games/sample", saveDir: "/tmp/sample-saves", budget: 42},
+			want: krkrgocli.LaunchOptions{Project: "/games/sample", SaveDir: "/tmp/sample-saves", Budget: 42},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseLaunchArgs(tt.args)
+			got, err := krkrgocli.ParseLaunchArgs(tt.args)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -45,11 +47,11 @@ func TestProjectStartupRunsWithoutExplicitBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	opts, err := parseLaunchArgs([]string{"-project", project})
+	opts, err := krkrgocli.ParseLaunchArgs([]string{"-project", project})
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := newSession(opts.project, opts.saveDir, opts.budget)
+	session, err := krkrgocli.NewSession(opts.Project, opts.SaveDir, opts.Budget)
 	if err != nil {
 		t.Fatalf("launch project without -budget: %v", err)
 	}
@@ -78,7 +80,7 @@ window = new KAGWindow();
 		t.Fatal(err)
 	}
 
-	session, err := newSession(project, "", 10_000)
+	session, err := krkrgocli.NewSession(project, "", 10_000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,14 +117,14 @@ window = new KAGWindow();
 }
 
 func TestNewSessionWithoutProjectKeepsEmptyHostWindow(t *testing.T) {
-	session, err := newSession("", "", 10_000)
+	session, err := krkrgocli.NewSession("", "", 10_000)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer session.Close()
 
 	root := session.Services.Root
-	if root == nil || root.ChildCount() != 0 || root.Bounds.Width != defaultWidth || root.Bounds.Height != defaultHeight {
+	if root == nil || root.ChildCount() != 0 || root.Bounds.Width != host.DefaultWidth || root.Bounds.Height != host.DefaultHeight {
 		t.Fatalf("empty host root = %#v", root)
 	}
 	if session.Services.MainWindow == 0 || session.Services.Window(tjs.ObjectID(session.Services.MainWindow)) == nil {
@@ -158,7 +160,7 @@ window = new TestWindow();
 		t.Fatal(err)
 	}
 
-	session, err := newSession(project, "", 10_000)
+	session, err := krkrgocli.NewSession(project, "", 10_000)
 	if err != nil {
 		t.Fatal(err)
 	}

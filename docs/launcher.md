@@ -9,11 +9,12 @@ different application-hosting APIs.
 The launcher provides visual control for project selection, save-directory
 configuration, budget configuration, and game start.
 
-It complements the existing command-line interface. Direct CLI use remains
-available:
+The launcher and game runtime share one executable with explicit dispatch:
+no arguments (or launcher options) open the GUI, while `run` starts a game.
+Direct runtime and tool commands are:
 
 ```text
-krkrgo -project <directory> [-save-dir <directory>] [-budget <instructions>]
+krkrgo run -project <directory> [-save-dir <directory>] [-budget <instructions>]
 krkrgo-tool replay|extract ...
 ```
 
@@ -25,13 +26,13 @@ The launcher supplies host-specific UI and lifecycle control.
 The desktop launcher runs as an independent process.
 
 ```text
-launcher process (cmd/krkrgo-launcher, MyGo native UI)
+launcher process (cmd/krkrgo, MyGo native UI)
   - selects a project directory
   - configures save-dir and budget
-  - starts the existing krkrgo binary with constructed arguments
+  - starts the same krkrgo executable with `run` and constructed arguments
   - monitors the child process and its log
 
-game process (cmd/krkrgo)
+game process (cmd/krkrgo run)
   - parses -project, -save-dir, and -budget
   - creates the runtime Session
   - creates the Ebitengine host
@@ -40,17 +41,15 @@ game process (cmd/krkrgo)
 
 ### Why separate process
 
-The existing `cmd/krkrgo` entry point already exposes the parameter surface
-that the launcher needs. The launcher passes an argument array to the
-existing binary and keeps the current CLI behavior intact.
-
-Separate processes keep MyGo's native event loop and Ebitengine's game window
-independent. A TJS panic or native game failure leaves the launcher available
-for configuration and log inspection.
+The launcher starts its own executable with a `run` subcommand and passes
+arguments as an array. Separate processes keep MyGo's native event loop and
+Ebitengine's game window independent. A TJS panic or native game failure leaves
+the launcher available for configuration and log inspection.
 
 The model also fits a future streaming client in which the launcher selects a
 remote or cached project and starts a local game client. Streaming remains a
 future extension; it is not required by the current launcher implementation.
+
 
 ### Window model
 
@@ -77,9 +76,9 @@ On Linux, MyGo Native UI uses system GTK3, GLib, Cairo, and related graphics
 components at runtime. These are platform prerequisites; the launcher does
 not ship an additional game library or webview.
 
-The desktop launcher package does not import Ebitengine or the game runtime.
-It starts `krkrgo` with `os/exec` and passes arguments without shell
-interpolation.
+The `internal/launcher` package does not import Ebitengine or the game runtime.
+The combined executable starts itself in `run` mode with `os/exec` and passes
+arguments without shell interpolation.
 
 ## Mobile: native library in the application process
 
@@ -169,11 +168,11 @@ architecture contract without device and workload details.
 | | Desktop | Mobile |
 | --- | --- | --- |
 | Launcher UI | MyGo native UI process | Compose/SwiftUI in the app process |
-| Game runtime | `cmd/krkrgo` child process | Go/Ebitengine native library |
+| Game runtime | `krkrgo run` child process | Go/Ebitengine native library |
 | Launcher → game | `os/exec` argument array | Host API and lifecycle callback |
 | Process isolation | Yes | No |
 | Runtime core | Shared | Shared |
-| Host entry | Desktop CLI | Android AAR / iOS XCFramework |
+| Host entry | `krkrgo` executable (`run` mode) | Android AAR / iOS XCFramework |
 
 The launcher responsibilities remain consistent across platforms: select a
 project, configure runtime options, start the game, and present errors.

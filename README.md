@@ -20,22 +20,21 @@ The implementation is actively expanding toward the behavior of the official C++
 
 ## Quick start
 
+### Start the GUI launcher
+
+```sh
+go run ./cmd/krkrgo
+```
+
+The equivalent single-file entry point is `go run ./cmd/krkrgo/main.go`; it also supports `run -project /path/to/project`.
+
 ### Run a project
 
-From the repository root:
-
 ```sh
-go run ./cmd/krkrgo -project /path/to/project
+go run ./cmd/krkrgo run -project /path/to/project
 ```
 
-`-project` accepts a project root or a directory containing the project's runtime data (for example, `startup.tjs`, `data.xp3`).
-
-### Build the interactive launcher
-
-```sh
-go build -trimpath -o krkrgo ./cmd/krkrgo
-./krkrgo -project /path/to/project
-```
+`-project` accepts a project root or a directory containing the project's runtime data (for example, `startup.tjs`, `data.xp3`). `-save-dir` overrides the save-data directory and `-budget` applies an optional instruction limit (zero means unlimited).
 
 ### Extract an XP3 archive
 
@@ -66,7 +65,7 @@ Run the current-platform test suite:
 go test ./...
 ```
 
-Build both command-line entry points:
+Build the two command targets for the current platform:
 
 ```sh
 go build -trimpath ./cmd/krkrgo
@@ -82,7 +81,7 @@ The repository keeps generated binaries, profiles, logs, local replay data, and 
 - `internal/assets` — project storage, XP3 archives, image formats, fonts, and media resources.
 - `internal/runtime` — sessions, layers, transitions, native services, timers, audio, plugins, and KAG execution.
 - `internal/host` — Ebitengine presentation, input, audio output, and deterministic replay support.
-- `cmd/krkrgo` — interactive project launcher.
+- `cmd/krkrgo` — MyGo interactive game launcher and `run` game runtime.
 - `cmd/krkrgo-tool` — extraction and headless replay utilities.
 
 ## Documentation

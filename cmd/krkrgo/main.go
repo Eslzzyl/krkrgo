@@ -1,213 +1,314 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"log"
 	"os"
-	"runtime/pprof"
-	"sync"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
-	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hajimehoshi/ebiten/v2/audio"
-
-	"github.com/eslzzyl/krkrgo/internal/host"
-	"github.com/eslzzyl/krkrgo/internal/runtime"
-	"github.com/eslzzyl/krkrgo/internal/tjs"
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
+	"github.com/eslzzyl/krkrgo/internal/krkrgocli"
+	"github.com/eslzzyl/krkrgo/internal/launcher"
 )
 
-const (
-	defaultWidth    = host.DefaultWidth
-	defaultHeight   = host.DefaultHeight
-	unlimitedBudget = ^uint64(0)
-)
-
-type launchOptions struct {
-	project string
-	saveDir string
-	budget  uint64
-}
-
-func parseLaunchArgs(args []string) (launchOptions, error) {
-	opts := launchOptions{budget: unlimitedBudget}
-	fs := flag.NewFlagSet("krkrgo", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	fs.StringVar(&opts.project, "project", "", "project root or data directory")
-	fs.StringVar(&opts.saveDir, "save-dir", "", "save-data directory")
-	fs.Uint64Var(&opts.budget, "budget", unlimitedBudget, "diagnostic session instruction limit (default: unlimited)")
-	if err := fs.Parse(args); err != nil {
-		return launchOptions{}, err
-	}
-	if fs.NArg() != 0 {
-		return launchOptions{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
-	}
-	return opts, nil
-}
-
-func newSession(project, saveDir string, budget uint64) (*runtime.Session, error) {
-	var (
-		session *runtime.Session
-		err     error
-	)
-	if project == "" {
-		session = runtime.NewSession(runtime.DefaultServices(), budget)
-	} else {
-		session, err = runtime.OpenSession(project, saveDir, budget)
-		if err != nil {
-			return nil, fmt.Errorf("open project: %w", err)
-		}
-	}
-
-	if project == "" {
-		// Keep an empty host scene for non-project launches. Project startup
-		// must let its first script-created primary Layer become the root.
-		root := runtime.NewRootLayer(1, defaultWidth, defaultHeight)
-		session.Services.SetRoot(root)
-	}
-	if err := session.Services.SetFrameSize(defaultWidth, defaultHeight); err != nil {
-		_ = session.Close()
-		return nil, err
-	}
-
-	if project == "" {
-		// Without a project there is no script-created Window to host the
-		// empty scene. Keep a minimal host Window for that mode; project
-		// startup must let its first script-created Window become mainWindow.
-		window := runtime.NewWindow()
-		window.SetCaption("krkrgo")
-		if err := window.SetInnerSize(defaultWidth, defaultHeight); err != nil {
-			_ = session.Close()
-			return nil, err
-		}
-		windowObject := session.VM.Objects.New(tjs.CategoryInstance)
-		if err := session.Services.RegisterWindow(windowObject.ID, window); err != nil {
-			_ = session.Close()
-			return nil, err
-		}
-		session.Services.MainWindow = uint64(windowObject.ID)
-	}
-
-	if project != "" {
-		if _, err := session.Startup(); err != nil {
-			_ = session.Close()
-			return nil, fmt.Errorf("startup: %w", err)
-		}
-	}
-	return session, nil
-}
-
-func startCPUProfileFromEnv() func() {
-	path := os.Getenv("KRKRGO_CPU_PROFILE")
-	durationValue := os.Getenv("KRKRGO_CPU_PROFILE_DURATION")
-	if path == "" && durationValue == "" {
-		return nil
-	}
-	if path == "" || durationValue == "" {
-		log.Printf("CPU profile requires both KRKRGO_CPU_PROFILE and KRKRGO_CPU_PROFILE_DURATION")
-		return nil
-	}
-	duration, err := time.ParseDuration(durationValue)
-	if err != nil || duration <= 0 {
-		log.Printf("invalid KRKRGO_CPU_PROFILE_DURATION %q", durationValue)
-		return nil
-	}
-
-	file, err := os.Create(path)
-	if err != nil {
-		log.Printf("create CPU profile %q: %v", path, err)
-		return nil
-	}
-	if err := pprof.StartCPUProfile(file); err != nil {
-		log.Printf("start CPU profile %q: %v", path, err)
-		if closeErr := file.Close(); closeErr != nil {
-			log.Printf("close CPU profile %q: %v", path, closeErr)
-		}
-		return nil
-	}
-
-	var stopOnce sync.Once
-	stop := func() {
-		stopOnce.Do(func() {
-			pprof.StopCPUProfile()
-			if err := file.Close(); err != nil {
-				log.Printf("close CPU profile %q: %v", path, err)
-			}
-		})
-	}
-	timer := time.NewTimer(duration)
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-timer.C:
-			stop()
-		case <-done:
-			timer.Stop()
-		}
-	}()
-	var cleanupOnce sync.Once
-	return func() {
-		cleanupOnce.Do(func() {
-			close(done)
-			timer.Stop()
-			stop()
-		})
-	}
+type launcherApp struct {
+	window      *mygo.Window
+	catalogPath string
+	catalog     launcher.Catalog
+	selected    int
+	running     bool
+	advanced    bool
+	status      string
+	budgetText  string
 }
 
 func main() {
-	opts, err := parseLaunchArgs(os.Args[1:])
-	if err == flag.ErrHelp {
+	if len(os.Args) > 1 && os.Args[1] == "run" {
+		krkrgocli.RunGame(os.Args[2:])
 		return
 	}
-	if err != nil {
-		log.Fatal(err)
-	}
-	session, err := newSession(opts.project, opts.saveDir, opts.budget)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer func() { _ = session.Close() }()
 
-	ebiten.SetWindowSize(defaultWidth, defaultHeight)
-	ebiten.SetWindowTitle("krkrgo")
-	stopCPUProfile := startCPUProfileFromEnv()
-	if stopCPUProfile != nil {
-		defer stopCPUProfile()
+	mygo.App.SetName("krkrgo")
+	app := &launcherApp{selected: -1, status: "Choose a game project to begin."}
+	mygo.App.WhenReady(func() {
+		var err error
+		app.catalogPath, err = catalogPath()
+		if err == nil {
+			app.catalog, err = launcher.LoadCatalog(app.catalogPath)
+		}
+		if err != nil {
+			app.status = "Could not load game catalog: " + err.Error()
+			app.catalog = launcher.EmptyCatalog()
+		}
+		if err == nil {
+			changed := false
+			for i := range app.catalog.Games {
+				if app.catalog.Games[i].SaveDir == "" {
+					app.catalog.Games[i].SaveDir = defaultSaveDir(app.catalogPath, app.catalog.Games[i].ID, app.catalog.Games[i].Title)
+					changed = true
+				}
+			}
+			if changed {
+				_ = app.saveCatalog()
+			}
+			if len(app.catalog.Games) > 0 {
+				app.selected = 0
+				app.budgetText = strconv.FormatUint(app.catalog.Games[0].Budget, 10)
+			}
+		}
+		app.window = mygo.NewWindow(mygo.WindowOptions{
+			Title: "krkrgo", Width: 980, Height: 660, MinWidth: 680, MinHeight: 460,
+			Content: ui.View(app.view),
+		})
+	})
+	if err := mygo.App.Run(); err != nil {
+		log.Fatal(err)
 	}
-	game := host.NewGameWithInitialWindowSize(session, defaultWidth, defaultHeight)
-	audioDiagnostics := os.Getenv("KRKRGO_AUDIO_DIAGNOSTICS") == "1"
-	audioContext := audio.NewContext(runtime.OutputRate)
-	audioOutput, err := host.NewAudioOutput(audioContext, host.AudioOutputOptions{Diagnostics: audioDiagnostics})
+}
+
+func catalogPath() (string, error) {
+	dir, err := mygo.App.Path(mygo.PathUserData)
 	if err != nil {
-		log.Fatal(err)
+		return "", err
 	}
-	if err := game.AttachAudioOutput(audioOutput); err != nil {
-		_ = audioOutput.Close()
-		log.Fatal(err)
+	return filepath.Join(dir, "catalog.json"), nil
+}
+
+func defaultSaveDir(catalogFile, id, title string) string {
+	if id == "" {
+		id = safeName(title)
 	}
-	logAudioOutput := func() {
-		stats := audioOutput.Diagnostics()
-		log.Printf("audio output state: ready=%t pending_frames=%d accepted_blocks=%d accepted_frames=%d nonzero_samples=%d peak=%g",
-			audioContext.IsReady(), audioOutput.PendingFrames(), stats.Blocks, stats.Frames, stats.NonZeroSamples, stats.Peak)
+	return filepath.Join(filepath.Dir(catalogFile), "saves", id)
+}
+
+func (a *launcherApp) view(c *ui.Context) {
+	theme := c.Theme()
+	ui.Column(c).Fill().Padding(18).Gap(12).Children(func() {
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "krkrgo").FontSize(24).Bold()
+			ui.Spacer(c)
+			if ui.Button(c, "Add game").Clicked() {
+				a.chooseProject()
+			}
+		})
+		ui.Divider(c)
+		ui.Row(c).Grow(1).Gap(16).Children(func() {
+			ui.Scroll(c).Width(280).Background(theme.Surface).Padding(8).Children(func() {
+				ui.Column(c).Gap(4).Children(func() {
+					for i := range a.catalog.Games {
+						index := i
+						game := &a.catalog.Games[index]
+						label := game.Title
+						if a.running && index == a.selected {
+							label += " (Running)"
+						}
+						button := ui.Button(c.Key(fmt.Sprintf("game-%d", index)), label).AlignSelf(ui.Stretch)
+						if index == a.selected {
+							button.Background(theme.Accent).TextColor(theme.AccentText)
+						}
+						if button.Clicked() {
+							a.selected = index
+							a.budgetText = strconv.FormatUint(game.Budget, 10)
+						}
+					}
+				})
+			})
+			ui.Column(c).Grow(1).Gap(10).Padding(8).Children(func() {
+				if game := a.selectedGame(); game != nil {
+					ui.Text(c, game.Title).FontSize(22).Bold()
+					ui.Text(c, game.Project).TextColor(theme.TextMuted)
+					ui.Text(c, "Project status: Registered").Padding(0, 0, 8, 0)
+					if a.advanced {
+						ui.Divider(c)
+						ui.Text(c, "Advanced launch settings").Bold()
+						ui.Text(c, "Save directory").TextColor(theme.TextMuted)
+						ui.TextInput(c, &game.SaveDir).AlignSelf(ui.Stretch)
+						ui.Text(c, "Instruction budget (0 means unlimited)").TextColor(theme.TextMuted)
+						ui.TextInput(c, &a.budgetText).AlignSelf(ui.Stretch)
+					}
+					ui.Spacer(c)
+					ui.Row(c).Gap(8).Children(func() {
+						if ui.PrimaryButton(c, launchLabel(a.running)).Clicked() {
+							a.launch()
+						}
+						if ui.Button(c, advancedLabel(a.advanced)).Clicked() {
+							a.advanced = !a.advanced
+						}
+						if ui.Button(c, "Remove").Clicked() && !a.running {
+							a.removeSelected()
+						}
+					})
+				} else {
+					ui.Text(c, "No games added").FontSize(20).Bold()
+					ui.Text(c, "Add a folder containing startup.tjs, either directly, under data/, or in an XP3 archive.").TextColor(theme.TextMuted)
+				}
+			})
+		})
+		ui.Divider(c)
+		ui.Text(c, a.status).TextColor(theme.TextMuted)
+	})
+}
+
+func launchLabel(running bool) string {
+	if running {
+		return "Game running"
 	}
-	if audioDiagnostics {
-		log.Printf("audio output attached: sample_rate=%d ready=%t", audioContext.SampleRate(), audioContext.IsReady())
+	return "Launch game"
+}
+
+func advancedLabel(open bool) string {
+	if open {
+		return "Hide settings"
 	}
-	if err := ebiten.RunGame(game); err != nil {
-		_ = audioOutput.Close()
-		if stopCPUProfile != nil {
-			stopCPUProfile()
+	return "Advanced settings"
+}
+
+func (a *launcherApp) selectedGame() *launcher.Game {
+	if a.selected < 0 || a.selected >= len(a.catalog.Games) {
+		return nil
+	}
+	return &a.catalog.Games[a.selected]
+}
+
+func (a *launcherApp) chooseProject() {
+	window := a.window
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: window, Title: "Add game project", Directory: true, CreateDirectories: false})
+		window.Update(func() {
+			if err != nil {
+				a.status = "Could not choose project: " + err.Error()
+				return
+			}
+			if len(paths) == 0 {
+				return
+			}
+			game, err := launcher.InspectProject(paths[0])
+			if err != nil {
+				a.status = "Not a supported game project: " + err.Error()
+				return
+			}
+			for _, existing := range a.catalog.Games {
+				if existing.Project == game.Project {
+					a.status = "That project is already in the catalog."
+					return
+				}
+			}
+			game.SaveDir = defaultSaveDir(a.catalogPath, game.ID, game.Title)
+			a.catalog.Games = append(a.catalog.Games, game)
+			a.selected = len(a.catalog.Games) - 1
+			a.budgetText = "0"
+			if a.saveCatalog() {
+				a.status = "Added " + game.Title
+			}
+		})
+	}()
+}
+
+func (a *launcherApp) saveCatalog() bool {
+	if a.catalogPath == "" {
+		a.status = "Could not save catalog: user data path is unavailable."
+		return false
+	}
+	if err := launcher.SaveCatalog(a.catalogPath, a.catalog); err != nil {
+		a.status = "Could not save catalog: " + err.Error()
+		return false
+	}
+	return true
+}
+
+func (a *launcherApp) removeSelected() {
+	if a.selectedGame() == nil {
+		return
+	}
+	a.catalog.Games = append(a.catalog.Games[:a.selected], a.catalog.Games[a.selected+1:]...)
+	if len(a.catalog.Games) == 0 {
+		a.selected = -1
+	} else if a.selected >= len(a.catalog.Games) {
+		a.selected = len(a.catalog.Games) - 1
+	}
+	if a.saveCatalog() {
+		a.status = "Game removed."
+	}
+}
+
+func (a *launcherApp) launch() {
+	game := a.selectedGame()
+	if game == nil || a.running {
+		return
+	}
+	budget, err := strconv.ParseUint(strings.TrimSpace(a.budgetText), 10, 64)
+	if err != nil {
+		a.status = "Invalid instruction budget: enter a whole number."
+		return
+	}
+	game.Budget = budget
+	if !a.saveCatalog() {
+		return
+	}
+	logs, err := mygo.App.Path(mygo.PathLogs)
+	if err != nil {
+		a.status = "Could not locate log directory: " + err.Error()
+		return
+	}
+	runtimePath, err := os.Executable()
+	if err != nil {
+		a.status = "Could not locate krkrgo executable: " + err.Error()
+		return
+	}
+	logPath := filepath.Join(logs, safeName(game.ID)+".log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		a.status = "Could not open game log: " + err.Error()
+		return
+	}
+	args := []string{"run", "-project", game.Project}
+	if budget != 0 {
+		args = append(args, "-budget", strconv.FormatUint(budget, 10))
+	}
+	if game.SaveDir != "" {
+		args = append(args, "-save-dir", game.SaveDir)
+	}
+	cmd := exec.Command(runtimePath, args...)
+	cmd.Dir = game.Project
+	cmd.Stdout, cmd.Stderr = logFile, logFile
+	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
+		a.status = "Could not launch game: " + err.Error()
+		return
+	}
+	a.running = true
+	a.status = "Launched " + game.Title + " — log: " + logPath
+	window := a.window
+	go func() {
+		waitErr := cmd.Wait()
+		closeErr := logFile.Close()
+		window.Update(func() {
+			a.running = false
+			if waitErr != nil {
+				a.status = fmt.Sprintf("%s exited with an error: %v", game.Title, waitErr)
+			} else if closeErr != nil {
+				a.status = fmt.Sprintf("%s exited; log close failed: %v", game.Title, closeErr)
+			} else {
+				a.status = fmt.Sprintf("%s exited normally at %s", game.Title, time.Now().Format(time.Kitchen))
+			}
+		})
+	}()
+}
+
+func safeName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "game"
+	}
+	return strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == ':' || r == 0 {
+			return '_'
 		}
-		if audioDiagnostics {
-			logAudioOutput()
-		}
-		log.Fatal(err)
-	}
-	if err := audioOutput.Close(); err != nil {
-		log.Printf("close audio output: %v", err)
-	}
-	if audioDiagnostics {
-		logAudioOutput()
-	}
+		return r
+	}, name)
 }

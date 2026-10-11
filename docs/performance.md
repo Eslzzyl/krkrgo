@@ -11,7 +11,7 @@ The latest controlled run used:
 
 ```sh
 CGO_ENABLED=0 go build -trimpath -o /tmp/krkrgo-transition-zeroopaque ./cmd/krkrgo
-KRKRGO_RENDER_STATS=1 /tmp/krkrgo-transition-zeroopaque -project /Users/eslzzyl/Games/lovelyday
+KRKRGO_RENDER_STATS=1 /tmp/krkrgo-transition-zeroopaque run -project /Users/eslzzyl/Games/lovelyday
 ```
 
 The diagnostic log is `/private/tmp/krkrgo-transition-zeroopaque.log`. One process
@@ -93,7 +93,7 @@ signals.
 - `internal/host/ebiten.go` reuses the upload buffer, avoids repeated
   premultiplication for opaque data, computes changed bounds during the
   upload scan, and selects subimage or full-image writes by changed area.
-- `cmd/krkrgo/main.go` passes the already configured initial window dimensions
+- `internal/krkrgocli` passes the already configured initial window dimensions
   to `host.NewGameWithInitialWindowSize`. The host skips one redundant
   same-size resize and continues to resize on the first mismatch or later
   runtime resolution changes.

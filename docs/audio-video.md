@@ -22,7 +22,7 @@ The native `VideoOverlay` currently reports zero audio streams and one video str
 
 ## Device output
 
-[`host.AudioOutput`](../internal/host/audio.go) is an opt-in adapter for runtime's fixed 48 kHz stereo float32 output. The caller creates an Ebitengine `audio.Context`, passes it to `host.NewAudioOutput`, and attaches the output to `host.Game`. The adapter has a bounded queue; the default `cmd/krkrgo` and headless session do not create or activate this device-output path. Oto is an indirect dependency; platform details are in [Host and platform](host-platform.md).
+[`host.AudioOutput`](../internal/host/audio.go) is an opt-in adapter for runtime's fixed 48 kHz stereo float32 output. The caller creates an Ebitengine `audio.Context`, passes it to `host.NewAudioOutput`, and attaches the output to `host.Game`. The adapter has a bounded queue; the default `krkrgo run` and headless session do not create or activate this device-output path. Oto is an indirect dependency; platform details are in [Host and platform](host-platform.md).
 
 ## C++ comparison and gaps
 
