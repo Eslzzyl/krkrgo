@@ -159,7 +159,7 @@ GPU rendering is not bit-exact across drivers. The C++ `ogl_accurate_render`
 flag exists for exactly this reason. The Go port needs an equivalent internal
 fallback to the CPU path for:
 
-1. Replay validation (`krkrz-tool replay` requires bit-exact frames; the
+1. Replay validation (`krkrgo-tool replay` requires bit-exact frames; the
    headless path already bypasses Ebitengine and composites on the CPU).
 2. Shader-compile failure fallback, when a transition shader exceeds the
    Ebitengine Kage subset.
