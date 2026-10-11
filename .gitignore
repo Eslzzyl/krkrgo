@@ -1,0 +1,23 @@
+# Go test, coverage, profile, and log artifacts
+*.test
+*.out
+*.prof
+*.pprof
+*.cover
+*.coverprofile
+coverage*.txt
+*.log
+
+# macOS metadata
+.DS_Store
+
+# Local replay and fixture data, retaining directory placeholders
+replays/*
+!replays/.gitkeep
+testdata/*
+!testdata/.gitkeep
+
+# Generated project-root binaries
+/krkrgo
+/krkrgo-tool
+/krkrgo_startup_measure
