@@ -16,6 +16,8 @@ replays/*
 !replays/.gitkeep
 testdata/*
 !testdata/.gitkeep
+reference/*
+!reference/.gitkeep
 
 # Generated project-root binaries
 /krkrgo
