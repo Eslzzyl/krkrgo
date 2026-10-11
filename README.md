@@ -28,7 +28,7 @@ From the repository root:
 go run ./cmd/krkrgo -project /path/to/project
 ```
 
-`-project` accepts a project root or a directory containing the project's runtime data. The interactive launcher uses an unlimited script instruction budget by default. Use `-budget N` when an explicit diagnostic limit is required.
+`-project` accepts a project root or a directory containing the project's runtime data (for example, `startup.tjs`, `data.xp3`).
 
 ### Build the interactive launcher
 
@@ -99,10 +99,6 @@ See the [documentation index](docs/README.md) for domain guides:
 
 ## Reference implementations
 
-The official C++ [Kirikiri Z project](https://github.com/krkrz/krkrz) is the semantic and compatibility target. The Rust implementation at `/Users/eslzzyl/WorkSpace/Rust/krkrz_rs` provides a migration reference, and [krkr2](https://github.com/2468785842/krkr2) provides additional compatibility and plugin behavior references.
-
-## Module
-
-```text
-github.com/eslzzyl/krkrgo
-```
+- The official C++ [Kirikiri Z project](https://github.com/krkrz/krkrz) is the semantic and compatibility target.
+- A Rust implementation [krkrz_rs](https://github.com/asukaminato0721/krkrz_rs)
+- [krkr2](https://github.com/2468785842/krkr2)
