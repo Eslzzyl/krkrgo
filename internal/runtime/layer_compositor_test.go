@@ -96,7 +96,6 @@ func TestDrawLayerAlphaFastPathMatchesBlendAcrossDestinationAlphaAndProvince(t *
 	}
 }
 
-
 func BenchmarkComposeAlphaOverOpaqueDestination(b *testing.B) {
 	const width, height = 1280, 720
 	root := NewRootLayer(1, width, height)

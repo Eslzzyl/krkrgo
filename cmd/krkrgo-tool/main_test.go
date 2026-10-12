@@ -18,7 +18,7 @@ func TestRunExtractXP3(t *testing.T) {
 	root := t.TempDir()
 	archivePath := filepath.Join(root, "data.xp3")
 	files := map[string][]byte{
-		"Dir/Startup.TJS":                  []byte("startup script"),
+		"Dir/Startup.TJS":                   []byte("startup script"),
 		"LeGaL/" + strings.Repeat("X", 256): []byte("unrepresentable name"),
 	}
 	if err := os.WriteFile(archivePath, toolTestXP3Files(files), 0o600); err != nil {
@@ -54,7 +54,6 @@ func TestRunExtractXP3(t *testing.T) {
 	}
 }
 
-
 func toolTestXP3Files(files map[string][]byte) []byte {
 	index := make([]byte, 0)
 	payload := make([]byte, 0)
@@ -86,7 +85,6 @@ func toolTestXP3Files(files map[string][]byte) []byte {
 	archive = toolTestU64(archive, uint64(len(index)))
 	return append(archive, index...)
 }
-
 
 func toolTestChunk(dst []byte, tag string, data []byte) []byte {
 	dst = append(dst, tag...)

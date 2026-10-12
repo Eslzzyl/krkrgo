@@ -107,3 +107,45 @@ child = new DerivedLayer(window, primary);
 		t.Fatalf("derived Window/Layer ownership = %v, %v", value, truthErr)
 	}
 }
+func TestDeepDerivedLayerInitializesNativeWindowState(t *testing.T) {
+	session := NewSession(DefaultServices(), 10_000)
+	defer session.Close()
+	source := `
+class KAGLayer extends Layer {
+	function KAGLayer(win, par) { super.Layer(win, par); }
+}
+class AffineLayer extends KAGLayer {
+	function AffineLayer(win, par) { super.KAGLayer(win, par); }
+}
+class AnimationLayer extends AffineLayer {
+	function AnimationLayer(win, par) { super.AffineLayer(...); }
+}
+class KAGTransMove {
+	function KAGTransMove() {}
+}
+global.KAGTransMove = KAGTransMove;
+class AnimationLayerTransMove extends AnimationLayer, KAGTransMove {
+	function AnimationLayerTransMove() {
+		global.AnimationLayer.AnimationLayer(...);
+		global.KAGTransMove.KAGTransMove();
+	}
+}
+class GraphicLayer extends AnimationLayerTransMove {
+	function GraphicLayer(win, par) { super.AnimationLayerTransMove(win, par); }
+}
+window = new Window();
+primary = new Layer(window, null);
+window.add(primary);
+child = new GraphicLayer(window, primary);
+`
+	if _, err := session.executeSource("<deep-derived-layer-window-test>", source, false); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate(`child.window === window && child.parent === primary`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, truthErr := value.Truth(); truthErr != nil || !ok {
+		t.Fatalf("deep derived Layer native state = %v, %v", value, truthErr)
+	}
+}

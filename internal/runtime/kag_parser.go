@@ -174,7 +174,21 @@ func (p *KAGParser) Call(label string) error {
 	if p.kagCallDepth() >= 128 {
 		return fmt.Errorf("KAG call depth exceeded")
 	}
-	return p.parser.Call(label)
+	// Keep this frame outside the scenario cursor: native callLabel callers
+	// commonly load another storage after calling and must still be able to return.
+	frame := kagScenarioCallFrame{
+		parser:        p.parser,
+		state:         p.storeCallFrameState(),
+		macroRanges:   p.macroRanges,
+		macroIndexErr: p.macroIndexErr,
+	}
+	if err := p.parser.Jump(label); err != nil {
+		return err
+	}
+	p.crossCalls = append(p.crossCalls, frame)
+	p.conditions = nil
+	p.conditionCalls = nil
+	return nil
 }
 func (p *KAGParser) CallLabel(label string) error { return p.Call(label) }
 
@@ -379,6 +393,35 @@ func (p *KAGParser) ClearCallStack() error {
 func (p *KAGParser) ReturnFromCall() error {
 	if err := p.ensureExecutable(); err != nil {
 		return err
+	}
+	localCalls := len(p.parser.State().Calls)
+	if n := len(p.crossCalls); n != 0 && len(p.crossCalls[n-1].state.Calls) >= localCalls {
+		frame := p.crossCalls[n-1]
+		if err := p.restoreScenarioCallFrame(frame); err != nil {
+			return err
+		}
+		p.crossCalls = p.crossCalls[:n-1]
+		return nil
+	}
+	if localCalls != 0 {
+		if err := p.parser.ReturnFromCall(); err != nil {
+			return err
+		}
+		if n := len(p.conditionCalls); n != 0 {
+			p.conditions = p.conditionCalls[n-1]
+			p.conditionCalls = p.conditionCalls[:n-1]
+		} else {
+			p.conditions = nil
+		}
+		return nil
+	}
+	if n := len(p.crossCalls); n != 0 {
+		frame := p.crossCalls[n-1]
+		if err := p.restoreScenarioCallFrame(frame); err != nil {
+			return err
+		}
+		p.crossCalls = p.crossCalls[:n-1]
+		return nil
 	}
 	return p.parser.ReturnFromCall()
 }

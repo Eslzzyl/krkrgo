@@ -92,9 +92,9 @@ func (s *Services) layerTransition(vm *tjs.VM, context tjs.Value, operation stri
 		return tjs.VoidValue, err
 	}
 	if operation == "stopTransition" {
-		if len(args) != 0 {
-			return tjs.VoidValue, fmt.Errorf("Layer.stopTransition takes no arguments")
-		}
+		// The native method takes no semantic arguments. TJS still permits
+		// callers to supply extras, which the original Layer implementation
+		// ignores (including stopAllTransitions(true) in KAG).
 		return tjs.VoidValue, s.stopLayerTransition(vm, layer, true, budget)
 	}
 	if len(args) < 3 || len(args) > 4 {

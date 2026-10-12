@@ -81,8 +81,8 @@ type RegexpLiteral struct {
 }
 
 // InterpolationLiteral is the lossless representation of TJS's embeddable
-// string syntax (@\"text &name; ${expression}\"). Text parts retain escapes;
-// Expression parts contain the source between &...; or ${...}.
+// string syntax (@"text &name; ${expression}"). Text parts contain decoded
+// interpolation escapes; expression parts contain their source.
 type InterpolationPart struct {
 	Text       UTF16
 	Expression string
@@ -542,9 +542,27 @@ func (l *Lexer) scanInterpolation(start uint64, loc core.SourceLocation) (Token,
 	parts := make([]InterpolationPart, 0, 3)
 	textStart := l.i
 	flush := func(end uint64) {
-		if end > textStart {
-			parts = append(parts, InterpolationPart{Text: NewUTF16(l.units[textStart:end])})
+		if end <= textStart {
+			return
 		}
+		text := l.units[textStart:end]
+		for i := uint64(0); i+1 < uint64(len(text)); i++ {
+			if text[i] != '\\' || (text[i+1] != '&' && !(text[i+1] == '$' && i+2 < uint64(len(text)) && text[i+2] == '{')) {
+				continue
+			}
+			decoded := make([]uint16, 0, len(text))
+			decoded = append(decoded, text[:i]...)
+			for ; i < uint64(len(text)); i++ {
+				if text[i] == '\\' && i+1 < uint64(len(text)) &&
+					(text[i+1] == '&' || (text[i+1] == '$' && i+2 < uint64(len(text)) && text[i+2] == '{')) {
+					continue
+				}
+				decoded = append(decoded, text[i])
+			}
+			text = decoded
+			break
+		}
+		parts = append(parts, InterpolationPart{Text: NewUTF16(text)})
 	}
 	for l.i < uint64(len(l.units)) {
 		u := l.peek(0)

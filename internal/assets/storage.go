@@ -28,7 +28,7 @@ type Storage struct {
 	searchPaths []string
 	imageCache  imageDecodeCache
 
-	directoryMu sync.Mutex
+	directoryMu  sync.Mutex
 	directories  map[string]directoryIndex
 	directoryAge uint64
 	cacheProject string
@@ -308,6 +308,27 @@ func (s *Storage) FullPath(name string) (string, error) {
 	return result, nil
 }
 
+// LocalName returns the operating-system path for a file-media storage name.
+// Archive members cannot be passed directly to the local filesystem.
+func (s *Storage) LocalName(name string) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("nil storage")
+	}
+	if strings.ContainsRune(name, '>') {
+		return "", fmt.Errorf("archive members are not locally accessible")
+	}
+	name = strings.ReplaceAll(name, `\`, "/")
+	local, err := s.storagePath(name)
+	if err != nil {
+		return "", err
+	}
+	local = filepath.FromSlash(local)
+	if !filepath.IsAbs(local) {
+		local = filepath.Join(s.Project, local)
+	}
+	return filepath.Clean(local), nil
+}
+
 // storagePath accepts unqualified project names and the local file media
 // spelling. Other media are unsupported by the project-only storage backend.
 func (s *Storage) storagePath(name string) (string, error) {
@@ -386,6 +407,19 @@ func (s *Storage) normalize(name string, directory bool) (string, error) {
 		return "", err
 	} else if matched {
 		name = relative
+	} else if relative, matched := projectRelativePathFolded(name, s.Project); matched {
+		// FullPath lowercases file-media URIs for storage-name compatibility.
+		// On case-sensitive volumes that can also lowercase the absolute project
+		// prefix, so accept that spelling only when it still names this project.
+		// Re-resolve against the canonical project root to reject symlink escapes.
+		candidate := filepath.Join(s.Project, filepath.FromSlash(relative))
+		if resolved, inProject, err := core.LocalStorageRelativePath(candidate, s.Project); err != nil {
+			return "", err
+		} else if inProject {
+			name = resolved
+		} else {
+			return "", fmt.Errorf("%w: absolute storage name %q", core.ErrInvalidStorageName, name)
+		}
 	}
 	if i := strings.IndexByte(name, '>'); i >= 0 {
 		archive, member := name[:i], name[i+1:]
@@ -409,6 +443,28 @@ func (s *Storage) normalize(name string, directory bool) (string, error) {
 		return "", nil
 	}
 	return core.StorageName(name)
+}
+
+// projectRelativePathFolded handles absolute project paths returned by
+// FullPath after its storage-name case normalization. It never grants access
+// outside the project; loosePath still enforces symlink containment.
+func projectRelativePathFolded(name, project string) (string, bool) {
+	path := filepath.Clean(filepath.FromSlash(strings.ReplaceAll(name, `\`, "/")))
+	root := filepath.Clean(project)
+	if !filepath.IsAbs(path) || !filepath.IsAbs(root) {
+		return "", false
+	}
+	pathParts := strings.Split(filepath.ToSlash(path), "/")
+	rootParts := strings.Split(filepath.ToSlash(root), "/")
+	if len(pathParts) < len(rootParts) {
+		return "", false
+	}
+	for i := range rootParts {
+		if !strings.EqualFold(pathParts[i], rootParts[i]) {
+			return "", false
+		}
+	}
+	return filepath.ToSlash(filepath.Join(pathParts[len(rootParts):]...)), true
 }
 
 func (s *Storage) archiveLocation(name string) (int, string, bool) {

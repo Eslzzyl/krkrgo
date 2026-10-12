@@ -234,6 +234,48 @@ func ScanSystemFonts(roots ...string) ([]SystemFont, []error) {
 	return fonts, errs
 }
 
+// registerFontData adds real faces from a storage resource to the runtime font
+// book. It makes them available to Font.getList and font selection without
+// installing fonts in the host operating system.
+func (s *Services) registerFontData(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, fmt.Errorf("%w: empty font data", ErrInvalidFont)
+	}
+	collection, err := sfnt.ParseCollection(data)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %w", ErrInvalidFont, err)
+	}
+	type registration struct {
+		family  string
+		factory FontFactory
+	}
+	registrations := make([]registration, 0, collection.NumFonts())
+	for i := range collection.NumFonts() {
+		parsed, err := collection.Font(i)
+		if err != nil {
+			return 0, fmt.Errorf("%w: face %d: %w", ErrInvalidFont, i, err)
+		}
+		family, err := parsed.Name(nil, sfnt.NameIDTypographicFamily)
+		if err != nil || strings.TrimSpace(family) == "" {
+			family, err = parsed.Name(nil, sfnt.NameIDFamily)
+		}
+		family = strings.TrimSpace(family)
+		if err != nil || family == "" {
+			return 0, fmt.Errorf("%w: face %d has no Family name", ErrInvalidFont, i)
+		}
+		registrations = append(registrations, registration{family: family, factory: fontFactoryFor(parsed)})
+	}
+	if len(registrations) == 0 {
+		return 0, fmt.Errorf("%w: font contains no faces", ErrInvalidFont)
+	}
+	for _, registration := range registrations {
+		if err := s.RegisterFontFactory(registration.family, registration.factory); err != nil {
+			return 0, err
+		}
+	}
+	return len(registrations), nil
+}
+
 func fontFactoryFor(parsed *sfnt.Font) FontFactory {
 	return func(size float64) (FontFace, error) {
 		if size <= 0 {

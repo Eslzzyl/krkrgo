@@ -30,7 +30,31 @@ func (s *Services) timerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		return tjs.VoidValue, err
 	}
 
-	if operation == "@initialize" || operation == "Timer" {
+	if operation == "@initialize" {
+		if vm == nil || vm.Objects == nil {
+			return tjs.VoidValue, fmt.Errorf("Timer.%s requires a VM", operation)
+		}
+		// Class initialization also runs for a Timer base class with no
+		// constructor arguments. The ActionOwner is supplied later by Timer().
+		if s.Timers.Timer(uint64(id)) == nil {
+			if _, err := s.Timers.Register(uint64(id)); err != nil {
+				return tjs.VoidValue, fmt.Errorf("Timer.%s: %w", operation, err)
+			}
+		}
+		if class, ok := vm.Globals["Timer"]; ok {
+			if classObject, ok := vm.Objects.Lookup(class.ObjectRef().Object); ok {
+				if method, ok := classObject.Get("onTimer"); ok {
+					if instance, ok := vm.Objects.Lookup(id); ok {
+						if err := instance.Set("onTimer", method); err != nil {
+							return tjs.VoidValue, err
+						}
+					}
+				}
+			}
+		}
+		return tjs.VoidValue, nil
+	}
+	if operation == "Timer" {
 		if len(args) < 1 || args[0].Kind() != tjs.KindObject || args[0].IsNull() || args[0].ObjectRef().Object == 0 {
 			return tjs.VoidValue, fmt.Errorf("Timer.%s requires an ActionOwner object", operation)
 		}
@@ -45,32 +69,12 @@ func (s *Services) timerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		if len(args) >= 2 && args[1].Kind() != tjs.KindVoid {
 			actionName = args[1].Text()
 		}
-		if existing := s.Timers.Timer(uint64(id)); existing != nil {
-			s.mu.Lock()
-			s.TimerActions[id] = timerAction{owner: owner, name: actionName}
-			s.mu.Unlock()
-			return tjs.VoidValue, nil
-		}
-		if _, err := s.Timers.Register(uint64(id)); err != nil {
-			return tjs.VoidValue, fmt.Errorf("Timer.%s: %w", operation, err)
+		if s.Timers.Timer(uint64(id)) == nil {
+			return tjs.VoidValue, fmt.Errorf("Timer.%s: native instance was not initialized", operation)
 		}
 		s.mu.Lock()
 		s.TimerActions[id] = timerAction{owner: owner, name: actionName}
 		s.mu.Unlock()
-		// DispatchEvents intentionally uses direct object members for event
-		// handlers. Shadow the class method on this instance so the timer's
-		// native onTimer operation is reached by the existing dispatcher.
-		if class, ok := vm.Globals["Timer"]; ok {
-			if classObject, ok := vm.Objects.Lookup(class.ObjectRef().Object); ok {
-				if method, ok := classObject.Get("onTimer"); ok {
-					if instance, ok := vm.Objects.Lookup(id); ok {
-						if err := instance.Set("onTimer", method); err != nil {
-							return tjs.VoidValue, err
-						}
-					}
-				}
-			}
-		}
 		return tjs.VoidValue, nil
 	}
 

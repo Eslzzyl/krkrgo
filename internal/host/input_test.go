@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/hajimehoshi/ebiten/v2"
 	runtime "github.com/eslzzyl/krkrgo/internal/runtime"
+	"github.com/hajimehoshi/ebiten/v2"
 )
 
 func TestInputWireContract(t *testing.T) {

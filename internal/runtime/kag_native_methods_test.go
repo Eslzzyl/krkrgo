@@ -8,6 +8,45 @@ import (
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
+func TestKAGNativeBaseConstructorUsesCurrentDerivedReceiverWhenCached(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+
+	source := `
+class BaseConductor extends KAGParser {
+	function BaseConductor() {
+		var ctor;
+		if (typeof global.BaseConductor.SuperConstructor != "Object") {
+			ctor = super.KAGParser;
+			global.BaseConductor.SuperConstructor = ctor;
+		} else {
+			ctor = global.BaseConductor.SuperConstructor;
+		}
+		ctor(...);
+	}
+}
+class AnimationConductor extends BaseConductor {
+	function AnimationConductor() { super.BaseConductor(...); }
+}
+first = new AnimationConductor();
+invalidate first;
+second = new AnimationConductor();
+`
+	if _, err := session.executeSource("<kag-native-cached-base-constructor>", source, false); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate(`second.curStorage == ""`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := value.Truth(); !ok {
+		t.Fatalf("cached KAGParser base constructor did not initialize the new derived receiver: %v", value)
+	}
+	if len(session.Services.KAGParsers) != 1 {
+		t.Fatalf("live KAGParser contexts = %d, want only the second instance", len(session.Services.KAGParsers))
+	}
+}
+
 func TestKAGNativeClearResetsParserFramesAndKeepsMacroDefinitions(t *testing.T) {
 	session := NewSession(DefaultServices(), 100_000)
 	defer session.Close()
@@ -71,6 +110,31 @@ after = p.getNextTag();`
 	if ok, _ := value.Truth(); !ok {
 		detail, _ := session.Evaluate(`[chars, hitret.tagname, after.tagname].join("|")`)
 		t.Fatalf("legacy KAG parser exposed line-ending newlines before tags: %v (%v)", value, detail)
+	}
+}
+
+func TestKAGNativeGoToLabelVoidIsNoOp(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+
+	source := `Plugins.link("plugin/KAGParser.dll");
+p = new KAGParser();
+p.loadScenario("title.ks", "*start\n[first]\n*next\n[second]\n");
+p.goToLabel("*next");
+before = p.curLabel;
+p.goToLabel(void);
+after = p.curLabel;
+next = p.getNextTag();`
+	if _, err := session.executeSource("<kag-native-empty-label-test>", source, false); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate(`before == "*next" && after == before && next.tagname == "second"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := value.Truth(); !ok {
+		detail, _ := session.Evaluate(`[before, after, next.tagname].join("|")`)
+		t.Fatalf("goToLabel(void) changed KAG parser position: %v (%v)", value, detail)
 	}
 }
 

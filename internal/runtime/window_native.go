@@ -91,7 +91,6 @@ var windowNotificationNames = func() map[int]string {
 	return names
 }()
 
-
 func windowObjectContext(context tjs.Value, operation string) (tjs.ObjectID, error) {
 	if context.Kind() != tjs.KindObject || context.IsNull() || context.ObjectRef().Object == 0 {
 		return 0, fmt.Errorf("Window.%s requires non-null object context", operation)
@@ -133,10 +132,20 @@ func windowBoolArg(args []tjs.Value, index int, operation string) (bool, error) 
 }
 
 func windowRectValue(vm *tjs.VM, rect [4]int32) (tjs.Value, error) {
-	return vm.NewArray([]tjs.Value{
-		tjs.IntegerValue(int64(rect[0])), tjs.IntegerValue(int64(rect[1])),
-		tjs.IntegerValue(int64(rect[2])), tjs.IntegerValue(int64(rect[3])),
-	})
+	value, err := vm.NewDictionary()
+	if err != nil {
+		return tjs.VoidValue, err
+	}
+	object, ok := vm.Objects.Lookup(value.ObjectRef().Object)
+	if !ok {
+		return tjs.VoidValue, fmt.Errorf("window rectangle object was not registered")
+	}
+	for i, name := range [...]string{"x", "y", "w", "h"} {
+		if err := object.Set(name, tjs.IntegerValue(int64(rect[i]))); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	return value, nil
 }
 
 func rectangleValue(vm *tjs.VM, rect [4]int32) (tjs.Value, error) {
@@ -322,6 +331,11 @@ func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string,
 				return tjs.NullValue, nil
 			}
 			return window.ExSystemMenu, nil
+		case "drawDevice":
+			if window.DrawDeviceObject.Kind() == tjs.KindVoid {
+				return tjs.NullValue, nil
+			}
+			return window.DrawDeviceObject, nil
 		case "windowRect":
 			return windowRectValue(vm, window.WindowRect())
 		case "clientRect":
@@ -342,6 +356,15 @@ func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string,
 			return tjs.VoidValue, fmt.Errorf("Window.set:%s: missing value", property)
 		}
 		switch property {
+		case "drawDevice":
+			current := window.DrawDeviceObject
+			if current.Kind() == tjs.KindObject && !current.IsNull() && !current.StrictEqual(args[0]) && vm != nil {
+				if _, err := vm.Invalidate(current, s, budget); err != nil {
+					return tjs.VoidValue, err
+				}
+			}
+			window.DrawDeviceObject = args[0]
+			return tjs.VoidValue, nil
 		case "focusedLayer":
 			var target *Layer
 			value := args[0]
@@ -538,6 +561,9 @@ func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string,
 			return tjs.VoidValue, err
 		}
 		return tjs.VoidValue, UnsupportedDevice("native window menu focus")
+	case "bringToFront":
+		// The portable runtime does not own a native window manager to raise.
+		return tjs.VoidValue, nil
 	case "bringTo", "sendToBack":
 		return tjs.VoidValue, UnsupportedDevice("native window z-order")
 	case "setMessageHook":
@@ -573,7 +599,7 @@ func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string,
 		}
 		window.EnableWinMsgHook = on
 		return tjs.IntegerValue(windowBoolInt(window.EnableWinMsgHook)), nil
-	case "onMouseMove", "onMouseDown", "onMouseUp", "onClick", "onDoubleClick", "onMouseLeave", "onMouseWheel", "onKeyDown", "onKeyUp", "onKeyPress", "onActivate", "onDeactivate":
+	case "onResize", "onMouseMove", "onMouseDown", "onMouseUp", "onClick", "onDoubleClick", "onMouseLeave", "onMouseWheel", "onKeyDown", "onKeyUp", "onKeyPress", "onActivate", "onDeactivate":
 		return tjs.VoidValue, nil
 	case "registerExEvent":
 		events := [...]string{"onResizing", "onMoving", "onMove", "onNcMouseMove"}

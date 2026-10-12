@@ -1,6 +1,9 @@
 package kag
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParsePreservesLabelsAttributesAndUTF16Columns(t *testing.T) {
 	scenario, err := Parse("test.ks", "*start|Title\n😀x[tag a=1 a=2 b=\"x] y\"]\n")
@@ -25,6 +28,48 @@ func TestParsePreservesLabelsAttributesAndUTF16Columns(t *testing.T) {
 	}
 	if got := scenario.Tokens[2].Location.Column; got != 4 {
 		t.Fatalf("tag UTF-16 column = %d, want 4", got)
+	}
+}
+
+func TestParseNamedFirstLabelAfterHeaderCommands(t *testing.T) {
+	source := "[linemode]\n" + strings.Repeat("@loadplugin name=\"x\"\n", 12) +
+		"@call storage=\"custom.ks\"\n*first\n"
+	scenario, err := Parse("first.ks", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scenario.Tokens) != 16 {
+		t.Fatalf("tokens = %#v, want 15 tags/newlines and a label", scenario.Tokens)
+	}
+	label := scenario.Tokens[15]
+	if label.Kind != KindLabel || label.Label == nil || label.Label.Name != "*first" {
+		t.Fatalf("line 15 label token = %#v, want named *first label", label)
+	}
+	if label.Location.Storage != "first.ks" || label.Location.Line != 15 || label.Location.Column != 1 {
+		t.Fatalf("line 15 label location = %+v, want first.ks:15:1", label.Location)
+	}
+	if got, ok := scenario.Labels["*first"]; !ok || got != 15 {
+		t.Fatalf("first label index = %d, %v, want 15, true", got, ok)
+	}
+}
+
+func TestParseIgnoresBareLabelMarkerBeforeNamedFirstLabel(t *testing.T) {
+	scenario, err := Parse("custom.ks", "*\n*first\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scenario.Tokens) != 1 {
+		t.Fatalf("tokens = %#v, want only the named label", scenario.Tokens)
+	}
+	label := scenario.Tokens[0]
+	if label.Kind != KindLabel || label.Label == nil || label.Label.Name != "*first" {
+		t.Fatalf("first indexed label = %#v, want *first", label)
+	}
+	if label.Location.Line != 2 {
+		t.Fatalf("first indexed label line = %d, want 2", label.Location.Line)
+	}
+	if got, ok := scenario.Labels["*first"]; !ok || got != 0 {
+		t.Fatalf("label index = %d, %v, want 0, true", got, ok)
 	}
 }
 
@@ -62,6 +107,29 @@ func TestParseSkipsIndentedSemicolonCommentLines(t *testing.T) {
 	}
 	if scenario.Tokens[2].Kind != KindNewline {
 		t.Fatalf("final token = %#v, want newline", scenario.Tokens[2])
+	}
+}
+
+func TestParseRecognizesIndentedLineCommands(t *testing.T) {
+	scenario, err := Parse("indented-command.asd", "*start\n\t@wait time=200\n  plain text\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scenario.Tokens) != 4 {
+		t.Fatalf("tokens = %#v, want label, command, text, and newline", scenario.Tokens)
+	}
+	command := scenario.Tokens[1]
+	if command.Kind != KindTag || command.Tag == nil || command.Tag.Name != "wait" {
+		t.Fatalf("indented command = %#v, want wait tag", command)
+	}
+	if got, ok := command.Tag.Get("time"); !ok || got != "200" {
+		t.Errorf("wait time = %q, %v, want 200, true", got, ok)
+	}
+	if got := command.Location.Column; got != 2 {
+		t.Errorf("indented command column = %d, want 2", got)
+	}
+	if got := scenario.Tokens[2].Text; got != "  plain text" {
+		t.Errorf("ordinary text = %q, want leading spaces preserved", got)
 	}
 }
 func TestParseMarksLeadingEntityExpressionsWithoutChangingLiteralValues(t *testing.T) {
@@ -154,6 +222,23 @@ func TestParserJumpAndCallRepeatedLabelAliases(t *testing.T) {
 	token := parser.NextToken()
 	if token == nil || token.Label == nil || token.Label.Name != "*a:2" {
 		t.Fatalf("second occurrence token = %#v, want *a:2 label", token)
+	}
+}
+func TestParserJumpEmptyLabelIsNoOp(t *testing.T) {
+	scenario, err := Parse("test.ks", "*start\nhello\n*next\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parser := NewParser(scenario)
+	if err := parser.Jump("*next"); err != nil {
+		t.Fatal(err)
+	}
+	before := parser.State()
+	if err := parser.Jump(""); err != nil {
+		t.Fatalf("empty jump: %v", err)
+	}
+	if got := parser.State(); got.Position != before.Position {
+		t.Fatalf("empty jump position = %d, want unchanged position %d", got.Position, before.Position)
 	}
 }
 

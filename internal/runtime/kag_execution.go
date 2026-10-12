@@ -415,8 +415,18 @@ func (p *KAGParser) kagCallDepth() int {
 	if p.parser != nil {
 		depth += len(p.parser.State().Calls)
 	}
-	for _, frame := range p.crossCalls {
-		if frame.parser != nil {
+	for i, frame := range p.crossCalls {
+		if frame.parser == nil || frame.parser == p.parser {
+			continue
+		}
+		seen := false
+		for j := range i {
+			if p.crossCalls[j].parser == frame.parser {
+				seen = true
+				break
+			}
+		}
+		if !seen {
 			depth += len(frame.parser.State().Calls)
 		}
 	}
@@ -452,11 +462,12 @@ func (p *KAGParser) restoreScenarioCallFrame(frame kagScenarioCallFrame) error {
 }
 
 func (p *KAGParser) consumeExplicitReturnFrame(parser *kag.Parser, localCalls int) error {
+	if n := len(p.crossCalls); n != 0 && len(p.crossCalls[n-1].state.Calls) >= localCalls {
+		p.crossCalls = p.crossCalls[:n-1]
+		return nil
+	}
 	if localCalls != 0 {
 		cursor := parser.State()
-		if len(cursor.Calls) == 0 {
-			return nil
-		}
 		cursor.Calls = cursor.Calls[:len(cursor.Calls)-1]
 		return parser.Restore(cursor)
 	}
@@ -654,27 +665,7 @@ func (p *KAGParser) Step(budget *uint64) (KAGEvent, error) {
 					}
 					continue
 				}
-				if len(p.parser.State().Calls) != 0 {
-					if err := p.parser.ReturnFromCall(); err != nil {
-						return KAGEvent{}, kagLocationError(token.Location, err)
-					}
-					if n := len(p.conditionCalls); n != 0 {
-						p.conditions = p.conditionCalls[n-1]
-						p.conditionCalls = p.conditionCalls[:n-1]
-					} else {
-						p.conditions = nil
-					}
-					continue
-				}
-				if n := len(p.crossCalls); n != 0 {
-					frame := p.crossCalls[n-1]
-					if err := p.restoreScenarioCallFrame(frame); err != nil {
-						return KAGEvent{}, kagLocationError(token.Location, err)
-					}
-					p.crossCalls = p.crossCalls[:n-1]
-					continue
-				}
-				if err := p.parser.ReturnFromCall(); err != nil {
+				if err := p.ReturnFromCall(); err != nil {
 					return KAGEvent{}, kagLocationError(token.Location, err)
 				}
 				continue

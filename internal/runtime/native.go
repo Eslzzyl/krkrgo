@@ -125,6 +125,13 @@ func RegisterDefaultNatives(r *NativeRegistry) error {
 			}
 		}
 	}
+	for _, name := range []string{"Console.log", "Console.info", "Console.warn", "Console.error", "Console.debug", "Console.trace", "Console.dir", "Console.getPlacement", "Console.getRect", "Console.setPos", "Console.restoreMaximize", "Console.bringTo", "Console.bringAfter"} {
+		if _, ok := r.Entry(name); !ok {
+			if err := r.Register(name, name); err != nil {
+				return err
+			}
+		}
+	}
 	for _, name := range []string{"Debug.logAsError"} {
 		if _, ok := r.Entry(name); !ok {
 			if err := r.Register(name, name); err != nil {

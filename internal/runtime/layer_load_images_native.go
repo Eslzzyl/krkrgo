@@ -264,6 +264,7 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 	layer.ImageWidth, layer.ImageHeight = width, height
 	layer.ClearProvince()
 	resetNativeLayerClip(layer)
+	layer.imageModified = true
 	return result, nil
 }
 
@@ -337,5 +338,6 @@ func (s *Services) layerLoadProvinceImage(layer *Layer, id tjs.ObjectID, args []
 	}
 	layer.Province = append(layer.Province[:0], indexed.Pixels...)
 	layer.ProvinceWidth, layer.ProvinceHeight = width, height
+	layer.imageModified = true
 	return nil
 }

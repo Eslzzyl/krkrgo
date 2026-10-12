@@ -17,7 +17,7 @@ type Dispatcher struct{ Table *ObjectTable }
 func NewDispatcher(table *ObjectTable) *Dispatcher { return &Dispatcher{Table: table} }
 
 func (d *Dispatcher) object(ref ObjectRef) (*Object, error) {
-	if ref.Object == 0 {
+	if ref.IsNull() {
 		return nil, ErrType
 	}
 	if d != nil && d.Table != nil {
@@ -136,7 +136,7 @@ func (d *Dispatcher) getPropertyDescriptor(p *propertyMeta, context ObjectRef, t
 }
 
 func (d *Dispatcher) bindMember(value Value, context ObjectRef) Value {
-	if value.Kind() != KindObject {
+	if value.Kind() != KindObject || value.ObjectRef().Context != 0 {
 		return value
 	}
 	registry.mu.RLock()
@@ -278,7 +278,9 @@ func (d *Dispatcher) CallWithContext(function Value, context ObjectRef, args ...
 	if meta == nil {
 		return Value{}, ErrType
 	}
-	if context.Object == 0 {
+	if boundContext := function.ObjectRef().Context; boundContext != 0 {
+		context = ObjectRef{Object: boundContext, Context: boundContext}
+	} else if context.Object == 0 {
 		context = meta.bound
 	}
 	if meta.call != nil {
@@ -371,9 +373,9 @@ func regexesHas(id ObjectID) bool {
 func primitiveGet(d *Dispatcher, target Value, name string) (Value, error) {
 	switch target.Kind() {
 	case KindString:
-		return stringMethod(target, name)
+		return stringMethod(d, target, name)
 	case KindOctet:
-		return octetMethod(target, name)
+		return octetMethod(d, target, name)
 	default:
 		return VoidValue, ErrMemberNotFound
 	}
@@ -424,16 +426,16 @@ func stringUTF16LastIndex(haystack, needle []uint16) int {
 	}
 	return -1
 }
-func stringMethod(value Value, name string) (Value, error) {
+func stringMethod(d *Dispatcher, value Value, name string) (Value, error) {
 	switch name {
 	case "length":
 		return IntegerValue(int64(len(value.string))), nil
 	case "sprintf":
-		return makeValueMethod(nil, name, value, func(v Value, a []Value) (Value, error) {
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
 			return formatTJSString(v, a)
 		}), nil
 	case "charAt":
-		return makeValueMethod(nil, name, value, func(v Value, a []Value) (Value, error) {
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
 			i, e := argInt(a, 0)
 			if e != nil {
 				return Value{}, e
@@ -444,7 +446,7 @@ func stringMethod(value Value, name string) (Value, error) {
 			return StringUnits(v.string[i : i+1]), nil
 		}), nil
 	case "indexOf":
-		return makeValueMethod(nil, name, value, func(v Value, a []Value) (Value, error) {
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
 			if len(a) == 0 {
 				return IntegerValue(-1), nil
 			}
@@ -466,14 +468,14 @@ func stringMethod(value Value, name string) (Value, error) {
 			return IntegerValue(int64(stringUTF16Index(u, tjsStringUnits(a[0]), int(at)))), nil
 		}), nil
 	case "lastIndexOf":
-		return makeValueMethod(nil, name, value, func(v Value, a []Value) (Value, error) {
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
 			if len(a) == 0 {
 				return IntegerValue(-1), nil
 			}
 			return IntegerValue(int64(stringUTF16LastIndex(v.string, tjsStringUnits(a[0])))), nil
 		}), nil
 	case "substr":
-		return makeValueMethod(nil, name, value, func(v Value, a []Value) (Value, error) {
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
 			start, e := argInt(a, 0)
 			if e != nil {
 				return Value{}, e
@@ -504,7 +506,7 @@ func stringMethod(value Value, name string) (Value, error) {
 			return StringUnits(u[start:end]), nil
 		}), nil
 	case "substring":
-		return makeValueMethod(nil, name, value, func(v Value, a []Value) (Value, error) {
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
 			start, e := argInt(a, 0)
 			if e != nil {
 				return Value{}, e
@@ -534,46 +536,78 @@ func stringMethod(value Value, name string) (Value, error) {
 			}
 			return StringUnits(u[start:end]), nil
 		}), nil
+	case "escape":
+		return makeValueMethod(d, name, value, func(v Value, _ []Value) (Value, error) {
+			return StringValue(EscapeUTF16(v.string)), nil
+		}), nil
 	case "toUpperCase":
-		return makeValueMethod(nil, name, value, func(v Value, a []Value) (Value, error) { return StringValue(strings.ToUpper(v.Text())), nil }), nil
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) { return StringValue(strings.ToUpper(v.Text())), nil }), nil
 	case "toLowerCase":
-		return makeValueMethod(nil, name, value, func(v Value, a []Value) (Value, error) { return StringValue(strings.ToLower(v.Text())), nil }), nil
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) { return StringValue(strings.ToLower(v.Text())), nil }), nil
 	case "trim":
-		return makeValueMethod(nil, name, value, func(v Value, a []Value) (Value, error) {
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
 			return StringValue(strings.TrimFunc(v.Text(), unicode.IsSpace)), nil
 		}), nil
 	case "split":
-		return makeValueMethod(nil, name, value, func(v Value, a []Value) (Value, error) {
-			sep := ""
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
+			separator := ""
 			if len(a) > 0 {
-				sep = a[0].Text()
+				separator = a[0].Text()
 			}
+			purgeEmpty := false
+			if len(a) >= 3 && a[2].Kind() != KindVoid {
+				var err error
+				purgeEmpty, err = a[2].Truth()
+				if err != nil {
+					return VoidValue, err
+				}
+			}
+			parts := splitTJSString(v.string, UTF16FromString(separator), purgeEmpty)
 			o := NewObject(CategoryArray)
-			if sep == "" {
-				for _, r := range v.Text() {
-					_ = o.Set(strconv.Itoa(int(r)), StringValue(string(r)))
-				}
-			} else {
-				for i, x := range strings.Split(v.Text(), sep) {
-					_ = o.Set(strconv.Itoa(i), StringValue(x))
-				}
+			for i, part := range parts {
+				_ = o.Set(strconv.Itoa(i), part)
 			}
 			return ObjectValue(o.Ref()), nil
 		}), nil
+	case "repeat":
+		return makeValueMethod(d, name, value, repeatString), nil
 	case "replace":
-		return makeValueMethod(nil, name, value, func(v Value, a []Value) (Value, error) {
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
 			return replaceStringValue(v, a)
 		}), nil
 	}
 	return VoidValue, ErrMemberNotFound
 }
 
-func octetMethod(value Value, name string) (Value, error) {
+func splitTJSString(subject, delimiters UTF16, purgeEmpty bool) []Value {
+	var delimiterSet [1024]uint64
+	for _, unit := range delimiters {
+		delimiterSet[unit/64] |= uint64(1) << (unit % 64)
+	}
+
+	parts := make([]Value, 0)
+	start := 0
+	for i, unit := range subject {
+		if delimiterSet[unit/64]&(uint64(1)<<(unit%64)) == 0 {
+			continue
+		}
+		if !purgeEmpty || i != start {
+			parts = append(parts, StringUnits(subject[start:i]))
+		}
+		start = i + 1
+	}
+	if !purgeEmpty || start != len(subject) {
+		parts = append(parts, StringUnits(subject[start:]))
+	}
+	return parts
+}
+
+func octetMethod(d *Dispatcher, value Value, name string) (Value, error) {
 	switch name {
 	case "length":
 		return IntegerValue(int64(len(value.Octets()))), nil
 	case "get":
-		return makeValueMethod(nil, name, value, func(v Value, a []Value) (Value, error) {
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
 			i, e := argInt(a, 0)
 			if e != nil {
 				return Value{}, e
@@ -585,7 +619,7 @@ func octetMethod(value Value, name string) (Value, error) {
 			return IntegerValue(int64(b[i])), nil
 		}), nil
 	case "subarray":
-		return makeValueMethod(nil, name, value, func(v Value, a []Value) (Value, error) {
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
 			start, e := argInt(a, 0)
 			if e != nil {
 				return Value{}, e
@@ -610,7 +644,7 @@ func octetMethod(value Value, name string) (Value, error) {
 			return OctetValue(b[start:end]), nil
 		}), nil
 	case "toString":
-		return makeValueMethod(nil, name, value, func(v Value, a []Value) (Value, error) { return StringValue(v.Text()), nil }), nil
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) { return StringValue(v.Text()), nil }), nil
 	}
 	return VoidValue, ErrMemberNotFound
 }
@@ -620,6 +654,29 @@ func argInt(args []Value, n int) (int64, error) {
 		return 0, ErrBadParamCount
 	}
 	return args[n].Int()
+}
+
+func repeatString(value Value, args []Value) (Value, error) {
+	count, err := argInt(args, 0)
+	if err != nil {
+		return Value{}, err
+	}
+	if count < 0 {
+		return Value{}, fmt.Errorf("String.repeat count must not be negative")
+	}
+	units := value.string
+	if count == 0 || len(units) == 0 {
+		return StringValue(""), nil
+	}
+	maxInt := int64(int(^uint(0) >> 1))
+	if count > maxInt/int64(len(units)) {
+		return Value{}, fmt.Errorf("String.repeat result is too large")
+	}
+	repeated := make([]uint16, int64(len(units))*count)
+	for offset := 0; offset < len(repeated); offset += len(units) {
+		copy(repeated[offset:], units)
+	}
+	return StringUnits(repeated), nil
 }
 
 func canonicalArrayIndex(name string) (int64, bool) {
@@ -845,6 +902,10 @@ func arrayMethod(d *Dispatcher, o *Object, name string) (Value, bool) {
 			}
 			return VoidValue, assignArrayItems(o, source)
 		}
+	case "load":
+		a = func(_ Value, _ []Value) (Value, error) {
+			return VoidValue, fmt.Errorf("Array.load requires a VM host")
+		}
 	case "split":
 		a = func(_ Value, args []Value) (Value, error) {
 			if len(args) < 2 {
@@ -980,6 +1041,29 @@ func arrayMethod(d *Dispatcher, o *Object, name string) (Value, bool) {
 			}
 			return StringValue(strings.Join(parts, sep)), nil
 		}
+	case "find":
+		a = func(_ Value, args []Value) (Value, error) {
+			if len(args) == 0 {
+				return VoidValue, ErrBadParamCount
+			}
+			start := int64(0)
+			if len(args) > 1 && !args[1].IsVoid() {
+				var err error
+				start, err = args[1].Int()
+				if err != nil {
+					return Value{}, err
+				}
+			}
+			if start < 0 {
+				start = 0
+			}
+			for _, entry := range arrayEntries(o) {
+				if entry.i >= start && entry.v.StrictEqual(args[0]) {
+					return IntegerValue(entry.i), nil
+				}
+			}
+			return IntegerValue(-1), nil
+		}
 	case "indexOf":
 		a = func(_ Value, args []Value) (Value, error) {
 			if len(args) == 0 {
@@ -1085,6 +1169,61 @@ func arrayMethod(d *Dispatcher, o *Object, name string) (Value, bool) {
 			}
 			return VoidValue, nil
 		}
+	case "sort":
+		a = func(_ Value, args []Value) (Value, error) {
+			n := arrayLength(o)
+			values := make([]Value, int(n))
+			for i := range values {
+				values[i], _ = o.Get(strconv.Itoa(i))
+			}
+			mode := ""
+			var compare func(Value, Value) (bool, error)
+			if len(args) > 0 && !args[0].IsVoid() {
+				if args[0].Kind() == KindObject && !args[0].IsNull() {
+					callback := args[0]
+					compare = func(left, right Value) (bool, error) {
+						result, err := d.CallWithContext(callback, ObjectRef{}, left, right)
+						if err != nil {
+							return false, err
+						}
+						return result.Truth()
+					}
+				} else {
+					mode = args[0].Text()
+					if mode != "" {
+						mode = mode[:1]
+					}
+					switch mode {
+					case "", "+", "-", "0", "9", "a", "z":
+					default:
+						mode = "+"
+					}
+				}
+			}
+			stable := false
+			if len(args) > 1 && !args[1].IsVoid() {
+				var err error
+				stable, err = args[1].Truth()
+				if err != nil {
+					return VoidValue, err
+				}
+			}
+			if err := SortValues(values, mode, stable, compare); err != nil {
+				return VoidValue, err
+			}
+			if err := resizeArrayLength(o, 0); err != nil {
+				return VoidValue, err
+			}
+			for i, value := range values {
+				if err := o.Set(strconv.Itoa(i), value); err != nil {
+					return VoidValue, err
+				}
+			}
+			if err := resizeArrayLength(o, n); err != nil {
+				return VoidValue, err
+			}
+			return VoidValue, nil
+		}
 	case "reverse":
 		a = func(_ Value, args []Value) (Value, error) {
 			n := arrayLength(o)
@@ -1186,7 +1325,7 @@ func NewRegExp(table *ObjectTable, pattern, flags string) (*Object, error) {
 
 func regexpMethod(d *Dispatcher, o *Object, name string) (Value, bool) {
 	switch name {
-	case "test", "exec":
+	case "test", "exec", "match":
 		fn := func(_ ObjectRef, args []Value) (Value, error) {
 			return d.RegExpCall(o, name, args...)
 		}
@@ -1209,12 +1348,21 @@ func (d *Dispatcher) RegExpCall(o *Object, name string, args ...Value) (Value, e
 	switch name {
 	case "test":
 		return boolValue(r.IsMatch(s)), nil
-	case "exec":
+	case "exec", "match":
 		match, ok := r.Find(s)
 		if !ok {
+			if name == "match" {
+				if table := dTable(d); table != nil {
+					return ObjectValue(table.New(CategoryArray).Ref()), nil
+				}
+				return ObjectValue(NewObject(CategoryArray).Ref()), nil
+			}
 			return NullValue, nil
 		}
 		a := NewObject(CategoryArray)
+		if table := dTable(d); table != nil {
+			a = table.New(CategoryArray)
+		}
 		_ = a.Set("0", StringValue(match.Text))
 		for i, submatch := range match.Submatches {
 			_ = a.Set(strconv.Itoa(i+1), StringValue(submatch))

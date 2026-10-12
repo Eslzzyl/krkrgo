@@ -26,6 +26,18 @@ func pluginLinkKey(name string) string {
 	return clean
 }
 
+// LayerExImage's game-facing TJS helpers compose Layer's built-in pixel
+// operations; unavailable extension operations still fail through Layer's
+// normal ErrUnsupportedNative path instead of being claimed as successful.
+func isImplementedNativePlugin(key string) bool {
+	switch path.Base(key) {
+	case "addfont.dll", "alphamovie.dll", "csvparser.dll", "extnagano.dll", "extrans.dll", "fftgraph.dll", "getabout.dll", "getsample.dll", "kagparser.dll", "layereximage.dll", "menu.dll", "motionplayer.dll", "packinone.dll", "psbfile.dll", "scriptsex.dll", "varfile.dll", "win32dialog.dll", "windowex.dll":
+		return true
+	default:
+		return false
+	}
+}
+
 var ErrPluginName = errors.New("invalid plugin name")
 var ErrPluginRegistrar = errors.New("invalid plugin registrar")
 

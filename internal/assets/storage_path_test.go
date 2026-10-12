@@ -116,6 +116,74 @@ func TestLoosePathEnforcesSymlinkProjectRoot(t *testing.T) {
 	}
 }
 
+func TestNormalizeStorageNameAcceptsLowercasedProjectAbsolutePaths(t *testing.T) {
+	project := filepath.Join(t.TempDir(), "MixedProject")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for _, archive := range storage.Archives {
+			archive.Close()
+		}
+	}()
+
+	archivePath := filepath.Join(storage.Project, "data.xp3")
+	fullPath, err := storage.FullPath(archivePath + ">main/AnimationLayer.tjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := storage.NormalizeStorageName(fullPath)
+	if err != nil {
+		t.Fatalf("normalize FullPath result %q: %v", fullPath, err)
+	}
+	if got != "data.xp3>main/animationlayer.tjs" {
+		t.Fatalf("normalized archive storage name = %q, want data.xp3>main/animationlayer.tjs", got)
+	}
+
+	absolute := filepath.ToSlash(filepath.Join(storage.Project, "data.xp3")) + ">main/AnimationLayer.tjs"
+	got, err = storage.NormalizeStorageName(absolute)
+	if err != nil {
+		t.Fatalf("normalize absolute archive storage name %q: %v", absolute, err)
+	}
+	if got != "data.xp3>main/animationlayer.tjs" {
+		t.Fatalf("normalized absolute archive storage name = %q, want data.xp3>main/animationlayer.tjs", got)
+	}
+}
+
+func TestNormalizeStorageNameRejectsAbsolutePathsOutsideProject(t *testing.T) {
+	project := t.TempDir()
+	outside := t.TempDir()
+	storage, err := OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	name := filepath.Join(outside, "outside.xp3") + ">main/script.tjs"
+	if got, err := storage.NormalizeStorageName(name); err == nil {
+		t.Fatalf("absolute path outside project normalized to %q", got)
+	}
+}
+
+func TestNormalizeStorageNameRejectsProjectSymlinkEscape(t *testing.T) {
+	project := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(project, "outside")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	storage, err := OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := storage.NormalizeStorageName(filepath.Join(project, "outside", "file.tjs")); err == nil {
+		t.Fatalf("project symlink escape normalized to %q", got)
+	}
+}
+
 func BenchmarkStorageImageExtensionProbe(b *testing.B) {
 	project := b.TempDir()
 	storage, err := OpenStorage(project, core.DefaultLimits())

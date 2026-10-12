@@ -35,16 +35,23 @@ func (s *Services) asyncTriggerNative(vm *tjs.VM, context tjs.Value, operation s
 		if object, ok := vm.Objects.Lookup(id); !ok || !object.IsValid() {
 			return tjs.VoidValue, fmt.Errorf("AsyncTrigger.%s: invalid object context", operation)
 		}
-		if len(args) < 1 || len(args) > 2 || args[0].Kind() != tjs.KindObject || args[0].IsNull() || args[0].ObjectRef().Object == 0 {
-			return tjs.VoidValue, fmt.Errorf("AsyncTrigger.%s requires an ActionOwner object and optional ActionName", operation)
+		if len(args) > 2 || len(args) > 0 && args[0].Kind() != tjs.KindObject {
+			return tjs.VoidValue, fmt.Errorf("AsyncTrigger.%s requires an ActionOwner, null, or no owner and optional ActionName", operation)
 		}
-		owner := args[0].ObjectRef()
-		if object, ok := vm.Objects.Lookup(owner.Object); !ok || !object.IsValid() {
-			return tjs.VoidValue, fmt.Errorf("AsyncTrigger.%s: invalid ActionOwner object", operation)
-		}
-		name := defaultAsyncTriggerActionName
-		if len(args) == 2 && !args[1].IsVoid() {
-			name = args[1].Text()
+		owner := tjs.NewObjectRef(id)
+		name := "onFire"
+		if len(args) > 0 && !args[0].IsNull() {
+			owner = args[0].ObjectRef()
+			name = defaultAsyncTriggerActionName
+			if owner.Object == 0 {
+				return tjs.VoidValue, fmt.Errorf("AsyncTrigger.%s requires a valid ActionOwner", operation)
+			}
+			if object, ok := vm.Objects.Lookup(owner.Object); !ok || !object.IsValid() {
+				return tjs.VoidValue, fmt.Errorf("AsyncTrigger.%s: invalid ActionOwner object", operation)
+			}
+			if len(args) == 2 && !args[1].IsVoid() {
+				name = args[1].Text()
+			}
 		}
 		state := &asyncTriggerState{owner: owner, name: name, cached: true, mode: PriorityNormal}
 		s.mu.Lock()
@@ -167,6 +174,17 @@ func (s *Services) asyncTriggerAction(vm *tjs.VM, id tjs.ObjectID, budget *uint6
 		function, found = ownerObject.Get(action.name)
 		if !found {
 			return nil
+		}
+	}
+	if action.owner.Object == id && action.name == "onFire" {
+		if class, ok := vm.Globals["AsyncTrigger"]; ok {
+			if classObject, ok := vm.Objects.Lookup(class.ObjectRef().Object); ok {
+				if defaultHandler, ok := classObject.Get("onFire"); ok &&
+					defaultHandler.Kind() == tjs.KindObject &&
+					function.ObjectRef().Object == defaultHandler.ObjectRef().Object {
+					return nil
+				}
+			}
 		}
 	}
 	if function.Kind() != tjs.KindObject || function.IsNull() {

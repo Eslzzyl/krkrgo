@@ -5,8 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
-	"image/color"
 	"image"
+	"image/color"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -83,7 +83,6 @@ func writeProvincePatternPNG(t *testing.T, path string, width, height int) {
 		t.Fatal(err)
 	}
 }
-
 
 func TestNativeLayerLoadImagesReadsStorageAndReturnsTags(t *testing.T) {
 	project := t.TempDir()
@@ -392,7 +391,7 @@ func TestNativeLayerLoadProvinceImageTilesToMainSize(t *testing.T) {
 			if err := root.AddChild(layer); err != nil {
 				t.Fatal(err)
 			}
-	compositor := Compositor{Width: int32(tc.width), Height: int32(tc.height)}
+			compositor := Compositor{Width: int32(tc.width), Height: int32(tc.height)}
 			frame, err := compositor.Compose(root)
 			if err != nil {
 				t.Fatal(err)

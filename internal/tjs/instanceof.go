@@ -12,7 +12,6 @@ func (v *VM) instanceOf(value Value, name string) (Value, error) {
 	if name == "Object" {
 		return boolValue(true), nil
 	}
-
 	switch value.Kind() {
 	case KindInteger, KindReal:
 		return boolValue(name == "Number"), nil
@@ -99,4 +98,17 @@ func classMetaHasName(class *classMeta, name string, seen map[*classMeta]struct{
 		}
 	}
 	return false
+}
+func (v *VM) instanceOfValue(value, classValue Value) (Value, error) {
+	if classValue.Kind() == KindObject && !classValue.IsNull() {
+		id := classValue.ObjectRef().Object
+		object, metadata, err := v.lookup(id)
+		if err != nil {
+			return VoidValue, err
+		}
+		if object.Category == CategoryClass && metadata != nil && metadata.class != nil {
+			return v.instanceOf(value, metadata.class.Name)
+		}
+	}
+	return v.instanceOf(value, classValue.Text())
 }

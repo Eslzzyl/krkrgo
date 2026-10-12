@@ -10,6 +10,72 @@ import (
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
+func scriptsClone(vm *tjs.VM, value tjs.Value, host tjs.Host, budget *uint64) (tjs.Value, error) {
+	if value.Kind() != tjs.KindObject || value.IsNull() {
+		return value, nil
+	}
+	object, ok := vm.Objects.Lookup(value.ObjectRef().Object)
+	if !ok {
+		return tjs.VoidValue, fmt.Errorf("Scripts.clone: invalid object")
+	}
+	switch object.Category {
+	case tjs.CategoryArray:
+		length, err := vm.GetArrayLength(value)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		items := make([]tjs.Value, length)
+		for i := int64(0); i < length; i++ {
+			item, _, err := vm.GetArrayElement(value, i)
+			if err != nil {
+				return tjs.VoidValue, err
+			}
+			items[i], err = scriptsClone(vm, item, host, budget)
+			if err != nil {
+				return tjs.VoidValue, err
+			}
+		}
+		return vm.NewArray(items)
+	case tjs.CategoryDictionary:
+		clone, err := vm.NewDictionary()
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		destination, ok := vm.Objects.Lookup(clone.ObjectRef().Object)
+		if !ok {
+			return tjs.VoidValue, fmt.Errorf("Scripts.clone: invalid clone object")
+		}
+		for _, entry := range object.Entries() {
+			item, err := scriptsClone(vm, entry.Value, host, budget)
+			if err != nil {
+				return tjs.VoidValue, err
+			}
+			if err := destination.SetUnits(entry.Key, item); err != nil {
+				return tjs.VoidValue, err
+			}
+			if entry.Flags != 0 {
+				if err := destination.SetFlags(entry.Name, entry.Flags); err != nil {
+					return tjs.VoidValue, err
+				}
+			}
+		}
+		return clone, nil
+	default:
+		method, err := vm.GetMember(value, "clone", host, budget)
+		if err != nil {
+			return value, nil
+		}
+		if method.Kind() != tjs.KindObject || method.IsNull() {
+			return value, nil
+		}
+		clone, err := vm.InvokeLegacy(method, value, nil, host, budget, true)
+		if err != nil {
+			return value, nil
+		}
+		return clone, nil
+	}
+}
+
 // scriptsExNative implements the process-independent ScriptsEx helpers exposed
 // by the official plugin. Operations here inspect only ordinary VM values.
 func scriptsExNative(vm *tjs.VM, operation string, args []tjs.Value, resultNeeded bool) (tjs.Value, error) {

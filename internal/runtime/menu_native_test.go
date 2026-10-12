@@ -11,8 +11,8 @@ func TestMenuPluginInstallsHeadlessMenuSurface(t *testing.T) {
 	session := NewSession(services, 100_000)
 	defer session.Close()
 
-	if _, err := session.Evaluate("MenuItem"); err == nil {
-		t.Fatal("MenuItem was available before menu.dll was linked")
+	if _, err := session.Evaluate("MenuItem"); err != nil {
+		t.Fatalf("krkr2 MenuItem API unavailable before plugin linking: %v", err)
 	}
 	if _, err := session.Evaluate(`Plugins.link("Plugin/Menu.DLL")`); err != nil {
 		t.Fatal(err)
@@ -86,6 +86,12 @@ func TestMenuPluginInstallsHeadlessMenuSurface(t *testing.T) {
 	if !evalTruth(`MenuItem.textToKeycode.f4 == 115 && MenuItem.keycodeToText[115] == "F4"`) {
 		t.Fatal("MenuItem shortcut lookup tables are not available")
 	}
+	if _, err := session.Evaluate(`Plugins.link("windowEx.dll")`); err != nil {
+		t.Fatal(err)
+	}
+	if !evalTruth(`MenuItem.biSystem == 1 && MenuItem.biRestore == 2 && MenuItem.biMinimize == 3 && MenuItem.biClose == 5 && MenuItem.biCloseDisabled == 6 && MenuItem.biMinimizeDisabled == 7 && MenuItem.biPopupClose == 8 && MenuItem.biPopupRestore == 9 && MenuItem.biPopupMaximize == 10 && MenuItem.biPopupMinimize == 11`) {
+		t.Fatal("windowEx MenuItem bitmap constants are incorrect")
+	}
 	if _, err := session.Evaluate(`first.popup(10, 20)`); err != nil {
 		t.Fatal(err)
 	}
@@ -122,6 +128,37 @@ func TestMenuPluginInstallsHeadlessMenuSurface(t *testing.T) {
 	}
 	if !evalTruth(`window.menu === root && first.caption == "renamed" && root.children.count == 2`) {
 		t.Fatal("GC did not preserve the window menu tree")
+	}
+}
+
+func TestWindowExPluginInstallsMenuItemSurface(t *testing.T) {
+	services := DefaultServices()
+	session := NewSession(services, 100_000)
+	defer session.Close()
+
+	for _, source := range []string{
+		`Plugins.link("windowEx.dll")`,
+		`window = new Window(); item = new MenuItem(window, "minimize"); window.menu.add(item)`,
+		`Plugins.link("WINDOWEX.DLL")`,
+	} {
+		if _, err := session.Evaluate(source); err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+	}
+
+	value, err := session.Evaluate(`MenuItem.biMinimize == 3 && MenuItem.biSystem == 1 && item.caption == "minimize" && item.parent === window.menu && item.root === window.menu && window.menu.children[0] === item`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err := value.Truth()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("windowEx link did not expose MenuItem constants and class API")
+	}
+	if len(services.Plugins) != 1 || pluginLinkKey(services.Plugins[0]) != "windowex.dll" {
+		t.Fatalf("windowEx link list = %v", services.Plugins)
 	}
 }
 

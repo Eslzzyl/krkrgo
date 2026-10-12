@@ -50,6 +50,65 @@ func TestDispatchPrimitiveMethodsAndBoundContext(t *testing.T) {
 	}
 }
 
+func TestDispatchMemberLookupPreservesExplicitFunctionContext(t *testing.T) {
+	table := NewObjectTable()
+	d := NewDispatcher(table)
+	boundContext := table.New(CategoryDictionary)
+	receiver := table.New(CategoryClass)
+	function := NewNativeFunction(table, "bound", func(context ObjectRef, _ []Value) (Value, error) {
+		return IntegerValue(int64(context.Object)), nil
+	})
+	bound, err := Bind(function, boundContext.Ref())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := receiver.Set("bound", bound); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.Get(ObjectValue(receiver.Ref()), "bound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := d.Call(got)
+	if err != nil || result.IntegerValue() != int64(boundContext.ID) {
+		t.Fatalf("bound member context = %v, %v; want object %d", result, err, boundContext.ID)
+	}
+	memberResult, err := d.CallMember(ObjectValue(receiver.Ref()), "bound")
+	if err != nil || memberResult.IntegerValue() != int64(boundContext.ID) {
+		t.Fatalf("bound member call context = %v, %v; want object %d", memberResult, err, boundContext.ID)
+	}
+}
+func TestDispatchRegexpMatchReturnsCaptureArrayAndEmptyMiss(t *testing.T) {
+	table := NewObjectTable()
+	dispatcher := NewDispatcher(table)
+	pattern, err := NewRegExp(table, `([a-z]+)(\d+)`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	matched, err := dispatcher.CallMember(ObjectValue(pattern.Ref()), "match", StringValue("foo42"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	array, ok := table.Lookup(matched.ObjectRef().Object)
+	if !ok {
+		t.Fatal("match did not return a registered array")
+	}
+	for key, want := range map[string]string{"0": "foo42", "1": "foo", "2": "42"} {
+		got, present := array.Get(key)
+		if !present || got.Text() != want {
+			t.Errorf("capture %s = %v, present %t; want %q", key, got, present, want)
+		}
+	}
+	missed, err := dispatcher.CallMember(ObjectValue(pattern.Ref()), "match", StringValue("no digits"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	missArray, ok := table.Lookup(missed.ObjectRef().Object)
+	if !ok || missArray.Category != CategoryArray || arrayLength(missArray) != 0 {
+		t.Fatalf("unmatched RegExp.match = %v; want empty array", missed)
+	}
+}
+
 func TestDispatchArrayCanonicalIndicesAndBounds(t *testing.T) {
 	table := NewObjectTable()
 	d := NewDispatcher(table)
@@ -240,5 +299,30 @@ func TestDispatchClassInheritanceAndAccessor(t *testing.T) {
 	}
 	if !InstanceOf(ObjectValue(instance.Ref()), base) || !instance.IsInstanceOf(derived) {
 		t.Fatal("instanceof failed")
+	}
+}
+func TestDispatchArrayFindUsesStrictValueAndStartIndex(t *testing.T) {
+	table := NewObjectTable()
+	d := NewDispatcher(table)
+	array := table.New(CategoryArray)
+	target := ObjectValue(array.Ref())
+	for i, value := range []Value{IntegerValue(1), StringValue("1"), IntegerValue(1)} {
+		if err := d.Set(target, []string{"0", "1", "2"}[i], value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		value Value
+		start Value
+		want  int64
+	}{
+		{IntegerValue(1), IntegerValue(1), 2},
+		{StringValue("1"), IntegerValue(0), 1},
+		{IntegerValue(1), IntegerValue(3), -1},
+	} {
+		got, err := d.CallMember(target, "find", test.value, test.start)
+		if err != nil || got.IntegerValue() != test.want {
+			t.Fatalf("Array.find(%v, %v) = %v, %v; want %d", test.value, test.start, got, err, test.want)
+		}
 	}
 }

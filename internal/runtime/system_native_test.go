@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
 func TestSystemNativePropertiesAndMethods(t *testing.T) {
@@ -60,6 +62,35 @@ func TestSystemNativePropertiesAndMethods(t *testing.T) {
 	}
 	if !services.Terminated || services.TerminationCode != 3 {
 		t.Fatalf("termination state = %v/%d", services.Terminated, services.TerminationCode)
+	}
+}
+func TestSystemReadRegValueIsARegistryMethod(t *testing.T) {
+	session := NewSession(DefaultServices(), 10000)
+	defer session.Close()
+
+	value, err := session.Evaluate(`typeof System.readRegValue == "Object"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := value.Truth(); err != nil || !ok {
+		t.Fatalf("System.readRegValue is not registered: %v, %v", value, err)
+	}
+	value, err = session.Evaluate(`typeof readRegValue`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Text() == "Object" {
+		t.Fatal("System.readRegValue leaked into the global namespace")
+	}
+	value, err = session.Evaluate(`System.readRegValue("HKEY_CURRENT_USER\\Software\\krkrgo-test-key-that-does-not-exist\\missing-value")`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Kind() != tjs.KindVoid {
+		t.Fatalf("missing registry value = %v, want void", value)
+	}
+	if _, err := session.Evaluate(`System.readRegValue(42)`); err == nil {
+		t.Fatal("System.readRegValue accepted a non-string key")
 	}
 }
 

@@ -713,6 +713,9 @@ func (v *VideoOverlay) transport(s VideoStatus) error {
 		return nil
 	}
 	if v.source == nil {
+		if s == VideoStopped {
+			return nil
+		}
 		return ErrVideoNoSource
 	}
 	v.setStatusLocked(s)
@@ -1150,7 +1153,7 @@ func (s *Services) VideoNative(vm *tjs.VM, context tjs.Value, operation string, 
 		return x.Int()
 	}
 	switch operation {
-	case "VideoOverlay":
+	case "VideoOverlay", "AlphaMovie":
 		return tjs.VoidValue, nil
 	case "open":
 		x, err := arg(0)
@@ -1502,7 +1505,6 @@ func (s *Services) dispatchVideoEvents(vm *tjs.VM, id tjs.ObjectID, budget *uint
 		}
 	}
 }
-
 
 func boolInt(v bool) int64 {
 	if v {

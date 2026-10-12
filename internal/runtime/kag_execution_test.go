@@ -30,6 +30,34 @@ func TestKAGExecutionTextTagOrder(t *testing.T) {
 	}
 }
 
+func TestKAGExecutionRecognizesIndentedAnimationWaits(t *testing.T) {
+	parser, err := NewKAGParser("animation.asd", "*skip\n\t@wait time=200\n@jump target=*skip\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := uint64(100)
+	if event, err := parser.Step(&budget); err != nil {
+		t.Fatal(err)
+	} else if event.Kind != KAGEventLabel {
+		t.Fatalf("initial step = %#v, want label", event)
+	}
+	for i := range 3 {
+		event, err := parser.Step(&budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 1 {
+			if event.Kind != KAGEventLabel {
+				t.Fatalf("loop step = %#v, want jump target label", event)
+			}
+			continue
+		}
+		if event.Kind != KAGEventTag || event.Tag == nil || event.Tag.Name != "wait" {
+			t.Fatalf("step %d = %#v, want wait tag", i, event)
+		}
+	}
+}
+
 func TestKAGExecutionConditionalBranches(t *testing.T) {
 	parser, err := NewKAGParser("branch.ks", "@if exp=\"false\"\nno\n@elsif exp=\"1\"\nyes\n@else\nno2\n@endif\n@end\n")
 	if err != nil {
@@ -184,6 +212,110 @@ func TestKAGExecutionCrossScenarioCallWithoutTargetStartsAtFirstToken(t *testing
 	}
 	if parser.StorageName() != "caller.ks" || len(parser.Store().CrossScenarioCalls) != 0 {
 		t.Fatalf("state after cross-scenario return = storage %q, frames %#v; want caller.ks and no pending calls", parser.StorageName(), parser.Store().CrossScenarioCalls)
+	}
+}
+
+func TestKAGReturnFromCallRestoresCrossScenarioFrame(t *testing.T) {
+	parser, err := NewKAGParser("caller.ks", "@call storage=callee.ks target=*entry\ncaller after\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parser.SetScenarioLoadCallback(func(_ *KAGParser, storage, source string) (string, error) {
+		if storage != "callee.ks" || source != "" {
+			t.Fatalf("scenario load = %q, %q; want callee.ks and empty source", storage, source)
+		}
+		return "*entry\ncallee body\n", nil
+	})
+
+	if _, err := parser.Step(nil); err != nil {
+		t.Fatal(err)
+	}
+	if parser.StorageName() != "callee.ks" || parser.kagCallDepth() != 1 {
+		t.Fatalf("state before native return = storage %q, depth %d; want callee.ks and 1", parser.StorageName(), parser.kagCallDepth())
+	}
+	if err := parser.ReturnFromCall(); err != nil {
+		t.Fatal(err)
+	}
+	if parser.StorageName() != "caller.ks" || parser.kagCallDepth() != 0 {
+		t.Fatalf("state after native return = storage %q, depth %d; want caller.ks and 0", parser.StorageName(), parser.kagCallDepth())
+	}
+	event, err := parser.Step(nil)
+	if err != nil || event.Kind != KAGEventText || event.Text != "caller after" {
+		t.Fatalf("caller event = %#v, %v; want caller after text", event, err)
+	}
+}
+
+func TestKAGCallLabelFrameSurvivesScenarioLoad(t *testing.T) {
+	parser, err := NewKAGParser("caller.ks", "*start\ncaller after\n*sub\ncallee body\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := parser.CallLabel("*sub"); err != nil {
+		t.Fatal(err)
+	}
+	if err := parser.LoadScenario("callee.ks", "*entry\ncallee body\n"); err != nil {
+		t.Fatal(err)
+	}
+	if parser.StorageName() != "callee.ks" || parser.kagCallDepth() != 1 {
+		t.Fatalf("state before return = storage %q, depth %d; want callee.ks and 1", parser.StorageName(), parser.kagCallDepth())
+	}
+	if err := parser.ReturnFromCall(); err != nil {
+		t.Fatal(err)
+	}
+	if parser.StorageName() != "caller.ks" || parser.kagCallDepth() != 0 {
+		t.Fatalf("state after return = storage %q, depth %d; want caller.ks and 0", parser.StorageName(), parser.kagCallDepth())
+	}
+}
+
+func TestKAGCallLabelLogoCautionReturnStack(t *testing.T) {
+	parser, err := NewKAGParser("conductor.ks", "caller after\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := parser.CallLabel(""); err != nil {
+		t.Fatal(err)
+	}
+	const custom = `*logo
+@call target=*caution
+logo resumed
+@return
+*caution
+caution body
+@return
+`
+	if err := parser.LoadScenario("custom.ks", custom); err != nil {
+		t.Fatal(err)
+	}
+	if err := parser.Jump("*logo"); err != nil {
+		t.Fatal(err)
+	}
+	var text []string
+	for range 20 {
+		event, err := parser.Step(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Kind == KAGEventLabel {
+			depth := parser.kagCallDepth()
+			if event.Label.Name == "*caution" && (parser.StorageName() != "custom.ks" || parser.CurrentLabel() != "*caution" || depth != 2) {
+				t.Fatalf("caution stack = storage %q, label %q, depth %d; want custom.ks, *caution, 2", parser.StorageName(), parser.CurrentLabel(), depth)
+			}
+			if event.Label.Name == "*logo" && (parser.StorageName() != "custom.ks" || parser.CurrentLabel() != "*logo" || depth != 1) {
+				t.Fatalf("logo stack = storage %q, label %q, depth %d; want custom.ks, *logo, 1", parser.StorageName(), parser.CurrentLabel(), depth)
+			}
+		}
+		if event.Kind == KAGEventText {
+			text = append(text, event.Text)
+			if event.Text == "caller after" && (parser.StorageName() != "conductor.ks" || parser.kagCallDepth() != 0) {
+				t.Fatalf("state after logo return = storage %q, depth %d; want conductor.ks and 0", parser.StorageName(), parser.kagCallDepth())
+			}
+		}
+		if event.Kind == KAGEventEnd {
+			break
+		}
+	}
+	if !reflect.DeepEqual(text, []string{"caution body", "logo resumed", "caller after"}) {
+		t.Fatalf("text execution = %v; want caution body, logo resumed, caller after", text)
 	}
 }
 

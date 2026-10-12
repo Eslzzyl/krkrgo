@@ -66,7 +66,8 @@ func menuPluginPath(name string) string {
 }
 
 func isMenuPlugin(name string) bool {
-	return path.Base(menuPluginPath(name)) == "menu.dll"
+	base := path.Base(menuPluginPath(name))
+	return base == "menu.dll" || base == "windowex.dll"
 }
 
 func (s *Services) installMenuNative(vm *tjs.VM) error {
@@ -95,7 +96,7 @@ func (s *Services) installMenuNative(vm *tjs.VM) error {
 			return err
 		}
 	}
-	for _, property := range []string{"textToKeycode", "keycodeToText"} {
+	for _, property := range []string{"textToKeycode", "keycodeToText", "biSystem", "biRestore", "biMinimize", "biClose", "biCloseDisabled", "biMinimizeDisabled", "biPopupClose", "biPopupRestore", "biPopupMaximize", "biPopupMinimize"} {
 		if err := vm.RegisterNativeStaticProperty(class, property, "MenuItem.get:"+property, ""); err != nil {
 			return err
 		}
@@ -517,6 +518,30 @@ func (s *Services) menuNative(vm *tjs.VM, context tjs.Value, operation string, a
 	}
 	if operation == "get:keycodeToText" {
 		return model.keycodeToText, nil
+	}
+	if strings.HasPrefix(operation, "get:bi") {
+		switch strings.TrimPrefix(operation, "get:") {
+		case "biSystem":
+			return tjs.IntegerValue(1), nil
+		case "biRestore":
+			return tjs.IntegerValue(2), nil
+		case "biMinimize":
+			return tjs.IntegerValue(3), nil
+		case "biClose":
+			return tjs.IntegerValue(5), nil
+		case "biCloseDisabled":
+			return tjs.IntegerValue(6), nil
+		case "biMinimizeDisabled":
+			return tjs.IntegerValue(7), nil
+		case "biPopupClose":
+			return tjs.IntegerValue(8), nil
+		case "biPopupRestore":
+			return tjs.IntegerValue(9), nil
+		case "biPopupMaximize":
+			return tjs.IntegerValue(10), nil
+		case "biPopupMinimize":
+			return tjs.IntegerValue(11), nil
+		}
 	}
 	if context.Kind() != tjs.KindObject || context.IsNull() || context.ObjectRef().Object == 0 {
 		return tjs.VoidValue, fmt.Errorf("MenuItem.%s requires an object context", operation)

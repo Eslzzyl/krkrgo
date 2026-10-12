@@ -1,6 +1,9 @@
 package tjs
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func TestDispatchArraySplitTJSArgumentsAndDelimiters(t *testing.T) {
 	table := NewObjectTable()
@@ -210,5 +213,95 @@ func TestVMArrayMethodsSupportBoundClassCalls(t *testing.T) {
 	got = executeVMSource(t, `var src=[3,4],a=[];a.assign((function(){}) incontextof src);return a.join('|');`)
 	if got.Text() != "3|4" {
 		t.Fatalf("bound Array.assign = %q, want %q", got.Text(), "3|4")
+	}
+}
+
+func TestVMInContextOfNullClearsFunctionContext(t *testing.T) {
+	got := executeVMSource(t, `
+var receiver = %[answer:42];
+var bound = function { return this.answer; } incontextof receiver;
+var unbound = bound incontextof null;
+return [bound(), typeof unbound].join("|");
+`)
+	if want := "42|Object"; got.Text() != want {
+		t.Fatalf("function incontextof null = %q, want %q", got.Text(), want)
+	}
+}
+func TestVMArrayMethodsResolveFromFunctionContext(t *testing.T) {
+	got := executeVMSource(t, `
+var tmp=[];
+var append=function(arr){for(var i=0;i<arr.count;i++) add(arr[i]);} incontextof tmp;
+append(["ctor","params","wrap"]);
+return tmp.join("|");`)
+	if got.Text() != "ctor|params|wrap" {
+		t.Fatalf("array method from function context = %q, want %q", got.Text(), "ctor|params|wrap")
+	}
+}
+func TestVMArrayFindUsesArrayContext(t *testing.T) {
+	got := executeVMSource(t, `
+var names=["DerivedConductor","BaseConductor","BaseConductor"];
+var position=(Array.find incontextof names)("BaseConductor");
+var typed=[1,"1",1];
+var other=%[name:"BaseConductor"];
+return position==1 && names.find("BaseConductor",2)==2 && names.find("BaseConductor",3)==-1 &&
+	typed.find(1,1)==2 && typed.find("1")==1 && names.find("missing")==-1 &&
+	typeof other.find=="undefined";
+`)
+	truth, err := got.Truth()
+	if err != nil || !truth {
+		t.Fatalf("Array.find receiver/result = %v, %v; want true", got, err)
+	}
+}
+func TestVMSortArrayModesAndComparator(t *testing.T) {
+	got := executeVMSource(t, `
+var out=[];
+var modes=['+','-','0','9','a','z','?'];
+for(var i=0;i<modes.count;i++){
+	var a=['10','2','1'];var r=a.sort(modes[i]);
+	out.add(a.join(',')+':'+typeof r);
+}
+var objects=[%[key:2,id:'a'],%[key:1,id:'b'],%[key:2,id:'c'],%[key:1,id:'d']];
+objects.sort(function(a,b){return a.key<b.key;},true);
+var ids=[];for(var i=0;i<objects.count;i++)ids.add(objects[i].id);
+out.add(ids.join(''));
+return out.join('|');`)
+	const want = "1,10,2:void|2,10,1:void|1,2,10:void|2,10,1:void|1,10,2:void|2,10,1:void|1,10,2:void|bdac"
+	if got.Text() != want {
+		t.Fatalf("Array.sort modes/callback = %q, want %q", got.Text(), want)
+	}
+	got = executeVMSource(t, `var a=[10,2,1];(Array.sort incontextof a)("0");return a.join(',');`)
+	if got.Text() != "1,2,10" {
+		t.Fatalf("bound Array.sort = %q, want %q", got.Text(), "1,2,10")
+	}
+}
+
+func TestVMSortArrayComparatorErrorAndBoundContext(t *testing.T) {
+	got := executeVMSource(t, `
+class Sorter { var direction=-1; function less(a,b){return a*direction<b*direction;} }
+var s=new Sorter(),a=[1,3,2];a.sort(s.less);
+var caught="";
+try{[2,1].sort(function(a,b){throw 'compare';});}catch(e){caught=e;}
+return a.join(',')+'|'+caught;`)
+	if got.Text() != "3,2,1|compare" {
+		t.Fatalf("Array.sort bound comparator/error = %q, want %q", got.Text(), "3,2,1|compare")
+	}
+}
+func TestDispatchArraySort(t *testing.T) {
+	table := NewObjectTable()
+	d := NewDispatcher(table)
+	array := table.New(CategoryArray)
+	target := ObjectValue(array.Ref())
+	for i, value := range []Value{IntegerValue(3), IntegerValue(1), IntegerValue(2)} {
+		if err := array.Set(strconv.Itoa(i), value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := d.CallMember(target, "sort", StringValue("0"))
+	if err != nil || !result.IsVoid() {
+		t.Fatalf("Array.sort result = %v, %v; want void", result, err)
+	}
+	joined, err := d.CallMember(target, "join", StringValue(","))
+	if err != nil || joined.Text() != "1,2,3" {
+		t.Fatalf("Array.sort values = %q, %v; want 1,2,3", joined.Text(), err)
 	}
 }

@@ -125,6 +125,7 @@ func Parse(storage, source string) (Scenario, error) {
 	labels := make(map[string]int)
 	labelCounts := make(map[string]int)
 	previousLabel := ""
+	hasPreviousLabel := false
 	for lineNo := 0; lineNo < len(lines); lineNo++ {
 		original := lineNo
 		text := lines[lineNo]
@@ -169,8 +170,13 @@ func Parse(storage, source string) (Scenario, error) {
 				name = before
 				caption = &after
 			}
+			if len(text) == 1 {
+				// Native KAG ignores a lone '*' as a label because it has no
+				// label name; it must not poison the next named label.
+				continue
+			}
 			if name == "" {
-				if previousLabel == "" {
+				if !hasPreviousLabel {
 					return Scenario{}, fmt.Errorf("cannot omit first KAG label name")
 				}
 				name = previousLabel
@@ -178,6 +184,7 @@ func Parse(storage, source string) (Scenario, error) {
 				name = "*" + name
 			}
 			previousLabel = name
+			hasPreviousLabel = true
 			labelCounts[name]++
 			alias := name
 			if labelCounts[name] > 1 {
@@ -204,11 +211,16 @@ func Parse(storage, source string) (Scenario, error) {
 			text += continuation[1:]
 		}
 
-		if strings.HasPrefix(text, "@") {
-			tag, err := parseTag(text[1:])
+		commandStart := 0
+		for commandStart < len(text) && (text[commandStart] == ' ' || text[commandStart] == '\t') {
+			commandStart++
+		}
+		if commandStart < len(text) && text[commandStart] == '@' {
+			tag, err := parseTag(text[commandStart+1:])
 			if err != nil {
 				return Scenario{}, fmt.Errorf("%s:%d: %w", storage, location.Line, err)
 			}
+			location.Column = uint64(commandStart + 1)
 			tokens = append(tokens, Token{Location: location, Kind: KindTag, Tag: &tag})
 			if len(tokens) > 1_000_000 {
 				return Scenario{}, fmt.Errorf("KAG token limit exceeded")
@@ -324,7 +336,12 @@ func (p *Parser) Restore(state Cursor) error {
 }
 
 // Jump moves to the token indexed by label. A leading '*' is optional.
+// An empty label leaves the current position unchanged, matching KAG's
+// GoToLabel behavior.
 func (p *Parser) Jump(label string) error {
+	if label == "" {
+		return nil
+	}
 	name := strings.TrimLeft(label, "*")
 	position, ok := p.scenario.Labels["*"+name]
 	if !ok {

@@ -3,6 +3,8 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
 	"github.com/eslzzyl/krkrgo/internal/tjs"
@@ -31,6 +33,21 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 		default:
 			return tjs.StringValue(chopStorageExt(name)), nil
 		}
+	}
+	if operation == "getLocalName" {
+		name, err := storagesPathArg(args, operation)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		storage := storagesStorage(s)
+		if storage == nil {
+			return tjs.VoidValue, UnsupportedDevice("storage")
+		}
+		local, err := storage.LocalName(name)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		return tjs.StringValue(local), nil
 	}
 
 	if operation == "fstat" {
@@ -67,6 +84,32 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 		storage.ClearCache()
 		return tjs.VoidValue, nil
 	}
+	if operation == "addArchive" {
+		name, err := storagesPathArg(args, operation)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		storage := storagesStorage(s)
+		if storage == nil {
+			return tjs.VoidValue, UnsupportedDevice("storage")
+		}
+		fullPath, err := storage.FullPath(name)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		if strings.ContainsRune(fullPath, '>') {
+			return tjs.VoidValue, fmt.Errorf("Storages.addArchive requires an archive path, not an archive member")
+		}
+		const filePrefix = "file://."
+		if !strings.HasPrefix(fullPath, filePrefix) {
+			return tjs.VoidValue, fmt.Errorf("Storages.addArchive requires a local file archive path")
+		}
+		if err := storage.Mount(filepath.FromSlash(strings.TrimPrefix(fullPath, filePrefix)), s.Limits); err != nil {
+			return tjs.VoidValue, err
+		}
+		return tjs.VoidValue, nil
+	}
+
 	if operation == "getListAt" {
 		name, err := storagesPathArg(args, operation)
 		if err != nil {

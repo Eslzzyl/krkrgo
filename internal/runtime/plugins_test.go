@@ -16,19 +16,21 @@ func TestBuiltinPluginLinksNormalizePathsCaseAndExtensions(t *testing.T) {
 		`Plugins.link("PLUGIN\\menu.DLL")`,
 		`Plugins.link("plugin/windowEx.TPM")`,
 		`Plugins.link("PLUGIN/WINDOWEX.dll")`,
+		`Plugins.link("plugin/LayerExImage.TPM")`,
+		`Plugins.link("PLUGIN\\layereximage.dll")`,
 	} {
 		if _, err := session.Evaluate(link); err != nil {
 			t.Fatalf("%s: %v", link, err)
 		}
 	}
-
-	if len(services.Plugins) != 3 {
+	if len(services.Plugins) != 4 {
 		t.Fatalf("normalized plugin list = %v, want one entry per built-in module", services.Plugins)
 	}
 	for _, source := range []string{
 		`parser = new KAGParser(); parser.loadScenario("alias.ks", "hello")`,
-		`window = new Window(); window.registerExEvent()` ,
+		`window = new Window(); window.registerExEvent()`,
 		`menu = new MenuItem(window, "menu")`,
+		`layer = new Layer(); layer.setImageSize(1,1); layer.light(0,0)`,
 	} {
 		if _, err := session.executeSource("<plugin-alias-test>", source, false); err != nil {
 			t.Fatalf("built-in module after link (%s): %v", source, err)
@@ -36,6 +38,43 @@ func TestBuiltinPluginLinksNormalizePathsCaseAndExtensions(t *testing.T) {
 	}
 	if _, err := session.Evaluate(`MenuItem.textToKeycode.f4 == 115`); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPackinOnePluginLinkIsIdempotentAndListed(t *testing.T) {
+	services := DefaultServices()
+	session := NewSession(services, 100_000)
+	defer session.Close()
+
+	for _, source := range []string{
+		`Plugins.link("plugin/PackinOne.dll")`,
+		`Plugins.link("PLUGIN\\packinone.tpm")`,
+	} {
+		if _, err := session.Evaluate(source); err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+	}
+	if len(services.Plugins) != 1 || pluginLinkKey(services.Plugins[0]) != "plugin/packinone.dll" {
+		t.Fatalf("PackinOne link list = %v, want one normalized entry", services.Plugins)
+	}
+	value, err := session.Evaluate(`Plugins.getList()[0]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Text() != "plugin/PackinOne.dll" {
+		t.Fatalf("Plugins.getList()[0] = %q, want first linked spelling", value.Text())
+	}
+}
+
+func TestPackinOneLinksDuringStartup(t *testing.T) {
+	session := newScriptsTestSession(t, map[string][]byte{
+		"startup.tjs": []byte(`Plugins.link("PackinOne.dll");`),
+	})
+	if _, err := session.Startup(); err != nil {
+		t.Fatalf("startup linking PackinOne.dll: %v", err)
+	}
+	if len(session.Services.Plugins) != 1 || pluginLinkKey(session.Services.Plugins[0]) != "packinone.dll" {
+		t.Fatalf("startup plugin list = %v, want PackinOne.dll", session.Services.Plugins)
 	}
 }
 
@@ -48,6 +87,66 @@ func TestPluginLinkKeyNormalizesWindowsPathsAndTPMExtension(t *testing.T) {
 	} {
 		if key := pluginLinkKey(test.name); key != test.want {
 			t.Errorf("pluginLinkKey(%q) = %q, want %q", test.name, key, test.want)
+		}
+	}
+}
+func TestExtransPluginLinkIsExplicitlySupportedAsLinkOnly(t *testing.T) {
+	services := DefaultServices()
+	session := NewSession(services, 100_000)
+	defer session.Close()
+
+	for _, link := range []string{
+		`Plugins.link("plugin/extrans.dll")`,
+		`Plugins.link("PLUGIN\\EXTRANS.TPM")`,
+		`Plugins.link("plugin/extNagano.dll")`,
+	} {
+		if _, err := session.Evaluate(link); err != nil {
+			t.Fatalf("%s: %v", link, err)
+		}
+	}
+	if len(services.Plugins) != 2 {
+		t.Fatalf("linked transition plugins = %v, want extrans and extNagano", services.Plugins)
+	}
+	if _, err := session.Evaluate(`Plugins.link("unimplemented-extrans.dll")`); err == nil {
+		t.Fatal("unimplemented plugin link unexpectedly succeeded")
+	}
+}
+func TestScriptsExPluginLinkIsNormalizedIdempotentAndExposesImplementedHelpers(t *testing.T) {
+	services := DefaultServices()
+	session := NewSession(services, 100_000)
+	defer session.Close()
+
+	for _, source := range []string{
+		`Plugins.link("plugin/ScriptsEx.TPM")`,
+		`Plugins.link("PLUGIN\\scriptsex.dll")`,
+	} {
+		if _, err := session.Evaluate(source); err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+	}
+	if len(services.Plugins) != 1 || pluginLinkKey(services.Plugins[0]) != "plugin/scriptsex.dll" {
+		t.Fatalf("ScriptsEx link list = %v, want one normalized entry", services.Plugins)
+	}
+	value, err := session.Evaluate(`Plugins.getList()[0]`)
+	if err != nil || value.Text() != "plugin/ScriptsEx.TPM" {
+		t.Fatalf("Plugins.getList()[0] = %q, err=%v; want first linked spelling", value.Text(), err)
+	}
+
+	if _, err := session.executeSource("<scriptsex-link-test>", `
+		global.scriptsex_keys = Scripts.getObjectKeys(%[alpha:1]).join(",");
+		global.scriptsex_count = Scripts.getObjectCount(%[alpha:1]);
+		global.scriptsex_equal = Scripts.equalStruct([1], [1]);
+	`, false); err != nil {
+		t.Fatalf("implemented ScriptsEx helpers after link: %v", err)
+	}
+	for name, want := range map[string]string{
+		"scriptsex_keys":  "alpha",
+		"scriptsex_count": "1",
+		"scriptsex_equal": "1",
+	} {
+		got, err := session.Evaluate("global." + name)
+		if err != nil || got.Text() != want {
+			t.Errorf("%s = %q, err=%v; want %q", name, got.Text(), err, want)
 		}
 	}
 }

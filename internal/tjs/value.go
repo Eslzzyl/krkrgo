@@ -259,7 +259,7 @@ func (v Value) Equal(other Value) bool {
 	case v.kind == KindOctet || other.kind == KindOctet:
 		return false
 	case v.kind == KindObject && other.kind == KindObject:
-		return v.object == other.object
+		return v.object.Object == other.object.Object
 	case v.kind == KindObject || other.kind == KindObject:
 		return false
 	}

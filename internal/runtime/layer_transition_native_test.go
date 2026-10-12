@@ -72,8 +72,12 @@ func TestLayerTransitionLifecycleAndCompletionCallback(t *testing.T) {
 	if pixel := frame.RGBA[:4]; pixel[0] != 128 || pixel[1] != 128 || pixel[2] != 128 || pixel[3] != 255 {
 		t.Fatalf("halfway crossfade pixel = %v; want opaque midpoint gray", pixel)
 	}
-	if _, err := session.Evaluate(`destinationLayer.stopTransition()`); err != nil {
+	stopResult, err := session.Evaluate(`destinationLayer.stopTransition()`)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !stopResult.IsVoid() {
+		t.Fatalf("stopTransition() result = %v, want void", stopResult)
 	}
 	if destination.transitionOpaque {
 		t.Fatal("stopping transition did not clear cached opaque endpoint mode")
@@ -206,6 +210,9 @@ func TestLayerTransitionAutomaticCompletionAndIdleStop(t *testing.T) {
 	}
 	if _, err := session.Evaluate(`destinationLayer.stopTransition()`); err != nil {
 		t.Fatalf("idle stopTransition: %v", err)
+	}
+	if _, err := session.Evaluate(`destinationLayer.stopTransition(true)`); err != nil {
+		t.Fatalf("stopTransition(true): %v", err)
 	}
 }
 

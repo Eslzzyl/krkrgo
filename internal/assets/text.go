@@ -6,12 +6,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 	"io"
 	"unicode/utf16"
 	"unicode/utf8"
-
-	"golang.org/x/text/encoding/japanese"
-	"golang.org/x/text/transform"
 )
 
 const maxTextUnits = 32 << 20
@@ -237,26 +237,60 @@ func decodeShiftJIS(data []byte) ([]uint16, error) {
 			// ASCII and half-width katakana are single-byte characters.
 		case b >= 0x81 && b <= 0x9f || b >= 0xe0 && b <= 0xfc:
 			if i+1 >= len(data) {
-				return nil, fmt.Errorf("invalid Shift-JIS source text at byte %d", i)
+				return decodeGBK(data, fmt.Errorf("invalid Shift-JIS source text at byte %d", i))
 			}
 			trail := data[i+1]
 			if trail < 0x40 || trail > 0xfc || trail == 0x7f {
-				return nil, fmt.Errorf("invalid Shift-JIS source text at byte %d", i)
+				return decodeGBK(data, fmt.Errorf("invalid Shift-JIS source text at byte %d", i))
 			}
 			i++
 		default:
-			return nil, fmt.Errorf("invalid Shift-JIS source text at byte %d", i)
+			return decodeGBK(data, fmt.Errorf("invalid Shift-JIS source text at byte %d", i))
 		}
 	}
 
-	decoded, _, err := transform.Bytes(japanese.ShiftJIS.NewDecoder(), data)
+	shiftJIS, _, shiftErr := transform.Bytes(japanese.ShiftJIS.NewDecoder(), data)
+	if shiftErr != nil {
+		return decodeGBK(data, fmt.Errorf("invalid Shift-JIS source text: %w", shiftErr))
+	}
+	gbk, _, gbkErr := transform.Bytes(simplifiedchinese.GBK.NewDecoder(), data)
+	if len(data) >= 4 && gbkErr == nil && !bytes.ContainsRune(gbk, utf8.RuneError) && textEncodingScore(string(gbk)) > textEncodingScore(string(shiftJIS)) {
+		return utf16.Encode([]rune(string(gbk))), nil
+	}
+	return utf16.Encode([]rune(string(shiftJIS))), nil
+}
+
+func decodeGBK(data []byte, shiftJISErr error) ([]uint16, error) {
+	if len(data) == 1 && data[0] == 0x80 {
+		return nil, fmt.Errorf("%v; invalid GBK source text at byte 0x80", shiftJISErr)
+	}
+	decoded, _, err := transform.Bytes(simplifiedchinese.GBK.NewDecoder(), data)
 	if err != nil {
-		return nil, fmt.Errorf("invalid Shift-JIS source text: %w", err)
+		return nil, fmt.Errorf("%v; invalid GBK source text: %w", shiftJISErr, err)
 	}
 	for _, r := range string(decoded) {
 		if r == utf8.RuneError {
-			return nil, errors.New("invalid Shift-JIS source text: unmapped character")
+			return nil, fmt.Errorf("%v; invalid GBK source text: unmapped character", shiftJISErr)
 		}
 	}
 	return utf16.Encode([]rune(string(decoded))), nil
+}
+
+func textEncodingScore(text string) int {
+	score := 0
+	for _, r := range text {
+		switch {
+		case r >= 0x3040 && r <= 0x30ff:
+			score += 6
+		case r >= 0x3400 && r <= 0x9fff:
+			score += 4
+		case r >= 0xff61 && r <= 0xff9f:
+			// Half-width katakana is valid Shift_JIS text, not strong GBK evidence.
+		case r == utf8.RuneError:
+			score -= 16
+		case r < 0x20 && r != '\n' && r != '\r' && r != '\t':
+			score -= 4
+		}
+	}
+	return score
 }

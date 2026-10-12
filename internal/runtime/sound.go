@@ -30,23 +30,23 @@ type SoundEvent struct {
 // WaveSoundBuffer is the headless transport/state portion of Kirikiri's
 // WaveSoundBuffer. It owns decoded source state but no device or goroutine.
 type WaveSoundBuffer struct {
-	loaded        *loadedSound
-	status        string
-	generation    uint64
-	events        []SoundEvent
-	frequency     int32
-	volume        int32
-	volume2       int32
-	pan           int32
-	paused        bool
-	looping       bool
-	useVisBuffer  bool
-	sampleCount   int
-	sampleAhead   int
+	loaded                  *loadedSound
+	status                  string
+	generation              uint64
+	events                  []SoundEvent
+	frequency               int32
+	volume                  int32
+	volume2                 int32
+	pan                     int32
+	paused                  bool
+	looping                 bool
+	useVisBuffer            bool
+	sampleCount             int
+	sampleAhead             int
 	sampleConfigInitialized bool
-	positionClock uint64
-	fade          *soundFade
-	fadePending   bool
+	positionClock           uint64
+	fade                    *soundFade
+	fadePending             bool
 }
 
 type loadedSound struct {
@@ -167,6 +167,7 @@ func (s *WaveSoundBuffer) SetUseVisBuffer(v bool) {
 		s.useVisBuffer = v
 	}
 }
+
 // configureSampleProperties applies the extension defaults on first use, matching
 // the native hook's lazy per-instance state.
 func (s *WaveSoundBuffer) configureSampleProperties(count, ahead int) {
@@ -213,7 +214,6 @@ func (s *WaveSoundBuffer) sampleValue() float64 {
 	peak := float64(max) / 32768.0
 	return peak * peak
 }
-
 
 // OpenAudio installs a decoded PCM source and optional loop metadata.
 func (s *WaveSoundBuffer) OpenAudio(audio assets.Audio, info assets.LoopInfo) error {

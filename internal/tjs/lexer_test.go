@@ -84,6 +84,22 @@ func TestLexerInterpolation(t *testing.T) {
 		t.Fatalf("interpolation = %#v", ts[0].Value)
 	}
 }
+func TestLexerInterpolationEscapedMarkers(t *testing.T) {
+	tokens, err := Lex(`@"first \&.orig and \${value}; &name;"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	literal, ok := tokens[0].Value.(InterpolationLiteral)
+	if !ok || len(literal.Parts) != 2 {
+		t.Fatalf("interpolation = %#v", tokens[0].Value)
+	}
+	if got, want := literal.Parts[0].Text.String(), "first &.orig and ${value}; "; got != want {
+		t.Fatalf("escaped text = %q, want %q", got, want)
+	}
+	if literal.Parts[1].Expression != "name" {
+		t.Fatalf("expression = %q, want name", literal.Parts[1].Expression)
+	}
+}
 
 func TestLexerUTF16Columns(t *testing.T) {
 	ts, err := Lex("😀 x")

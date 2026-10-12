@@ -12,13 +12,14 @@ import (
 // selected face is resolved only through Services.FontSystem; no host fallback
 // is attempted.
 type FontState struct {
-	Face      string
-	Height    int32
-	Bold      bool
-	Italic    bool
-	Underline bool
-	Strikeout bool
-	Angle     int32
+	Face                   string
+	Height                 int32
+	Bold                   bool
+	Italic                 bool
+	Underline              bool
+	Strikeout              bool
+	Angle                  int32
+	PrerenderedFontStorage string
 }
 
 func newFontState() *FontState {
@@ -265,6 +266,37 @@ func (s *Services) fontNative(vm *tjs.VM, context tjs.Value, operation string, a
 		return tjs.VoidValue, err
 	}
 	switch operation {
+	case "mapPrerenderedFont":
+		value, err := arg(0)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		storage := value.Text()
+		if storage == "" {
+			return tjs.VoidValue, fmt.Errorf("Font.mapPrerenderedFont requires a storage name")
+		}
+		if _, err := s.readStorage(storage); err != nil {
+			return tjs.VoidValue, fmt.Errorf("Font.mapPrerenderedFont %q: %w", storage, err)
+		}
+		s.mu.Lock()
+		if current := s.Fonts[id]; current == nil {
+			s.mu.Unlock()
+			return tjs.VoidValue, fmt.Errorf("Font.mapPrerenderedFont: context has no Font native instance")
+		} else {
+			current.PrerenderedFontStorage = storage
+		}
+		s.mu.Unlock()
+		return tjs.VoidValue, nil
+	case "getList":
+		s.mu.RLock()
+		book := s.FontBook
+		s.mu.RUnlock()
+		names := book.Names()
+		items := make([]tjs.Value, len(names))
+		for i, name := range names {
+			items[i] = tjs.StringValue(name)
+		}
+		return vm.NewArray(items)
 	case "getTextWidth", "getTextHeight", "getEscWidthX", "getEscWidthY", "getEscHeightX", "getEscHeightY":
 		value, err := arg(0)
 		if err != nil {

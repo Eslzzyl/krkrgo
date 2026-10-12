@@ -40,6 +40,17 @@ func TestSessionEvaluateAndBudget(t *testing.T) {
 	}
 }
 
+func TestCaptureFrameBeforeRootExists(t *testing.T) {
+	services := DefaultServices()
+	frame, err := services.CaptureFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !frame.Empty() {
+		t.Fatalf("frame before root initialization = %#v, want empty frame", frame)
+	}
+}
+
 func TestSessionFrameAndAudioOwnership(t *testing.T) {
 	s := NewSession(DefaultServices(), 16)
 	root := NewRootLayer(1, 2, 1)
@@ -698,6 +709,23 @@ func TestServicesNativeMessagesAndTrace(t *testing.T) {
 	}
 	if !errors.Is(ErrUnsupportedDevice, ErrUnsupportedDevice) {
 		t.Fatal("sentinel broken")
+	}
+}
+
+func TestConsoleGlobalAliasesDebugConsoleAndLogs(t *testing.T) {
+	session := NewSession(DefaultServices(), 128)
+	if _, err := session.Evaluate(`global.consoleFromDebug = Debug.console; global.consoleAlias = console; console.info("console message"); Debug.console.visible = true;`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := session.Evaluate(`consoleFromDebug === consoleAlias && consoleAlias === Debug.console && Debug.console.visible`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, err := got.Int(); err != nil || value != 1 {
+		t.Fatalf("console aliases/visible = %v, %v; want true", got, err)
+	}
+	if messages := session.Services.Messages; len(messages) != 1 || messages[0] != "console message" {
+		t.Fatalf("console messages = %v, want [console message]", messages)
 	}
 }
 

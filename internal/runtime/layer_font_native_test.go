@@ -68,6 +68,93 @@ func TestNativeLayerConstructionTreeAndInvalidation(t *testing.T) {
 		break
 	}
 }
+func TestNativeLayerNeutralColorPropertyAndInheritance(t *testing.T) {
+	session := NewSession(DefaultServices(), 10_000)
+	if _, err := session.executeSource("<layer-neutral-color-test>", `
+class AffineLayer extends Layer {
+	function AffineLayer() { super.Layer(); }
+	function clearColor() { return neutralColor; }
+}
+layer = new AffineLayer();
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	read := func(expression string) int64 {
+		t.Helper()
+		value, err := session.Evaluate(expression)
+		if err != nil {
+			t.Fatalf("%s: %v", expression, err)
+		}
+		n, err := value.Int()
+		if err != nil {
+			t.Fatalf("%s = %v: %v", expression, value, err)
+		}
+		return n
+	}
+	if got := read("layer.neutralColor"); got != 0 {
+		t.Fatalf("default neutralColor = %#x, want 0", got)
+	}
+	if got := read("layer.clearColor()"); got != 0 {
+		t.Fatalf("inherited method neutralColor = %#x, want 0", got)
+	}
+	if _, err := session.Evaluate("layer.type = ltSubtractive"); err != nil {
+		t.Fatal(err)
+	}
+	if got := read("layer.neutralColor"); got != 0xffffff {
+		t.Fatalf("subtractive neutralColor = %#x, want 0xffffff", got)
+	}
+	if _, err := session.Evaluate("layer.neutralColor = 1"); err == nil {
+		t.Fatal("assigning read-only Layer.neutralColor succeeded")
+	}
+	if _, err := session.Evaluate(`class OrdinaryLayerLike {}; ordinary = new OrdinaryLayerLike(); ordinary.neutralColor`); err == nil || !strings.Contains(err.Error(), "neutralColor") {
+		t.Fatalf("ordinary object neutralColor error = %v, want missing member", err)
+	}
+}
+
+func TestNativeLayerImagePropertyContextPropagatesThroughDerivedClasses(t *testing.T) {
+	services := DefaultServices()
+	session := NewSession(services, 10_000)
+	t.Cleanup(func() { _ = session.Close() })
+	if _, err := session.executeSource("<derived-layer-image-context-test>", `
+class KAGLayer extends Layer {
+	function KAGLayer(win, par) { super.Layer(win, par); }
+}
+class AffineLayer extends KAGLayer {
+	function AffineLayer(win, par) { super.KAGLayer(win, par); }
+	function readNativeImageWidth() { return imageWidth; }
+	function readThroughBase() { return this.readNativeImageWidth(); }
+}
+class BMPBaseAffineSourceLayer extends AffineLayer {
+	function BMPBaseAffineSourceLayer(win, par) { super.AffineLayer(win, par); }
+	function readThroughSuper() { return super.readThroughBase(); }
+}
+layer = new BMPBaseAffineSourceLayer();
+`, false); err != nil {
+		t.Fatalf("construct derived native Layer: %v", err)
+	}
+	derived, err := session.Evaluate("layer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := derived.ObjectRef().Object
+	object, ok := session.VM.Objects.Lookup(id)
+	if services.Layer(id) == nil {
+		category := tjs.ObjectCategory(255)
+		if ok {
+			category = object.Category
+		}
+		t.Fatalf("derived receiver object %d (TJS category %d) has no Layer native instance; registered layer IDs=%v", id, category, services.Layers)
+	}
+	for _, expression := range []string{"layer.imageWidth", "layer.readNativeImageWidth()", "layer.readThroughBase()", "layer.readThroughSuper()", "*(&global.Layer.imageWidth incontextof layer)"} {
+		value, err := session.Evaluate(expression)
+		if err != nil {
+			t.Fatalf("%s: %v", expression, err)
+		}
+		if got, err := value.Int(); err != nil || got != int64(nativeLayerDefaultSize) {
+			t.Errorf("%s = %v, %v; want %d", expression, value, err, nativeLayerDefaultSize)
+		}
+	}
+}
 
 func TestNativeLayerRejectsCycles(t *testing.T) {
 	services := DefaultServices()
@@ -365,6 +452,37 @@ func TestNativeLayerDefaultFontLifecycle(t *testing.T) {
 	}
 }
 
+func TestLayerFontGetterUsesInContextOfReceiver(t *testing.T) {
+	services := DefaultServices()
+	session := NewSession(services, 10_000)
+	if _, err := session.executeSource("<layer-font-context-test>", `
+		class DerivedLayer extends Layer {
+			function DerivedLayer() { super.Layer(); }
+		}
+		layer = new DerivedLayer();
+		boundFont = (global.Layer incontextof layer).font;
+		rejected = false;
+		try { (global.Layer incontextof %[]).font; } catch (e) { rejected = true; }
+	`, false); err != nil {
+		t.Fatal(err)
+	}
+	layer := session.VM.Globals["layer"]
+	font := session.VM.Globals["boundFont"]
+	if font.Kind() != tjs.KindObject || services.Font(font.ObjectRef().Object) == nil {
+		t.Fatalf("bound Layer.font = %v, want native Font object", font)
+	}
+	if layerFont := services.LayerFonts[layer.ObjectRef().Object]; layerFont != font.ObjectRef().Object {
+		t.Fatalf("bound Layer.font id = %d, layer font id = %d", font.ObjectRef().Object, layerFont)
+	}
+	rejected, err := session.Evaluate("rejected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := rejected.Truth(); !ok {
+		t.Fatal("Layer.font getter accepted a non-Layer incontextof receiver")
+	}
+}
+
 func TestNativeFontEscapementMetrics(t *testing.T) {
 	services := DefaultServices()
 	if err := services.RegisterFontFace("Deterministic", basicfont.Face7x13); err != nil {
@@ -447,6 +565,9 @@ func TestNativeFontMeasurementAndDrawText(t *testing.T) {
 	if _, err := session.Evaluate(`l.drawText(0,0,'A',-65536)`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := session.Evaluate(`function forwardText(x,y,text,color,*) { l.drawText(...); } forwardText(0,0,'A',-65536,128)`); err != nil {
+		t.Fatalf("drawText with explicit forwarding: %v", err)
+	}
 	widthValue, err := session.Evaluate(`w`)
 	if err != nil {
 		t.Fatal(err)
@@ -511,7 +632,6 @@ func TestNativeLayerDrawTextRGBColorIsOpaque(t *testing.T) {
 	}
 	t.Fatal("drawText with 0xRRGGBB produced no visible pixels")
 }
-
 
 func TestNativeLayerDrawTextUsesSelectedFontHeight(t *testing.T) {
 	services := DefaultServices()
@@ -781,7 +901,7 @@ func TestNativeLayerDrawTextUsesConfiguredDefaultFace(t *testing.T) {
 	if _, err := session.Evaluate(`l = new Layer()`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.Evaluate(`l.drawText(0,0,'A')`); err != nil {
+	if _, err := session.Evaluate(`l.drawText(0,0,'A',0xffffff)`); err != nil {
 		t.Fatal(err)
 	}
 	changed := false
@@ -795,6 +915,15 @@ func TestNativeLayerDrawTextUsesConfiguredDefaultFace(t *testing.T) {
 	}
 	if !changed {
 		t.Fatal("default-face drawText did not modify frame pixels")
+	}
+}
+func TestNativeLayerDrawTextRequiresColor(t *testing.T) {
+	session := NewSession(DefaultServices(), 10_000)
+	if _, err := session.Evaluate(`l = new Layer()`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Evaluate(`l.drawText(0,0,'A')`); err == nil || !strings.Contains(err.Error(), "Layer.drawText: missing argument 3") {
+		t.Fatalf("drawText without color error = %v, want missing argument 3", err)
 	}
 }
 
@@ -821,4 +950,25 @@ func TestNativeFontMappingConcurrentAccessIsSerialized(t *testing.T) {
 		}(worker)
 	}
 	wg.Wait()
+}
+func TestNativeFontGetListReturnsAvailableFamilies(t *testing.T) {
+	book := NewFontBook()
+	if err := book.Register("First Face", basicfont.Face7x13); err != nil {
+		t.Fatal(err)
+	}
+	if err := book.Register("Second Face", basicfont.Face7x13); err != nil {
+		t.Fatal(err)
+	}
+	services := DefaultServices()
+	services.SetFontBook(book)
+	session := NewSession(services, 10_000)
+	defer session.Close()
+
+	value, err := session.Evaluate(`font = new Font(); font.getList(fsfSameCharSet | fsfNoVertical | fsfTrueTypeOnly).join("|")`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value.Text(); got != "First Face|Second Face" {
+		t.Fatalf("Font.getList() = %q, want registered available faces in order", got)
+	}
 }

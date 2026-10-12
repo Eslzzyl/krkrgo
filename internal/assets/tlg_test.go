@@ -117,7 +117,6 @@ func TestTLG6GolombQuotientSupportsExtendedRuns(t *testing.T) {
 	}
 }
 
-
 type tlg6TestBits struct {
 	data []byte
 	bit  uint

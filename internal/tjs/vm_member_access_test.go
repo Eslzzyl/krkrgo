@@ -119,3 +119,17 @@ return value * 10 + backing;
 		}
 	})
 }
+func TestVMClassStaticMembersAccessibleThroughBoundFunctionThis(t *testing.T) {
+	got := executeVMSource(t, `
+class C { function C() {} }
+with (C) {
+	.cursorMoveTimeByFocus = .defaultCursorMove = 300;
+	.setCursorMoveTime = function () { return this.defaultCursorMove; } incontextof C;
+	.instance = new C();
+}
+return C.setCursorMoveTime();
+`)
+	if got.IntegerValue() != 300 {
+		t.Fatalf("class-bound function this.defaultCursorMove = %v, want 300", got)
+	}
+}

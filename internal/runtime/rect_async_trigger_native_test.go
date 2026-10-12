@@ -242,10 +242,17 @@ func TestAsyncTriggerEmptyActionNameCallsOwnerFunctionWithEvent(t *testing.T) {
 	}
 }
 
-func TestAsyncTriggerNativeRequiresActionOwner(t *testing.T) {
+func TestAsyncTriggerNativeUsesOwnOnFireWithoutActionOwner(t *testing.T) {
 	session := NewSession(DefaultServices(), 1000)
-	if _, err := session.Evaluate("new AsyncTrigger()"); err == nil {
-		t.Fatal("AsyncTrigger without ActionOwner unexpectedly succeeded")
+	if _, err := session.Evaluate(`calls = 0; trigger = new AsyncTrigger(null, ""); trigger.onFire = function(event) { calls++; }; trigger.trigger()`); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.DispatchEvents(); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("calls")
+	if err != nil || value.IntegerValue() != 1 {
+		t.Fatalf("self-owned AsyncTrigger callback = %v, %v; want 1", value, err)
 	}
 	if _, err := session.Evaluate("new AsyncTrigger(1)"); err == nil {
 		t.Fatal("AsyncTrigger with non-object ActionOwner unexpectedly succeeded")

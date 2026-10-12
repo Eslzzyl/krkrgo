@@ -215,6 +215,7 @@ type Layer struct {
 	clipSet               bool
 	hitTestWork           bool
 	callOnPaint           bool
+	imageModified         bool
 	windowID              uint64
 }
 

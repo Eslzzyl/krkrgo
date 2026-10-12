@@ -14,7 +14,8 @@ return s.length == 7 &&
     s.substring(3, 4) == "B" && s.substring(4, 7) == "aba" &&
     "hello".toUpperCase() == "HELLO" && "HELLO".toLowerCase() == "hello" &&
     " \t alpha \n".trim() == "alpha" && split.join("|") == "a||b|" &&
-    "abc".replace("b", "x") == "axc" && replaced == "axxx";
+    "abc".replace("b", "x") == "axc" && replaced == "axxx" &&
+    " clipleft=0 cliptop=0 ".split(" ",,true).join(",") == "clipleft=0,cliptop=0";
 `)
 	truth, err := got.Truth()
 	if err != nil {
@@ -22,6 +23,56 @@ return s.length == 7 &&
 	}
 	if !truth {
 		t.Fatalf("String methods returned %v", got)
+	}
+}
+
+func TestVMStringSplitPurgesEmptyFields(t *testing.T) {
+	got := executeVMSource(t, `return " clipleft=0 cliptop=0 ".split(" ",,true).join(",") + "#" + "a;b,c".split(",;").join("|");`)
+	if got.Text() != "clipleft=0,cliptop=0#a|b|c" {
+		t.Fatalf("string split = %q", got.Text())
+	}
+}
+
+func TestVMStringEscapeUsesTJSStringLiteralEscapes(t *testing.T) {
+	got := executeVMSource(t, `
+var escaped = "quote: \" ' slash: \\ controls:\x07\b\f\n\r\t\v \x01 \x1b9".escape();
+return escaped;
+`)
+	if got.Text() != `quote: \" \' slash: \\ controls:\a\b\f\n\r\t\v \x01 \x1b\x39` {
+		t.Fatalf("String.escape = %q", got.Text())
+	}
+	astral := executeVMSource(t, `return "😀".escape();`)
+	if astral.Text() != "😀" {
+		t.Fatalf("String.escape astral = %q", astral.Text())
+	}
+	surrogate := executeVMSource(t, `return "\uD800".escape();`)
+	if surrogate.Text() != "\\uD800" {
+		t.Fatalf("String.escape isolated surrogate = %q", surrogate.Text())
+	}
+	dispatcher := NewDispatcher(NewObjectTable())
+	raw := StringUnits([]uint16{'a', '\n', 0xd800})
+	escaped, err := dispatcher.CallMember(raw, "escape")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if escaped.Text() != `a\n\uD800` {
+		t.Fatalf("dispatcher String.escape = %q", escaped.Text())
+	}
+}
+
+func TestVMStringRepeatUsesUTF16AndCount(t *testing.T) {
+	got := executeVMSource(t, `
+return "=".repeat(4) == "====" &&
+    "😀".repeat(2).length == 4 &&
+    "".repeat(10) == "" &&
+    "x".repeat(0) == "";
+`)
+	truth, err := got.Truth()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truth {
+		t.Fatalf("String.repeat returned %v", got)
 	}
 }
 

@@ -56,11 +56,12 @@ type WindowState struct {
 	DisableMove             bool
 	EnableNCMouseEvent      bool
 	ExSystemMenu            tjs.Value // Script menu description retained by WindowEx.
-	Closed                  bool    // Close has been requested or the instance invalidated.
-	Modal                   bool    // Headless modal state; no platform modal loop is run.
-	ExEvents                [4]bool // onResizing, onMoving, onMove, onNcMouseMove
+	DrawDeviceObject        tjs.Value // Script-visible draw-device object retained by Window.
+	Closed                  bool      // Close has been requested or the instance invalidated.
+	Modal                   bool      // Headless modal state; no platform modal loop is run.
+	ExEvents                [4]bool   // onResizing, onMoving, onMove, onNcMouseMove
 	ExEventRegistered       bool
-	EnableWinMsgHook         bool
+	EnableWinMsgHook        bool
 
 	normalBounds      *[4]int32
 	restoreMaximized  bool

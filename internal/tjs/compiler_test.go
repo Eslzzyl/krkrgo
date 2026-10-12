@@ -25,6 +25,49 @@ func TestCompileExpressionEmitsReturnAndLocations(t *testing.T) {
 	}
 }
 
+func TestCompileEvalAnimationLayerInlineWithProperties(t *testing.T) {
+	source := "with (this) .clipleft=0,.cliptop=0,.clipwidth=50,.clipheight=50;"
+	program, err := CompileEval("<eval operator>", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vm := NewVM()
+	context, err := vm.NewDictionary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := uint64(1000)
+	if _, err := vm.ExecuteInContext(&program, context, vmTestHost{}, &budget); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]int64{"clipleft": 0, "cliptop": 0, "clipwidth": 50, "clipheight": 50} {
+		value, err := vm.GetMember(context, name, vmTestHost{}, &budget)
+		if got, intErr := value.Int(); err != nil || intErr != nil || got != want {
+			t.Errorf("%s = %v, %v; want %d", name, value, errors.Join(err, intErr), want)
+		}
+	}
+}
+
+func TestCompileInterpolatedString(t *testing.T) {
+	got := executeVMSource(t, `var name = "World"; return @"Hello &name; ${1 + 2}";`)
+	if got.Text() != "Hello World 3" {
+		t.Fatalf("interpolated string = %q, want %q", got.Text(), "Hello World 3")
+	}
+}
+
+func TestCompileCatchWithoutBinding(t *testing.T) {
+	for _, source := range []string{
+		`try { throw "caught"; } catch {} return 7;`,
+		`try { throw "caught"; } catch() {} return 7;`,
+	} {
+		got := executeVMSource(t, source)
+		if value, err := got.Int(); err != nil || value != 7 {
+			t.Errorf("catch without binding in %q = %v, %v; want 7", source, got, err)
+		}
+	}
+}
+
 func TestCompileAndRunNumberLiterals(t *testing.T) {
 	tests := []struct {
 		source  string
@@ -132,6 +175,20 @@ func TestCompileAndRunChainedAssignments(t *testing.T) {
 	}
 }
 
+func TestCompileAndRunSwapAssignment(t *testing.T) {
+	got := executeVMSource(t, `
+var first = "left", second = "right";
+first <-> second;
+var object = %[x:1, y:2], index = 0;
+function nextKey() { index++; return index == 1 ? "x" : "y"; }
+object[nextKey()] <-> object[nextKey()];
+return [first, second, object.x, object.y, index].join("|");
+`)
+	if want := "right|left|2|1|2"; got.Text() != want {
+		t.Fatalf("swap assignment = %q, want %q", got.Text(), want)
+	}
+}
+
 func TestCompileAndRunBackslashAssignment(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -188,6 +245,13 @@ func TestCompileAndRunDictionarySeparators(t *testing.T) {
 	got := executeVMSource(t, `var key = "dynamic"; var object = %[plain:1, key=>%[child:2, ("nested" + key)=>[3,4,],],]; return object.plain + object.dynamic.child + object.dynamic.nesteddynamic[1];`)
 	if value, err := got.Int(); err != nil || value != 7 {
 		t.Fatalf("dictionary result = %v, want 7", got)
+	}
+}
+func TestCompileAndRunArrayAssociativeEntries(t *testing.T) {
+	got := executeVMSource(t, `var key = "dynamic"; var values = ["first", key => 7, "last", "alias": 9]; var sparse = ["first",, key => 7, "last", "alias": 9]; var pairs = ["left" => 3, "right" => 4]; return values.count == 6 && values[0] == "first" && values[1] == key && values[2] == 7 && values[3] == "last" && values[4] == "alias" && values[5] == 9 && values.dynamic == 7 && values.alias == 9 && sparse.count == 7 && sparse[0] == "first" && sparse[1] === void && sparse[2] == key && sparse[3] == 7 && sparse[4] == "last" && sparse[5] == "alias" && sparse[6] == 9 && sparse.dynamic == 7 && sparse.alias == 9 && pairs.count == 4 && pairs[0] == "left" && pairs[1] == 3 && pairs[2] == "right" && pairs[3] == 4 && pairs.left == 3 && pairs.right == 4;`)
+	truth, err := got.Truth()
+	if err != nil || !truth {
+		t.Fatalf("associative array result = %v, %v; want true", got, err)
 	}
 }
 
@@ -397,6 +461,7 @@ func TestCompileRegexpLiteralAndDivision(t *testing.T) {
 		{source: `"AbA".replace(/a/i, "x")`, want: "xbA"},
 		{source: `/foo/.test("foobar")`, want: "1"},
 		{source: `10 / 2 / 5`, want: "1"},
+		{source: `/^([a-z]+)(\d+)/.match("foo42").join("|") + "#" + /x/.match("foo42").count`, want: "foo42|foo|42#0"},
 	} {
 		program, err := compile_expression("regexp-division.tjs", test.source)
 		if err != nil {
@@ -440,6 +505,7 @@ func TestCompileAndRunCStyleCasts(t *testing.T) {
 		{name: "prefix int", source: `return int 7.9;`, want: IntegerValue(7)},
 		{name: "prefix real", source: `return real (1 + 2);`, want: RealValue(3)},
 		{name: "prefix string", source: `return string (20 + 22);`, want: StringValue("42")},
+		{name: "const object expression", source: `var value = (const)%[a:1]; return value.a;`, want: IntegerValue(1)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := executeVMSource(t, test.source)

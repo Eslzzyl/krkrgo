@@ -8,6 +8,27 @@ import (
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
+func TestNativeWindowResizeBaseCallback(t *testing.T) {
+	session := NewSession(DefaultServices(), 10_000)
+	if _, err := session.Evaluate(`
+		class DerivedWindow extends Window {
+			function DerivedWindow() { super.Window(); }
+			function onResize() { resizeCalled = true; super.onResize(...); }
+		}
+		window = new DerivedWindow();
+		window.onResize();
+	`); err != nil {
+		t.Fatalf("derived Window.onResize(): %v", err)
+	}
+	if value, err := session.Evaluate("resizeCalled"); err != nil {
+		t.Fatal(err)
+	} else if called, err := value.Truth(); err != nil || !called {
+		t.Fatalf("derived onResize callback = %v, %v", called, err)
+	}
+	if _, err := session.Evaluate(`class PlainWindowLike {}; plain = new PlainWindowLike(); plain.onResize()`); err == nil || !strings.Contains(err.Error(), "member not found: onResize") {
+		t.Fatalf("non-Window onResize error = %v, want missing member", err)
+	}
+}
 func TestNativeWindowSessionPropertiesAndTransitions(t *testing.T) {
 	services := DefaultServices()
 	session := NewSession(services, 10_000)
@@ -26,6 +47,11 @@ func TestNativeWindowSessionPropertiesAndTransitions(t *testing.T) {
 	if window == nil || services.MainWindow != uint64(id) || services.Display.MainWindow != uint64(id) {
 		t.Fatalf("window registration id=%d main=%d displayMain=%d", id, services.MainWindow, services.Display.MainWindow)
 	}
+	if value, err := session.Evaluate(`window.drawDevice = %[]; var drawDevice = window.drawDevice; window.drawDevice === drawDevice`); err != nil {
+		t.Fatal(err)
+	} else if same, err := value.Truth(); err != nil || !same {
+		t.Fatalf("Window.drawDevice setter/getter = %v, %v", value, err)
+	}
 	object, ok := session.VM.Objects.Lookup(id)
 	if !ok {
 		t.Fatal("window object missing from VM")
@@ -41,6 +67,7 @@ func TestNativeWindowSessionPropertiesAndTransitions(t *testing.T) {
 		`window.disableMove = true`,
 		`window.enableNCMouseEvent = true`,
 		`window.registerExEvent()`,
+		`window.bringToFront()`,
 	} {
 		if _, err := session.Evaluate(source); err != nil {
 			t.Fatalf("%s: %v", source, err)
@@ -74,11 +101,14 @@ func TestNativeWindowSessionPropertiesAndTransitions(t *testing.T) {
 		}
 		return truth
 	}
-	if evalInt("window.getWindowRect()[0]") != 30 || evalInt("window.getWindowRect()[1]") != 40 || evalInt("window.getWindowRect()[2]") != 320 || evalInt("window.getWindowRect()[3]") != 240 {
+	if evalInt("window.getWindowRect().x") != 30 || evalInt("window.getWindowRect().y") != 40 || evalInt("window.getWindowRect().w") != 320 || evalInt("window.getWindowRect().h") != 240 {
 		t.Fatalf("window rect = %#v", window.WindowRect())
 	}
-	if evalInt("window.getClientRect()[2]") != int64(window.InnerWidth) || evalInt("window.getClientRect()[3]") != int64(window.InnerHeight) {
+	if evalInt("window.getClientRect().w") != int64(window.InnerWidth) || evalInt("window.getClientRect().h") != int64(window.InnerHeight) {
 		t.Fatalf("client rect = %#v", window.ClientRect())
+	}
+	if evalInt("window.getNormalRect().x") != 30 || evalInt("window.getNormalRect().y") != 40 || evalInt("window.getNormalRect().w") != 320 || evalInt("window.getNormalRect().h") != 240 {
+		t.Fatalf("normal rect = %#v", window.NormalRect())
 	}
 	if !evalTruth("Window.mainWindow === window") {
 		t.Fatal("Window.mainWindow does not reference instance")

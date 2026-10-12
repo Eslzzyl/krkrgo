@@ -44,7 +44,7 @@ func (s *Services) layerForContext(context tjs.Value, operation string) (*Layer,
 	l := s.Layers[id]
 	s.mu.RUnlock()
 	if l == nil {
-		return nil, id, fmt.Errorf("Layer.%s: context has no Layer native instance", operation)
+		return nil, id, fmt.Errorf("Layer.%s: context has no Layer native instance (object %d, bound context %d)", operation, id, context.ObjectRef().Context)
 	}
 	return l, id, nil
 }
@@ -194,6 +194,11 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 	}
 	l, _, err := s.layerForContext(context, operation)
 	if err != nil {
+		if vm != nil {
+			if object, ok := vm.Objects.Lookup(id); ok {
+				return tjs.VoidValue, fmt.Errorf("%w (TJS category %d)", err, object.Category)
+			}
+		}
 		return tjs.VoidValue, err
 	}
 	arg := func(i int) (tjs.Value, error) {
@@ -331,6 +336,9 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		}
 		s.mu.Lock()
 		err = l.SetImageSize(width, height)
+		if err == nil {
+			l.imageModified = true
+		}
 		s.mu.Unlock()
 		return tjs.VoidValue, err
 	case "setImagePos":
@@ -384,15 +392,21 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		return tjs.VoidValue, s.layerLoadProvinceImage(l, id, args)
 	case "saveLayerImage":
 		return tjs.VoidValue, s.layerSaveImage(l, id, args, budget)
-	case "piledCopy", "pileRect":
-		return tjs.VoidValue, s.layerPiledCopy(l, id, args, budget, operation)
 	case "light", "copyRect", "operateRect", "stretchCopy", "assignImages", "doBoxBlur", "adjustGamma", "doGrayScale":
-		return tjs.VoidValue, s.layerImageNative(l, operation, args)
+		err := s.layerImageNative(l, operation, args)
+		if err == nil {
+			s.mu.Lock()
+			l.imageModified = true
+			s.mu.Unlock()
+		}
+		return tjs.VoidValue, err
 	case "fillRect", "colorRect":
 		s.mu.Lock()
 		err := s.layerFillRect(l, operation, args, intArg)
 		s.mu.Unlock()
 		return tjs.VoidValue, err
+	case "piledCopy", "pileRect":
+		return tjs.VoidValue, s.layerPiledCopy(l, id, args, budget, operation)
 	case "bringToFront":
 		s.mu.Lock()
 		err := l.SetOrderIndex(math.MaxInt32)
@@ -531,6 +545,7 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 			} else {
 				p[0], p[1], p[2] = uint8(uint64(value)>>16), uint8(uint64(value)>>8), uint8(value)
 			}
+			l.imageModified = true
 		}
 		s.mu.Unlock()
 		return tjs.VoidValue, err
@@ -585,6 +600,7 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		if x >= 0 && y >= 0 && x < l.ProvinceWidth && y < l.ProvinceHeight &&
 			(!clipSet || clip.Contains(x, y)) {
 			l.Province[int(y)*int(l.ProvinceWidth)+int(x)] = uint8(value)
+			l.imageModified = true
 		}
 		s.mu.Unlock()
 		return tjs.VoidValue, nil
@@ -791,6 +807,14 @@ func (s *Services) layerGet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, b
 		return tjs.VoidValue, fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
 	}
 	switch key {
+	case "neutralColor":
+		switch l.Type {
+		case LayerSubtractive, LayerMultiplicative, LayerDarken, LayerPSSubtractive,
+			LayerPSMultiplicative, LayerPSColorBurn, LayerPSDarken:
+			return tjs.IntegerValue(0xffffff), nil
+		default:
+			return tjs.IntegerValue(0), nil
+		}
 	case "parent":
 		if l.Parent == nil {
 			return tjs.NullValue, nil
@@ -803,10 +827,10 @@ func (s *Services) layerGet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, b
 		return tjs.NullValue, nil
 	case "order":
 		return tjs.IntegerValue(int64(l.orderIndex())), nil
-	case "absolute":
-		return tjs.IntegerValue(int64(l.absoluteOrderValue())), nil
 	case "absoluteOrderMode":
 		return tjs.IntegerValue(boolInt(l.absoluteOrderMode)), nil
+	case "absolute":
+		return tjs.IntegerValue(int64(l.absoluteOrderValue())), nil
 	case "window":
 		if windowID := tjs.ObjectID(l.windowID); windowID != 0 && s.WindowObjects[windowID] != nil {
 			return tjs.ObjectIDValue(windowID), nil
@@ -846,6 +870,9 @@ func (s *Services) layerGet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, b
 		return tjs.IntegerValue(boolInt(l.Enabled)), nil
 	case "eventTransparent":
 		return tjs.IntegerValue(boolInt(l.EventTransparent)), nil
+	case "imageModified":
+		return tjs.IntegerValue(boolInt(l.imageModified)), nil
+
 	case "type":
 		return tjs.IntegerValue(int64(l.Type)), nil
 	case "face":
@@ -1011,6 +1038,8 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch key {
+	case "window", "isPrimary":
+		return tjs.VoidValue, nil
 	case "order":
 		n, e := intArg(0)
 		if e == nil {
@@ -1112,6 +1141,14 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 			e = l.SetType(LayerType(n))
 		}
 		return tjs.VoidValue, e
+	case "imageModified":
+		b, e := boolArg(0)
+		if e != nil {
+			return tjs.VoidValue, e
+		}
+		l.imageModified = b
+		return tjs.VoidValue, nil
+
 	case "face":
 		n, e := intArg(0)
 		if e != nil {
@@ -1177,6 +1214,7 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 		if !b {
 			l.ClearImage()
 			l.ResetClip()
+			l.imageModified = true
 			return tjs.VoidValue, nil
 		}
 		if l.Type == LayerBinder || l.Type == LayerEffect || l.Type == LayerFilter {
@@ -1186,6 +1224,7 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 			e = resizeLayerImage(l, layerNativeDimension(l.Bounds.Width), layerNativeDimension(l.Bounds.Height))
 			if e == nil {
 				l.ImageLeft, l.ImageTop = 0, 0
+				l.imageModified = true
 			}
 		}
 		return tjs.VoidValue, e
@@ -1422,11 +1461,12 @@ func (s *Services) layerFillRect(l *Layer, operation string, args []tjs.Value, i
 			}
 		}
 	}
+	l.imageModified = true
 	return nil
 }
 
 func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) error {
-	if len(args) < 3 {
+	if len(args) < 4 {
 		return fmt.Errorf("Layer.drawText: missing argument %d", len(args))
 	}
 	x, e := args[0].Int()

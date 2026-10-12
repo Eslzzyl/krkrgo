@@ -428,11 +428,19 @@ func (o *Object) Len() int {
 // infer identity from pointers and keeps invalidated objects addressable until
 // the owner deliberately removes them.
 type ObjectTable struct {
-	mu      sync.RWMutex
-	objects map[ObjectID]*Object
+	mu                  sync.RWMutex
+	objects             map[ObjectID]*Object
+	classInstanceNames  map[ObjectID][]string
+	registeredClassInfo map[ObjectID]bool
 }
 
-func NewObjectTable() *ObjectTable { return &ObjectTable{objects: make(map[ObjectID]*Object)} }
+func NewObjectTable() *ObjectTable {
+	return &ObjectTable{
+		objects:             make(map[ObjectID]*Object),
+		classInstanceNames:  make(map[ObjectID][]string),
+		registeredClassInfo: make(map[ObjectID]bool),
+	}
+}
 func (t *ObjectTable) New(categories ...ObjectCategory) *Object {
 	o := NewObject(categories...)
 	t.mu.Lock()
@@ -461,6 +469,45 @@ func (t *ObjectTable) Lookup(id ObjectID) (*Object, bool) {
 	o, ok := t.objects[id]
 	return o, ok
 }
+func (t *ObjectTable) AddClassInstanceMember(classID ObjectID, name string) error {
+	if t == nil {
+		return errInvalidObject
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	classObject, ok := t.objects[classID]
+	if !ok || classObject.Category != CategoryClass {
+		return errors.New("TJS class instance metadata target is not a class")
+	}
+	t.classInstanceNames[classID] = append(t.classInstanceNames[classID], name)
+	return nil
+}
+
+func (t *ObjectTable) RegisterClassInstanceMembers(classID ObjectID) error {
+	if t == nil {
+		return errInvalidObject
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	classObject, ok := t.objects[classID]
+	if !ok || classObject.Category != CategoryClass {
+		return errors.New("TJS class instance metadata target is not a class")
+	}
+	t.registeredClassInfo[classID] = true
+	return nil
+}
+
+func (t *ObjectTable) ClassInstanceMembers(classID ObjectID) ([]string, bool) {
+	if t == nil {
+		return nil, false
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if !t.registeredClassInfo[classID] {
+		return nil, false
+	}
+	return append([]string(nil), t.classInstanceNames[classID]...), true
+}
 func (t *ObjectTable) Remove(id ObjectID) bool {
 	if t == nil {
 		return false
@@ -471,6 +518,8 @@ func (t *ObjectTable) Remove(id ObjectID) bool {
 		return false
 	}
 	delete(t.objects, id)
+	delete(t.classInstanceNames, id)
+	delete(t.registeredClassInfo, id)
 	return true
 }
 func (t *ObjectTable) Ref(id ObjectID, context ...ObjectID) (ObjectRef, bool) {

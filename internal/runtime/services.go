@@ -7,6 +7,7 @@ import (
 	"hash/maphash"
 	"log"
 	"os"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -24,7 +25,6 @@ var (
 	ErrUnsupportedNative = errors.New("runtime native operation is unsupported")
 	ErrClockBackwards    = errors.New("session clock cannot move backwards")
 )
-
 
 // Clock supplies the deterministic millisecond clock used by a session.
 type Clock interface{ NowMS() uint64 }
@@ -82,13 +82,15 @@ type Services struct {
 	Messages                []string
 	MessageMap              map[string]string
 	TraceEnabled            bool
+	console                 tjs.Value
 	Windows                 map[uint64]*WindowState
 	WindowObjects           map[tjs.ObjectID]*WindowState
 	MainWindow              uint64
 	Display                 *DisplayState
 
-	// ScriptTextEncoding is the visible Scripts.textEncoding value. Until the
-	// script changes it, storage decoding follows the native text-stream decoder.
+	// ScriptTextEncoding is the visible Scripts.textEncoding value. Scripts
+	// storage operations use the native text-stream decoder until the script
+	// explicitly selects an encoding.
 	ScriptTextEncoding         string
 	scriptTextEncodingExplicit bool
 
@@ -125,6 +127,7 @@ type Services struct {
 	KAGParsers               map[tjs.ObjectID]*KAGParser
 	CSVParsers               map[tjs.ObjectID]*csvParserState
 	Videos                   map[tjs.ObjectID]*VideoOverlay
+	PhaseVocoders            map[tjs.ObjectID]*phaseVocoderConfig
 	Sounds                   map[tjs.ObjectID]*WaveSoundBuffer
 	SoundEvents              map[tjs.ObjectID][]SoundEvent
 	AudioMixer               *AudioMixer
@@ -139,6 +142,7 @@ type Services struct {
 	LayerCursors             map[tjs.ObjectID]tjs.Value
 	FontBook                 *FontBook
 	FontSystem               *FontSystem
+	Pads                     map[tjs.ObjectID]*padState
 	Roots                    []tjs.Value
 	scriptsInitialized       bool
 	clipboardBackend         clipboardBackend
@@ -438,6 +442,9 @@ func (s *Services) ensureInit() {
 	}
 	if s.Videos == nil {
 		s.Videos = make(map[tjs.ObjectID]*VideoOverlay)
+	}
+	if s.PhaseVocoders == nil {
+		s.PhaseVocoders = make(map[tjs.ObjectID]*phaseVocoderConfig)
 	}
 	if s.Sounds == nil {
 		s.Sounds = make(map[tjs.ObjectID]*WaveSoundBuffer)
@@ -779,7 +786,11 @@ func (s *Services) beginWindowInvalidation(id tjs.ObjectID) ([]tjs.Value, bool) 
 	window.Closed = true
 	window.Visible = false
 	window.Modal = false
-	return window.registeredObjects, true
+	children := append([]tjs.Value(nil), window.registeredObjects...)
+	if window.DrawDeviceObject.Kind() == tjs.KindObject && !window.DrawDeviceObject.IsNull() {
+		children = append(children, window.DrawDeviceObject)
+	}
+	return children, true
 }
 
 func (s *Services) UnregisterWindow(id tjs.ObjectID) {
@@ -791,6 +802,7 @@ func (s *Services) UnregisterWindow(id tjs.ObjectID) {
 		window.Visible = false
 		window.Modal = false
 		window.registeredObjects = nil
+		window.DrawDeviceObject = tjs.VoidValue
 		window.primaryLayer = 0
 	}
 	for _, layer := range s.Layers {
@@ -867,11 +879,12 @@ func (s *Services) captureFrame() (FrameSnapshot, error) {
 func (s *Services) captureFrameWithPresentation(presentation bool) (FrameSnapshot, error) {
 	statsEnabled := os.Getenv("KRKRGO_RENDER_STATS") != ""
 	var timings frameCaptureTimings
-	s.ensureInit()
+	if s.Compositor == nil && s.Root == nil {
+		// A session can be captured before its script creates a root layer.
+		// In that state there is no display-sized frame to compose yet.
+		return FrameSnapshot{}, nil
+	}
 	if s.Compositor == nil {
-		if s.Root == nil {
-			return FrameSnapshot{}, fmt.Errorf("%w: no root layer", ErrUnsupportedDevice)
-		}
 		s.Compositor = NewCompositor(s.Root.Bounds.Width, s.Root.Bounds.Height)
 		s.Compositor.Root = s.Root
 	}
@@ -1144,6 +1157,9 @@ func (s *Services) GCRoots() []tjs.Value {
 	// collector consumes this detached snapshot after the lock is released.
 	s.mu.RLock()
 	out := append([]tjs.Value(nil), s.Roots...)
+	if s.console.Kind() == tjs.KindObject && !s.console.IsNull() {
+		out = append(out, s.console)
+	}
 	for id, window := range s.WindowObjects {
 		out = append(out, tjs.ObjectIDValue(id))
 		if window == nil {
@@ -1161,6 +1177,13 @@ func (s *Services) GCRoots() []tjs.Value {
 		if window.ExSystemMenu.Kind() == tjs.KindObject && !window.ExSystemMenu.IsNull() {
 			out = append(out, window.ExSystemMenu)
 			ref := window.ExSystemMenu.ObjectRef()
+			if ref.Context != 0 && ref.Context != ref.Object {
+				out = append(out, tjs.ObjectIDValue(ref.Context))
+			}
+		}
+		if window.DrawDeviceObject.Kind() == tjs.KindObject && !window.DrawDeviceObject.IsNull() {
+			out = append(out, window.DrawDeviceObject)
+			ref := window.DrawDeviceObject.ObjectRef()
 			if ref.Context != 0 && ref.Context != ref.Object {
 				out = append(out, tjs.ObjectIDValue(ref.Context))
 			}
@@ -1346,6 +1369,7 @@ func (s *Services) stopAllSounds() error {
 
 // SoundNative invokes the script-facing WaveSoundBuffer operation set.
 func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value) (tjs.Value, error) {
+
 	s.ensureInit()
 	if operation == "setDefaultCounts" || operation == "setDefaultAheads" {
 		if len(args) == 0 {
@@ -1686,6 +1710,57 @@ func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, 
 	}
 }
 
+// MIDISoundNative exposes the legacy MIDI buffer API when the host has no MIDI
+// output backend. The reference runtime keeps this class registered in that
+// configuration; its MIDI operations are disabled while base status and volume
+// state remain available.
+func (s *Services) MIDISoundNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value) (tjs.Value, error) {
+	return s.disabledLegacySoundNative(vm, context, operation, args, "MIDISoundBuffer")
+}
+
+func (s *Services) CDDASoundNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value) (tjs.Value, error) {
+	return s.disabledLegacySoundNative(vm, context, operation, args, "CDDASoundBuffer")
+}
+
+func (s *Services) disabledLegacySoundNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value, className string) (tjs.Value, error) {
+	switch operation {
+	case "@initialize":
+		if _, err := s.SoundNative(vm, context, "@initialize", args); err != nil {
+			return tjs.VoidValue, err
+		}
+		if context.Kind() == tjs.KindObject && !context.IsNull() {
+			s.mu.Lock()
+			if sound := s.Sounds[context.ObjectRef().Object]; sound != nil {
+				sound.volume2 = 0
+			}
+			s.mu.Unlock()
+		}
+		return tjs.VoidValue, nil
+	case "@invalidate", "finalize":
+		return s.SoundNative(vm, context, operation, args)
+	case "MIDISoundBuffer", "CDDASoundBuffer", "play", "stop", "stopFade", "onStatusChanged", "onFadeCompleted":
+		return tjs.VoidValue, nil
+	case "open":
+		if len(args) < 1 {
+			return tjs.VoidValue, fmt.Errorf("%s.open: missing argument 0", className)
+		}
+		return tjs.VoidValue, nil
+	case "fade":
+		if len(args) < 2 {
+			return tjs.VoidValue, fmt.Errorf("%s.fade: missing argument", className)
+		}
+		return tjs.VoidValue, nil
+	case "get:status", "get:volume", "set:volume":
+		return s.SoundNative(vm, context, operation, args)
+	case "get:volume2":
+		return tjs.IntegerValue(0), nil
+	case "set:volume2", "get:position", "set:position", "get:paused", "set:paused", "get:totalTime", "set:totalTime", "get:looping", "set:looping":
+		return tjs.VoidValue, nil
+	default:
+		return tjs.VoidValue, fmt.Errorf("unsupported %s operation %q", className, operation)
+	}
+}
+
 // Call implements tjs.Host. Context-sensitive operations are handled by
 // CallWithContext, while unknown devices fail explicitly rather than no-oping.
 func (s *Services) Call(vm *tjs.VM, name string, args []tjs.Value, budget *uint64) (tjs.Value, error) {
@@ -1716,6 +1791,9 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 	}
 	if strings.HasPrefix(name, "Window.") {
 		return s.windowNative(vm, context, strings.TrimPrefix(name, "Window."), args, budget)
+	}
+	if strings.HasPrefix(name, "Pad.") {
+		return s.padNative(context, strings.TrimPrefix(name, "Pad."), args)
 	}
 	if strings.HasPrefix(name, "WIN32Dialog.") {
 		return s.win32DialogNative(strings.TrimPrefix(name, "WIN32Dialog."), args)
@@ -1801,6 +1879,24 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 	if strings.HasPrefix(name, "VideoOverlay.") {
 		return s.VideoNative(vm, context, strings.TrimPrefix(name, "VideoOverlay."), args, budget)
 	}
+	if strings.HasPrefix(name, "AlphaMovie.") {
+		return s.VideoNative(vm, context, strings.TrimPrefix(name, "AlphaMovie."), args, budget)
+	}
+	if strings.HasPrefix(name, "Motion.ResourceManager.") {
+		return s.motionResourceManagerNative(vm, context, strings.TrimPrefix(name, "Motion.ResourceManager."), args)
+	}
+	if strings.HasPrefix(name, "PSBFile.") {
+		return s.psbFileNative(vm, context, strings.TrimPrefix(name, "PSBFile."), args)
+	}
+	if strings.HasPrefix(name, "CDDASoundBuffer.") {
+		return s.CDDASoundNative(vm, context, strings.TrimPrefix(name, "CDDASoundBuffer."), args)
+	}
+	if strings.HasPrefix(name, "MIDISoundBuffer.") {
+		return s.MIDISoundNative(vm, context, strings.TrimPrefix(name, "MIDISoundBuffer."), args)
+	}
+	if strings.HasPrefix(name, "PhaseVocoder.") {
+		return s.PhaseVocoderNative(context, strings.TrimPrefix(name, "PhaseVocoder."), args)
+	}
 	if strings.HasPrefix(name, "WaveSoundBuffer.") {
 		return s.SoundNative(vm, context, strings.TrimPrefix(name, "WaveSoundBuffer."), args)
 	}
@@ -1863,7 +1959,46 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		}
 		s.Limits.CacheBytes = uint64(n)
 		return tjs.VoidValue, nil
-	case "Debug.get:console", "Console.@initialize", "Console.@invalidate", "Console.Console", "Console.finalize":
+	case "Debug.get:console":
+		s.mu.RLock()
+		console := s.console
+		s.mu.RUnlock()
+		if console.Kind() == tjs.KindObject && !console.IsNull() {
+			return console, nil
+		}
+		console, err := vm.NewDictionary()
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		object, ok := vm.Objects.Lookup(console.ObjectRef().Object)
+		if !ok {
+			return tjs.VoidValue, fmt.Errorf("console object allocation failed")
+		}
+		if err := object.Set("visible", tjs.IntegerValue(0)); err != nil {
+			return tjs.VoidValue, err
+		}
+		for _, method := range []string{"log", "info", "warn", "error", "debug", "trace", "dir", "getPlacement", "getRect", "setPos", "restoreMaximize", "bringTo", "bringAfter"} {
+			if err := vm.RegisterNativeMethod(console, method, "Console."+method); err != nil {
+				return tjs.VoidValue, err
+			}
+		}
+		s.mu.Lock()
+		if s.console.Kind() == tjs.KindObject && !s.console.IsNull() {
+			console = s.console
+		} else {
+			s.console = console
+			vm.Globals["console"] = console
+		}
+		s.mu.Unlock()
+		return console, nil
+	case "Console.log", "Console.info", "Console.warn", "Console.error", "Console.debug", "Console.trace", "Console.dir":
+		s.Messages = append(s.Messages, joinValues(args))
+		return tjs.VoidValue, nil
+	case "Console.getPlacement", "Console.getRect":
+		return tjs.VoidValue, nil
+	case "Console.setPos", "Console.restoreMaximize", "Console.bringTo", "Console.bringAfter":
+		return tjs.VoidValue, nil
+	case "Console.@initialize", "Console.@invalidate", "Console.Console", "Console.finalize":
 		return tjs.VoidValue, nil
 	case "Plugins.link":
 		x, e := arg(0)
@@ -1872,6 +2007,19 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		}
 		p := x.Text()
 		key := pluginLinkKey(p)
+		if !isImplementedNativePlugin(key) {
+			return tjs.VoidValue, fmt.Errorf("%w: Plugins.link(%q)", ErrUnsupportedNative, p)
+		}
+		if path.Base(key) == "motionplayer.dll" {
+			if e := installMotionPlayerNative(vm); e != nil {
+				return tjs.VoidValue, e
+			}
+		}
+		if strings.HasSuffix(key, "alphamovie.dll") {
+			if e := installAlphaMovieNative(vm); e != nil {
+				return tjs.VoidValue, e
+			}
+		}
 		if strings.HasSuffix(key, "getabout.dll") {
 			if e := installGetAboutNative(vm); e != nil {
 				return tjs.VoidValue, e
@@ -1887,6 +2035,11 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 				return tjs.VoidValue, e
 			}
 		}
+		if strings.HasSuffix(key, "psbfile.dll") {
+			if e := installPSBFileNative(vm); e != nil {
+				return tjs.VoidValue, e
+			}
+		}
 		if strings.HasSuffix(key, "getsample.dll") {
 			if s.samplePluginVMs == nil {
 				s.samplePluginVMs = make(map[*tjs.VM]struct{})
@@ -1896,6 +2049,20 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 					return tjs.VoidValue, e
 				}
 				s.samplePluginVMs[vm] = struct{}{}
+			}
+		}
+		if path.Base(key) == "addfont.dll" {
+			installed := false
+			for _, plugin := range s.Plugins {
+				if pluginLinkKey(plugin) == key {
+					installed = true
+					break
+				}
+			}
+			if !installed {
+				if e := vm.RegisterNative("System.addFont"); e != nil {
+					return tjs.VoidValue, e
+				}
 			}
 		}
 		if isMenuPlugin(p) {

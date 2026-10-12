@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -216,17 +217,17 @@ func (s *Session) registerNatives() error {
 	if err := s.VM.RegisterNativeStaticMethod(window, "getNotificationName", "Window.getNotificationName"); err != nil {
 		return err
 	}
-	for _, m := range []string{"resetWindowIcon", "setWindowIcon", "setOverlayBitmap", "resetExSystemMenu", "ncHitTest", "focusMenuByKey", "bringTo", "sendToBack"} {
+	for _, m := range []string{"resetWindowIcon", "setWindowIcon", "setOverlayBitmap", "resetExSystemMenu", "ncHitTest", "focusMenuByKey", "bringTo", "bringToFront", "sendToBack"} {
 		if err := s.VM.RegisterNativeMethod(window, m, "Window."+m); err != nil {
 			return err
 		}
 	}
-	for _, m := range []string{"@initialize", "@invalidate", "Window", "finalize", "add", "remove", "close", "showModal", "setPos", "setLayerPos", "setSize", "setInnerSize", "resize", "setZoom", "show", "hide", "minimize", "maximize", "restore", "showRestore", "getWindowRect", "getClientRect", "getNormalRect", "registerExEvent", "setMessageHook", "hideMouseCursor", "disableResize", "disableMove", "enableNCMouseEvent", "onMouseMove", "onMouseDown", "onMouseUp", "onClick", "onDoubleClick", "onMouseLeave", "onMouseWheel", "onKeyDown", "onKeyUp", "onKeyPress", "onActivate", "onDeactivate"} {
+	for _, m := range []string{"@initialize", "@invalidate", "Window", "finalize", "add", "remove", "close", "showModal", "setPos", "setLayerPos", "setSize", "setInnerSize", "resize", "setZoom", "show", "hide", "minimize", "maximize", "restore", "showRestore", "getWindowRect", "getClientRect", "getNormalRect", "registerExEvent", "setMessageHook", "hideMouseCursor", "disableResize", "disableMove", "enableNCMouseEvent", "onResize", "onMouseMove", "onMouseDown", "onMouseUp", "onClick", "onDoubleClick", "onMouseLeave", "onMouseWheel", "onKeyDown", "onKeyUp", "onKeyPress", "onActivate", "onDeactivate"} {
 		if err := s.VM.RegisterNativeMethod(window, m, "Window."+m); err != nil {
 			return err
 		}
 	}
-	for _, property := range []string{"caption", "visible", "minimized", "maximized", "left", "top", "layerLeft", "layerTop", "width", "height", "innerWidth", "innerHeight", "borderStyle", "fullScreen", "fitToClient", "zoom", "zoomNumer", "zoomDenom", "mouseCursor", "mouseCursorState", "disableResize", "disableMove", "enableNCMouseEvent", "exSystemMenu", "windowRect", "clientRect", "normalRect", "focusedLayer"} {
+	for _, property := range []string{"caption", "visible", "minimized", "maximized", "left", "top", "layerLeft", "layerTop", "width", "height", "innerWidth", "innerHeight", "borderStyle", "fullScreen", "fitToClient", "zoom", "zoomNumer", "zoomDenom", "mouseCursor", "mouseCursorState", "disableResize", "disableMove", "enableNCMouseEvent", "exSystemMenu", "windowRect", "clientRect", "normalRect", "drawDevice", "focusedLayer"} {
 		setter := "Window.set:" + property
 		switch property {
 		case "windowRect", "clientRect", "normalRect":
@@ -254,11 +255,10 @@ func (s *Session) registerNatives() error {
 	if err := s.VM.RegisterNativeMethod(layer, "light", "Layer.light"); err != nil {
 		return err
 	}
-	for _, property := range []string{"parent", "children", "order", "absolute", "absoluteOrderMode", "window", "isPrimary", "left", "top", "width", "height", "imageLeft", "imageTop", "imageWidth", "imageHeight", "visible", "nodeVisible", "opacity", "enabled", "eventTransparent", "type", "face", "holdAlpha", "hitType", "hitThreshold", "name", "hasImage", "clipLeft", "clipTop", "clipWidth", "clipHeight", "cursor", "cursorX", "cursorY", "font", "focusable", "nodeEnabled", "nodeFocusable", "focused"} {
+	for _, property := range []string{"parent", "children", "order", "absolute", "absoluteOrderMode", "window", "isPrimary", "left", "top", "width", "height", "imageLeft", "imageTop", "imageWidth", "imageHeight", "visible", "nodeVisible", "opacity", "enabled", "eventTransparent", "type", "face", "holdAlpha", "hitType", "hitThreshold", "name", "hasImage", "imageModified", "clipLeft", "clipTop", "clipWidth", "clipHeight", "cursor", "cursorX", "cursorY", "neutralColor", "font", "focusable", "nodeEnabled", "nodeFocusable", "focused"} {
 		setter := "Layer.set:" + property
 		switch property {
-		case "children", "nodeVisible", "nodeEnabled", "nodeFocusable", "focused", "window", "isPrimary":
-			setter = ""
+		case "children", "nodeVisible", "nodeEnabled", "nodeFocusable", "focused", "window", "isPrimary", "neutralColor":
 		}
 		if err := s.VM.RegisterNativeProperty(layer, property, "Layer.get:"+property, setter); err != nil {
 			return err
@@ -321,7 +321,7 @@ func (s *Session) registerNatives() error {
 	if err := s.VM.RegisterNativeMethod(storages, "@initialize", "Storages.@initialize"); err != nil {
 		return err
 	}
-	for _, method := range []string{"addAutoPath", "removeAutoPath", "getFullPath", "getPlacedPath", "isExistentStorage", "getListAt", "fstat", "extractStorageExt", "extractStorageName", "extractStoragePath", "chopStorageExt", "clearArchiveCache"} {
+	for _, method := range []string{"addArchive", "addAutoPath", "removeAutoPath", "getFullPath", "getPlacedPath", "getLocalName", "isExistentStorage", "getListAt", "fstat", "extractStorageExt", "extractStorageName", "extractStoragePath", "chopStorageExt", "clearArchiveCache"} {
 		if err := s.VM.RegisterNativeStaticMethod(storages, method, "Storages."+method); err != nil {
 			return err
 		}
@@ -330,7 +330,7 @@ func (s *Session) registerNatives() error {
 	if err != nil {
 		return err
 	}
-	for _, method := range []string{"@initialize", "@invalidate", "Font", "finalize", "getTextWidth", "getTextHeight", "getEscWidthX", "getEscWidthY", "getEscHeightX", "getEscHeightY"} {
+	for _, method := range []string{"@initialize", "@invalidate", "Font", "finalize", "getTextWidth", "getTextHeight", "getEscWidthX", "getEscWidthY", "getEscHeightX", "getEscHeightY", "getList", "mapPrerenderedFont"} {
 		if err := s.VM.RegisterNativeMethod(font, method, "Font."+method); err != nil {
 			return err
 		}
@@ -407,6 +407,66 @@ func (s *Session) registerNatives() error {
 	}
 	for _, property := range []string{"globalVolume", "globalFocusMode"} {
 		if err := s.VM.RegisterNativeStaticProperty(sound, property, "WaveSoundBuffer.get:"+property, "WaveSoundBuffer.set:"+property); err != nil {
+			return err
+		}
+	}
+	vocoder, err := s.VM.RegisterNativeClass("PhaseVocoder")
+	if err != nil {
+		return err
+	}
+	delete(s.VM.Globals, "PhaseVocoder")
+	for _, method := range []string{"@initialize", "@invalidate", "PhaseVocoder", "finalize"} {
+		if err := s.VM.RegisterNativeMethod(vocoder, method, "PhaseVocoder."+method); err != nil {
+			return err
+		}
+	}
+	for _, property := range []string{"window", "overlap", "pitch", "time", "interface"} {
+		setter := "PhaseVocoder.set:" + property
+		if property == "interface" {
+			setter = ""
+		}
+		if err := s.VM.RegisterNativeProperty(vocoder, property, "PhaseVocoder.get:"+property, setter); err != nil {
+			return err
+		}
+	}
+	if err := s.VM.RegisterNativeStaticValue(sound, "PhaseVocoder", vocoder); err != nil {
+		return err
+	}
+	midi, err := s.VM.RegisterNativeClass("MIDISoundBuffer")
+	if err != nil {
+		return err
+	}
+	for _, method := range []string{"@initialize", "@invalidate", "MIDISoundBuffer", "finalize", "open", "play", "stop", "fade", "stopFade", "onStatusChanged", "onFadeCompleted"} {
+		if err := s.VM.RegisterNativeMethod(midi, method, "MIDISoundBuffer."+method); err != nil {
+			return err
+		}
+	}
+	for _, property := range []string{"position", "paused", "totalTime", "looping", "volume", "volume2", "status"} {
+		getter := "MIDISoundBuffer.get:" + property
+		setter := "MIDISoundBuffer.set:" + property
+		if property == "status" {
+			setter = ""
+		}
+		if err := s.VM.RegisterNativeProperty(midi, property, getter, setter); err != nil {
+			return err
+		}
+	}
+	cdda, err := s.VM.RegisterNativeClass("CDDASoundBuffer")
+	if err != nil {
+		return err
+	}
+	for _, method := range []string{"@initialize", "@invalidate", "CDDASoundBuffer", "finalize", "open", "play", "stop", "fade", "stopFade", "onStatusChanged", "onFadeCompleted"} {
+		if err := s.VM.RegisterNativeMethod(cdda, method, "CDDASoundBuffer."+method); err != nil {
+			return err
+		}
+	}
+	for _, property := range []string{"position", "paused", "totalTime", "looping", "volume", "volume2", "status"} {
+		getter := "CDDASoundBuffer.get:" + property
+		setter := "CDDASoundBuffer.set:" + property
+		if property == "status" {
+			setter = ""
+		}
+		if err := s.VM.RegisterNativeProperty(cdda, property, getter, setter); err != nil {
 			return err
 		}
 	}
@@ -522,12 +582,25 @@ func (s *Session) registerNatives() error {
 			return err
 		}
 	}
-	for _, method := range []string{"terminate", "exit", "addContinuousHandler", "removeContinuousHandler", "toActualColor", "clearGraphicCache", "touchImages", "createUUID", "createAppLock", "getArgument", "setArgument", "inform", "getKeyState", "assignMessage", "doCompact", "getAboutString"} {
+	for _, method := range []string{"terminate", "exit", "addContinuousHandler", "removeContinuousHandler", "toActualColor", "clearGraphicCache", "touchImages", "createUUID", "createAppLock", "getArgument", "setArgument", "inform", "getKeyState", "assignMessage", "doCompact", "getAboutString", "readRegValue"} {
 		if err := s.VM.RegisterNativeMethod(system, method, "System."+method); err != nil {
 			return err
 		}
 	}
-	return s.registerScriptsNative()
+	debug, err := s.VM.RegisterNamespace("Debug")
+	if err != nil {
+		return err
+	}
+	if err := s.VM.RegisterNativeProperty(debug, "console", "Debug.get:console", ""); err != nil {
+		return err
+	}
+	if err := s.registerScriptsNative(); err != nil {
+		return err
+	}
+	if err := s.Services.installMenuNative(s.VM); err != nil {
+		return err
+	}
+	return installPadNative(s.VM)
 }
 func (s *Session) RegisterNative(name string, fn NativeFunc) error {
 	if err := s.checkOpen(); err != nil {
@@ -573,6 +646,10 @@ func (s *Session) executeSource(name, source string, expression bool) (tjs.Value
 	return s.VM.Execute(&p, s.Services, &s.Budget)
 }
 func (s *Session) ExecuteStorage(name string) (tjs.Value, error) {
+	return s.executeStorage(name, false)
+}
+
+func (s *Session) executeStorage(name string, useConfiguredEncoding bool) (tjs.Value, error) {
 	if err := s.checkOpen(); err != nil {
 		return tjs.VoidValue, err
 	}
@@ -581,17 +658,53 @@ func (s *Session) ExecuteStorage(name string) (tjs.Value, error) {
 		return tjs.VoidValue, err
 	}
 	if len(b) >= 4 && string(b[:4]) == "TJS2" {
-		return tjs.VoidValue, fmt.Errorf("%w: compiled TJS2 bytecode", ErrUnsupportedNative)
+		return executeTJS2Bytecode(s.VM, b, tjs.ObjectValue(tjs.NewObjectRef(0, 1)), s.Services, &s.Budget)
 	}
-	src, err := assets.Decode(b)
+	var src string
+	if useConfiguredEncoding {
+		src, err = s.Services.decodeScriptStorage(b)
+	} else {
+		src, err = decodeScriptStorageDefault(b)
+	}
 	if err != nil {
 		return tjs.VoidValue, err
 	}
 	return s.executeSource(name, src, false)
 }
-func (s *Session) Startup() (tjs.Value, error) { return s.ExecuteStorage("startup.tjs") }
+func (s *Session) Startup() (tjs.Value, error) { return s.executeStorage("startup.tjs", true) }
 func (s *Session) Evaluate(source string) (tjs.Value, error) {
-	return s.executeSource("<tool>", source, true)
+	if err := s.checkOpen(); err != nil {
+		return tjs.VoidValue, err
+	}
+	program, expressionErr := tjs.CompileWithPreprocessor("<tool>", source, true, s.preprocessor)
+	if expressionErr == nil {
+		return s.VM.Execute(&program, s.Services, &s.Budget)
+	}
+	// Evaluate is commonly used by embedders for either a single expression
+	// (whose value is returned) or a statement sequence. Retry in script mode
+	// only when expression parsing fails; script-mode diagnostics remain
+	// authoritative when the input is not a valid expression or script.
+	if split := strings.LastIndexByte(source, ';'); split >= 0 {
+		prefix := source[:split+1]
+		suffix := strings.TrimSpace(source[split+1:])
+		if suffix != "" {
+			prefixProgram, prefixErr := tjs.CompileWithPreprocessor("<tool>", prefix, false, s.preprocessor)
+			if prefixErr == nil {
+				resultProgram, resultErr := tjs.CompileWithPreprocessor("<tool>", suffix, true, s.preprocessor)
+				if resultErr == nil {
+					if _, err := s.VM.Execute(&prefixProgram, s.Services, &s.Budget); err != nil {
+						return tjs.VoidValue, err
+					}
+					return s.VM.Execute(&resultProgram, s.Services, &s.Budget)
+				}
+			}
+		}
+	}
+	program, err := tjs.CompileWithPreprocessor("<tool>", source, false, s.preprocessor)
+	if err != nil {
+		return tjs.VoidValue, err
+	}
+	return s.VM.Execute(&program, s.Services, &s.Budget)
 }
 func (s *Session) AdvanceClock(timeMS uint64) error {
 	if err := s.checkOpen(); err != nil {

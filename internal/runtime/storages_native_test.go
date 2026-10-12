@@ -11,7 +11,44 @@ import (
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
 	"github.com/eslzzyl/krkrgo/internal/core"
+	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
+
+func TestStoragesAddArchiveThroughLegacyGlobalProxy(t *testing.T) {
+	session := NewSession(DefaultServices(), 50_000)
+	defer session.Close()
+
+	globalObject, ok := session.VM.Objects.Lookup(0)
+	if !ok {
+		t.Fatal("TJS global object is missing")
+	}
+	storages := session.VM.Globals["Storages"]
+	if err := globalObject.Set("Storages", storages); err != nil {
+		t.Fatal(err)
+	}
+	bytecode := &tjs.DecodedBytecode{Objects: []tjs.BytecodeObject{{
+		MaxVariables: 4,
+		Code: []int16{
+			103, 1, -2, 0, // GPD r1, this-proxy, Storages
+			103, 2, 1, 1, // GPD r2, r1, addArchive
+			1, 3, 2, // CONST r3, "missing.xp3"
+			99, 0, 2, 1, 3, // CALL (discarded result), r2, 1 arg (r3)
+			119,
+		},
+		Constants: []tjs.BytecodeConstant{
+			{Value: tjs.StringValue("Storages")},
+			{Value: tjs.StringValue("addArchive")},
+			{Value: tjs.StringValue("missing.xp3")},
+		},
+	}}}
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	invoke := func(function, receiver tjs.Value, args []tjs.Value, resultNeeded bool) (tjs.Value, error) {
+		return session.VM.InvokeLegacy(function, receiver, args, session.Services, &session.Budget, resultNeeded)
+	}
+	if _, err := bytecode.ExecuteLegacyWithContextAndConstruction(0, global, global, nil, invoke, nil, session.VM.Objects); !errors.Is(err, ErrUnsupportedDevice) {
+		t.Fatalf("legacy Storages.addArchive error = %v, want ErrUnsupportedDevice", err)
+	}
+}
 
 func TestStoragesStaticPathHelpersWithoutStorage(t *testing.T) {
 	session := NewSession(DefaultServices(), 50_000)
@@ -46,14 +83,21 @@ func TestStoragesStaticPathHelpersWithoutStorage(t *testing.T) {
 		"Storages.removeAutoPath('path/')",
 		"Storages.getFullPath('path/file.tjs')",
 		"Storages.getPlacedPath('path/file.tjs')",
+		"Storages.getLocalName('path/file.tjs')",
 		"Storages.isExistentStorage('path/file.tjs')",
 		"Storages.fstat('path/file.tjs')",
+		"Storages.addArchive('path.xp3')",
 		"Storages.clearArchiveCache()",
 	} {
+
 		if _, err := session.Evaluate(source); !errors.Is(err, ErrUnsupportedDevice) {
 			t.Errorf("%s error = %v, want ErrUnsupportedDevice", source, err)
 		}
 	}
+	if _, err := session.Evaluate("Storages.addArchive()"); err == nil {
+		t.Fatal("Storages.addArchive without an argument unexpectedly succeeded")
+	}
+
 	if _, err := session.Evaluate("new Storages()"); err == nil {
 		t.Fatal("Storages unexpectedly allowed instance construction")
 	}
@@ -99,6 +143,7 @@ func TestStoragesStorageBackedOperations(t *testing.T) {
 		source string
 		want   string
 	}{
+		{"Storages.getLocalName('lookup/Found.TJS')", filepath.Join(storage.Project, "lookup", "Found.TJS")},
 		{"Storages.getFullPath('LOOKUP/../LOOKUP/FOUND.TJS')", wantFile},
 		{"Storages.getFullPath('LOOKUP/./FOUND.TJS')", wantFile},
 		{"Storages.getFullPath(" + strconv.Quote(`LOOKUP\FOUND.TJS`) + ")", wantFile},
@@ -126,11 +171,15 @@ func TestStoragesStorageBackedOperations(t *testing.T) {
 	}{
 		{"getFullPath", "http://example.test/file.tjs", "unsupported storage media: http"},
 		{"getPlacedPath", "https://example.test/file.tjs", "unsupported storage media: https"},
+		{"getLocalName", "https://example.test/file.tjs", "unsupported storage media: https"},
 	} {
 		source := "Storages." + test.method + "(" + strconv.Quote(test.name) + ")"
 		if _, err := session.Evaluate(source); err == nil || !errors.Is(err, assets.ErrUnsupportedStorageMedia) {
 			t.Errorf("%s error = %v, want ErrUnsupportedStorageMedia", source, err)
 		}
+	}
+	if _, err := session.Evaluate(`Storages.getLocalName("Mounted.XP3>archive/Entry.TJS")`); err == nil {
+		t.Fatal("archive member unexpectedly had a local filesystem name")
 	}
 	if _, err := session.Evaluate(`Storages.getFullPath("file://remote/share/file.tjs")`); err == nil {
 		t.Error("non-current file domain unexpectedly succeeded")
@@ -220,6 +269,45 @@ func TestStoragesStorageBackedOperations(t *testing.T) {
 	}
 	if _, err := session.Evaluate("Storages.clearArchiveCache()"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStoragesAddArchiveMountsProjectArchive(t *testing.T) {
+	project := t.TempDir()
+	storage, err := assets.OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := NewSession(NewServices(storage, "", core.DefaultLimits()), 50_000)
+	defer session.Close()
+	defer func() {
+		for _, archive := range storage.Archives {
+			if err := archive.Close(); err != nil {
+				t.Errorf("close mounted archive: %v", err)
+			}
+		}
+	}()
+
+	archivePath := filepath.Join(project, "dynamic.xp3")
+	if err := os.WriteFile(archivePath, storagesTestXP3("nested/entry.tjs", []byte("mounted")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Evaluate(`Storages.addArchive("dynamic.xp3")`); err != nil {
+		t.Fatalf("Storages.addArchive: %v", err)
+	}
+	if got, err := storage.Read("dynamic.xp3>nested/entry.tjs"); err != nil || string(got) != "mounted" {
+		t.Errorf("mounted archive read = %q, %v; want %q", got, err, "mounted")
+	}
+	if got, err := session.Evaluate(`Storages.isExistentStorage("dynamic.xp3>nested/entry.tjs")`); err != nil {
+		t.Fatal(err)
+	} else if value, _ := got.Int(); value != 1 {
+		t.Errorf("mounted archive existence = %d, want 1", value)
+	}
+	if _, err := session.Evaluate(`Storages.addArchive("dynamic.xp3>nested/entry.tjs")`); err == nil {
+		t.Error("Storages.addArchive accepted an archive member as an archive path")
+	}
+	if _, err := session.Evaluate(`Storages.addArchive("missing.xp3")`); err == nil {
+		t.Error("Storages.addArchive accepted a missing archive")
 	}
 }
 

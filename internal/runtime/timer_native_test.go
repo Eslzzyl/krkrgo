@@ -100,6 +100,31 @@ func TestTimerNativeRequiresActionOwner(t *testing.T) {
 	}
 }
 
+func TestTimerNativeBaseInitializationDefersActionOwnerToConstructor(t *testing.T) {
+	session := NewSession(DefaultServices(), 10_000)
+	owner := session.VM.Objects.New(tjs.CategoryDictionary)
+	session.VM.Globals["timerOwner"] = tjs.ObjectValue(owner.Ref())
+	source := `
+class ScriptTimer extends Timer {
+	function ScriptTimer(owner) { super.Timer(owner); }
+}
+timer = new ScriptTimer(timerOwner);
+`
+	if _, err := session.Evaluate(source); err != nil {
+		t.Fatalf("construct Timer subclass: %v", err)
+	}
+	timerValue, err := session.Evaluate("timer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if servicesTimer := session.Services.Timers.Timer(uint64(timerValue.ObjectRef().Object)); servicesTimer == nil {
+		t.Fatal("Timer subclass was not registered")
+	}
+	if _, err := session.Evaluate("new Timer()"); err == nil {
+		t.Fatal("Timer without ActionOwner unexpectedly succeeded")
+	}
+}
+
 func TestTimerNativeForwardsScriptAction(t *testing.T) {
 	session := NewSession(DefaultServices(), 10_000)
 	owner := session.VM.Objects.New(tjs.CategoryDictionary)

@@ -11,6 +11,25 @@ type vmTestHost struct{}
 func (vmTestHost) Call(_ *VM, _ string, _ []Value, _ *uint64) (Value, error) { return VoidValue, nil }
 
 type vmRecordingTraceHost struct{ instructions []Instruction }
+type vmGlobalConstructionHost struct {
+	observed bool
+}
+
+func (h *vmGlobalConstructionHost) Call(_ *VM, _ string, _ []Value, _ *uint64) (Value, error) {
+	return VoidValue, nil
+}
+
+func (h *vmGlobalConstructionHost) CallWithContext(vm *VM, name string, context Value, _ []Value, _ *uint64) (Value, error) {
+	if name == "C.@initialize" {
+		global, err := vm.obj(0)
+		if err != nil {
+			return VoidValue, err
+		}
+		value, ok := global.Get("x")
+		h.observed = ok && value.StrictEqual(context)
+	}
+	return VoidValue, nil
+}
 
 func (h *vmRecordingTraceHost) Trace(instruction *Instruction) error {
 	h.instructions = append(h.instructions, *instruction)
@@ -18,6 +37,74 @@ func (h *vmRecordingTraceHost) Trace(instruction *Instruction) error {
 }
 func (h *vmRecordingTraceHost) Call(_ *VM, _ string, _ []Value, _ *uint64) (Value, error) {
 	return VoidValue, nil
+}
+
+func TestLegacyClassCallDispatchesBodyWithCurrentContext(t *testing.T) {
+	vm := NewVM()
+	class, err := vm.RegisterLegacyClass("LegacyClassCallTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver, receiverID, err := vm.alloc(CategoryInstance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arg := StringValue("base argument")
+	called := false
+	if err := vm.SetLegacyClassBody(class, func(context Value, args []Value, _ Host, _ *uint64, needed bool) (Value, error) {
+		called = true
+		if !context.StrictEqual(receiver) {
+			t.Fatalf("class body context = %v, want current receiver %v", context, receiver)
+		}
+		if len(args) != 1 || !args[0].StrictEqual(arg) {
+			t.Fatalf("class body args = %v, want [%v]", args, arg)
+		}
+		if !needed {
+			t.Fatal("class body did not receive result-needed flag")
+		}
+		return IntegerValue(int64(receiverID)), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := vm.InvokeLegacy(class, receiver, []Value{arg}, vmTestHost{}, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called || got.Kind() != KindInteger || got.IntegerValue() != int64(receiverID) {
+		t.Fatalf("class call = %v, called=%t; want receiver id %d", got, called, receiverID)
+	}
+}
+
+func TestLegacyClassCallKeepsNonCallableObjectsNonCallable(t *testing.T) {
+	vm := NewVM()
+	object, _, err := vm.alloc(CategoryDictionary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.InvokeLegacy(object, VoidValue, nil, vmTestHost{}, nil, true); err == nil || !strings.Contains(err.Error(), "TJS object is not callable") {
+		t.Fatalf("dictionary call error = %v, want not-callable error", err)
+	}
+}
+func TestLegacyClassCallLinksClassBaseOnce(t *testing.T) {
+	vm := NewVM()
+	base, baseID, err := vm.alloc(CategoryClass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm.meta[baseID].nativeClass = true
+	derived, derivedID, err := vm.alloc(CategoryClass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.InvokeLegacy(base, derived, nil, vmTestHost{}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.InvokeLegacy(base, derived, nil, vmTestHost{}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := vm.meta[derivedID].classBases; len(got) != 1 || got[0] != baseID {
+		t.Fatalf("derived class bases = %v, want exactly [%d]", got, baseID)
+	}
 }
 
 func TestVMTraceAndBudgetObserveEveryExecutedInstruction(t *testing.T) {
@@ -228,6 +315,30 @@ func TestVMNativeClassGlobalBinding(t *testing.T) {
 	}
 }
 
+func TestVMGlobalMemberAssignmentExposesConstructedObjectDuringConstruction(t *testing.T) {
+	program, err := compile("global-member-construction.tjs", `
+global.x = new C();
+return true;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm := NewVM()
+	if _, err := vm.NewNativeClass("C", "C.@initialize"); err != nil {
+		t.Fatal(err)
+	}
+	host := &vmGlobalConstructionHost{}
+	budget := uint64(1000)
+	got, err := vm.Execute(&program, host, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err := got.Truth()
+	if err != nil || !ok || !host.observed {
+		t.Fatalf("global member assignment result = %v, %v; constructor observed in-progress instance = %v", got, err, host.observed)
+	}
+}
+
 func TestVMNativeClassGlobalBindingPreservesExistingMember(t *testing.T) {
 	vm := NewVM()
 	const name = "NativeGlobalConflict"
@@ -308,6 +419,71 @@ func executeVMSource(t *testing.T, source string) Value {
 		t.Fatal(err)
 	}
 	return value
+}
+
+func TestVMRegExpCompileInternalEncoding(t *testing.T) {
+	got := executeVMSource(t, `
+var r = new RegExp();
+var result = r._compile("//liig/foo");
+return result === void && r.test("FOO");
+`)
+	truth, err := got.Truth()
+	if err != nil || !truth {
+		t.Fatalf("RegExp._compile result = %v, %v; want true", got, err)
+	}
+}
+
+func TestVMRegExpCompileInternalEncodingErrors(t *testing.T) {
+	for _, source := range []string{
+		`var r=new RegExp();r._compile("bad");`,
+		`var r=new RegExp();r._compile("//i");`,
+		`var r=new RegExp();r._compile("//i/(");`,
+		`var r=new RegExp();r._compile();`,
+		`var r=new RegExp();r._compile("//i/x","extra");`,
+	} {
+		program, err := compile("regexp-compile-error.tjs", source)
+		if err != nil {
+			t.Fatalf("compile %q: %v", source, err)
+		}
+		budget := uint64(10000)
+		if _, err := NewVM().Execute(&program, vmTestHost{}, &budget); err == nil {
+			t.Errorf("RegExp._compile source %q unexpectedly succeeded", source)
+		}
+	}
+}
+func TestVMFunctionDeclarationReplacesGlobalProperty(t *testing.T) {
+	vm := NewVM()
+	program, err := compile("function-property.tjs", `
+property lazyFunction { getter { return void; } }
+function lazyFunction() { return 7; }
+return lazyFunction();
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := uint64(10000)
+	got, err := vm.Execute(&program, vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := got.Int()
+	if err != nil || result != 7 {
+		t.Fatalf("function declaration result = %v, %v; want 7", got, err)
+	}
+}
+
+func TestVMGlobalFunctionDeclarationIsAvailableBeforeItsStatement(t *testing.T) {
+	got := executeVMSource(t, `
+SystemActionBase = %[];
+with (SystemActionBase) {
+	.min = MinimizeOnPanicMode;
+}
+function MinimizeOnPanicMode() { return 7; }
+return SystemActionBase.min();
+`)
+	if result, err := got.Int(); err != nil || result != 7 {
+		t.Fatalf("forward global function result = %v, %v; want 7", got, err)
+	}
 }
 
 func TestVMOrdinaryDictionaryMissingMemberIsVoid(t *testing.T) {
@@ -585,6 +761,48 @@ func TestVMReadOnlyScriptProperty(t *testing.T) {
 	}
 }
 
+func TestVMPropertyReferenceUsesBoundContext(t *testing.T) {
+	got := executeVMSource(t, `
+class Hooked {
+	property value {
+		getter { return __propertyHook.value; }
+		setter(v) { __propertyHook.value = v; }
+	}
+}
+var first = new Hooked();
+var second = new Hooked();
+first.__propertyHook = %[value:4];
+second.__propertyHook = %[value:9];
+var reference = (&first.value) incontextof second;
+var original = *reference;
+*reference = 17;
+return original * 1000 + second.value * 10 + first.value;
+`)
+	if n, _ := got.Int(); n != 9174 {
+		t.Fatalf("bound property reference result = %v, want 9174", got)
+	}
+}
+func TestVMQuickMenuProxyPropertyReferenceSurvivesNestedGet(t *testing.T) {
+	got := executeVMSource(t, `
+class Proxy {
+	var target;
+	function Proxy() { target = %[enabled:true]; }
+	property proxyEnabled {
+		getter { return target.enabled; }
+		setter(v) { target.enabled = v; }
+	}
+	function getMap() { return %[skip:%[enabled:&proxyEnabled]]; }
+}
+var proxy = new Proxy(), map = proxy.getMap();
+var enabled = map.skip.enabled;
+map.skip.enabled = false;
+return enabled && !proxy.target.enabled;
+`)
+	truth, err := got.Truth()
+	if err != nil || !truth {
+		t.Fatalf("nested quickmenu proxy property reference = %v, %v; want true", got, err)
+	}
+}
 func TestVMWithRawPropertyAssignment(t *testing.T) {
 	got := executeVMSource(t, `var backing=0; var object=%[field:0]; property original { getter() { return -1; } setter(v) { backing=v; } } property source { getter() { return backing; } setter(v) { backing=v; } } object.field = &original; with(object) { &.field = &source; } *(&object.field)=29; return *(&object.field);`)
 	if n, _ := got.Int(); n != 29 {
@@ -852,6 +1070,37 @@ func TestVMClosuresCaptureAndMutateLexicalBindings(t *testing.T) {
 	got := executeVMSource(t, "function outer(){var x=1; return function(){x++; return x;};} var f=outer(); f(); return f();")
 	if n, _ := got.Int(); n != 3 {
 		t.Fatalf("closure value = %v, want 3", got)
+	}
+}
+func TestVMClosureCapturesLexicalMethodContextForNameLookup(t *testing.T) {
+	got := executeVMSource(t, `
+class C {
+	var x = 17;
+	function callback() {
+		var f = function() { return x; };
+		return f incontextof null;
+	}
+}
+var c = new C();
+return c.callback()();
+`)
+	if n, _ := got.Int(); n != 17 {
+		t.Fatalf("closure lookup = %v, want 17", got)
+	}
+}
+func TestVMContextAssignmentUpdatesDeclaredGlobal(t *testing.T) {
+	got := executeVMSource(t, `
+var errorLog;
+var context = %[];
+var callback = (function() {
+	errorLog = [];
+	errorLog.add(42);
+	return errorLog.count;
+} incontextof context);
+return callback();
+`)
+	if n, _ := got.Int(); n != 1 {
+		t.Fatalf("global assigned under context = %v, want 1", got)
 	}
 }
 

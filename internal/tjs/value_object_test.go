@@ -25,6 +25,7 @@ func TestValueUTF16AndCoercion(t *testing.T) {
 		t.Fatal("numeric-looking string must retain text equality")
 	}
 }
+
 func TestUTF16EqualityAndOrderingBoundaries(t *testing.T) {
 	tests := []struct {
 		name string

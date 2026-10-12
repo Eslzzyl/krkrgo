@@ -31,6 +31,7 @@ const (
 	OpBinary         OpCode = "binary"
 	OpGet            OpCode = "get"
 	OpTypeOfMember   OpCode = "typeof_member"
+	OpEnsureMember   OpCode = "ensure_member"
 	OpSet            OpCode = "set"
 	OpArray          OpCode = "array"
 	OpDictionary     OpCode = "dictionary"
@@ -96,10 +97,12 @@ type Op struct {
 	Withs        int                 `json:"withs,omitempty"`
 	Finally      int                 `json:"finally,omitempty"`
 	ContextSet   bool                `json:"context_set,omitempty"`
+	TargetSet    bool                `json:"target_set,omitempty"`
 	Name         string              `json:"name,omitempty"`
 	Operator     string              `json:"operator,omitempty"`
 	Optional     bool                `json:"optional,omitempty"`
 	Raw          bool                `json:"raw,omitempty"`
+	DeclareWith  bool                `json:"declare_with,omitempty"`
 	ResultNeeded bool                `json:"result_needed,omitempty"`
 	Rest         bool                `json:"rest,omitempty"`
 	Index        int                 `json:"index,omitempty"`
@@ -208,6 +211,13 @@ func (p Program) Validate() error {
 			if e := check(op.Key, "key"); e != nil {
 				return e
 			}
+		case OpEnsureMember:
+			if e := check(op.Object, "object"); e != nil {
+				return e
+			}
+			if e := check(op.Key, "key"); e != nil {
+				return e
+			}
 		case OpSet:
 			if e := check(op.Object, "object"); e != nil {
 				return e
@@ -251,6 +261,17 @@ func (p Program) Validate() error {
 					return e
 				}
 			}
+			if op.TargetSet {
+				if op.Code != OpConstruct {
+					return invalid(i, "assignment target is only valid for construction")
+				}
+				if e := check(op.Object, "construction target object"); e != nil {
+					return e
+				}
+				if e := check(op.Key, "construction target key"); e != nil {
+					return e
+				}
+			}
 			for _, arg := range op.Args {
 				switch arg.Kind {
 				case ArgumentValue:
@@ -288,11 +309,12 @@ func (p Program) Validate() error {
 
 // --- scanner -----------------------------------------------------------------
 type ctoken struct {
-	kind, text   string
-	value        Value
-	regexp       *RegexpLiteral
-	controlClose bool
-	loc          core.SourceLocation
+	kind, text    string
+	value         Value
+	regexp        *RegexpLiteral
+	interpolation *InterpolationLiteral
+	controlClose  bool
+	loc           core.SourceLocation
 }
 type cscan struct {
 	src, storage string
@@ -680,6 +702,37 @@ func (s *cscan) scanNumber(loc core.SourceLocation) (string, Value, error) {
 	}
 	return text, IntegerValue(n), nil
 }
+func (s *cscan) scanInterpolation(loc core.SourceLocation) error {
+	lexer := NewLexerWithStorage(s.storage, s.src[s.i:])
+	token, err := lexer.Next()
+	if err != nil {
+		return err
+	}
+	if token.Kind != TokenInterpolation {
+		return fmt.Errorf("%s:%d:%d: expected interpolated string", loc.Storage, loc.Line, loc.Column)
+	}
+	consumed := 0
+	var units uint64
+	for consumed < len(s.src)-s.i && units < lexer.i {
+		r, size := utf8.DecodeRuneInString(s.src[s.i+consumed:])
+		units += uint64(utf16.RuneLen(r))
+		consumed += size
+	}
+	if units != lexer.i {
+		return fmt.Errorf("%s:%d:%d: invalid interpolated string length", loc.Storage, loc.Line, loc.Column)
+	}
+	for consumed > 0 {
+		_, size := utf8.DecodeRuneInString(s.src[s.i:])
+		s.advance()
+		consumed -= size
+	}
+	interpolation, ok := token.Value.(InterpolationLiteral)
+	if !ok {
+		return fmt.Errorf("%s:%d:%d: invalid interpolated string token", loc.Storage, loc.Line, loc.Column)
+	}
+	s.out = append(s.out, ctoken{kind: "interpolation", interpolation: &interpolation, loc: loc})
+	return nil
+}
 
 func (s *cscan) tokens() ([]ctoken, error) {
 	s.line = 1
@@ -725,6 +778,13 @@ func (s *cscan) tokens() ([]ctoken, error) {
 			s.add("literal", "", v, l)
 			continue
 		}
+		if r == '@' && s.i+1 < len(s.src) && (s.src[s.i+1] == '\'' || s.src[s.i+1] == '"') {
+			if err := s.scanInterpolation(l); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
 		if r == '\'' || r == '"' {
 			q := s.advance()
 			value, e := s.scanString(q, l)
@@ -814,8 +874,12 @@ type cexpr struct {
 	left, right, third *cexpr
 	args               []*cexpr
 	pairs              [][2]*cexpr
+	entries            []arrayLiteralEntry
 	fn                 *Function
 	loc                core.SourceLocation
+}
+type arrayLiteralEntry struct {
+	key, value *cexpr
 }
 
 type cparameterDefault struct {
@@ -899,6 +963,7 @@ func (p *cparser) functionDescriptor(name string) (*Function, error) {
 	var params []string
 	var defaults map[int]cparameterDefault
 	rest := ""
+	unnamedRest := 0
 	if p.eat("(") {
 		for !p.eat(")") {
 			if p.eat("*") {
@@ -908,6 +973,7 @@ func (p *cparser) functionDescriptor(name string) (*Function, error) {
 				if err := p.need(")"); err != nil {
 					return nil, err
 				}
+				unnamedRest = len(params)
 				break
 			}
 			if len(params) >= 1024 {
@@ -956,8 +1022,8 @@ func (p *cparser) functionDescriptor(name string) (*Function, error) {
 		return nil, err
 	}
 	// withMember reads p.c.withDepth, so point it at the compiler parsing this body.
-	sub := &compiler{program: Program{Storage: p.c.program.Storage}, p: p, withDepth: p.c.withDepth}
 	activeCompiler := p.c
+	sub := &compiler{program: Program{Storage: p.c.program.Storage}, p: p, withDepth: p.c.withDepth, forwardArgsFrom: unnamedRest}
 	p.c = sub
 	defer func() { p.c = activeCompiler }()
 	for i, n := range params {
@@ -1085,172 +1151,217 @@ func (p *cparser) expr(min int) (*cexpr, error) {
 	}
 	t := p.at()
 	var left *cexpr
-	cast := ""
-	if p.p+2 < len(p.ts) &&
-		p.ts[p.p].text == "(" &&
-		p.ts[p.p+1].kind == "name" &&
-		(p.ts[p.p+1].text == "int" || p.ts[p.p+1].text == "real" || p.ts[p.p+1].text == "string") &&
-		p.ts[p.p+2].text == ")" {
-		cast = p.ts[p.p+1].text
-	}
-	if cast != "" {
-		p.p += 3
-		x, e := p.expr(13)
-		if e != nil {
-			return nil, e
-		}
-		left = &cexpr{kind: "unary", text: cast, left: x, loc: t.loc}
-	} else if p.eat("(") {
-		var e error
-		left, e = p.full()
-		if e != nil {
-			return nil, e
-		}
-		if e = p.need(")"); e != nil {
-			return nil, e
-		}
-	} else if p.eat("[") {
-		left = &cexpr{kind: "array", loc: t.loc}
-		if !p.eat("]") {
-			for {
-				if p.eat(",") {
-					left.args = append(left.args, &cexpr{kind: "value", value: VoidValue, loc: t.loc})
-					continue
-				}
-				x, e := p.expr(0)
-				if e != nil {
-					return nil, e
-				}
-				left.args = append(left.args, x)
-				if p.eat("]") {
-					break
-				}
-				if e = p.need(","); e != nil {
-					return nil, e
-				}
-				if p.eat("]") {
-					left.args = append(left.args, &cexpr{kind: "value", value: VoidValue, loc: t.loc})
-					break
-				}
-			}
-		}
-	} else if p.eat("%[") {
-		left = &cexpr{kind: "dict", loc: t.loc}
-		if !p.eat("]") {
-			for {
-				a, e := p.expr(0)
-				if e != nil {
-					return nil, e
-				}
-				if p.eat(":") {
-					if a.kind == "name" {
-						a = &cexpr{kind: "value", value: StringValue(a.text), loc: a.loc}
-					}
-				} else if !p.eat("=>") {
-					if e = p.need(","); e != nil {
-						return nil, e
-					}
-				}
-				b, e := p.expr(0)
-				if e != nil {
-					return nil, e
-				}
-				left.pairs = append(left.pairs, [2]*cexpr{a, b})
-				if p.eat("]") {
-					break
-				}
-				if e = p.need(","); e != nil {
-					return nil, e
-				}
-				if p.eat("]") {
-					break
-				}
-			}
-		}
-	} else if p.eat("function") {
-		name := ""
-		if p.at().kind == "name" {
-			name = p.at().text
-			p.p++
-		}
-		fn, err := p.functionDescriptor(name)
-		if err != nil {
-			return nil, err
-		}
-		left = &cexpr{kind: "function", fn: fn, loc: t.loc}
-	} else if p.is("++") || p.is("--") {
-		op := p.at().text
+	if t.kind == "interpolation" {
 		p.p++
-		x, e := p.expr(13)
-		if e != nil {
-			return nil, e
-		}
-		left = &cexpr{kind: "update", text: op, left: x, prefix: true, loc: t.loc}
-	} else if p.is("!") || p.is("~") || p.is("+") || p.is("-") || p.is("typeof") || p.is("delete") || p.is("int") || p.is("real") || p.is("string") || p.is("#") || p.is("$") || p.is("&") || p.is("*") || p.is("isvalid") || p.is("invalidate") {
-		op := p.at().text
-		p.p++
-		if op == "&" && p.eat(".") {
-			name, e := p.name()
-			if e != nil {
-				return nil, e
+		left = &cexpr{kind: "value", value: StringValue(""), loc: t.loc}
+		for _, part := range t.interpolation.Parts {
+			var value *cexpr
+			if part.Expression == "" {
+				value = &cexpr{kind: "value", value: StringUnits(part.Text), loc: t.loc}
+			} else {
+				scanner := &cscan{src: part.Expression, storage: t.loc.Storage}
+				tokens, err := scanner.tokens()
+				if err != nil {
+					return nil, err
+				}
+				embedded := &cparser{ts: tokens, c: p.c}
+				value, err = embedded.expr(1)
+				if err != nil {
+					return nil, err
+				}
+				if embedded.at().kind != "eof" {
+					return nil, fmt.Errorf("%s:%d:%d: unexpected token %q in interpolated expression", t.loc.Storage, t.loc.Line, t.loc.Column, embedded.at().text)
+				}
 			}
-			left = &cexpr{kind: "unary", text: op, left: p.withMember(name, t.loc), loc: t.loc}
-		} else {
+			left = &cexpr{kind: "binary", text: "+", left: left, right: value, loc: t.loc}
+		}
+		if len(t.interpolation.Parts) == 0 {
+			left = &cexpr{kind: "value", value: StringValue(""), loc: t.loc}
+		}
+	} else {
+		cast := ""
+		if p.p+2 < len(p.ts) &&
+			p.ts[p.p].text == "(" &&
+			p.ts[p.p+1].kind == "name" &&
+			(p.ts[p.p+1].text == "int" || p.ts[p.p+1].text == "real" || p.ts[p.p+1].text == "string" || p.ts[p.p+1].text == "const") &&
+			p.ts[p.p+2].text == ")" {
+			cast = p.ts[p.p+1].text
+		}
+		if cast != "" {
+			p.p += 3
 			x, e := p.expr(13)
 			if e != nil {
 				return nil, e
 			}
-			left = &cexpr{kind: "unary", text: op, left: x, loc: t.loc}
-		}
-	} else if p.eat("new") {
-		x, e := p.expr(15)
-		if e != nil {
-			return nil, e
-		}
-		if x.kind != "call" {
-			return nil, fmt.Errorf("new requires a constructor call")
-		}
-		x.kind = "construct"
-		left = x
-	} else if p.eat(".") {
-		name, e := p.name()
-		if e != nil {
-			return nil, e
-		}
-		left = p.withMember(name, t.loc)
-	} else if t.kind == "literal" {
-		p.p++
-		left = &cexpr{kind: "value", value: t.value, loc: t.loc}
-	} else if t.kind == "regexp" && t.regexp != nil {
-		p.p++
-		left = &cexpr{
-			kind: "construct",
-			left: &cexpr{kind: "name", text: "RegExp", loc: t.loc},
-			args: []*cexpr{
-				{kind: "value", value: StringUnits(t.regexp.Pattern), loc: t.loc},
-				{kind: "value", value: StringValue(t.regexp.Flags), loc: t.loc},
-			},
-			loc: t.loc,
-		}
-	} else if t.kind == "name" {
-		if t.text == "instanceof" {
-			return nil, fmt.Errorf("unsupported TJS construct %s", t.text)
-		}
-		p.p++
-		if t.text == "true" {
-			left = &cexpr{kind: "value", value: IntegerValue(1), loc: t.loc}
-		} else if t.text == "false" {
-			left = &cexpr{kind: "value", value: IntegerValue(0), loc: t.loc}
-		} else if t.text == "null" {
-			left = &cexpr{kind: "value", value: NullValue, loc: t.loc}
-		} else if t.text == "void" {
-			left = &cexpr{kind: "value", value: VoidValue, loc: t.loc}
+			left = &cexpr{kind: "unary", text: cast, left: x, loc: t.loc}
+		} else if p.eat("(") {
+			var e error
+			left, e = p.full()
+			if e != nil {
+				return nil, e
+			}
+			if e = p.need(")"); e != nil {
+				return nil, e
+			}
+		} else if p.eat("[") {
+			left = &cexpr{kind: "array", loc: t.loc}
+			if !p.eat("]") {
+				for {
+					if p.eat(",") {
+						left.entries = append(left.entries, arrayLiteralEntry{value: &cexpr{kind: "value", value: VoidValue, loc: t.loc}})
+						continue
+					}
+					x, e := p.expr(0)
+					if e != nil {
+						return nil, e
+					}
+					if p.eat("=>") || p.eat(":") {
+						v, err := p.expr(0)
+						if err != nil {
+							return nil, err
+						}
+						left.entries = append(left.entries, arrayLiteralEntry{key: x, value: v})
+					} else {
+						left.entries = append(left.entries, arrayLiteralEntry{value: x})
+					}
+					if p.eat("]") {
+						break
+					}
+					if e = p.need(","); e != nil {
+						return nil, e
+					}
+					if p.eat("]") {
+						left.entries = append(left.entries, arrayLiteralEntry{value: &cexpr{kind: "value", value: VoidValue, loc: t.loc}})
+						break
+					}
+				}
+			}
+		} else if p.eat("%[") {
+			left = &cexpr{kind: "dict", loc: t.loc}
+			if !p.eat("]") {
+				for {
+					a, e := p.expr(0)
+					if e != nil {
+						return nil, e
+					}
+					if p.eat(":") {
+						if a.kind == "name" {
+							a = &cexpr{kind: "value", value: StringValue(a.text), loc: a.loc}
+						}
+					} else if !p.eat("=>") {
+						if e = p.need(","); e != nil {
+							return nil, e
+						}
+					}
+					b, e := p.expr(0)
+					if e != nil {
+						return nil, e
+					}
+					left.pairs = append(left.pairs, [2]*cexpr{a, b})
+					if p.eat("]") {
+						break
+					}
+					if e = p.need(","); e != nil {
+						return nil, e
+					}
+					if p.eat("]") {
+						break
+					}
+				}
+			}
+		} else if p.eat("function") {
+			name := ""
+			if p.at().kind == "name" {
+				name = p.at().text
+				p.p++
+			}
+			fn, err := p.functionDescriptor(name)
+			if err != nil {
+				return nil, err
+			}
+			left = &cexpr{kind: "function", fn: fn, loc: t.loc}
+		} else if p.is("++") || p.is("--") {
+			op := p.at().text
+			p.p++
+			x, e := p.expr(13)
+			if e != nil {
+				return nil, e
+			}
+			left = &cexpr{kind: "update", text: op, left: x, prefix: true, loc: t.loc}
+		} else if p.is("!") || p.is("~") || p.is("+") || p.is("-") || p.is("typeof") || p.is("delete") || p.is("int") || p.is("real") || p.is("string") || p.is("#") || p.is("$") || p.is("&") || p.is("*") || p.is("isvalid") || p.is("invalidate") {
+			op := p.at().text
+			p.p++
+			if op == "&" && p.eat(".") {
+				name, e := p.name()
+				if e != nil {
+					return nil, e
+				}
+				left = &cexpr{kind: "unary", text: op, left: p.withMember(name, t.loc), loc: t.loc}
+			} else {
+				operandMin := 13
+				if op == "&" {
+					// A property reference binds before incontextof; otherwise
+					// &member incontextof receiver addresses the whole bound
+					// expression instead of the raw property descriptor.
+					operandMin = 15
+				}
+				x, e := p.expr(operandMin)
+				if e != nil {
+					return nil, e
+				}
+				left = &cexpr{kind: "unary", text: op, left: x, loc: t.loc}
+			}
+		} else if p.eat("new") {
+			x, e := p.expr(15)
+			if e != nil {
+				return nil, e
+			}
+			if x.kind != "call" {
+				return nil, fmt.Errorf("new requires a constructor call")
+			}
+			x.kind = "construct"
+			left = x
+		} else if p.eat(".") {
+			name, e := p.name()
+			if e != nil {
+				return nil, e
+			}
+			left = p.withMember(name, t.loc)
+		} else if t.kind == "literal" {
+			p.p++
+			left = &cexpr{kind: "value", value: t.value, loc: t.loc}
+		} else if t.kind == "regexp" && t.regexp != nil {
+			p.p++
+			left = &cexpr{
+				kind: "construct",
+				left: &cexpr{kind: "name", text: "RegExp", loc: t.loc},
+				args: []*cexpr{
+					{kind: "value", value: StringUnits(t.regexp.Pattern), loc: t.loc},
+					{kind: "value", value: StringValue(t.regexp.Flags), loc: t.loc},
+				},
+				loc: t.loc,
+			}
+		} else if t.kind == "name" {
+			if t.text == "instanceof" {
+				return nil, fmt.Errorf("unsupported TJS construct %s", t.text)
+			}
+			p.p++
+			if t.text == "true" {
+				left = &cexpr{kind: "value", value: IntegerValue(1), loc: t.loc}
+			} else if t.text == "false" {
+				left = &cexpr{kind: "value", value: IntegerValue(0), loc: t.loc}
+			} else if t.text == "null" {
+				left = &cexpr{kind: "value", value: NullValue, loc: t.loc}
+			} else if t.text == "void" {
+				left = &cexpr{kind: "value", value: VoidValue, loc: t.loc}
+			} else {
+				left = &cexpr{kind: "name", text: t.text, loc: t.loc}
+			}
 		} else {
-			left = &cexpr{kind: "name", text: t.text, loc: t.loc}
+			return nil, fmt.Errorf("unsupported TJS expression token %q", t.text)
 		}
-	} else {
-		return nil, fmt.Errorf("unsupported TJS expression token %q", t.text)
 	}
+
 	for {
 		if p.eat(".") {
 			n, e := p.name()
@@ -1277,7 +1388,7 @@ func (p *cparser) expr(min int) (*cexpr, error) {
 				for {
 					if p.is(",") || p.is(")") {
 						call.args = append(call.args, &cexpr{kind: "value", value: VoidValue, loc: p.at().loc})
-					} else if p.eat("...") || p.eat("*") {
+					} else if p.eat("...") {
 						if p.is(")") || p.is(",") {
 							call.args = append(call.args, &cexpr{kind: "forward", loc: t.loc})
 						} else {
@@ -1287,21 +1398,32 @@ func (p *cparser) expr(min int) (*cexpr, error) {
 							}
 							call.args = append(call.args, &cexpr{kind: "spread", left: x, loc: t.loc})
 						}
-					} else if p.at().kind == "name" && p.p+2 < len(p.ts) && p.ts[p.p+1].text == "*" && (p.ts[p.p+2].text == ")" || p.ts[p.p+2].text == ",") {
+					} else if p.eat("*") {
+						if p.is(")") || p.is(",") {
+							call.args = append(call.args, &cexpr{kind: "forward_tail", loc: t.loc})
+						} else {
+							x, e := p.expr(0)
+							if e != nil {
+								return nil, e
+							}
+							call.args = append(call.args, &cexpr{kind: "spread", left: x, loc: t.loc})
+						}
+					} else {
+						start := p.p
 						x, e := p.expr(13)
 						if e != nil {
 							return nil, e
 						}
-						if !p.eat("*") {
-							return nil, fmt.Errorf("expected spread marker")
+						if p.eat("*") && (p.is(")") || p.is(",")) {
+							call.args = append(call.args, &cexpr{kind: "spread", left: x, loc: t.loc})
+						} else {
+							p.p = start
+							x, e = p.expr(0)
+							if e != nil {
+								return nil, e
+							}
+							call.args = append(call.args, x)
 						}
-						call.args = append(call.args, &cexpr{kind: "spread", left: x, loc: t.loc})
-					} else {
-						x, e := p.expr(0)
-						if e != nil {
-							return nil, e
-						}
-						call.args = append(call.args, x)
 					}
 					if p.eat(")") {
 						break
@@ -1372,12 +1494,50 @@ func (p *cparser) expr(min int) (*cexpr, error) {
 
 // --- lowering ----------------------------------------------------------------
 type compiler struct {
-	program      Program
-	p            *cparser
-	controls     []controlContext
-	handlerDepth int
-	scopeDepth   int
-	withDepth    int
+	program               Program
+	p                     *cparser
+	controls              []controlContext
+	handlerDepth          int
+	scopeDepth            int
+	withDepth             int
+	forwardArgsFrom       int
+	hoisted               []Instruction
+	constructTargetExpr   *cexpr
+	constructTargetObject int
+	constructTargetKey    int
+}
+
+func (c *compiler) hoistGlobalFunction(loc core.SourceLocation, fn *Function, register int, name string) {
+	if c.scopeDepth != 0 || c.withDepth != 0 {
+		return
+	}
+	c.hoisted = append(c.hoisted,
+		Instruction{Location: loc, Op: Op{Code: OpFunction, Out: register, Function: fn}},
+		Instruction{Location: loc, Op: Op{Code: OpDeclare, Name: name, Input: register}},
+	)
+}
+
+func (c *compiler) prependHoistedFunctions() {
+	if len(c.hoisted) == 0 {
+		return
+	}
+	offset := len(c.hoisted)
+	for i := range c.program.Code {
+		op := &c.program.Code[i].Op
+		switch op.Code {
+		case OpJump, OpJumpUnless, OpTry, OpUnwind:
+			if op.Target >= 0 {
+				op.Target += offset
+			}
+			if op.Finally >= 0 {
+				op.Finally += offset
+			}
+		}
+	}
+	code := make([]Instruction, 0, offset+len(c.program.Code))
+	code = append(code, c.hoisted...)
+	code = append(code, c.program.Code...)
+	c.program.Code = code
 }
 
 type controlContext struct {
@@ -1398,6 +1558,59 @@ func (c *compiler) emit(loc core.SourceLocation, op Op) int {
 	i := len(c.program.Code)
 	c.program.Code = append(c.program.Code, Instruction{Location: loc, Op: op})
 	return i
+}
+
+type swapTarget struct {
+	kind        string
+	value       int
+	name        string
+	object, key int
+	property    int
+}
+
+func (c *compiler) compileSwapTarget(expression *cexpr) (swapTarget, error) {
+	switch {
+	case expression != nil && expression.kind == "name":
+		value := c.reg()
+		c.emit(expression.loc, Op{Code: OpLoad, Out: value, Name: expression.text})
+		return swapTarget{kind: "name", value: value, name: expression.text}, nil
+	case expression != nil && expression.kind == "member":
+		object, err := c.compile(expression.left)
+		if err != nil {
+			return swapTarget{}, err
+		}
+		key, err := c.compile(expression.right)
+		if err != nil {
+			return swapTarget{}, err
+		}
+		value := c.reg()
+		c.emit(expression.loc, Op{Code: OpGet, Out: value, Object: object, Key: key})
+		return swapTarget{kind: "member", value: value, object: object, key: key}, nil
+	case expression != nil && expression.kind == "unary" && expression.text == "*":
+		property, err := c.compile(expression.left)
+		if err != nil {
+			return swapTarget{}, err
+		}
+		value := c.reg()
+		c.emit(expression.loc, Op{Code: OpReadProperty, Out: value, Input: property})
+		return swapTarget{kind: "property", value: value, property: property}, nil
+	default:
+		return swapTarget{}, fmt.Errorf("invalid swap assignment target")
+	}
+}
+
+func (c *compiler) writeSwapTarget(target swapTarget, value int, loc core.SourceLocation) error {
+	switch target.kind {
+	case "name":
+		c.emit(loc, Op{Code: OpStore, Name: target.name, Input: value})
+	case "member":
+		c.emit(loc, Op{Code: OpSet, Object: target.object, Key: target.key, Input: value})
+	case "property":
+		c.emit(loc, Op{Code: OpWriteProperty, Context: target.property, Input: value})
+	default:
+		return fmt.Errorf("invalid swap assignment target")
+	}
+	return nil
 }
 func (c *compiler) patch(i, target int) { c.program.Code[i].Op.Target = target }
 
@@ -1485,15 +1698,34 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 		}
 		c.emit(e.loc, Op{Code: OpGet, Out: out, Object: o, Key: k})
 	case "array":
-		items := make([]int, len(e.args))
-		for i, x := range e.args {
-			r, err := c.compile(x)
+		items := make([]int, 0, len(e.entries)*2)
+		type associativeEntry struct{ key, value int }
+		var associative []associativeEntry
+		for _, entry := range e.entries {
+			var key int
+			if entry.key != nil {
+				var err error
+				key, err = c.compile(entry.key)
+				if err != nil {
+					return 0, err
+				}
+			}
+			value, err := c.compile(entry.value)
 			if err != nil {
 				return 0, err
 			}
-			items[i] = r
+			if entry.key != nil {
+				items = append(items, key)
+			}
+			items = append(items, value)
+			if entry.key != nil {
+				associative = append(associative, associativeEntry{key: key, value: value})
+			}
 		}
 		c.emit(e.loc, Op{Code: OpArray, Out: out, Items: items})
+		for _, pair := range associative {
+			c.emit(e.loc, Op{Code: OpSet, Object: out, Key: pair.key, Input: pair.value})
+		}
 	case "dict":
 		items := make([]DictionaryOperand, len(e.pairs))
 		for i, x := range e.pairs {
@@ -1514,6 +1746,9 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 		}
 		return c.compile(e.right)
 	case "unary":
+		if e.text == "const" {
+			return c.compile(e.left)
+		}
 		if e.text == "delete" {
 			switch e.left.kind {
 			case "name":
@@ -1545,6 +1780,12 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 			c.emit(e.loc, Op{Code: OpTypeOfMember, Out: out, Object: o, Key: k})
 			break
 		}
+		if e.text == "typeof" && e.left != nil && e.left.kind == "name" {
+			value := c.reg()
+			c.emit(e.loc, Op{Code: OpLoad, Out: value, Name: e.left.text, Optional: true})
+			c.emit(e.loc, Op{Code: OpUnary, Out: out, Operator: "typeof", Input: value})
+			break
+		}
 		if e.text == "&" {
 			if target, ok := rawPropertyTarget(e.left); ok {
 				r, err := c.compileRawProperty(target)
@@ -1556,7 +1797,13 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 			}
 		}
 		if e.text == "*" {
-			r, err := c.compile(e.left)
+			var r int
+			var err error
+			if target, ok := rawPropertyTarget(e.left); ok {
+				r, err = c.compileRawProperty(target)
+			} else {
+				r, err = c.compile(e.left)
+			}
 			if err != nil {
 				return 0, err
 			}
@@ -1612,6 +1859,24 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 		}
 
 	case "assign":
+		if e.text == "<->" {
+			left, err := c.compileSwapTarget(e.left)
+			if err != nil {
+				return 0, err
+			}
+			right, err := c.compileSwapTarget(e.right)
+			if err != nil {
+				return 0, err
+			}
+			c.emit(e.loc, Op{Code: OpMove, Out: out, Input: right.value})
+			if err := c.writeSwapTarget(left, right.value, e.loc); err != nil {
+				return 0, err
+			}
+			if err := c.writeSwapTarget(right, left.value, e.loc); err != nil {
+				return 0, err
+			}
+			break
+		}
 		if e.left != nil && e.left.kind == "unary" && e.left.text == "&" {
 			if e.text != "=" {
 				return 0, fmt.Errorf("raw property assignment does not support compound operators")
@@ -1631,7 +1896,13 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 			break
 		}
 		if e.left != nil && e.left.kind == "unary" && e.left.text == "*" {
-			property, err := c.compile(e.left.left)
+			var property int
+			var err error
+			if target, ok := rawPropertyTarget(e.left.left); ok {
+				property, err = c.compileRawProperty(target)
+			} else {
+				property, err = c.compile(e.left.left)
+			}
 			if err != nil {
 				return 0, err
 			}
@@ -1647,6 +1918,36 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 				c.emit(e.loc, Op{Code: OpMove, Out: out, Input: r})
 			}
 			c.emit(e.loc, Op{Code: OpWriteProperty, Context: property, Input: out})
+			break
+		}
+		if e.text == "=" && e.left != nil && e.left.kind == "member" &&
+			e.left.left != nil && e.left.left.kind == "name" && e.left.left.text == "global" {
+			object, err := c.compile(e.left.left)
+			if err != nil {
+				return 0, err
+			}
+			key, err := c.compile(e.left.right)
+			if err != nil {
+				return 0, err
+			}
+			if e.right.kind == "construct" {
+				c.constructTargetExpr = e.right
+				c.constructTargetObject = object
+				c.constructTargetKey = key
+				r, err := c.compile(e.right)
+				c.constructTargetExpr = nil
+				if err != nil {
+					return 0, err
+				}
+				c.emit(e.loc, Op{Code: OpMove, Out: out, Input: r})
+			} else {
+				r, err := c.compile(e.right)
+				if err != nil {
+					return 0, err
+				}
+				c.emit(e.loc, Op{Code: OpMove, Out: out, Input: r})
+			}
+			c.emit(e.loc, Op{Code: OpSet, Object: object, Key: key, Input: out})
 			break
 		}
 		r, err := c.compile(e.right)
@@ -1721,6 +2022,10 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 				args[i] = Argument{Kind: ArgumentForward}
 				continue
 			}
+			if x.kind == "forward_tail" {
+				args[i] = Argument{Kind: ArgumentForwardFrom, From: c.forwardArgsFrom}
+				continue
+			}
 			if x.kind == "spread" {
 				r, err := c.compile(x.left)
 				if err != nil {
@@ -1739,6 +2044,11 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 		if e.kind == "construct" {
 			op.Code = OpConstruct
 			op.ContextSet = false
+			if c.constructTargetExpr == e {
+				op.TargetSet = true
+				op.Object = c.constructTargetObject
+				op.Key = c.constructTargetKey
+			}
 		}
 		c.emit(e.loc, op)
 	case "cond":
@@ -1844,20 +2154,25 @@ func (c *compiler) tryStatement(loc core.SourceLocation) error {
 	catchJump := -1
 	catchTry := -1
 	if c.p.eat("catch") {
-		if err := c.p.need("("); err != nil {
-			return err
-		}
-		catchName, err := c.p.name()
-		if err != nil {
-			return err
-		}
-		if err = c.p.need(")"); err != nil {
-			return err
+		catchName := ""
+		var err error
+		if c.p.eat("(") {
+			if !c.p.eat(")") {
+				catchName, err = c.p.name()
+				if err != nil {
+					return err
+				}
+				if err = c.p.need(")"); err != nil {
+					return err
+				}
+			}
 		}
 		catchStart := len(c.program.Code)
 		c.patch(tryOp, catchStart)
 		c.emit(loc, Op{Code: OpEnterScope})
-		c.emit(loc, Op{Code: OpDeclare, Name: catchName, Input: exception})
+		if catchName != "" {
+			c.emit(loc, Op{Code: OpDeclare, Name: catchName, Input: exception})
+		}
 		c.scopeDepth++
 		catchTry = c.emit(loc, Op{Code: OpTry, Target: -1, Finally: -1})
 		if err = c.block(); err != nil {
@@ -2017,7 +2332,8 @@ func (c *compiler) statement() error {
 		}
 		r := c.reg()
 		c.emit(t.loc, Op{Code: OpFunction, Out: r, Function: fn})
-		c.emit(t.loc, Op{Code: OpStore, Name: name, Input: r})
+		c.emit(t.loc, Op{Code: OpDeclare, Name: name, Input: r})
+		c.hoistGlobalFunction(t.loc, fn, r, name)
 		if c.p.eat(";") {
 			return nil
 		}
@@ -2070,7 +2386,8 @@ func (c *compiler) statement() error {
 				return e
 			}
 			v := &cexpr{kind: "value", value: VoidValue, loc: t.loc}
-			if c.p.eat("=") {
+			hasInitializer := c.p.eat("=")
+			if hasInitializer {
 				v, e = c.p.expr(0)
 				if e != nil {
 					return e
@@ -2080,7 +2397,7 @@ func (c *compiler) statement() error {
 			if e != nil {
 				return e
 			}
-			c.emit(t.loc, Op{Code: OpDeclare, Name: n, Input: r})
+			c.emit(t.loc, Op{Code: OpDeclare, Name: n, Input: r, DeclareWith: hasInitializer})
 			if !c.p.eat(",") {
 				break
 			}
@@ -2567,6 +2884,7 @@ func compile_with_preprocessor(storage, source string, expression bool, state *P
 			}
 		}
 	}
+	c.prependHoistedFunctions()
 	return c.program, nil
 }
 func compile(storage, source string) (Program, error) {
@@ -2582,6 +2900,16 @@ func Compile(storage, source string) (Program, error) { return compile(storage, 
 // CompileExpression compiles one TJS expression and emits a Return operation.
 func CompileExpression(storage, source string) (Program, error) {
 	return compile_expression(storage, source)
+}
+
+// CompileEval compiles the expression or statement script accepted by TJS's
+// eval operator.
+func CompileEval(storage, source string) (Program, error) {
+	program, err := compile_expression(storage, source)
+	if err == nil {
+		return program, nil
+	}
+	return compile(storage, source)
 }
 
 // CompileWithPreprocessor preserves macro definitions across source units.

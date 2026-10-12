@@ -110,7 +110,7 @@ func TestKAGEntityNavigationResolvesDynamicStorageAndTarget(t *testing.T) {
 	vm := kagEntityTestVM(t)
 	setKAGEntityTestObject(t, vm, "sf", map[string]tjs.Value{"chapter": tjs.StringValue("1")})
 	setKAGEntityTestObject(t, vm, "f", map[string]tjs.Value{
-		"suffixks": tjs.StringValue(".ks"),
+		"suffixks":    tjs.StringValue(".ks"),
 		"callbackpos": tjs.StringValue("*callback"),
 	})
 	setKAGEntityTestEvaluator(parser, vm, DefaultServices())

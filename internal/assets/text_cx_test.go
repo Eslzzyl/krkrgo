@@ -31,6 +31,22 @@ func TestTextModesAndUnits(t *testing.T) {
 		t.Errorf("Shift-JIS: %q, %v", got, err)
 	}
 }
+func TestGBKScriptFixture(t *testing.T) {
+	// These bytes are copied from the BOM-less legacy text in
+	// testdata/amairo's sysscn/system.tjs.
+	data := []byte{
+		'/', '/', ' ',
+		0xb8, 0xf7, 0xb7, 0x4e, 0xbd, 0x4b, 0xc1, 0xcb, 0x84, 0x49,
+		0xc0, 0xed, 0xa4, 0xce, 0xb5, 0xc7, 0xe5, 0x68, 0x3f, 0x8c, 0x67, 0xd0, 0xd0,
+	}
+	got, err := Decode(data)
+	if err != nil {
+		t.Fatalf("Decode GBK fixture: %v", err)
+	}
+	if got != "// 各種終了処理の登録?実行" {
+		t.Fatalf("Decode GBK fixture = %q", got)
+	}
+}
 
 func TestShiftJISUnits(t *testing.T) {
 	tests := []struct {
@@ -58,11 +74,13 @@ func TestShiftJISUnits(t *testing.T) {
 		{0x80},       // invalid lead
 		{0x82, 0x7f}, // invalid trail
 		{0x82},       // truncated double-byte character
-		{0x81, 0xad}, // unmapped double-byte character
 	} {
 		if got, err := DecodeUnits(data); err == nil {
 			t.Errorf("DecodeUnits(%x) = %#v, want error", data, got)
 		}
+	}
+	if got, err := DecodeUnits([]byte{0x81, 0xad}); err != nil || !reflect.DeepEqual(got, []uint16{0xfffd}) {
+		t.Errorf("DecodeUnits(unmapped character) = %#v, %v, want replacement character", got, err)
 	}
 }
 

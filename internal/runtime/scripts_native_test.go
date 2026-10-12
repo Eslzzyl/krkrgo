@@ -12,6 +12,7 @@ import (
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
 	"github.com/eslzzyl/krkrgo/internal/core"
+	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
 func newScriptsTestSession(t *testing.T, resources map[string][]byte) *Session {
@@ -85,6 +86,43 @@ func TestScriptsInlineExecutionAndContext(t *testing.T) {
 	}
 }
 
+func TestScriptsCloneRecursivelyCopiesArraysAndDictionaries(t *testing.T) {
+	session := newScriptsTestSession(t, nil)
+	_, err := session.executeSource("<scripts-clone-test>", `
+var source = [1, [2], %["nested" => [3]]];
+var copied = Scripts.clone(source);
+source[0] = 99;
+source[1][0] = 98;
+source[2].nested[0] = 97;
+global.clone_array_values = copied[0] + copied[1][0] + copied[2].nested[0];
+
+var dictionary = %["number" => 4, "nested" => %["items" => [5]]];
+var copied_dictionary = Scripts.clone(dictionary);
+dictionary.number = 40;
+dictionary.nested.items[0] = 50;
+global.clone_dictionary_values = copied_dictionary.number + copied_dictionary.nested.items[0];
+copied_dictionary.nested.items[0] = 6;
+global.clone_dictionary_source_value = dictionary.nested.items[0];
+`, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]int64{
+		"clone_array_values":            6,
+		"clone_dictionary_values":       9,
+		"clone_dictionary_source_value": 50,
+	} {
+		value, err := session.Evaluate("global." + name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		got, err := value.Int()
+		if err != nil || got != want {
+			t.Errorf("%s = %v, %v; want %d", name, value, err, want)
+		}
+	}
+}
+
 func TestScriptsStorageExecutionAndEncoding(t *testing.T) {
 	shiftJIS := append([]byte("global.encoding_value='"), []byte{0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea}...)
 	shiftJIS = append(shiftJIS, '\'', ';')
@@ -94,10 +132,12 @@ func TestScriptsStorageExecutionAndEncoding(t *testing.T) {
 		"malformed-expression.tjs": []byte("6 * 7 trailing"),
 		"savedata/datasc.ksd":      scriptsTestUTF16LE(`(const) %["score" => 42,"title" => "日本語","nested" => (const) %["empty" => (const) []]]`),
 		"offset.tjs":               []byte("xxglobal.offset_value=23;"),
+		"offset-utf16.tjs":         append([]byte("xx"), scriptsTestUTF16LE("6 * 7")...),
 		"context-exec.tjs":         []byte("value += 2;"),
 		"context-eval.tjs":         []byte("value + 3"),
 		"shift-jis.tjs":            shiftJIS,
 		"compiled.tjs":             []byte("TJS2compiled bytecode"),
+		"compiled-offset.tjs":      []byte("xxTJS2compiled bytecode"),
 		"plain.tjs":                []byte("global.plain_value=1;"),
 	})
 	if _, err := session.Evaluate(`Scripts.execStorage("run.tjs")`); err != nil {
@@ -148,6 +188,13 @@ func TestScriptsStorageExecutionAndEncoding(t *testing.T) {
 	if n, err := offsetValue.Int(); err != nil || n != 23 {
 		t.Fatalf("offset storage result = %v, err=%v", offsetValue, err)
 	}
+	offsetEvalValue, err := session.Evaluate(`Scripts.evalStorage("offset-utf16.tjs", "o2")`)
+	if err != nil {
+		t.Fatalf("evalStorage TextStream data after binary offset: %v", err)
+	}
+	if n, err := offsetEvalValue.Int(); err != nil || n != 42 {
+		t.Fatalf("offset evalStorage result = %v, err=%v", offsetEvalValue, err)
+	}
 	_, err = session.executeSource("<scripts-storage-test>", `var context = %[value:4]; Scripts.execStorage("context-exec.tjs", "", context); global.storage_context_result = Scripts.evalStorage("context-eval.tjs", "", context);`, false)
 	if err != nil {
 		t.Fatal(err)
@@ -161,6 +208,9 @@ func TestScriptsStorageExecutionAndEncoding(t *testing.T) {
 	}
 	if _, err := session.Evaluate(`Scripts.execStorage("compiled.tjs")`); !errors.Is(err, ErrUnsupportedNative) {
 		t.Fatalf("compiled storage error = %v", err)
+	}
+	if _, err := session.Evaluate(`Scripts.execStorage("compiled-offset.tjs", "o2")`); !errors.Is(err, ErrUnsupportedNative) {
+		t.Fatalf("offset bytecode storage error = %v", err)
 	}
 	if _, err := session.Evaluate(`Scripts.textEncoding = "UTF-8"`); err != nil {
 		t.Fatal(err)
@@ -191,6 +241,21 @@ func TestScriptsStorageExecutionAndEncoding(t *testing.T) {
 		t.Fatalf("unsupported text encoding error = %v", err)
 	}
 }
+func TestScriptsStorageExecutesGBKFixture(t *testing.T) {
+	source := append([]byte("global.gbk_value='"), 0xd6, 0xd0, 0xce, 0xc4)
+	source = append(source, '\'', ';')
+	session := newScriptsTestSession(t, map[string][]byte{"gbk.tjs": source})
+	if _, err := session.ExecuteStorage("gbk.tjs"); err != nil {
+		t.Fatalf("ExecuteStorage GBK fixture: %v", err)
+	}
+	value, err := session.Evaluate("global.gbk_value")
+	if err != nil || value.Text() != "中文" {
+		t.Fatalf("GBK script value = %q, err=%v", value.Text(), err)
+	}
+	if got, err := decodeScriptText(source, "GBK"); err != nil || !strings.Contains(got, "中文") {
+		t.Fatalf("explicit GBK decoding = %q, err=%v", got, err)
+	}
+}
 func TestScriptsNestedStorageUsesDefaultDecoderUntilExplicitEncoding(t *testing.T) {
 	shiftJIS := append([]byte("global.nested_encoding_value='"), []byte{0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea}...)
 	shiftJIS = append(shiftJIS, '\'', ';')
@@ -218,7 +283,6 @@ func TestScriptsNestedStorageUsesDefaultDecoderUntilExplicitEncoding(t *testing.
 		t.Fatalf("explicit Shift_JIS nested storage: %v", err)
 	}
 }
-
 
 func TestScriptsPreprocessorPersistsAcrossExecutionPaths(t *testing.T) {
 	session := newScriptsTestSession(t, map[string][]byte{
@@ -362,5 +426,263 @@ func TestScriptsExObjectHelpers(t *testing.T) {
 		if err != nil || got.Text() != want {
 			t.Errorf("%s = %q, err=%v, want %q", name, got.Text(), err, want)
 		}
+	}
+}
+func TestScriptsExContextsAndPropertyFlags(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	_, err := session.Evaluate(`Plugins.link("ScriptsEx.dll");`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = session.executeSource("<scripts-ex-context-test>", `
+		var array = [], unbound = function() {};
+		global.script_ex_array_context = Scripts.getObjectContext(array) === array;
+		global.script_ex_array_null_context = Scripts.isNullContext(array);
+		global.script_ex_unbound_null_context = Scripts.isNullContext(unbound);
+		global.script_ex_flags = Scripts.pfMemberEnsure + "," + Scripts.pfMemberMustExist + "," + Scripts.pfIgnoreProp + "," + Scripts.pfHiddenMember + "," + Scripts.pfStaticMember;
+	`, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{
+		"script_ex_array_context":        "1",
+		"script_ex_array_null_context":   "0",
+		"script_ex_unbound_null_context": "1",
+		"script_ex_flags":                "512,1024,2048,4096,65536",
+	} {
+		got, err := session.Evaluate("global." + name)
+		if err != nil || got.Text() != want {
+			t.Errorf("%s = %q, err=%v; want %q", name, got.Text(), err, want)
+		}
+	}
+}
+
+func TestScriptsForeachSnapshotsEntriesAndForwardsArguments(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	_, err := session.executeSource("<scripts-foreach-test>", `
+		var object = %[alpha: 1, beta: 2];
+		var visited = [];
+		var callbackTarget;
+		global.script_foreach_result = Scripts.foreach(object, function(key, value, label, target) {
+			visited.add(label + ":" + key + "=" + value);
+			callbackTarget = target;
+			target[key] = value + 10;
+			if (key == "alpha") {
+				target.gamma = 3;
+			}
+			if (key == "beta") {
+				return value * 10;
+			}
+		}, "arg", object);
+		global.script_foreach_visited = visited.join(",");
+		global.script_foreach_target = callbackTarget === object;
+	`, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{
+		"script_foreach_result":  "20",
+		"script_foreach_visited": "arg:alpha=1,arg:beta=2",
+		"script_foreach_target":  "1",
+	} {
+		got, err := session.Evaluate("global." + name)
+		if err != nil || got.Text() != want {
+			t.Errorf("%s = %q, err=%v, want %q", name, got.Text(), err, want)
+		}
+	}
+}
+func TestScriptsForeachForwardsAccumulatorArguments(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	_, err := session.executeSource("<scripts-foreach-accumulator-test>", `
+		var objects = %[layer: %[]];
+		var output = [];
+		Scripts.foreach(objects, function(name, object, destination, storeSound) {
+			destination.add(name + ":" + storeSound);
+		}, output, true);
+		global.script_foreach_accumulator = output.join(",");
+	`, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := session.Evaluate("global.script_foreach_accumulator")
+	if err != nil || got.Text() != "layer:1" {
+		t.Fatalf("Scripts.foreach accumulator = %q, err=%v, want %q", got.Text(), err, "layer:1")
+	}
+}
+func TestLegacyObjectConstantBindsCallableScriptFunction(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	decoded := &tjs.DecodedBytecode{
+		Strings: []string{"", "echo"},
+		Objects: []tjs.BytecodeObject{
+			{
+				Constants: []tjs.BytecodeConstant{{Type: 2, Index: 1, Value: tjs.VoidValue}},
+			},
+			{
+				Name:          1,
+				ContextType:   1,
+				ArgumentCount: 1,
+				Code:          []int16{118, -3, 119},
+			},
+		},
+	}
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	if err := bindLegacyScriptFunctions(session.VM, decoded, global, session.Services, nil); err != nil {
+		t.Fatal(err)
+	}
+	function := decoded.Objects[0].Constants[0].Value
+	globalObject, ok := session.VM.Objects.Lookup(0)
+	if !ok {
+		t.Fatal("global object missing")
+	}
+	bound, ok := globalObject.Get("echo")
+	if !ok || !bound.StrictEqual(function) {
+		t.Fatalf("global echo binding = %v, %v; want callable %v", bound, ok, function)
+	}
+	got, err := session.VM.InvokeLegacy(function, global, []tjs.Value{tjs.StringValue("argument")}, nil, nil, true)
+	if err != nil || got.Text() != "argument" {
+		t.Fatalf("legacy function call = %q, %v; want argument", got.Text(), err)
+	}
+}
+
+func TestLegacyClassConstantBindsClassAndMemberMethod(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	decoded := &tjs.DecodedBytecode{
+		Strings: []string{"", "LegacyClass", "echo"},
+		Objects: []tjs.BytecodeObject{
+			{Constants: []tjs.BytecodeConstant{{Type: 2, Index: 1, Value: tjs.VoidValue}}},
+			{
+				Name:        1,
+				ContextType: 6,
+				Constants: []tjs.BytecodeConstant{
+					{Value: tjs.StringValue("ready")},
+					{Value: tjs.IntegerValue(7)},
+				},
+				Code:         []int16{1, 0, 1, 104, -1, 0, 0, 119},
+				MaxVariables: 1,
+				Properties:   []tjs.BytecodeProperty{{Name: 2, Object: 2}},
+			},
+			{
+				Name:          2,
+				Parent:        1,
+				ContextType:   1,
+				ArgumentCount: 1,
+				Code:          []int16{118, -3, 119},
+			},
+		},
+	}
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	if err := bindLegacyScriptFunctions(session.VM, decoded, global, session.Services, nil); err != nil {
+		t.Fatal(err)
+	}
+	class := decoded.Objects[0].Constants[0].Value
+	if class.Kind() != tjs.KindObject || class.IsNull() {
+		t.Fatalf("class constant = %v; want materialized class object", class)
+	}
+	instance, err := session.VM.Construct(class, nil, session.Services, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := session.VM.GetMember(instance, "echo", session.Services, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := session.VM.InvokeLegacy(member, instance, []tjs.Value{tjs.StringValue("class member")}, session.Services, nil, true)
+	if err != nil || got.Text() != "class member" {
+		t.Fatalf("compiled class member call = %q, %v; want %q", got.Text(), err, "class member")
+	}
+}
+func TestLegacyTopLevelClassWithoutObjectConstantIsGlobalAcrossStorages(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	newDecoded := func() *tjs.DecodedBytecode {
+		return &tjs.DecodedBytecode{
+			Strings: []string{"", "SharedLegacyClass"},
+			Objects: []tjs.BytecodeObject{{
+				Name:        1,
+				ContextType: 6,
+				Parent:      0,
+			}},
+		}
+	}
+	first := newDecoded()
+	if err := bindLegacyScriptFunctions(session.VM, first, global, session.Services, nil); err != nil {
+		t.Fatal(err)
+	}
+	firstClass, err := session.VM.GetMember(global, "SharedLegacyClass", session.Services, nil)
+	if err != nil || firstClass.Kind() != tjs.KindObject || firstClass.IsNull() {
+		t.Fatalf("first global class = %v, %v; want class object", firstClass, err)
+	}
+
+	second := newDecoded()
+	if err := bindLegacyScriptFunctions(session.VM, second, global, session.Services, nil); err != nil {
+		t.Fatal(err)
+	}
+	secondClass, err := session.VM.GetMember(global, "SharedLegacyClass", session.Services, nil)
+	if err != nil || secondClass.Kind() != tjs.KindObject || secondClass.IsNull() {
+		t.Fatalf("second global class = %v, %v; want class object", secondClass, err)
+	}
+	if firstClass.StrictEqual(secondClass) {
+		t.Fatal("separate storage class definition reused the previous class object")
+	}
+	if got, err := session.VM.GetMember(global, "SharedLegacyClass", session.Services, nil); err != nil || !got.StrictEqual(secondClass) {
+		t.Fatalf("current global class = %v, %v; want latest class %v", got, err, secondClass)
+	}
+}
+
+func TestLegacyObjectConstantCallsStringMethod(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	decoded := &tjs.DecodedBytecode{
+		Strings: []string{"", "lowercase"},
+		Objects: []tjs.BytecodeObject{
+			{Constants: []tjs.BytecodeConstant{{Type: 2, Index: 1, Value: tjs.VoidValue}}},
+			{
+				Name:        1,
+				ContextType: 1,
+				Code: []int16{
+					1, 0, 0, // CONST r0, "MiXeD"
+					100, 1, 0, 1, 0, // CALLD r1, r0.toLowerCase()
+					118, 1, // SRV r1
+					119, // RET
+				},
+				Constants: []tjs.BytecodeConstant{
+					{Value: tjs.StringValue("MiXeD")},
+					{Value: tjs.StringValue("toLowerCase")},
+				},
+			},
+		},
+	}
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	if err := bindLegacyScriptFunctions(session.VM, decoded, global, session.Services, nil); err != nil {
+		t.Fatal(err)
+	}
+	function := decoded.Objects[0].Constants[0].Value
+	got, err := session.VM.InvokeLegacy(function, global, nil, nil, nil, true)
+	if err != nil || got.Text() != "mixed" {
+		t.Fatalf("legacy String.toLowerCase call = %q, %v; want mixed", got.Text(), err)
+	}
+}
+func TestScriptsStorageExecutesModeOneTextStream(t *testing.T) {
+	source := "global.mode_one_script_value=31;"
+	data, err := assets.EncodeUnits(utf16.Encode([]rune(source)), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := newScriptsTestSession(t, map[string][]byte{"mode-one.tjs": data})
+	if _, err := session.Evaluate(`Scripts.execStorage("mode-one.tjs")`); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("global.mode_one_script_value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := value.Int(); err != nil || n != 31 {
+		t.Fatalf("mode-1 TextStream script result = %v, err=%v", value, err)
 	}
 }

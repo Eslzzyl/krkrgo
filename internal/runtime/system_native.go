@@ -25,6 +25,7 @@ const (
 func sameContinuousHandler(a, b tjs.Value) bool {
 	return a.Kind() == tjs.KindObject && b.Kind() == tjs.KindObject && a.ObjectRef() == b.ObjectRef()
 }
+
 var ErrSystemExit = fmt.Errorf("system exit requested")
 
 func systemPlatformName() string { return stdruntime.GOOS + "/" + stdruntime.GOARCH }
@@ -148,6 +149,38 @@ func (s *Services) systemNative(vm *tjs.VM, operation string, args []tjs.Value, 
 	}
 
 	switch operation {
+	case "readRegValue":
+		if len(args) != 1 || args[0].Kind() != tjs.KindString {
+			return tjs.VoidValue, fmt.Errorf("System.readRegValue requires one registry key string")
+		}
+		value, ok := readSystemRegistryValue(args[0].Text())
+		if !ok {
+			return tjs.VoidValue, nil
+		}
+		return value, nil
+	case "addFont":
+		linked := false
+		for _, plugin := range s.Plugins {
+			if pluginLinkKey(plugin) == "addfont.dll" {
+				linked = true
+				break
+			}
+		}
+		if !linked {
+			return tjs.VoidValue, fmt.Errorf("System.addFont requires addFont.dll to be linked")
+		}
+		if len(args) < 1 || len(args) > 2 {
+			return tjs.VoidValue, fmt.Errorf("System.addFont requires a storage name and optional private flag")
+		}
+		data, err := s.readStorage(args[0].Text())
+		if err != nil {
+			return tjs.VoidValue, fmt.Errorf("System.addFont %q: %w", args[0].Text(), err)
+		}
+		count, err := s.registerFontData(data)
+		if err != nil {
+			return tjs.VoidValue, fmt.Errorf("System.addFont %q: %w", args[0].Text(), err)
+		}
+		return tjs.IntegerValue(int64(count)), nil
 	case "getArgument":
 		value, err := arg(0)
 		if err != nil {
