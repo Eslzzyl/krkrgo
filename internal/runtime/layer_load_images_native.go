@@ -37,39 +37,78 @@ func supportedLayerImageExtension(ext string) bool {
 }
 
 func (s *Services) readLayerImage(name string) ([]byte, error) {
+	_, data, err := s.readLayerImageResolved(name)
+	return data, err
+}
+
+func (s *Services) readLayerImageResolved(name string) (string, []byte, error) {
 	if name == "" {
-		return nil, fmt.Errorf("empty storage name")
+		return "", nil, fmt.Errorf("empty storage name")
 	}
 	if ext := strings.ToLower(extractStorageExt(name)); ext != "" {
 		data, err := s.readStorage(name)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		if !supportedLayerImageExtension(ext) {
-			return nil, fmt.Errorf("%w: Layer.loadImages extension %q", assets.ErrUnsupported, ext)
+			return "", nil, fmt.Errorf("%w: Layer.loadImages extension %q", assets.ErrUnsupported, ext)
 		}
-		return data, nil
+		return name, data, nil
 	}
 
 	var lastErr error
 	for _, ext := range layerGraphicExtensions {
-		data, err := s.readStorage(name + ext)
+		resolved := name + ext
+		data, err := s.readStorage(resolved)
 		if errors.Is(err, assets.ErrNotFound) {
 			lastErr = err
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		if !supportedLayerImageExtension(ext) {
-			return nil, fmt.Errorf("%w: Layer.loadImages extension %q", assets.ErrUnsupported, ext)
+			return "", nil, fmt.Errorf("%w: Layer.loadImages extension %q", assets.ErrUnsupported, ext)
 		}
-		return data, nil
+		return resolved, data, nil
 	}
 	if lastErr != nil {
-		return nil, fmt.Errorf("Layer.loadImages graphic %q: %w", name, lastErr)
+		return "", nil, fmt.Errorf("Layer.loadImages graphic %q: %w", name, lastErr)
 	}
-	return nil, fmt.Errorf("Layer.loadImages graphic %q not found", name)
+	return "", nil, fmt.Errorf("Layer.loadImages graphic %q not found", name)
+}
+
+func (s *Services) readLayerImageSidecar(name, suffix string) (string, []byte, error) {
+	ext := extractStorageExt(name)
+	stem := name[:len(name)-len(ext)]
+	if ext != "" {
+		resolved := stem + suffix + ext
+		data, err := s.readStorage(resolved)
+		if err == nil {
+			if !supportedLayerImageExtension(strings.ToLower(ext)) {
+				return "", nil, fmt.Errorf("%w: Layer.loadImages extension %q", assets.ErrUnsupported, ext)
+			}
+			return resolved, data, nil
+		}
+		if !errors.Is(err, assets.ErrNotFound) {
+			return "", nil, err
+		}
+	}
+	for _, candidateExt := range layerGraphicExtensions {
+		resolved := stem + suffix + candidateExt
+		data, err := s.readStorage(resolved)
+		if errors.Is(err, assets.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return "", nil, err
+		}
+		if !supportedLayerImageExtension(candidateExt) {
+			return "", nil, fmt.Errorf("%w: Layer.loadImages extension %q", assets.ErrUnsupported, candidateExt)
+		}
+		return resolved, data, nil
+	}
+	return "", nil, assets.ErrNotFound
 }
 
 func layerImageIndexedFormat(data []byte) bool {
@@ -212,7 +251,7 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 
 	profile := os.Getenv("KRKRGO_RENDER_STATS") != ""
 	readStarted := time.Now()
-	data, err := s.readLayerImage(name)
+	resolvedName, data, err := s.readLayerImageResolved(name)
 	readTime := time.Since(readStarted)
 	if err != nil {
 		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q: %w", name, err)
@@ -232,6 +271,46 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 	}
 	if err := applyLayerImageKey(&decoded, data, key); err != nil {
 		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q color key: %w", name, err)
+	}
+	if _, maskData, maskErr := s.readLayerImageSidecar(resolvedName, "_m"); maskErr == nil {
+		mask, err := s.Storage.DecodeImage(maskData)
+		if err != nil {
+			return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q mask: %w", resolvedName, err)
+		}
+		if mask.Width != decoded.Width || mask.Height != decoded.Height {
+			return tjs.VoidValue, fmt.Errorf("%w: Layer.loadImages mask %dx%d does not match image %dx%d",
+				ErrInvalidLayer, mask.Width, mask.Height, decoded.Width, decoded.Height)
+		}
+		paletteMask := layerImageIndexedFormat(maskData)
+		for i := 0; i < len(decoded.RGBA); i += 4 {
+			if paletteMask {
+				decoded.RGBA[i+3] = uint8((uint32(mask.RGBA[i])*77 + uint32(mask.RGBA[i+1])*150 + uint32(mask.RGBA[i+2])*29) >> 8)
+			} else {
+				decoded.RGBA[i+3] = mask.RGBA[i+2]
+			}
+		}
+	} else if !errors.Is(maskErr, assets.ErrNotFound) {
+		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q mask: %w", resolvedName, maskErr)
+	}
+	var province []byte
+	if _, provinceData, provinceErr := s.readLayerImageSidecar(resolvedName, "_p"); provinceErr == nil {
+		indexed, err := assets.DecodeIndexedImage(provinceData)
+		if err != nil {
+			return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q province: %w", resolvedName, err)
+		}
+		if indexed.Width == 0 || indexed.Height == 0 || indexed.Width > uint32(width) || indexed.Height > uint32(height) {
+			return tjs.VoidValue, fmt.Errorf("%w: Layer.loadImages province %dx%d cannot tile to image %dx%d",
+				ErrProvinceSizeMismatch, indexed.Width, indexed.Height, width, height)
+		}
+		province = make([]byte, int(width)*int(height))
+		for y := 0; y < int(height); y++ {
+			sourceRow, targetRow := (y%int(indexed.Height))*int(indexed.Width), y*int(width)
+			for x := 0; x < int(width); x++ {
+				province[targetRow+x] = indexed.Pixels[sourceRow+x%int(indexed.Width)]
+			}
+		}
+	} else if !errors.Is(provinceErr, assets.ErrNotFound) {
+		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q province: %w", resolvedName, provinceErr)
 	}
 	tags, err := assets.ImageMetadata(data)
 	if err != nil {
@@ -262,7 +341,12 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 	layer.ImageTop = maxInt32(layer.ImageTop, layer.Bounds.Height-height)
 	layer.RGBA = decoded.RGBA
 	layer.ImageWidth, layer.ImageHeight = width, height
-	layer.ClearProvince()
+	layer.Province = append(layer.Province[:0], province...)
+	if len(province) == 0 {
+		layer.ClearProvince()
+	} else {
+		layer.ProvinceWidth, layer.ProvinceHeight = width, height
+	}
 	resetNativeLayerClip(layer)
 	layer.imageModified = true
 	return result, nil

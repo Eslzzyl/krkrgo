@@ -159,6 +159,45 @@ func TestNativeLayerLoadImagesReadsStorageAndReturnsTags(t *testing.T) {
 	}
 }
 
+func TestNativeLayerLoadImagesAppliesMaskAndProvinceSidecars(t *testing.T) {
+	project := t.TempDir()
+	writeLayerImagePNG(t, filepath.Join(project, "art", "sprite.png"))
+	mask := image.NewNRGBA(image.Rect(0, 0, 2, 1))
+	copy(mask.Pix, []byte{10, 20, 30, 255, 40, 50, 60, 255})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, mask); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "art", "sprite_m.png"), encoded.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeProvincePatternPNG(t, filepath.Join(project, "art", "sprite_p.png"), 1, 1)
+	storage, err := assets.OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	services := NewServices(storage, t.TempDir(), core.DefaultLimits())
+	session := NewSession(services, 20_000)
+	if _, err := session.Evaluate(`l = new Layer(); l.loadImages('art/sprite')`); err != nil {
+		t.Fatal(err)
+	}
+	for source, want := range map[string]int64{
+		"l.getMaskPixel(0,0)":     30,
+		"l.getMaskPixel(1,0)":     60,
+		"l.getProvincePixel(0,0)": 1,
+		"l.getProvincePixel(1,0)": 1,
+	} {
+		value, err := session.Evaluate(source)
+		if err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+		got, err := value.Int()
+		if err != nil || got != want {
+			t.Fatalf("%s=%d, err=%v; want %d", source, got, err, want)
+		}
+	}
+}
+
 func TestKAGImageTagHandlerLoadsAndComposesLayer(t *testing.T) {
 	project := t.TempDir()
 	writeLayerImagePNG(t, filepath.Join(project, "bg0.png"))
