@@ -12,7 +12,7 @@ Go uses string `OpCode`s and a tagged `Op` in `internal/tjs/compiler.go:18-124`;
 
 ## Completed production results
 
-All six optimizations were implemented and verified with `CGO_ENABLED=0` on Darwin arm64. Relevant tests and benchmarks are identified below; the full verification commands are listed afterward.
+All six optimizations were implemented and verified on Darwin arm64. Relevant tests and benchmarks are identified below; the full verification commands are listed afterward.
 
 1. **Direct scalar UTF-16 equality** — `internal/tjs/value.go:641-650` compares code units directly rather than calling `compareUTF16`. Equality and ordering boundary coverage includes empty strings, prefixes, and isolated surrogates (`internal/tjs/value_object_test.go:28-57`). On Apple M1 Pro, equal 32-unit inputs measured 12.69–13.65 ns/op versus 16.55–16.72 ns/op for the compare-based baseline; 1,024 units measured 346.0–351.1 ns/op versus 502.8–513.3 ns/op; 65,536 units measured 21.16–21.38 µs/op versus 31.79–32.19 µs/op. Both paths used zero allocations. These are helper benchmarks, not a VM speedup claim.
 
@@ -36,10 +36,10 @@ The property-frame review made no production change. Go `invokePropertyFunction`
 
 The reported post-change checks passed:
 
-- `CGO_ENABLED=0 go test ./internal/tjs -count=1`
-- `CGO_ENABLED=0 go test ./... -count=1`
-- `CGO_ENABLED=0 go build ./...`
-- `CGO_ENABLED=0 go vet ./...`
+- `go test ./internal/tjs -count=1`
+- `go test ./... -count=1`
+- `go build ./...`
+- `go vet ./...`
 
 These checks establish the reported test/build status, not overall VM or application performance.
 

@@ -21,7 +21,7 @@ The Go runtime composites on the CPU and presents on the GPU.
   scale. The window is resized to the frame size, so Ebitengine does no
   resampling.
 
-The GPU performs only the final blit. The `CGO_ENABLED=0` baseline applies to
+The GPU performs only the final blit. The cgo-free baseline applies to
 runtime code (TJS VM, compositor, interpreter), not to Ebitengine: the Metal,
 Direct3D, and OpenGL backends use `github.com/ebitengine/purego` (cgo-free FFI),
 so the presentation layer already runs without cgo.

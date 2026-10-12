@@ -10,7 +10,7 @@ are supporting data only.
 The latest controlled run used:
 
 ```sh
-CGO_ENABLED=0 go build -trimpath -o /tmp/krkrgo-transition-zeroopaque ./cmd/krkrgo
+go build -trimpath -o /tmp/krkrgo-transition-zeroopaque ./cmd/krkrgo
 KRKRGO_RENDER_STATS=1 /tmp/krkrgo-transition-zeroopaque run -project /Users/eslzzyl/Games/lovelyday
 ```
 

@@ -41,11 +41,11 @@ Versions below are declared by [`go.mod`](../go.mod), whose module directive is 
 
 ## Platform policy and limits
 
-The workspace execution contract identifies macOS, Linux, and Windows as first-class desktop targets and prioritizes a desktop path without cgo. It records a prior `CGO_ENABLED=0` build baseline for all three desktop OSes at amd64, before audio-adapter integration. This is historical evidence, not a current all-platform verification; see [Verification and gaps](verification-and-gaps.md).
+The workspace execution contract identifies macOS, Linux, and Windows as first-class desktop targets and prioritizes a desktop path without cgo. It records a prior build baseline for all three desktop OSes at amd64, before audio-adapter integration. This is historical evidence, not a current all-platform verification; see [Verification and gaps](verification-and-gaps.md).
 
 The contract requires Android and iOS support and allows cgo/C/C++ toolchains on mobile. This is target policy, not evidence of a completed or verified mobile build. Ebitengine and device-backend behavior must be assessed per platform/version. The contract records Oto v3.5.0 desktop Darwin/Linux/Windows driver paths as cgo-free and Android/console paths as using C/C++ toolchains; that dependency assessment does not prove all application audio features on all targets.
 
-Linux `Clipboard` runtime use depends on external utilities. The pinned [`atotto/clipboard` v0.1.4 Unix backend](https://github.com/atotto/clipboard/blob/v0.1.4/clipboard_unix.go) uses `wl-copy`/`wl-paste` when available for Wayland, otherwise checks `xclip` and `xsel`; without a usable helper the calls fail. A successful `CGO_ENABLED=0` build does not provide those utilities.
+Linux `Clipboard` runtime use depends on external utilities. The pinned [`atotto/clipboard` v0.1.4 Unix backend](https://github.com/atotto/clipboard/blob/v0.1.4/clipboard_unix.go) uses `wl-copy`/`wl-paste` when available for Wayland, otherwise checks `xclip` and `xsel`; without a usable helper the calls fail. A successful build does not provide those utilities.
 
 ## C++ host comparison
 
