@@ -18,6 +18,8 @@ testdata/*
 !testdata/.gitkeep
 reference/*
 !reference/.gitkeep
+temp/*
+!temp/.gitkeep
 
 # Generated project-root binaries
 /krkrgo
