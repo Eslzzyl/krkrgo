@@ -435,6 +435,15 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, global, thisConte
 				context := regs[ctx].ObjectRef()
 				regs[dst] = ObjectValue(NewObjectRef(ref.Object, context.Object))
 			}
+		case 83: // TYPEOF replaces the register with the TJS type-name string.
+			index, e := reg(in.Operands[0], in.Offset)
+			if e != nil {
+				return VoidValue, e
+			}
+			regs[index], e = regs[index].Unary("typeof")
+			if e != nil {
+				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: TYPEOF: %w", object, in.Offset, e)
+			}
 		case 84: // TYPEOFD ra[dst] = typeof ra[target][constant-name].
 			dst, e := reg(in.Operands[0], in.Offset)
 			if e != nil {

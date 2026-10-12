@@ -551,6 +551,42 @@ func TestExecuteLegacyTYPEOFDDirectMember(t *testing.T) {
 		})
 	}
 }
+func TestExecuteLegacyTYPEOFInPlace(t *testing.T) {
+	table := NewObjectTable()
+	object := table.New(CategoryDictionary)
+	class := table.New(CategoryClass)
+	function := table.New(CategoryFunction)
+	tests := []struct {
+		name  string
+		value Value
+		want  string
+	}{
+		{name: "void", value: VoidValue, want: "void"},
+		{name: "null object", value: NullValue, want: "Object"},
+		{name: "dictionary", value: ObjectValue(object.Ref()), want: "Object"},
+		{name: "class", value: ObjectValue(class.Ref()), want: "Object"},
+		{name: "function", value: ObjectValue(function.Ref()), want: "Object"},
+		{name: "string", value: StringValue("text"), want: "String"},
+		{name: "integer", value: IntegerValue(42), want: "Integer"},
+		{name: "real", value: RealValue(4.2), want: "Real"},
+		{name: "octet", value: OctetValue([]byte{1, 2}), want: "Octet"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bytecode := &DecodedBytecode{Objects: []BytecodeObject{{
+				Code:      []int16{1, 0, 0, 83, 0, 118, 0, 119},
+				Constants: []BytecodeConstant{{Value: test.value}},
+			}}}
+			got, err := bytecode.ExecuteLegacy(0, VoidValue, table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Kind() != KindString || got.Text() != test.want {
+				t.Fatalf("TYPEOF result = %v (kind %v); want string %q", got, got.Kind(), test.want)
+			}
+		})
+	}
+}
 
 func TestExecuteLegacySTRConversion(t *testing.T) {
 	table := NewObjectTable()
