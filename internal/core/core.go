@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -26,6 +27,34 @@ func LocalStoragePath(name string) string {
 		return name[len(prefix):]
 	}
 	return name
+}
+
+// LocalStorageNativePath returns the native absolute spelling of a local file
+// storage name. It removes the "file://." prefix and, on Windows, moves the
+// volume letter ahead of the leading slash, so the storage spelling "/c:/games"
+// addresses the drive path "c:/games". Names without a volume stay unchanged,
+// which keeps the conversion idempotent.
+func LocalStorageNativePath(name string) string {
+	path := LocalStoragePath(name)
+	if filepath.Separator != '\\' || len(path) < 4 || path[0] != '/' || path[2] != ':' || path[3] != '/' {
+		return path
+	}
+	if !isASCIILetter(path[1]) {
+		return path
+	}
+	return path[1:]
+}
+
+// LocalStorageName returns the storage spelling of an absolute local path:
+// "file://." followed by the slash-separated path, with a Windows volume moved
+// behind the leading slash so "C:/games/x" becomes "file://./c:/games/x".
+// TVPNormalizeStorageName in the reference implementation writes the same shape.
+func LocalStorageName(path string) string {
+	path = filepath.ToSlash(path)
+	if len(path) >= 3 && isASCIILetter(path[0]) && path[1] == ':' && path[2] == '/' {
+		path = "/" + path
+	}
+	return "file://." + path
 }
 
 // StorageName normalizes an archive/storage name using ASCII case folding.
@@ -68,6 +97,10 @@ func asciiLower(s string) string {
 		}
 	}
 	return string(b)
+}
+
+func isASCIILetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 // Limits bounds resource/index/cache allocation. Values match the Rust core

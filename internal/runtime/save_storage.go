@@ -93,7 +93,7 @@ func serviceProjectPath(s *Services) string {
 
 func saveStorageName(project, root, name string) (string, error) {
 	name = strings.ReplaceAll(name, `\`, "/")
-	candidate := core.LocalStoragePath(name)
+	candidate := core.LocalStorageNativePath(name)
 	candidatePath := filepath.FromSlash(candidate)
 	if filepath.IsAbs(candidatePath) {
 		for _, base := range []string{root, project} {

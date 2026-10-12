@@ -417,10 +417,7 @@ func TestSystemProjectEnvironmentPropertiesAndWindowTitle(t *testing.T) {
 				wantExePath += "/"
 			}
 			wantExeName := filepath.ToSlash(filepath.Join(project, "game.exe"))
-			wantSaveURI := "file://." + filepath.ToSlash(session.Services.SaveDir)
-			if !strings.HasSuffix(wantSaveURI, "/") {
-				wantSaveURI += "/"
-			}
+			wantSaveURI := localStorageDirectoryURI(session.Services.SaveDir)
 
 			value, err := session.Evaluate(`[System.exePath, System.exeName, System.dataPath, System.personalPath, System.appDataPath, System.title]`)
 			if err != nil {

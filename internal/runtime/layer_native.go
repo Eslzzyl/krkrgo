@@ -401,6 +401,8 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 			s.mu.Unlock()
 		}
 		return tjs.VoidValue, err
+	case "affineCopy":
+		return tjs.VoidValue, s.layerAffineCopy(l, args)
 	case "fillRect", "colorRect":
 		s.mu.Lock()
 		err := s.layerFillRect(l, operation, args, intArg)
@@ -816,6 +818,8 @@ func (s *Services) layerGet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, b
 		default:
 			return tjs.IntegerValue(0), nil
 		}
+	case "callOnPaint":
+		return tjs.IntegerValue(boolInt(l.callOnPaint)), nil
 	case "parent":
 		if l.Parent == nil {
 			return tjs.NullValue, nil
@@ -1057,6 +1061,12 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 		b, e := boolArg(0)
 		if e == nil {
 			l.SetAbsoluteOrderMode(b)
+		}
+		return tjs.VoidValue, e
+	case "callOnPaint":
+		b, e := boolArg(0)
+		if e == nil {
+			l.callOnPaint = b
 		}
 		return tjs.VoidValue, e
 	case "left":

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
+	"github.com/eslzzyl/krkrgo/internal/core"
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
@@ -104,7 +105,7 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 		if !strings.HasPrefix(fullPath, filePrefix) {
 			return tjs.VoidValue, fmt.Errorf("Storages.addArchive requires a local file archive path")
 		}
-		if err := storage.Mount(filepath.FromSlash(strings.TrimPrefix(fullPath, filePrefix)), s.Limits); err != nil {
+		if err := storage.Mount(filepath.FromSlash(core.LocalStorageNativePath(fullPath)), s.Limits); err != nil {
 			return tjs.VoidValue, err
 		}
 		return tjs.VoidValue, nil

@@ -647,6 +647,191 @@ func layerCopyFaceSupported(face int32) bool {
 	return face == layerFaceAlpha || face == layerFaceOpaque || face == layerFaceAddAlpha
 }
 
+// copyPixelForFace writes one sampled pixel with the channel selection
+// Layer.affineCopy's bmCopy path uses: an opaque face that holds alpha copies
+// RGB, every other supported face copies all four channels.
+func copyPixelForFace(dst, src []byte, face int32, holdAlpha bool) {
+	if face == layerFaceOpaque && holdAlpha {
+		dst[0], dst[1], dst[2] = src[0], src[1], src[2]
+		return
+	}
+	dst[0], dst[1], dst[2], dst[3] = src[0], src[1], src[2], src[3]
+}
+
+// affineCopyPixels maps a source rectangle onto this layer's image plane and
+// writes the sampled pixels over the transformed area, mirroring
+// tTJSNI_BaseLayer::AffineCopy: the draw face selects the copied channels,
+// destination pixels the transform leaves uncovered keep their value, and clear
+// fills the clipping rectangle with the layer's neutral color first. The matrix
+// maps source-rectangle center coordinates to destination coordinates, which is
+// the form the caller derives from either the matrix or the points arguments.
+func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft, stop, swidth, sheight int32, matrix [6]float64, filter int32, clear bool) error {
+	if err := validLayerPixels(l); err != nil {
+		return err
+	}
+	if sourceWidth <= 0 || sourceHeight <= 0 || uint64(sourceWidth)*uint64(sourceHeight)*4 != uint64(len(source)) {
+		return fmt.Errorf("%w: invalid affineCopy source image", ErrInvalidLayer)
+	}
+	if swidth < 0 || sheight < 0 {
+		return fmt.Errorf("%w: negative affineCopy source rectangle", ErrInvalidLayer)
+	}
+	if sleft < 0 || stop < 0 || int64(sleft)+int64(swidth) > int64(sourceWidth) || int64(stop)+int64(sheight) > int64(sourceHeight) {
+		return fmt.Errorf("%w: affineCopy source rectangle outside image", ErrInvalidLayer)
+	}
+	if filter != 0 && filter != 1 && filter != 2 {
+		return fmt.Errorf("%w: Layer.affineCopy filter %d", ErrUnsupportedNative, filter)
+	}
+	face := l.drawFace()
+	if !layerCopyFaceSupported(face) {
+		return fmt.Errorf("%w: affineCopy draw face %d", ErrUnsupportedNative, face)
+	}
+	left, top, right, bottom := layerImageClip(l)
+	if swidth == 0 || sheight == 0 || left >= right || top >= bottom {
+		return nil
+	}
+	if clear {
+		neutral := layerNeutralColor(l.Type)
+		for y := int64(top); y < int64(bottom); y++ {
+			offset := (y*int64(l.ImageWidth) + int64(left)) * 4
+			for x := range int64(right - left) {
+				copy(l.RGBA[offset+x*4:offset+4+x*4], neutral[:])
+			}
+		}
+	}
+
+	a, b, c, d, tx, ty := matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]
+	determinant := a*d - b*c
+	if math.IsNaN(determinant) || math.IsInf(determinant, 0) {
+		return fmt.Errorf("%w: affineCopy transform outside safe numeric range", ErrUnsupportedNative)
+	}
+	if determinant == 0 {
+		return nil
+	}
+	sourceWidthF, sourceHeightF := float64(swidth), float64(sheight)
+	minX, maxX := math.Inf(1), math.Inf(-1)
+	minY, maxY := math.Inf(1), math.Inf(-1)
+	for _, corner := range [4][2]float64{
+		{-0.5, -0.5},
+		{sourceWidthF - 0.5, -0.5},
+		{sourceWidthF - 0.5, sourceHeightF - 0.5},
+		{-0.5, sourceHeightF - 0.5},
+	} {
+		x := a*corner[0] + c*corner[1] + tx
+		y := b*corner[0] + d*corner[1] + ty
+		if math.IsNaN(x) || math.IsInf(x, 0) || math.IsNaN(y) || math.IsInf(y, 0) {
+			return fmt.Errorf("%w: affineCopy transform outside safe numeric range", ErrUnsupportedNative)
+		}
+		minX, maxX = math.Min(minX, x), math.Max(maxX, x)
+		minY, maxY = math.Min(minY, y), math.Max(maxY, y)
+	}
+	outLeft, outTop := int64(left), int64(top)
+	outRight, outBottom := int64(right), int64(bottom)
+	if minX > float64(outLeft) {
+		outLeft = int64(math.Ceil(minX))
+	}
+	if maxX < float64(outRight) {
+		outRight = int64(math.Ceil(maxX))
+	}
+	if minY > float64(outTop) {
+		outTop = int64(math.Ceil(minY))
+	}
+	if maxY < float64(outBottom) {
+		outBottom = int64(math.Ceil(maxY))
+	}
+	if outRight <= outLeft || outBottom <= outTop {
+		return nil
+	}
+
+	if len(source) == len(l.RGBA) && &source[0] == &l.RGBA[0] {
+		// Reading from the plane being written would let the scan sample pixels
+		// this call already replaced, so the source rectangle is snapshotted.
+		rows := int64(sheight)
+		snapshot := make([]byte, int64(swidth)*rows*4)
+		for row := int64(0); row < rows; row++ {
+			offset := ((int64(stop)+row)*int64(sourceWidth) + int64(sleft)) * 4
+			copy(snapshot[row*int64(swidth)*4:(row+1)*int64(swidth)*4], source[offset:offset+int64(swidth)*4])
+		}
+		source, sourceWidth, sleft, stop = snapshot, swidth, 0, 0
+	}
+
+	sourceStride := int64(sourceWidth)
+	nearest := filter == 0
+	lastColumn, lastRow := int64(sleft+swidth-1), int64(stop+sheight-1)
+	for y := outTop; y < outBottom; y++ {
+		dy := float64(y) - ty
+		rowOffset := (y*int64(l.ImageWidth) + outLeft) * 4
+		for x := outLeft; x < outRight; x++ {
+			dx := float64(x) - tx
+			u := (dx*d - dy*c) / determinant
+			v := (dy*a - dx*b) / determinant
+			if !(u >= -0.5 && u < sourceWidthF-0.5 && v >= -0.5 && v < sourceHeightF-0.5) {
+				continue
+			}
+			di := rowOffset + (x-outLeft)*4
+			if nearest {
+				column := int64(math.Floor(u + 0.5))
+				row := int64(math.Floor(v + 0.5))
+				if column < 0 {
+					column = 0
+				} else if column > int64(swidth)-1 {
+					column = int64(swidth) - 1
+				}
+				if row < 0 {
+					row = 0
+				} else if row > int64(sheight)-1 {
+					row = int64(sheight) - 1
+				}
+				si := ((int64(stop)+row)*sourceStride + int64(sleft) + column) * 4
+				copyPixelForFace(l.RGBA[di:di+4], source[si:si+4], face, l.HoldAlpha)
+				continue
+			}
+			sx := float64(sleft) + u
+			sy := float64(stop) + v
+			minColumn := int64(math.Floor(sx))
+			minRow := int64(math.Floor(sy))
+			fx, fy := sx-float64(minColumn), sy-float64(minRow)
+			if minColumn < int64(sleft) {
+				minColumn = int64(sleft)
+			} else if minColumn > lastColumn {
+				minColumn = lastColumn
+			}
+			if minRow < int64(stop) {
+				minRow = int64(stop)
+			} else if minRow > lastRow {
+				minRow = lastRow
+			}
+			if minColumn+1 > lastColumn {
+				fx = 0
+			}
+			if minRow+1 > lastRow {
+				fy = 0
+			}
+			if fx < 0 {
+				fx = 0
+			} else if fx > 1 {
+				fx = 1
+			}
+			if fy < 0 {
+				fy = 0
+			} else if fy > 1 {
+				fy = 1
+			}
+			topLeft := (minRow*sourceStride + minColumn) * 4
+			topRight := topLeft + 4
+			bottomLeft := topLeft + sourceStride*4
+			bottomRight := bottomLeft + 4
+			var pixel [4]byte
+			for channel := range pixel {
+				top := float64(source[topLeft+int64(channel)])*(1-fx) + float64(source[topRight+int64(channel)])*fx
+				bottomValue := float64(source[bottomLeft+int64(channel)])*(1-fx) + float64(source[bottomRight+int64(channel)])*fx
+				pixel[channel] = uint8(top*(1-fy) + bottomValue*fy + 0.5)
+			}
+			copyPixelForFace(l.RGBA[di:di+4], pixel[:], face, l.HoldAlpha)
+		}
+	}
+	return nil
+}
+
 func (l *Layer) DoGrayScale() error {
 	if err := validLayerPixels(l); err != nil {
 		return err
@@ -897,6 +1082,92 @@ func maxIntValue() int {
 	return int(^uint(0) >> 1)
 }
 
+// layerAffineCopy implements
+// Layer.affineCopy(src, sleft, stop, swidth, sheight, affine, A, B, C, D, E, F,
+// type=stNearest, clear=false). Points mode passes the destination coordinates
+// of the source rectangle's top-left, top-right, and bottom-left edges; matrix
+// mode passes an affine matrix whose coefficients address source pixels with a
+// 1x1 extent, as tTVPBaseBitmap::AffineBlt does.
+func (s *Services) layerAffineCopy(l *Layer, args []tjs.Value) error {
+	const operation = "affineCopy"
+	if len(args) < 12 {
+		return fmt.Errorf("Layer.%s requires at least 12 arguments", operation)
+	}
+	source, err := s.nativeLayerImageSource(args[0], operation)
+	if err != nil {
+		return err
+	}
+	sleft, err := layerImageInt(args, 1, operation)
+	if err != nil {
+		return err
+	}
+	stop, err := layerImageInt(args, 2, operation)
+	if err != nil {
+		return err
+	}
+	swidth, err := layerImageInt(args, 3, operation)
+	if err != nil {
+		return err
+	}
+	sheight, err := layerImageInt(args, 4, operation)
+	if err != nil {
+		return err
+	}
+	affine, err := layerOptionalBool(args, 5, false, operation)
+	if err != nil {
+		return err
+	}
+	values := [6]float64{}
+	for i := range values {
+		values[i], err = layerImageOptionalFloat(args, 6+i, 0, operation)
+		if err != nil {
+			return err
+		}
+	}
+	stretchType, err := layerImageOptionalInt(args, 12, 0, operation)
+	if err != nil {
+		return err
+	}
+	clear, err := layerOptionalBool(args, 13, false, operation)
+	if err != nil {
+		return err
+	}
+	if swidth == 0 || sheight == 0 {
+		return nil
+	}
+	matrix := values
+	if !affine {
+		matrix[0] = (values[2] - values[0]) / float64(swidth)
+		matrix[1] = (values[3] - values[1]) / float64(swidth)
+		matrix[2] = (values[4] - values[0]) / float64(sheight)
+		matrix[3] = (values[5] - values[1]) / float64(sheight)
+	} else {
+		matrix[4] = values[4] - 0.5*values[0] - 0.5*values[2]
+		matrix[5] = values[5] - 0.5*values[1] - 0.5*values[3]
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.nativeLayerImageStillValid(source) {
+		return fmt.Errorf("Layer.%s source was invalidated", operation)
+	}
+	if err := l.affineCopyPixels(source.pixels, source.width, source.height, sleft, stop, swidth, sheight, matrix, stretchType&0xffff, clear); err != nil {
+		return err
+	}
+	l.imageModified = true
+	return nil
+}
+
+func layerOptionalBool(args []tjs.Value, index int, defaultValue bool, operation string) (bool, error) {
+	if index >= len(args) || args[index].IsVoid() {
+		return defaultValue, nil
+	}
+	value, err := args[index].Truth()
+	if err != nil {
+		return false, fmt.Errorf("Layer.%s argument %d: %w", operation, index, err)
+	}
+	return value, nil
+}
+
 func (s *Services) nativeLayerImageSource(value tjs.Value, operation string) (nativeLayerImage, error) {
 	if value.Kind() != tjs.KindObject || value.IsNull() {
 		return nativeLayerImage{}, fmt.Errorf("Layer.%s requires a Layer or Bitmap source", operation)
@@ -978,7 +1249,7 @@ func layerImageOptionalFloat(args []tjs.Value, index int, defaultValue float64, 
 		if err == nil {
 			err = fmt.Errorf("must be finite")
 		}
-		return 0, fmt.Errorf("Layer.%s argument %d: %w", operation, index, err)
+		return 0, fmt.Errorf("Layer.%s argument %d value %s: %w", operation, index, args[index].Text(), err)
 	}
 	return value, nil
 }

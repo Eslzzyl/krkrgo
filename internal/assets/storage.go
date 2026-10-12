@@ -279,10 +279,17 @@ func (s *Storage) FullPath(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if strings.ContainsRune(outer, ':') {
+	if drive, ok := localDriveName(outer); ok {
+		// "file://./c:/games" keeps the volume behind the leading slash.
+		outer = drive
+	}
+	if strings.ContainsRune(outer, ':') && !driveQualifiedPath(outer) {
 		return "", fmt.Errorf("%w: file path contains a colon", ErrUnsupportedStorageMedia)
 	}
-	if !strings.HasPrefix(outer, "/") {
+	switch {
+	case driveQualifiedPath(outer):
+		outer = "/" + filepath.ToSlash(outer)
+	case !strings.HasPrefix(outer, "/"):
 		outer = filepath.ToSlash(s.Project) + "/" + outer
 	}
 	outer = asciiLower(outer)
@@ -322,7 +329,7 @@ func (s *Storage) LocalName(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	local = filepath.FromSlash(local)
+	local = filepath.FromSlash(core.LocalStorageNativePath(local))
 	if !filepath.IsAbs(local) {
 		local = filepath.Join(s.Project, local)
 	}
@@ -342,13 +349,46 @@ func (s *Storage) storagePath(name string) (string, error) {
 		}
 		return s.localFileMediaPath(name[colon+1:])
 	}
-	if strings.ContainsRune(name, ':') {
+	if strings.ContainsRune(name, ':') && !driveQualifiedPath(name) {
 		return "", fmt.Errorf("%w: drive-qualified or malformed storage name", ErrUnsupportedStorageMedia)
 	}
 	return name, nil
 }
 
+// windowsVolumePaths reports whether absolute local paths start with a volume
+// name, as they do on Windows. File-media storage names keep a leading slash,
+// so a drive path appears as "/c:/games/data.xp3" inside those names.
+var windowsVolumePaths = filepath.Separator == '\\'
+
+// driveQualifiedPath reports the native Windows spelling of an absolute drive
+// path, such as "c:/games" or `c:\games`.
+func driveQualifiedPath(name string) bool {
+	if !windowsVolumePaths || len(name) < 3 || name[1] != ':' {
+		return false
+	}
+	return isASCIILetter(name[0]) && (name[2] == '/' || name[2] == '\\')
+}
+
+// localDriveName reports the file-media spelling of an absolute drive path,
+// "/c:/games", and returns the native slash spelling "c:/games".
+func localDriveName(name string) (string, bool) {
+	if !windowsVolumePaths || len(name) < 4 || name[0] != '/' || name[2] != ':' || name[3] != '/' {
+		return "", false
+	}
+	if !isASCIILetter(name[1]) {
+		return "", false
+	}
+	return name[1:], true
+}
+
+func isASCIILetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
 func storageMediaSeparator(name string) int {
+	if driveQualifiedPath(name) {
+		return -1
+	}
 	for i := range len(name) {
 		c := name[i]
 		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
@@ -381,6 +421,9 @@ func (s *Storage) localFileMediaPath(path string) (string, error) {
 		}
 		return authority[slash:], nil
 	}
+	if drive, ok := localDriveName(path); ok {
+		return drive, nil
+	}
 	if strings.HasPrefix(path, "/") {
 		return path, nil
 	}
@@ -398,28 +441,16 @@ func (s *Storage) normalize(name string, directory bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if qualified {
-		name = outer + ">" + member
-	} else {
-		name = outer
-	}
-	if relative, matched, err := core.LocalStorageRelativePath(name, s.Project); err != nil {
+	// The archive file path is resolved before the member is appended: a
+	// Windows member separator is not a legal filename character, so a combined
+	// path could not be inspected on the filesystem.
+	outer, err = s.projectRelativePath(outer)
+	if err != nil {
 		return "", err
-	} else if matched {
-		name = relative
-	} else if relative, matched := projectRelativePathFolded(name, s.Project); matched {
-		// FullPath lowercases file-media URIs for storage-name compatibility.
-		// On case-sensitive volumes that can also lowercase the absolute project
-		// prefix, so accept that spelling only when it still names this project.
-		// Re-resolve against the canonical project root to reject symlink escapes.
-		candidate := filepath.Join(s.Project, filepath.FromSlash(relative))
-		if resolved, inProject, err := core.LocalStorageRelativePath(candidate, s.Project); err != nil {
-			return "", err
-		} else if inProject {
-			name = resolved
-		} else {
-			return "", fmt.Errorf("%w: absolute storage name %q", core.ErrInvalidStorageName, name)
-		}
+	}
+	name = outer
+	if qualified {
+		name += ">" + member
 	}
 	if i := strings.IndexByte(name, '>'); i >= 0 {
 		archive, member := name[:i], name[i+1:]
@@ -443,6 +474,33 @@ func (s *Storage) normalize(name string, directory bool) (string, error) {
 		return "", nil
 	}
 	return core.StorageName(name)
+}
+
+// projectRelativePath rewrites an absolute local path inside the project as a
+// project-relative name; other names pass through unchanged.
+func (s *Storage) projectRelativePath(name string) (string, error) {
+	if relative, matched, err := core.LocalStorageRelativePath(name, s.Project); err != nil {
+		return "", err
+	} else if matched {
+		return relative, nil
+	}
+	// FullPath lowercases file-media URIs for storage-name compatibility. On
+	// case-sensitive volumes that can also lowercase the absolute project
+	// prefix, so accept that spelling only when it still names this project.
+	// Re-resolve against the canonical project root to reject symlink escapes.
+	relative, matched := projectRelativePathFolded(name, s.Project)
+	if !matched {
+		return name, nil
+	}
+	candidate := filepath.Join(s.Project, filepath.FromSlash(relative))
+	resolved, inProject, err := core.LocalStorageRelativePath(candidate, s.Project)
+	if err != nil {
+		return "", err
+	}
+	if !inProject {
+		return "", fmt.Errorf("%w: absolute storage name %q", core.ErrInvalidStorageName, name)
+	}
+	return resolved, nil
 }
 
 // projectRelativePathFolded handles absolute project paths returned by
@@ -732,6 +790,7 @@ func (s *Storage) StatSize(name string) (uint64, error) {
 		if err != nil {
 			return 0, err
 		}
+		placed = core.LocalStorageNativePath(placed)
 		if filepath.IsAbs(placed) {
 			relative, ok := storageRelativeCaseInsensitive(placed, s.Project)
 			if !ok {

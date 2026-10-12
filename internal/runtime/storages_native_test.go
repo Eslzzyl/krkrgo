@@ -125,13 +125,7 @@ func TestStoragesStorageBackedOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		for _, archive := range storage.Archives {
-			if err := archive.Close(); err != nil {
-				t.Errorf("close mounted archive: %v", err)
-			}
-		}
-	}()
+	closeArchivesOnCleanup(t, storage)
 	session := NewSession(NewServices(storage, "", core.DefaultLimits()), 50_000)
 	defer session.Close()
 
@@ -139,7 +133,7 @@ func TestStoragesStorageBackedOperations(t *testing.T) {
 	wantArchive := expectedFileStorageURI(filepath.Join(storage.Project, "archive.xp3")) + ">file.tjs"
 	wantArchiveMember := expectedFileStorageURI(filepath.Join(storage.Project, "mounted.xp3")) + ">archive/entry.tjs"
 	absoluteProjectPath := filepath.ToSlash(storage.Project) + "/LOOKUP/../LOOKUP/FOUND.TJS"
-	fileURIInput := "file://." + filepath.ToSlash(storage.Project) + "/LOOKUP/../LOOKUP/FOUND.TJS"
+	fileURIInput := expectedFileStorageURI(storage.Project) + "/LOOKUP/../LOOKUP/FOUND.TJS"
 	for _, test := range []struct {
 		source string
 		want   string
@@ -281,13 +275,7 @@ func TestStoragesAddArchiveMountsProjectArchive(t *testing.T) {
 	}
 	session := NewSession(NewServices(storage, "", core.DefaultLimits()), 50_000)
 	defer session.Close()
-	defer func() {
-		for _, archive := range storage.Archives {
-			if err := archive.Close(); err != nil {
-				t.Errorf("close mounted archive: %v", err)
-			}
-		}
-	}()
+	closeArchivesOnCleanup(t, storage)
 
 	archivePath := filepath.Join(project, "dynamic.xp3")
 	if err := os.WriteFile(archivePath, storagesTestXP3("nested/entry.tjs", []byte("mounted")), 0o600); err != nil {
@@ -312,6 +300,41 @@ func TestStoragesAddArchiveMountsProjectArchive(t *testing.T) {
 	}
 }
 
+// localStorageURI returns the file-media storage name for a native path with
+// its original case, matching System.dataPath and the reference
+// TVPNormalizeStorageName spelling.
+func localStorageURI(path string) string {
+	return core.LocalStorageName(filepath.ToSlash(path))
+}
+
+// localStorageDirectoryURI is localStorageURI for a directory path, which the
+// runtime always reports with a trailing separator.
+func localStorageDirectoryURI(path string) string {
+	if !strings.HasSuffix(path, string(os.PathSeparator)) {
+		path += string(os.PathSeparator)
+	}
+	return localStorageURI(path)
+}
+
+// closeArchivesOnCleanup releases XP3 file handles on platforms that refuse to
+// remove directories holding open files.
+func closeArchivesOnCleanup(t *testing.T, storage *assets.Storage) {
+	t.Helper()
+	if storage == nil {
+		return
+	}
+	t.Cleanup(func() {
+		for _, archive := range storage.Archives {
+			if err := archive.Close(); err != nil {
+				t.Errorf("close archive: %v", err)
+			}
+		}
+	})
+}
+
+// expectedFileStorageURI builds the file-media storage name Kirikiri writes for
+// a native path: "file://." followed by the slash-separated path, with a
+// Windows volume moved behind the leading slash ("file://./c:/games").
 func expectedFileStorageURI(input string) string {
 	normalized := []byte(filepath.ToSlash(input))
 	for i, c := range normalized {
@@ -319,7 +342,11 @@ func expectedFileStorageURI(input string) string {
 			normalized[i] = c + ('a' - 'A')
 		}
 	}
-	return "file://." + string(normalized)
+	path := string(normalized)
+	if len(path) >= 3 && path[1] == ':' && (path[2] == '/' || path[2] == '\\') {
+		path = "/" + path
+	}
+	return "file://." + path
 }
 
 func storagesTestXP3(name string, contents []byte) []byte {
@@ -397,13 +424,7 @@ func TestStoragesAutoPathFindsIslandDiaryArchiveConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		for _, archive := range storage.Archives {
-			if err := archive.Close(); err != nil {
-				t.Errorf("close archive: %v", err)
-			}
-		}
-	}()
+	closeArchivesOnCleanup(t, storage)
 	session := NewSession(NewServices(storage, "", core.DefaultLimits()), 50_000)
 	defer session.Close()
 	if _, err := session.Evaluate(`Storages.addAutoPath("main/")`); err != nil {

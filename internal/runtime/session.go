@@ -247,7 +247,7 @@ func (s *Session) registerNatives() error {
 	if err != nil {
 		return err
 	}
-	for _, method := range []string{"@initialize", "@invalidate", "Layer", "finalize", "update", "setPos", "setSize", "setSizeToImageSize", "setImageSize", "setImagePos", "setClip", "resetClip", "loadImages", "loadProvinceImage", "saveLayerImage", "piledCopy", "pileRect", "fillRect", "colorRect", "copyRect", "operateRect", "stretchCopy", "assignImages", "doBoxBlur", "adjustGamma", "doGrayScale", "drawText", "bringToFront", "move", "addChild", "removeChild", "getLayerAt", "getMainPixel", "setMainPixel", "getMaskPixel", "setMaskPixel", "getProvincePixel", "setProvincePixel", "setMode", "removeMode", "focus", "beginTransition", "stopTransition", "openMovie", "startMovie", "stopMovie", "isPlayingMovie", "onMouseMove", "onHitTest", "onMouseDown", "onMouseUp", "onClick", "onDoubleClick", "onMouseEnter", "onMouseLeave", "onMouseWheel", "onKeyDown", "onKeyUp", "onKeyPress", "onFocus", "onBlur", "onTransitionCompleted", "onPaint"} {
+	for _, method := range []string{"@initialize", "@invalidate", "Layer", "finalize", "update", "setPos", "setSize", "setSizeToImageSize", "setImageSize", "setImagePos", "setClip", "resetClip", "loadImages", "loadProvinceImage", "saveLayerImage", "piledCopy", "pileRect", "fillRect", "colorRect", "copyRect", "operateRect", "stretchCopy", "affineCopy", "assignImages", "doBoxBlur", "adjustGamma", "doGrayScale", "drawText", "bringToFront", "move", "addChild", "removeChild", "getLayerAt", "getMainPixel", "setMainPixel", "getMaskPixel", "setMaskPixel", "getProvincePixel", "setProvincePixel", "setMode", "removeMode", "focus", "beginTransition", "stopTransition", "openMovie", "startMovie", "stopMovie", "isPlayingMovie", "onMouseMove", "onHitTest", "onMouseDown", "onMouseUp", "onClick", "onDoubleClick", "onMouseEnter", "onMouseLeave", "onMouseWheel", "onKeyDown", "onKeyUp", "onKeyPress", "onFocus", "onBlur", "onTransitionCompleted", "onPaint"} {
 		if err := s.VM.RegisterNativeMethod(layer, method, "Layer."+method); err != nil {
 			return err
 		}
@@ -255,7 +255,7 @@ func (s *Session) registerNatives() error {
 	if err := s.VM.RegisterNativeMethod(layer, "light", "Layer.light"); err != nil {
 		return err
 	}
-	for _, property := range []string{"parent", "children", "order", "absolute", "absoluteOrderMode", "window", "isPrimary", "left", "top", "width", "height", "imageLeft", "imageTop", "imageWidth", "imageHeight", "visible", "nodeVisible", "opacity", "enabled", "eventTransparent", "type", "face", "holdAlpha", "hitType", "hitThreshold", "name", "hasImage", "imageModified", "clipLeft", "clipTop", "clipWidth", "clipHeight", "cursor", "cursorX", "cursorY", "neutralColor", "font", "focusable", "nodeEnabled", "nodeFocusable", "focused"} {
+	for _, property := range []string{"parent", "children", "order", "absolute", "absoluteOrderMode", "window", "isPrimary", "left", "top", "width", "height", "imageLeft", "imageTop", "imageWidth", "imageHeight", "visible", "nodeVisible", "opacity", "enabled", "eventTransparent", "type", "face", "holdAlpha", "hitType", "hitThreshold", "name", "hasImage", "imageModified", "clipLeft", "clipTop", "clipWidth", "clipHeight", "cursor", "cursorX", "cursorY", "neutralColor", "callOnPaint", "font", "focusable", "nodeEnabled", "nodeFocusable", "focused"} {
 		setter := "Layer.set:" + property
 		switch property {
 		case "children", "nodeVisible", "nodeEnabled", "nodeFocusable", "focused", "window", "isPrimary", "neutralColor":

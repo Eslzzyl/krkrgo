@@ -1,7 +1,7 @@
 # krkrgo Handoff
 
 Status: 2026-10-12
-Repository: `/Users/eslzzyl/WorkSpace/Go/krkrgo`
+Repository: `/Users/eslzzyl/WorkSpace/Go/krkrgo` (macOS) and `D:/WorkSpace/Go/krkrgo` (Windows)
 
 ## Current objectives
 
@@ -9,6 +9,8 @@ Repository: `/Users/eslzzyl/WorkSpace/Go/krkrgo`
 2. Continue the Amairo startup black-screen fix.
 
 No subagents are currently running. The WMV3 and ASF agents used `cline-pass/mimo-v2.6-flash`. The Amairo takeover agent used `cline-pass/deepseek-v4.1-flash:high`.
+
+The Amairo work below was verified on the Windows host. Earlier Amairo and WMV3 notes were written on macOS; platform assumptions in the storage and host layers only surface on Windows.
 
 ## Commits
 
@@ -20,7 +22,7 @@ The current code and WMV3 assessment document listed below are intentionally inc
 
 ## Verification completed
 
-The following commands passed against the current worktree:
+The following commands passed against the current worktree on Windows:
 
 ```text
 go test ./... -count=1
@@ -31,11 +33,16 @@ go build ./...
 Focused checks also passed:
 
 ```text
-go test ./internal/assets/wmv3 -count=1
+go test ./internal/assets/... ./internal/core/... -count=1
 go test ./internal/runtime/... ./internal/tjs/... -count=1
 ```
 
 The WMV3 package currently reports 33 passing tests. The ASF package has no implementation tests yet.
+
+Windows-specific test facts discovered while fixing Amairo:
+
+- `internal/assets` and `internal/runtime` tests leaked XP3 file handles, so `t.TempDir` cleanup failed on Windows. New helpers `closeArchivesOnCleanup` close the archives on test cleanup.
+- Symlink tests must tolerate a missing `SeCreateSymbolicLinkPrivilege`; `os.Symlink` fails with "A required privilege is not held by the client" on this machine (Developer Mode is off), so `TestSaveStorageAtomicContained` now skips that part with `t.Skipf`.
 
 ## WMV3 implementation status
 
@@ -89,54 +96,54 @@ Missing ASF work:
 
 ## Amairo status
 
-The following files contain the current generic runtime fix:
+Verified on the Windows host (`D:/WorkSpace/Go/krkrgo`):
 
-- `internal/runtime/kag_native.go`
-- `internal/tjs/assign_struct.go`
-- `internal/tjs/assign_struct_test.go`
-- `internal/tjs/gc.go`
-- `internal/tjs/vm.go`
-- `internal/runtime/amairo_startup_test.go`
+```text
+go build -o temp/krkrgo.exe ./cmd/krkrgo
+./temp/krkrgo.exe run -project testdata/amairo
+```
 
-Root causes identified by the Amairo investigation:
+Earlier Amairo notes describe the macOS state. On Windows the game exited before creating a window, so three separate blockers had to be fixed before the opening sequence ran at all. Each one is now implemented:
 
-1. KAG tag elements lacked the `taglist` member expected by the KAGEnvironment `getCommandTarget` path. The `[ev file=attention notrans]` tag was consumed without creating the `ev` environment object or loading `attention.png`.
-2. Dictionary methods registered as static members leaked into Dictionary instances. KAG scripts inspect fields such as `elm.clear`; the leaked instance method changed the `syscover` branch and prevented the white cover from being shown.
+1. `unsupported storage media: d` from `startup.tjs` → `Initialize.tjs:21` (`Storages.getPlacedPath`). `assets.Storage` parsed a drive-qualified Windows path as a URI media name (`D:` → media `d`). Added `core.LocalStorageName` (encode) and `core.LocalStorageNativePath` (decode) implementing the reference spelling from `reference/krkr2/cpp/core/base/impl/StorageImpl.cpp:430`: `C:\games\x` ⇄ `file://./c:/games/x`. `storageMediaSeparator`, `storagePath`, `localFileMediaPath`, `FullPath`, `LocalName`, `StatSize`, save-storage name handling, and `Storages.addArchive` now use it, `System.dataPath` uses the same spelling, and `normalize` resolves the archive file path before appending `>member` because `>` is not a legal Windows filename character.
+2. `member not found: affineCopy` from `AffineLayer.tjs:540` → `510` → `BMPBaseAffineSourceLayer.tjs:352` → `330`. `Layer.affineCopy` is implemented in `internal/runtime/layer_image.go` (`affineCopyPixels` rasterizer plus the `layerAffineCopy` entry point): points and matrix modes, nearest and linear sampling, `clear` filling the clipping rectangle with the layer's neutral color, bmCopy channel selection per draw face, and a source snapshot when the source plane is the destination plane. Semantics follow `tTJSNI_BaseLayer::AffineCopy` (`reference/krkr2/cpp/core/visual/LayerIntf.cpp:4722`) and `tTVPBaseBitmap::AffineBlt` (`LayerBitmapIntf.cpp:3960`).
+3. `member not found: callOnPaint` from `world.tjs:1389` and `affinelayer.tjs:545`. `callOnPaint` is a script-visible native Layer property in the reference (`LayerIntf.cpp:11321`) but was a private Go field; it is now a registered native property with getter and setter.
+4. The stage matrix held NaN. Root cause: the VM resolved unqualified names inside `with` blocks through the with-object, so `with (world.env) { cameraoffsetz = .cameraoffsetz; }` (`world.tjs:555`) wrote to `world.env` instead of the new `EnvCameraObject`. `camerainfo.cameraoffsetz` stayed void, `zorder` computed `void / void * 100` = NaN (`world.tjs:295`), and `EnvGraphicLayer.calcAffineMatrix` called `mtx.scale(NaN, NaN)` (`world.tjs:470`), which failed the stage draw. TJS2 binds unqualified names to parameters/locals and then `this`, and only the `.name` spelling uses the with object (`reference/krkr2/cpp/core/tjs2/tjsInterCodeGen.cpp`, T_SYMBOL / T_THIS_PROXY / T_WITHDOT_PROXY, plus `AddLocalVariable`). `vm.loadName` and `vm.storeName` now follow that, the dead `DeclareWith` op field was removed, and `TestUninitializedVarInWithShadowsMemberWithoutOverwritingIt` pins the reference behaviour.
 
-The fix adds a KAGParserEx-compatible taglist, restores static-only Dictionary members, and adds a focused startup test. The test verifies that `ev` contains `imageFile == "attention"`, has a shown display state, and that the startup frame sequence changes from the old solid-black sequence. Current runtime and TJS tests pass.
+Current behaviour: `testdata/amairo` starts, runs at least 45 s of host frames with no logged exception, and the frame sequence advances past the white `[syscover]` frame that `TestAmairoStartupCoverAndNoticeImage` already asserted.
 
-Remaining Amairo blocker:
+Remaining Amairo blockers (reproduced on Windows, not yet fixed):
 
-- The opening script reaches `[stage ...]` and stops because `Layer.affineCopy` is unimplemented. The environment image now decodes into an affine source layer, but the affine source pool/player path still needs to render it into the scene. This prevents claiming a complete Amairo visual fix.
+- After the initial white frame the window stays black: the stage/opening picture is still not visible. The affine draw itself now runs without exceptions, so this is a composition problem after `Layer.affineCopy` (layer visibility/order, clip, or update propagation to the compositor).
+- Dragging the window freezes the process; the freeze is in the Ebitengine host window loop (`internal/host/ebiten.go`).
 - PSB/motion forms of `[ev storage=... psb chara=... motion=...]` remain separate capability work. The Windows-only `AmairoIsleNauts.tpm` remains unavailable to the pure-Go runtime.
 
 ## Pending worktree files
 
-The pending commit includes:
+The Amairo fix touched:
 
 ```text
-docs/wmv3-go-port-assessment.md
-internal/assets/asf/doc.go
-internal/assets/wmv3/bitplane.go
-internal/assets/wmv3/bitreader.go
-internal/assets/wmv3/bitreader_test.go
-internal/assets/wmv3/decoder.go
-internal/assets/wmv3/doc.go
-internal/assets/wmv3/extradata.go
-internal/assets/wmv3/extradata_test.go
-internal/assets/wmv3/frameheader.go
-internal/assets/wmv3/frameheader_test.go
-internal/assets/wmv3/tables.go
-internal/assets/wmv3/vlc.go
-internal/runtime/amairo_startup_test.go
-internal/runtime/kag_native.go
-internal/tjs/assign_struct.go
-internal/tjs/assign_struct_test.go
-internal/tjs/gc.go
+HANDOFF.md
+internal/assets/storage.go
+internal/assets/storage_path_test.go
+internal/core/core.go
+internal/core/project.go
+internal/runtime/layer_image.go
+internal/runtime/layer_native.go
+internal/runtime/runtime_kag_save_test.go
+internal/runtime/save_storage.go
+internal/runtime/session.go
+internal/runtime/session_project_test.go
+internal/runtime/storages_native.go
+internal/runtime/storages_native_test.go
+internal/runtime/system_native.go
+internal/runtime/system_native_test.go
+internal/tjs/compiler.go
+internal/tjs/sound_expression_test.go
 internal/tjs/vm.go
 ```
 
-Temporary `cmd/tmpasflist/main.go` was removed before this handoff.
+The WMV3/ASF files listed by the previous handoff are unchanged by this work.
 
 ## Recommended next order
 
@@ -144,4 +151,4 @@ Temporary `cmd/tmpasflist/main.go` was removed before this handoff.
 2. Implement WMV3 macroblock decode, coefficients, transforms, motion compensation, and YUV output.
 3. Connect ASF video access units to the WMV3 decoder and `VideoOverlay` clock/frame queue.
 4. Add WMA2 only if audio parity is required for the opening movie milestone.
-5. Generalize `imageAffine` into `Layer.affineCopy`, then verify the real Amairo opening window and keep the focused startup test.
+5. Amairo: find why the composited frame stays black after the `[syscover]` frame (start from `EnvGraphicLayer` visibility/order and the update path after `Layer.affineCopy`), then fix the window-drag freeze in `internal/host/ebiten.go`.

@@ -102,7 +102,6 @@ type Op struct {
 	Operator     string              `json:"operator,omitempty"`
 	Optional     bool                `json:"optional,omitempty"`
 	Raw          bool                `json:"raw,omitempty"`
-	DeclareWith  bool                `json:"declare_with,omitempty"`
 	ResultNeeded bool                `json:"result_needed,omitempty"`
 	Rest         bool                `json:"rest,omitempty"`
 	Index        int                 `json:"index,omitempty"`
@@ -2386,8 +2385,7 @@ func (c *compiler) statement() error {
 				return e
 			}
 			v := &cexpr{kind: "value", value: VoidValue, loc: t.loc}
-			hasInitializer := c.p.eat("=")
-			if hasInitializer {
+			if c.p.eat("=") {
 				v, e = c.p.expr(0)
 				if e != nil {
 					return e
@@ -2397,7 +2395,7 @@ func (c *compiler) statement() error {
 			if e != nil {
 				return e
 			}
-			c.emit(t.loc, Op{Code: OpDeclare, Name: n, Input: r, DeclareWith: hasInitializer})
+			c.emit(t.loc, Op{Code: OpDeclare, Name: n, Input: r})
 			if !c.p.eat(",") {
 				break
 			}

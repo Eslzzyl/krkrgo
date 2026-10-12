@@ -43,7 +43,10 @@ func TestUnknownStringMemberIsNotFabricatedAsMethod(t *testing.T) {
 		t.Fatalf("unknown String.storage error = %v, want missing member", err)
 	}
 }
-func TestUninitializedVarInWithDoesNotOverwriteMember(t *testing.T) {
+func TestUninitializedVarInWithShadowsMemberWithoutOverwritingIt(t *testing.T) {
+	// TJS2 declares a local for "var se;" and clears it, so the unqualified name
+	// resolves to that local while the with-object member stays reachable through
+	// the explicit ".se" spelling.
 	got := executeVMSource(t, `
 function read(item) {
 	with (item) {
@@ -53,7 +56,7 @@ function read(item) {
 }
 return read(%[se: "menu.save"]);
 `)
-	if got.Kind() != KindString || got.Text() != "menu.save:String" {
-		t.Fatalf("uninitialized var result = %#v, want original with member", got)
+	if got.Kind() != KindString || got.Text() != "menu.save:void" {
+		t.Fatalf("uninitialized var result = %#v, want local shadow over the with member", got)
 	}
 }

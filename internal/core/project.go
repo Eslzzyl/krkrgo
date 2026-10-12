@@ -116,7 +116,7 @@ func LocalStorageRelativePath(name, root string) (string, bool, error) {
 	if root == "" {
 		return "", false, nil
 	}
-	path := filepath.FromSlash(strings.ReplaceAll(LocalStoragePath(name), `\`, "/"))
+	path := filepath.FromSlash(strings.ReplaceAll(LocalStorageNativePath(name), `\`, "/"))
 	if !filepath.IsAbs(path) {
 		return "", false, nil
 	}

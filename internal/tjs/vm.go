@@ -1078,29 +1078,6 @@ func (v *VM) loadName(f *vmFrame, name string, optional, raw bool, h Host, b *ui
 			return x, nil
 		}
 	}
-	for i := len(f.withs) - 1; i >= 0; i-- {
-		receiver := f.withs[i]
-		id, e := v.handle(receiver)
-		if e != nil {
-			return VoidValue, e
-		}
-		x, ok, e := v.getMemberStringWithRuntime(id, name, h, b)
-		if e != nil {
-			return VoidValue, e
-		}
-		if !ok {
-			x, ok, e = v.vmArrayMethod(id, name)
-			if e != nil {
-				return VoidValue, e
-			}
-		}
-		if ok {
-			if meta := v.meta[id]; meta != nil && meta.category == CategoryClass && meta.class != nil && meta.class.Name == name {
-				return receiver, nil
-			}
-			return v.getValue(receiver, x, raw, h, b)
-		}
-	}
 	if f.lexicalContext != 0 && f.lexicalContext != f.context {
 		x, ok, e := v.getMemberStringWithRuntime(f.lexicalContext, name, h, b)
 		if e != nil {
@@ -1195,31 +1172,8 @@ func (v *VM) deleteName(f *vmFrame, name string) (bool, error) {
 	}
 	return false, nil
 }
-func (v *VM) storeName(f *vmFrame, name string, x Value, declare, raw, declareWith bool, h Host, b *uint64) error {
+func (v *VM) storeName(f *vmFrame, name string, x Value, declare, raw bool, h Host, b *uint64) error {
 	if declare {
-		for i := len(f.withs) - 1; i >= 0; i-- {
-			receiver := f.withs[i]
-			id, err := v.handle(receiver)
-			if err != nil {
-				return err
-			}
-			member, ok, err := v.getMemberStringWithRuntime(id, name, h, b)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				continue
-			}
-			if !declareWith {
-				// An uninitialized var declaration does not assign to a with
-				// member or introduce a local that masks it.
-				return nil
-			}
-			if memberID, err := v.handle(member); !raw && err == nil && v.meta[memberID] != nil && v.meta[memberID].category == CategoryProperty {
-				return v.writeProperty(member, receiver, x, h, b)
-			}
-			return v.setMemberString(id, name, x)
-		}
 		if len(f.scopes) > 0 {
 			f.scopes[len(f.scopes)-1][name] = x
 			return nil
@@ -1240,23 +1194,6 @@ func (v *VM) storeName(f *vmFrame, name string, x Value, declare, raw, declareWi
 		if _, ok := f.scopes[i][name]; ok {
 			f.scopes[i][name] = x
 			return nil
-		}
-	}
-	for i := len(f.withs) - 1; i >= 0; i-- {
-		receiver := f.withs[i]
-		id, err := v.handle(receiver)
-		if err != nil {
-			return err
-		}
-		member, ok, err := v.getMemberStringWithRuntime(id, name, h, b)
-		if err != nil {
-			return err
-		}
-		if ok {
-			if memberID, err := v.handle(member); !raw && err == nil && v.meta[memberID] != nil && v.meta[memberID].category == CategoryProperty {
-				return v.writeProperty(member, receiver, x, h, b)
-			}
-			return v.setMemberString(id, name, x)
 		}
 	}
 	receiver := v.globalValue()
@@ -1978,7 +1915,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 					x = VoidValue
 				}
 				if e == nil {
-					e = v.storeName(&f, op.Name, x, true, false, false, h, b)
+					e = v.storeName(&f, op.Name, x, true, false, h, b)
 					if e == nil {
 						if f.parameters == nil {
 							f.parameters = make(map[string]Value)
@@ -2004,9 +1941,9 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			x, e = v.loadName(&f, op.Name, op.Optional, op.Raw, h, b)
 			put(op.Out, x)
 		case OpDeclare:
-			e = v.storeName(&f, op.Name, reg(op.Input), true, false, op.DeclareWith, h, b)
+			e = v.storeName(&f, op.Name, reg(op.Input), true, false, h, b)
 		case OpStore:
-			e = v.storeName(&f, op.Name, reg(op.Input), false, op.Raw, false, h, b)
+			e = v.storeName(&f, op.Name, reg(op.Input), false, op.Raw, h, b)
 		case OpMove:
 			put(op.Out, reg(op.Input))
 		case OpDeleteName:

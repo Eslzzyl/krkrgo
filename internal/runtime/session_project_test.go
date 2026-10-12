@@ -3,6 +3,7 @@ package runtime
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -132,7 +133,7 @@ func TestOpenSessionResolvesStartupDirectory(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				wantDataPath := "file://." + filepath.ToSlash(wantSaveDir) + "/"
+				wantDataPath := localStorageDirectoryURI(wantSaveDir)
 				if got := dataPath.Text(); got != wantDataPath {
 					t.Fatalf("System.dataPath = %q, want %q", got, wantDataPath)
 				}
@@ -148,7 +149,7 @@ func TestOpenSessionMissingStartupReportsCandidatePaths(t *testing.T) {
 		t.Fatal("OpenSession unexpectedly accepted a project without startup.tjs")
 	}
 	for _, path := range []string{filepath.Join(project, "startup.tjs"), filepath.Join(project, "data", "startup.tjs")} {
-		if !strings.Contains(err.Error(), path) {
+		if !strings.Contains(err.Error(), strconv.Quote(path)) {
 			t.Errorf("error %q does not identify candidate path %q", err, path)
 		}
 	}
@@ -177,6 +178,7 @@ func TestOpenSessionKeepsProjectRootAndDataResources(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close()
+	closeArchivesOnCleanup(t, session.Services.Storage)
 	wantRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		t.Fatal(err)

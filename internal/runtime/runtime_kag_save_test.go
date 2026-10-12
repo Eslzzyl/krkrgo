@@ -93,7 +93,7 @@ func TestSaveStorageAtomicContained(t *testing.T) {
 	if err != nil || string(got) != "new" {
 		t.Fatalf("read = %q, %v", got, err)
 	}
-	uri := "file://." + filepath.ToSlash(filepath.Join(project, "savedata", "slot", "uri.sav"))
+	uri := localStorageURI(filepath.Join(project, "savedata", "slot", "uri.sav"))
 	if err := s.Write(uri, []byte("uri")); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestSaveStorageAtomicContained(t *testing.T) {
 	}
 	outside := filepath.Join(s.Root, "outside")
 	if err := os.Symlink(t.TempDir(), outside); err != nil {
-		t.Fatal(err)
+		t.Skipf("symlinks unavailable: %v", err)
 	}
 	if err := s.Write("outside/escape", []byte("bad")); err == nil {
 		t.Fatal("write followed symlink parent")
@@ -132,7 +132,7 @@ func TestLocalFileURIStorageAndSystemDataPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantDataPath := "file://." + filepath.ToSlash(saveDir) + "/"
+	wantDataPath := localStorageDirectoryURI(saveDir)
 	if got := dataPathValue.Text(); got != wantDataPath {
 		t.Fatalf("System.dataPath = %q, want %q", got, wantDataPath)
 	}
@@ -152,7 +152,7 @@ func TestLocalFileURIStorageAndSystemDataPath(t *testing.T) {
 		t.Fatalf("System.dataPath write = %q, %v", data, err)
 	}
 
-	projectURI := "file://." + filepath.ToSlash(projectFile)
+	projectURI := localStorageURI(projectFile)
 	if value, err := session.Evaluate("Storages.isExistentStorage(" + strconv.Quote(projectURI) + ")"); err != nil {
 		t.Fatal(err)
 	} else if got, _ := value.Int(); got != 1 {
@@ -182,7 +182,7 @@ func TestLocalFileURIStorageAndSystemDataPath(t *testing.T) {
 	if data, err := os.ReadFile(filepath.Join(saveDir, "relative.sav")); err != nil || string(data) != "relative" {
 		t.Fatalf("relative storage write = %q, %v", data, err)
 	}
-	outsideURI := "file://." + filepath.ToSlash(filepath.Join(t.TempDir(), "outside.txt"))
+	outsideURI := localStorageURI(filepath.Join(t.TempDir(), "outside.txt"))
 	if _, err := session.Evaluate("TextStream.write(" + strconv.Quote(outsideURI) + `, "outside")`); err == nil || !errors.Is(err, ErrInvalidSaveName) {
 		t.Fatalf("outside project URI write error = %v, want ErrInvalidSaveName", err)
 	}

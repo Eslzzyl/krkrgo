@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eslzzyl/krkrgo/internal/core"
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
@@ -82,7 +83,8 @@ func systemFilePath(path string) string {
 
 // Kirikiri local paths use the storage spelling "file://." followed by the
 // slash-normalized absolute path and a trailing slash (for example,
-// "/games/title/savedata" becomes "file://./games/title/savedata/").
+// "/games/title/savedata" becomes "file://./games/title/savedata/", and a
+// Windows drive path becomes "file://./c:/games/title/savedata/").
 func systemFileURI(path string) string {
 	if path == "" {
 		return "file://./"
@@ -94,7 +96,7 @@ func systemFileURI(path string) string {
 	if !strings.HasSuffix(path, "/") {
 		path += "/"
 	}
-	return "file://." + path
+	return core.LocalStorageName(path)
 }
 
 func (s *Services) systemPath(operation string) string {

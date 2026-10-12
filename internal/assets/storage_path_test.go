@@ -312,6 +312,7 @@ func TestStorageDirectoryCacheInvalidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	closeArchivesOnCleanup(t, storage)
 	warm := func(path string) {
 		t.Helper()
 		info, err := os.Stat(path)
@@ -373,6 +374,7 @@ func TestStorageDirectoryIndexTracksFilesystemAndSearchPrecedence(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	closeArchivesOnCleanup(t, storage)
 	// These are the ordinary directory auto paths registered by lovelyday's
 	// Init.tjs, plus the archive-qualified path used by useArchiveIfExists.
 	for _, path := range []string{"./", "data/", "sys_source/", "macro/"} {
@@ -552,6 +554,7 @@ func TestStorageArchiveMemberFoundThroughAutoPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	closeArchivesOnCleanup(t, storage)
 	if err := storage.Mount(archivePath, core.DefaultLimits()); err != nil {
 		t.Fatal(err)
 	}
@@ -564,4 +567,20 @@ func TestStorageArchiveMemberFoundThroughAutoPath(t *testing.T) {
 	if got, err := storage.Read("Config.tjs"); err != nil || string(got) != string(want) {
 		t.Fatalf("Read(Config.tjs) = %q, %v; want archive member", got, err)
 	}
+}
+
+// closeArchivesOnCleanup releases XP3 file handles on platforms that refuse to
+// remove directories holding open files.
+func closeArchivesOnCleanup(t *testing.T, storage *Storage) {
+	t.Helper()
+	if storage == nil {
+		return
+	}
+	t.Cleanup(func() {
+		for _, archive := range storage.Archives {
+			if err := archive.Close(); err != nil {
+				t.Errorf("close archive: %v", err)
+			}
+		}
+	})
 }
