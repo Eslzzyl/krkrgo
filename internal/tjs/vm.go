@@ -58,7 +58,6 @@ type vmObject struct {
 	array                   []Value
 	arrayLength             int64
 	arrayMethods            map[string]Value
-	dictionaryMethods       map[string]Value
 	stringMethods           map[string]Value
 	methodContext           Value
 	methodContextSet        bool
@@ -609,9 +608,6 @@ func (v *VM) getMemberFallbackWithRuntime(id ObjectID, name string, host Host, b
 	}
 	if meta.category == CategoryClass {
 		return v.lookupClassMemberWithRuntime(id, name, 0, false, host, budget)
-	}
-	if meta.category == CategoryDictionary {
-		return v.vmDictionaryMethod(id, name)
 	}
 	return VoidValue, false, nil
 }

@@ -67,9 +67,6 @@ func (v *VM) markObject(id ObjectID, seen map[ObjectID]struct{}, pending *[]Obje
 		for _, x := range m.arrayMethods {
 			markValue(x, seen, pending)
 		}
-		for _, x := range m.dictionaryMethods {
-			markValue(x, seen, pending)
-		}
 		for _, x := range m.stringMethods {
 			markValue(x, seen, pending)
 		}

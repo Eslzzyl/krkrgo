@@ -445,6 +445,14 @@ func kagEventValue(vm *tjs.VM, event KAGEvent) (tjs.Value, error) {
 		_ = object.Set("payload", tjs.StringValue(event.Script))
 	case event.Tag != nil:
 		attributes := make([]tjs.Value, len(event.Tag.Attributes))
+		// KAG command dispatch walks elm.taglist as the element's parameter
+		// names, so it must be the ordered member names rather than the
+		// attribute/value pairs. KAG scripts such as the KAGEnvironment
+		// framework size the list with elm.taglist.count to decide whether a
+		// defined environment object name supplies parameters at all.
+		taglist := make([]tjs.Value, 0, len(event.Tag.Attributes)+1)
+		taglist = append(taglist, tjs.StringValue("tagname"))
+		seen := make(map[string]struct{}, len(event.Tag.Attributes))
 		for i, attribute := range event.Tag.Attributes {
 			pair, err := vm.NewArray([]tjs.Value{tjs.StringValue(attribute.Name), tjs.StringValue(attribute.Value)})
 			if err != nil {
@@ -459,6 +467,11 @@ func kagEventValue(vm *tjs.VM, event KAGEvent) (tjs.Value, error) {
 			if err := object.Set(attribute.Name, value); err != nil {
 				return tjs.VoidValue, err
 			}
+			if _, ok := seen[attribute.Name]; ok {
+				continue
+			}
+			seen[attribute.Name] = struct{}{}
+			taglist = append(taglist, tjs.StringValue(attribute.Name))
 		}
 		ordered, err := vm.NewArray(attributes)
 		if err != nil {
@@ -467,6 +480,11 @@ func kagEventValue(vm *tjs.VM, event KAGEvent) (tjs.Value, error) {
 		_ = object.Set("attributes", ordered)
 		_ = object.Set("tagname", tjs.StringValue(event.Tag.Name))
 		_ = object.Set("payload", tjs.StringValue(event.Tag.Name))
+		names, err := vm.NewArray(taglist)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		_ = object.Set("taglist", names)
 	case event.Label != nil:
 		_ = object.Set("label", tjs.StringValue(event.Label.Name))
 		if event.Label.Caption != nil {

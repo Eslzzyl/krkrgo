@@ -55,21 +55,36 @@ func TestVMDictionaryAssignIsShallowAndSupportsPairs(t *testing.T) {
 var child=%[n:1],source=%[child:child],target=%[old:4];
 (Dictionary.assign incontextof target)(source);
 target.child.n=3;
-var dynamic=%[];dynamic.assign(source);
 var keep=%[old:5];(Dictionary.assign incontextof keep)(["new",8,"odd"],false);
-return [source.child.n,typeof target.old,keep.old,keep.new,typeof keep.odd,dynamic.child===source.child].join('|');`)
+return [source.child.n,typeof target.old,keep.old,keep.new,typeof keep.odd,target.child===source.child].join('|');`)
 	if want := "3|undefined|5|8|undefined|1"; got.Text() != want {
 		t.Fatalf("Dictionary.assign = %q, want %q", got.Text(), want)
 	}
 }
 
-func TestVMDictionaryClearSupportsStaticAndInstanceCalls(t *testing.T) {
+func TestVMDictionaryClearSupportsStaticCalls(t *testing.T) {
 	got := executeVMSource(t, `
 var d=%[one:1];(Dictionary.clear incontextof d)();
-var first=d.one===void;d.two=2;d.clear();
+var first=d.one===void;d.two=2;(Dictionary.clear incontextof d)();
 return [first,d.two===void].join('|');`)
 	if want := "1|1"; got.Text() != want {
 		t.Fatalf("Dictionary.clear = %q, want %q", got.Text(), want)
+	}
+}
+
+func TestVMDictionaryMembersAreStaticOnly(t *testing.T) {
+	// Kirikiri registers Dictionary.assign/assignStruct/clear as static
+	// members, so instances must not expose them: KAG tag elements are
+	// dictionaries and scripts probe attributes such as elm.clear.
+	got := executeVMSource(t, `
+var d=%[one:1];
+var instanceClear=d.clear===void, instanceAssign=d.assign===void, instanceAssignStruct=d.assignStruct===void;
+(Dictionary.assign incontextof d)(%[two:2]);
+(Dictionary.clear incontextof d)();
+var a=[1]; a.clear();
+return [instanceClear,instanceAssign,instanceAssignStruct,typeof d.two,d.one===void,a.count].join('|');`)
+	if want := "1|1|1|undefined|1|0"; got.Text() != want {
+		t.Fatalf("Dictionary static members = %q, want %q", got.Text(), want)
 	}
 }
 

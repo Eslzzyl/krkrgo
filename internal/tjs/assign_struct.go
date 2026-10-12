@@ -11,32 +11,6 @@ type dictionaryAssignEntry struct {
 	flags uint32
 }
 
-func (v *VM) vmDictionaryMethod(id ObjectID, name string) (Value, bool, error) {
-	if name != "assign" && name != "assignStruct" && name != "clear" {
-		return VoidValue, false, nil
-	}
-	meta := v.meta[id]
-	if meta == nil || meta.category != CategoryDictionary {
-		return VoidValue, false, nil
-	}
-	if meta.dictionaryMethods != nil {
-		if method, ok := meta.dictionaryMethods[name]; ok {
-			return method, true, nil
-		}
-	}
-	method, methodID, err := v.alloc(CategoryMethod)
-	if err != nil {
-		return VoidValue, false, err
-	}
-	v.meta[methodID].native = "Dictionary." + name
-	method = ObjectValue(NewObjectRef(methodID, id))
-	if meta.dictionaryMethods == nil {
-		meta.dictionaryMethods = make(map[string]Value)
-	}
-	meta.dictionaryMethods[name] = method
-	return method, true, nil
-}
-
 func (v *VM) assignStructure(receiver Value, args []Value, array bool, budget *uint64) (Value, error) {
 	targetID, err := v.handle(receiver)
 	if err != nil {
