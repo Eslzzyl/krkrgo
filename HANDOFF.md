@@ -17,6 +17,8 @@ The Amairo work below was verified on the Windows host. Earlier Amairo and WMV3 
 - `538f559 Update documentation execution contract`
   - Added `agents/krkrgo-execution-contract.md`.
   - Removed all `CGO_ENABLED=0` occurrences from repository Markdown documentation.
+- `febd39c Fix Windows storage paths and the Amairo opening sequence`
+  - Windows drive-qualified storage names, `Layer.affineCopy`, `callOnPaint`, and the TJS2 `with` scope rules; see "Amairo status" below.
 
 The current code and WMV3 assessment document listed below are intentionally included in the pending commit created after this handoff document.
 
