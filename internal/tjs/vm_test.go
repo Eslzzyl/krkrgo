@@ -1103,6 +1103,22 @@ return callback();
 		t.Fatalf("global assigned under context = %v, want 1", got)
 	}
 }
+func TestVMGlobalBaseMethodCallForwardsDerivedInstanceReceiver(t *testing.T) {
+	got := executeVMSource(t, `
+class Base {
+	var value = 42;
+	function read() { return this.value; }
+}
+global.Base = Base;
+class Derived extends Base {
+	function readViaGlobalBase() { return global.Base.read(); }
+}
+return (new Derived()).readViaGlobalBase();
+`)
+	if value, err := got.Int(); err != nil || value != 42 {
+		t.Fatalf("global base method result = %v, %v; want 42", got, err)
+	}
+}
 
 func TestVMNamedFunctionExpressionRecursion(t *testing.T) {
 	got := executeVMSource(t, "return (function sum(n){if(n<=0)return 0; return n+sum(n-1);})(4);")

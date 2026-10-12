@@ -2464,6 +2464,49 @@ func (v *VM) bindConstructingBaseConstructor(callee Value) Value {
 	return ObjectValue(NewObjectRef(methodID, instanceID))
 }
 
+// forwardClassMethodReceiver preserves an instance receiver for an explicit
+// class-member call made from a method on that same instance. TJS scripts use
+// this form to call an inherited implementation through its global class
+// object (for example, global.KAGLayer.beginTransition(...)).
+func (v *VM) forwardClassMethodReceiver(callee, context Value) Value {
+	if callee.Kind() != KindObject || callee.IsNull() ||
+		context.Kind() != KindObject || context.IsNull() || len(v.traceStack) == 0 {
+		return context
+	}
+	method := v.meta[callee.ObjectRef().Object]
+	classID := context.ObjectRef().Object
+	class := v.meta[classID]
+	if method == nil || (method.category != CategoryFunction && method.category != CategoryNative && method.category != CategoryMethod) ||
+		class == nil || class.category != CategoryClass {
+		return context
+	}
+	instanceID := v.traceStack[len(v.traceStack)-1].context
+	instance := v.meta[instanceID]
+	if instance == nil || instance.category != CategoryInstance || !v.classHasBase(instance.classObject, classID, 0) {
+		return context
+	}
+	return ObjectValue(NewObjectRef(instanceID, instanceID))
+}
+
+func (v *VM) classHasBase(classID, targetID ObjectID, depth int) bool {
+	if depth >= 128 {
+		return false
+	}
+	if classID == targetID {
+		return true
+	}
+	class := v.meta[classID]
+	if class == nil || class.category != CategoryClass {
+		return false
+	}
+	for _, baseID := range class.classBases {
+		if baseID == targetID || v.classHasBase(baseID, targetID, depth+1) {
+			return true
+		}
+	}
+	return false
+}
+
 func (v *VM) classHasBaseNamed(classID ObjectID, name string, depth int) bool {
 	if depth >= 128 {
 		return false
@@ -2514,6 +2557,7 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 			context = ObjectValue(NewObjectRef(proxy.superContext, proxy.superContext))
 		}
 	}
+	context = v.forwardClassMethodReceiver(callee, context)
 	if (m.category == CategoryNative || m.category == CategoryMethod) && callee.ObjectRef().Context != 0 {
 		context = ObjectValue(NewObjectRef(callee.ObjectRef().Context, callee.ObjectRef().Context))
 	}
