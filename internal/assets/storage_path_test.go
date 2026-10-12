@@ -541,3 +541,27 @@ func BenchmarkLovelydayStorageExtensionProbes(b *testing.B) {
 		})
 	}
 }
+func TestStorageArchiveMemberFoundThroughAutoPath(t *testing.T) {
+	project := t.TempDir()
+	archivePath := filepath.Join(project, "data.xp3")
+	want := []byte("archive config")
+	if err := os.WriteFile(archivePath, xp3TestArchive("main/config.tjs", want), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.Mount(archivePath, core.DefaultLimits()); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.AddSearchPath("main/"); err != nil {
+		t.Fatal(err)
+	}
+	if resolved, err := storage.Resolve("Config.tjs"); err != nil || resolved != "main/config.tjs" {
+		t.Fatalf("Resolve(Config.tjs) = %q, %v; want main/config.tjs", resolved, err)
+	}
+	if got, err := storage.Read("Config.tjs"); err != nil || string(got) != string(want) {
+		t.Fatalf("Read(Config.tjs) = %q, %v; want archive member", got, err)
+	}
+}

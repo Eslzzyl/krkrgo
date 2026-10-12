@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"unicode/utf16"
 
@@ -388,5 +389,34 @@ func TestStoragesPathHelpersRecognizeBackslashDelimiter(t *testing.T) {
 	}
 	if got := chopStorageExt(`folder\\name.TJS`); got != `folder\\name` {
 		t.Errorf("chopped path = %q, want folder\\name", got)
+	}
+}
+func TestStoragesAutoPathFindsIslandDiaryArchiveConfig(t *testing.T) {
+	project := filepath.Join("..", "..", "testdata", "islanddiary")
+	storage, err := assets.OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for _, archive := range storage.Archives {
+			if err := archive.Close(); err != nil {
+				t.Errorf("close archive: %v", err)
+			}
+		}
+	}()
+	session := NewSession(NewServices(storage, "", core.DefaultLimits()), 50_000)
+	defer session.Close()
+	if _, err := session.Evaluate(`Storages.addAutoPath("main/")`); err != nil {
+		t.Fatal(err)
+	}
+	placed, err := session.Evaluate(`Storages.getPlacedPath("Config.tjs")`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := placed.Text(); !strings.HasSuffix(got, ">main/config.tjs") {
+		t.Fatalf("Storages.getPlacedPath(Config.tjs) = %q, want archive member >main/config.tjs", got)
+	}
+	if _, err := storage.Read("Config.tjs"); err != nil {
+		t.Fatalf("read archive config through auto path: %v", err)
 	}
 }
