@@ -75,7 +75,10 @@ func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Ho
 	resolve := func(receiver tjs.Value, name string) (tjs.Value, bool, error) {
 		return vm.GetMemberIfPresent(receiver, name, host, budget)
 	}
-	value, err := decoded.ExecuteLegacyWithContextAndConstructionAndPropertyResolver(top, legacyGlobal, context, evaluate, invoke, construct, resolve, vm.Objects)
+	set := func(receiver tjs.Value, name string, value tjs.Value, flags uint32) error {
+		return vm.SetMemberWithRuntime(receiver, name, value, flags, host, budget)
+	}
+	value, err := decoded.ExecuteLegacyWithContextAndConstructionAndMemberResolvers(top, legacyGlobal, context, evaluate, invoke, construct, resolve, set, vm.Objects)
 	if err != nil {
 		if strings.Contains(err.Error(), "unsupported ") {
 			return tjs.VoidValue, fmt.Errorf("%w: compiled TJS2100 %v", ErrUnsupportedNative, err)
@@ -112,7 +115,66 @@ func bindLegacyScriptFunctions(vm *tjs.VM, decoded *tjs.DecodedBytecode, global 
 			resolve := func(value tjs.Value, member string) (tjs.Value, bool, error) {
 				return vm.GetMemberIfPresent(value, member, callHost, callBudget)
 			}
-			return decoded.ExecuteLegacyWithContextAndConstructionAndArgumentsAndPropertyResolver(classIndex, global, receiver, args, callEvaluate, callInvoke, callConstruct, resolve, vm.Objects)
+			set := func(value tjs.Value, member string, assigned tjs.Value, flags uint32) error {
+				return vm.SetMemberWithRuntime(value, member, assigned, flags, callHost, callBudget)
+			}
+			return decoded.ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolvers(classIndex, global, receiver, args, callEvaluate, callInvoke, callConstruct, resolve, set, vm.Objects)
+		})
+	}
+	bindSuperclassGetter := func(classIndex int, class tjs.Value) error {
+		classObject := &decoded.Objects[classIndex]
+		getterIndex := int32(classObject.SuperclassGetter)
+		if getterIndex < 0 {
+			return nil
+		}
+		if getterIndex == int32(classIndex) {
+			return nil
+		}
+		if int(getterIndex) >= len(decoded.Objects) {
+			return fmt.Errorf("compiled TJS2100 superclass getter object index %d is out of range", getterIndex)
+		}
+		getterObject := &decoded.Objects[getterIndex]
+		if getterObject.ContextType != 7 {
+			if getterObject.ContextType == 0 && len(getterObject.SuperclassGetters) == 0 {
+				return nil
+			}
+			return fmt.Errorf("compiled TJS2100 superclass getter object %d has context type %d, want 7", getterIndex, getterObject.ContextType)
+		}
+		offsets := make([]int, len(getterObject.SuperclassGetters))
+		for i, offset := range getterObject.SuperclassGetters {
+			if offset < 0 || int(offset) >= len(getterObject.Code) {
+				return fmt.Errorf("compiled TJS2100 superclass getter code offset %d is out of range", offset)
+			}
+			offsets[i] = int(offset)
+		}
+		return vm.SetLegacyClassSuperclassGetter(class, offsets, func(offset int, callHost tjs.Host, callBudget *uint64) (tjs.Value, error) {
+			callEvaluate := func(source string, evalContext tjs.Value, resultNeeded bool) (tjs.Value, error) {
+				if source == "" {
+					return tjs.VoidValue, nil
+				}
+				program, compileErr := tjs.CompileExpression("<eval>", source)
+				if compileErr != nil {
+					return tjs.VoidValue, compileErr
+				}
+				value, evalErr := vm.ExecuteInContext(&program, evalContext, callHost, callBudget)
+				if evalErr != nil || resultNeeded {
+					return value, evalErr
+				}
+				return tjs.VoidValue, nil
+			}
+			callInvoke := func(callee, thisValue tjs.Value, args []tjs.Value, resultNeeded bool) (tjs.Value, error) {
+				return vm.InvokeLegacy(callee, thisValue, args, callHost, callBudget, resultNeeded)
+			}
+			callConstruct := func(value tjs.Value, args []tjs.Value) (tjs.Value, error) {
+				return vm.Construct(value, args, callHost, callBudget)
+			}
+			resolve := func(value tjs.Value, member string) (tjs.Value, bool, error) {
+				return vm.GetMemberIfPresent(value, member, callHost, callBudget)
+			}
+			set := func(value tjs.Value, member string, assigned tjs.Value, flags uint32) error {
+				return vm.SetMemberWithRuntime(value, member, assigned, flags, callHost, callBudget)
+			}
+			return decoded.ExecuteLegacyAtOffsetAndMemberResolvers(int(getterIndex), offset, global, global, callEvaluate, callInvoke, callConstruct, resolve, set, vm.Objects)
 		})
 	}
 	// Class member tables reference method objects independently of the class
@@ -150,6 +212,9 @@ func bindLegacyScriptFunctions(vm *tjs.VM, decoded *tjs.DecodedBytecode, global 
 		if err := bindClassBody(objectIndex, class); err != nil {
 			return fmt.Errorf("bind compiled TJS class body %d: %w", objectIndex, err)
 		}
+		if err := bindSuperclassGetter(objectIndex, class); err != nil {
+			return fmt.Errorf("bind compiled TJS superclass getter %d: %w", objectIndex, err)
+		}
 		functions[objectIndex] = class
 	}
 	for objectIndex := range decoded.Objects {
@@ -180,6 +245,9 @@ func bindLegacyScriptFunctions(vm *tjs.VM, decoded *tjs.DecodedBytecode, global 
 				}
 				if err := bindClassBody(index, class); err != nil {
 					return fmt.Errorf("bind compiled TJS class body %d: %w", index, err)
+				}
+				if err := bindSuperclassGetter(index, class); err != nil {
+					return fmt.Errorf("bind compiled TJS superclass getter %d: %w", index, err)
 				}
 				constant.Value = class
 				continue
@@ -217,7 +285,10 @@ func bindLegacyScriptFunctions(vm *tjs.VM, decoded *tjs.DecodedBytecode, global 
 					resolve := func(value tjs.Value, member string) (tjs.Value, bool, error) {
 						return vm.GetMemberIfPresent(value, member, callHost, callBudget)
 					}
-					return decoded.ExecuteLegacyWithContextAndConstructionAndArgumentsAndPropertyResolver(index, global, receiver, args, callEvaluate, callInvoke, callConstruct, resolve, vm.Objects)
+					set := func(value tjs.Value, member string, assigned tjs.Value, flags uint32) error {
+						return vm.SetMemberWithRuntime(value, member, assigned, flags, callHost, callBudget)
+					}
+					return decoded.ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolvers(index, global, receiver, args, callEvaluate, callInvoke, callConstruct, resolve, set, vm.Objects)
 				})
 				if err != nil {
 					return err
@@ -288,8 +359,11 @@ func bindLegacyScriptFunctions(vm *tjs.VM, decoded *tjs.DecodedBytecode, global 
 		resolve := func(receiver tjs.Value, name string) (tjs.Value, bool, error) {
 			return vm.GetMemberIfPresent(receiver, name, host, budget)
 		}
-		if _, err := decoded.ExecuteLegacyWithContextAndConstructionAndPropertyResolver(
-			objectIndex, global, class, callEvaluate, callInvoke, callConstruct, resolve, vm.Objects,
+		set := func(receiver tjs.Value, name string, value tjs.Value, flags uint32) error {
+			return vm.SetMemberWithRuntime(receiver, name, value, flags, host, budget)
+		}
+		if _, err := decoded.ExecuteLegacyWithContextAndConstructionAndMemberResolvers(
+			objectIndex, global, class, callEvaluate, callInvoke, callConstruct, resolve, set, vm.Objects,
 		); err != nil {
 			return fmt.Errorf("initialize compiled TJS2100 class %d: %w", objectIndex, err)
 		}

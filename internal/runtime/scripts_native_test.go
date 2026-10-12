@@ -668,6 +668,44 @@ func TestLegacyObjectConstantCallsStringMethod(t *testing.T) {
 		t.Fatalf("legacy String.toLowerCase call = %q, %v; want mixed", got.Text(), err)
 	}
 }
+func TestLegacyClassBindsDeferredSuperclassGetter(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	decoded := &tjs.DecodedBytecode{
+		Strings: []string{"", "Derived", "Base"},
+		Objects: []tjs.BytecodeObject{
+			{},
+			{
+				Name:             1,
+				ContextType:      6,
+				SuperclassGetter: 2,
+			},
+			{
+				Parent:            1,
+				ContextType:       7,
+				MaxVariables:      1,
+				SuperclassGetters: []int32{0},
+				Constants:         []tjs.BytecodeConstant{{Type: 2, Index: 3}},
+				Code:              []int16{1, 0, 0, 118, 0, 119},
+			},
+			{Name: 2, ContextType: 6},
+		},
+	}
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	if err := bindLegacyScriptFunctions(session.VM, decoded, global, session.Services, nil); err != nil {
+		t.Fatal(err)
+	}
+	derived := session.VM.Globals["Derived"]
+	base := session.VM.Globals["Base"]
+	if err := session.VM.RegisterNativeStaticValue(base, "inheritedValue", tjs.IntegerValue(73)); err != nil {
+		t.Fatal(err)
+	}
+	var budget uint64 = 100_000
+	got, found, err := session.VM.GetMemberIfPresent(derived, "inheritedValue", session.Services, &budget)
+	if err != nil || !found || !got.StrictEqual(tjs.IntegerValue(73)) {
+		t.Fatalf("derived inherited value = %v, found=%t, err=%v; want 73", got, found, err)
+	}
+}
 func TestScriptsStorageExecutesModeOneTextStream(t *testing.T) {
 	source := "global.mode_one_script_value=31;"
 	data, err := assets.EncodeUnits(utf16.Encode([]rune(source)), "c1")

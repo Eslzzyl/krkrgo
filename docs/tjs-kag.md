@@ -35,7 +35,7 @@ The official C++ runtime initializes the TJS preprocessor symbol `kirikiriz` to 
 
 ### Known TJS gaps
 
-- Session storage execution supports source TJS and the implemented compiled `TJS2` intercode subset, including `TYPEOF` (in-place conversion to the TJS type name), class-object constants, class-body initialization, member methods, and VM construction. Unsupported bytecode instructions still return explicit errors.
+- Session storage execution supports source TJS and the implemented compiled `TJS2` intercode subset, including `TYPEOF` (in-place conversion to the TJS type name), class-object constants, class-body initialization, deferred superclass getters, member methods, and VM construction. Unsupported bytecode instructions still return explicit errors.
 - Registered `Scripts.compileStorage`, `Scripts.dump`, and object-valued `Scripts.setCallMissing` operations return unsupported errors: bytecode output, heap dumping, and missing-member dispatch are unavailable.
 - `Scripts.textEncoding` applies to `Scripts` storage execution; `Session.ExecuteStorage` retains its separate automatic-decoding behavior.
 - Class member modifiers such as `static`, `private`, and `protected` remain unsupported by the compiler.

@@ -1,6 +1,7 @@
 package tjs
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -9,6 +10,19 @@ import (
 type vmTestHost struct{}
 
 func (vmTestHost) Call(_ *VM, _ string, _ []Value, _ *uint64) (Value, error) { return VoidValue, nil }
+
+type vmSuperclassInitHost struct{ called bool }
+
+func (vmSuperclassInitHost) Call(_ *VM, _ string, _ []Value, _ *uint64) (Value, error) {
+	return VoidValue, nil
+}
+
+func (h *vmSuperclassInitHost) CallWithContext(_ *VM, name string, _ Value, _ []Value, _ *uint64) (Value, error) {
+	if name == "SuperclassGetterBaseInitialize" {
+		h.called = true
+	}
+	return VoidValue, nil
+}
 
 type vmRecordingTraceHost struct{ instructions []Instruction }
 type vmGlobalConstructionHost struct {
@@ -1176,5 +1190,140 @@ func TestVMRejectsMalformedArgumentDescriptors(t *testing.T) {
 		if _, err := NewVM().Execute(&program, vmTestHost{}, nil); err == nil {
 			t.Fatalf("malformed program %s was accepted", program.Storage)
 		}
+	}
+}
+
+func TestLegacySuperclassGetterResolvesBasesInReverseOrder(t *testing.T) {
+	vm := NewVM()
+	baseA, err := vm.RegisterLegacyClass("SuperclassGetterBaseA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseB, err := vm.RegisterLegacyClass("SuperclassGetterBaseB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, base := range []Value{baseA, baseB} {
+		id := base.ObjectRef().Object
+		if err := vm.setMember(id, StringValue("inherited"), base); err != nil {
+			t.Fatal(err)
+		}
+	}
+	derived, err := vm.RegisterLegacyClass("SuperclassGetterDerived")
+	if err != nil {
+		t.Fatal(err)
+	}
+	derivedID := derived.ObjectRef().Object
+	host := &vmTestHost{}
+	budget := uint64(9)
+	var offsets []int
+	if err := vm.SetLegacyClassSuperclassGetter(derived, []int{11, 22}, func(offset int, gotHost Host, gotBudget *uint64) (Value, error) {
+		if gotHost != host || gotBudget != &budget {
+			t.Fatal("superclass getter did not receive the active host and budget")
+		}
+		offsets = append(offsets, offset)
+		if offset == 22 {
+			return baseB, nil
+		}
+		return baseA, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := vm.GetMemberIfPresent(derived, "inherited", host, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || !got.StrictEqual(baseB) {
+		t.Fatalf("inherited member = %v, present=%t; want reverse-precedence base %v", got, ok, baseB)
+	}
+	if !reflect.DeepEqual(offsets, []int{22}) {
+		t.Fatalf("superclass getter offsets = %v, want lazy reverse-first [22]", offsets)
+	}
+	if _, _, err := vm.GetMemberIfPresent(derived, "inherited", host, &budget); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(offsets, []int{22}) {
+		t.Fatalf("cached superclass getter ran again: %v", offsets)
+	}
+	if gotBases := vm.meta[derivedID].superclassBases; !reflect.DeepEqual(gotBases, []ObjectID{0, baseB.ObjectRef().Object}) {
+		t.Fatalf("cached superclass bases = %v, want [0 %d]", gotBases, baseB.ObjectRef().Object)
+	}
+}
+
+func TestLegacySuperclassGetterWithoutGetterIsNoop(t *testing.T) {
+	vm := NewVM()
+	derived, err := vm.RegisterLegacyClass("SuperclassGetterWithoutGetter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	derivedID := derived.ObjectRef().Object
+	if _, ok, err := vm.GetMemberIfPresent(derived, "absent", vmTestHost{}, nil); err != nil || ok {
+		t.Fatalf("missing superclass member = present %t, error %v; want absent without error", ok, err)
+	}
+	if len(vm.meta[derivedID].superclassBases) != 0 {
+		t.Fatalf("missing getter linked superclass bases: %v", vm.meta[derivedID].superclassBases)
+	}
+}
+func TestLegacySuperclassGetterRecursionAndErrorContext(t *testing.T) {
+	t.Run("recursive lookup", func(t *testing.T) {
+		vm := NewVM()
+		derived, err := vm.RegisterLegacyClass("SuperclassGetterRecursive")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := vm.SetLegacyClassSuperclassGetter(derived, []int{31}, func(_ int, host Host, budget *uint64) (Value, error) {
+			_, _, err := vm.GetMemberIfPresent(derived, "absent", host, budget)
+			return VoidValue, err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err = vm.GetMemberIfPresent(derived, "absent", vmTestHost{}, nil)
+		if err == nil || !strings.Contains(err.Error(), "recursive TJS superclass getter") || !strings.Contains(err.Error(), "offset 31") {
+			t.Fatalf("recursive getter error = %v, want recursion and getter-offset context", err)
+		}
+	})
+	t.Run("getter failure context", func(t *testing.T) {
+		vm := NewVM()
+		derived, err := vm.RegisterLegacyClass("SuperclassGetterFailure")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := vm.SetLegacyClassSuperclassGetter(derived, []int{47}, func(_ int, _ Host, _ *uint64) (Value, error) {
+			return VoidValue, errors.New("getter failure")
+		}); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err = vm.GetMemberIfPresent(derived, "absent", vmTestHost{}, nil)
+		if err == nil || !strings.Contains(err.Error(), "TJS superclass getter at offset 47") || !strings.Contains(err.Error(), "getter failure") {
+			t.Fatalf("getter failure = %v, want offset and underlying error context", err)
+		}
+	})
+}
+
+func TestLegacySuperclassGetterInitializesBaseDuringConstruction(t *testing.T) {
+	vm := NewVM()
+	base, err := vm.RegisterLegacyClass("SuperclassGetterConstructBase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.RegisterNativeMethod(base, "@initialize", "SuperclassGetterBaseInitialize"); err != nil {
+		t.Fatal(err)
+	}
+	derived, err := vm.RegisterLegacyClass("SuperclassGetterConstructDerived")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetLegacyClassSuperclassGetter(derived, []int{7}, func(_ int, _ Host, _ *uint64) (Value, error) {
+		return base, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	host := &vmSuperclassInitHost{}
+	budget := uint64(20)
+	if _, err := vm.Construct(derived, nil, host, &budget); err != nil {
+		t.Fatal(err)
+	}
+	if !host.called {
+		t.Fatal("base initializer was not called during construction")
 	}
 }

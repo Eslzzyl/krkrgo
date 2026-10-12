@@ -58,6 +58,9 @@ func (v *VM) markObject(id ObjectID, seen map[ObjectID]struct{}, pending *[]Obje
 		for _, base := range m.classBases {
 			markObjectID(base, seen, pending)
 		}
+		for _, base := range m.superclassBases {
+			markObjectID(base, seen, pending)
+		}
 		for _, x := range m.array {
 			markValue(x, seen, pending)
 		}
