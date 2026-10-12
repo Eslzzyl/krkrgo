@@ -47,6 +47,34 @@ func TestComposeAlphaFastPathMatchesGeneralBlendOverOpaqueDestination(t *testing
 		t.Fatalf("alpha fast path differs from general blend")
 	}
 }
+
+func TestDrawLayerBinderForwardsInheritedTargetType(t *testing.T) {
+	root := NewRootLayer(1, 1, 1)
+	binder := NewLayer(2)
+	binder.Type = LayerBinder
+	binder.Bounds = Rect{Width: 1, Height: 1}
+	child := NewLayer(3)
+	child.Type = LayerPSNormal
+	if err := child.SetBounds(Rect{Width: 1, Height: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.SetRGBA(1, 1, []byte{200, 0, 0, 128}); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.AddChild(binder); err != nil {
+		t.Fatal(err)
+	}
+	if err := binder.AddChild(child); err != nil {
+		t.Fatal(err)
+	}
+	draw := drawContext{width: 1, height: 1, rgba: make([]byte, 4)}
+	if err := draw.drawLayer(root, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := draw.rgba; got[3] != 0 {
+		t.Fatalf("binder changed inherited alpha target: rgba=%v", got)
+	}
+}
 func TestDrawLayerAlphaFastPathMatchesBlendAcrossDestinationAlphaAndProvince(t *testing.T) {
 	const width = 256
 	layer := NewLayer(2)

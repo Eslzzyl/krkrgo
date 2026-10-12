@@ -149,8 +149,12 @@ func (d *drawContext) drawLayerTo(l *Layer, parentX, parentY int32, targetType L
 			}
 		}
 	}
+	childTargetType := l.Type
+	if l.Type == LayerBinder {
+		childTargetType = targetType
+	}
 	for _, child := range l.children {
-		if err := d.drawLayerTo(child, ax, ay, l.Type); err != nil {
+		if err := d.drawLayerTo(child, ax, ay, childTargetType); err != nil {
 			return err
 		}
 	}
