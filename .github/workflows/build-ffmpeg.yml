@@ -23,18 +23,13 @@ jobs:
             runner: ubuntu-24.04
             ffmpeg_os: linux
             ffmpeg_arch: x86_64
-            goos: linux
-            goarch: amd64
             cc: gcc
             cross_prefix: none
             install: gcc make nasm pkg-config
-            native_test: true
           - name: linux-aarch64
             runner: ubuntu-24.04
             ffmpeg_os: linux
             ffmpeg_arch: aarch64
-            goos: linux
-            goarch: arm64
             cc: aarch64-linux-gnu-gcc
             cross_prefix: aarch64-linux-gnu-
             install: gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu make nasm pkg-config
@@ -42,39 +37,28 @@ jobs:
             runner: macos-14
             ffmpeg_os: macos
             ffmpeg_arch: arm64
-            goos: darwin
-            goarch: arm64
             cc: clang
             cross_prefix: none
             install: nasm pkg-config
-            native_test: true
           - name: macos-x86_64
             runner: macos-13
             ffmpeg_os: macos
             ffmpeg_arch: x86_64
-            goos: darwin
-            goarch: amd64
             cc: clang
             cross_prefix: none
             install: nasm pkg-config
-            native_test: true
           - name: windows-x86_64
             runner: windows-2025
             ffmpeg_os: windows
             ffmpeg_arch: x86_64
-            goos: windows
-            goarch: amd64
             cc: x86_64-w64-mingw32-gcc
             cross_prefix: x86_64-w64-mingw32-
             msystem: MINGW64
             install: base-devel make mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-nasm
-            native_test: true
           - name: windows-arm64
             runner: windows-2025
             ffmpeg_os: windows
             ffmpeg_arch: aarch64
-            goos: windows
-            goarch: arm64
             cc: clang
             cross_prefix: none
             enable_cross_compile: '1'
@@ -88,7 +72,7 @@ jobs:
         shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
 
     steps:
-      - name: Checkout krkrgo
+      - name: Checkout build scripts
         uses: actions/checkout@v7
 
       - name: Install Linux tools
@@ -130,25 +114,13 @@ jobs:
           CROSS_PREFIX: ${{ matrix.cross_prefix }}
           ENABLE_CROSS_COMPILE: ${{ matrix.enable_cross_compile || '0' }}
           FFMPEG_SOURCE_DIR: ${{ github.workspace }}/ffmpeg-source
-          PREFIX: ${{ github.workspace }}/stage/krkrgo-${{ matrix.name }}
+          PREFIX: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
           BUILD_DIR: ${{ github.workspace }}/.build/ffmpeg-${{ matrix.name }}
         run: scripts/build-ffmpeg.sh
 
-      - name: Build Go binaries
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: '0'
-          PREFIX: ${{ github.workspace }}/stage/krkrgo-${{ matrix.name }}
-        run: |
-          suffix=
-          if [[ "$GOOS" == windows ]]; then suffix=.exe; fi
-          go build -trimpath -o "$PREFIX/krkrgo$suffix" ./cmd/krkrgo
-          go build -trimpath -o "$PREFIX/krkrgo-tool$suffix" ./cmd/krkrgo-tool
-
       - name: Check sidecar layout and dynamic dependencies
         env:
-          PREFIX: ${{ github.workspace }}/stage/krkrgo-${{ matrix.name }}
+          PREFIX: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
           FF_PLATFORM: ${{ matrix.ffmpeg_os }}
         run: |
           test -f "$PREFIX/LICENSES/FFmpeg/COPYING.LGPLv2.1"
@@ -169,21 +141,11 @@ jobs:
           esac
           test ! -d "$PREFIX/bin"
           test ! -d "$PREFIX/sbin"
-      - name: Run native sidecar tests
-        if: matrix.native_test == true
-        env:
-          PREFIX: ${{ github.workspace }}/stage/krkrgo-${{ matrix.name }}
-        run: |
-          ffmpeg_dir="$PREFIX/lib/ffmpeg"
-          if [[ "$RUNNER_OS" == Windows ]]; then
-            ffmpeg_dir=$(cygpath -w "$ffmpeg_dir")
-          fi
-          KRKRGO_FFMPEG_DIR="$ffmpeg_dir" go test ./internal/media/ffmpeg ./internal/runtime -count=1
 
       - name: Archive sidecar
         env:
-          PREFIX: ${{ github.workspace }}/stage/krkrgo-${{ matrix.name }}
-          ARCHIVE_NAME: krkrgo-${{ matrix.name }}
+          PREFIX: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
+          ARCHIVE_NAME: ffmpeg-${{ matrix.name }}
         run: |
           archive_path="$PWD/$ARCHIVE_NAME"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
@@ -195,9 +157,9 @@ jobs:
       - name: Upload sidecar
         uses: actions/upload-artifact@v7
         with:
-          name: krkrgo-${{ matrix.name }}
+          name: ffmpeg-${{ matrix.name }}
           path: |
-            krkrgo-${{ matrix.name }}.tar.gz
-            krkrgo-${{ matrix.name }}.zip
+            ffmpeg-${{ matrix.name }}.tar.gz
+            ffmpeg-${{ matrix.name }}.zip
           compression-level: 0
           if-no-files-found: error

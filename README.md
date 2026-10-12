@@ -86,7 +86,7 @@ PREFIX="$PWD/stage/krkrgo-macos-arm64" \
 scripts/build-ffmpeg.sh
 ```
 
-The workflow is [`.github/workflows/build-ffmpeg.yml`](.github/workflows/build-ffmpeg.yml). It packages the Go binaries, shared libraries, FFmpeg LGPL license, source version, and configure manifest.
+The workflow is [`.github/workflows/build-ffmpeg.yml`](.github/workflows/build-ffmpeg.yml). It builds and uploads only the FFmpeg shared libraries, LGPL license, source version, and configure manifest.
 
 The repository keeps generated binaries, profiles, logs, local replay data, and local test fixtures out of version control through [.gitignore](.gitignore).
 
