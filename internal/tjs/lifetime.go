@@ -61,7 +61,7 @@ func (v *VM) Invalidate(value Value, host Host, budget *uint64) (Value, error) {
 	if id == 0 {
 		return IntegerValue(0), nil
 	}
-	if m != nil && m.finalizer != "" {
+	if m != nil && (m.scriptFinalizer != 0 || m.finalizer != "") {
 		m.finalizing = true
 		if host == nil {
 			host = nopHost{}
@@ -70,7 +70,13 @@ func (v *VM) Invalidate(value Value, host Host, budget *uint64) (Value, error) {
 			x := uint64(1 << 62)
 			budget = &x
 		}
-		_, e = v.nativeCall(m.finalizer, value, nil, host, budget, true)
+		if m.scriptFinalizer != 0 {
+			finalizer := ObjectValue(NewObjectRef(m.scriptFinalizer, id))
+			_, e = v.invoke(finalizer, ObjectValue(NewObjectRef(id, id)), nil, host, budget, true)
+		}
+		if e == nil && m.finalizer != "" {
+			_, e = v.nativeCall(m.finalizer, value, nil, host, budget, true)
+		}
 		m.finalizing = false
 		if e != nil {
 			return VoidValue, e

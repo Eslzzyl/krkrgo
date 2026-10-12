@@ -557,6 +557,16 @@ func (s *Services) callbackValueValid(vm *tjs.VM, value tjs.Value) bool {
 	return object.Category == tjs.CategoryFunction || object.Category == tjs.CategoryNative || object.Category == tjs.CategoryMethod
 }
 
+func continuousHandlerValid(vm *tjs.VM, callback tjs.Value, ref tjs.ObjectRef) bool {
+	if vm.IsValid(callback).IntegerValue() == 0 {
+		return false
+	}
+	if ref.Context != 0 && vm.IsValid(tjs.ObjectValue(tjs.NewObjectRef(ref.Context))).IntegerValue() == 0 {
+		return false
+	}
+	return true
+}
+
 func (s *Services) invokeContinuousHandlers(vm *tjs.VM, tick uint64, budget *uint64) error {
 	if vm == nil {
 		return fmt.Errorf("continuous handler requires a VM")
@@ -581,6 +591,18 @@ func (s *Services) invokeContinuousHandlers(vm *tjs.VM, tick uint64, budget *uin
 	trace := os.Getenv("KRKRGO_CONTINUOUS_TRACE") != ""
 	args := [1]tjs.Value{tjs.IntegerValue(int64(tick))}
 	for index, callback := range handlers {
+		ref := callback.ObjectRef()
+		if !continuousHandlerValid(vm, callback, ref) {
+			s.mu.Lock()
+			for i, existing := range s.ContinuousHandlers {
+				if sameContinuousHandler(existing, callback) {
+					s.ContinuousHandlers = append(s.ContinuousHandlers[:i], s.ContinuousHandlers[i+1:]...)
+					break
+				}
+			}
+			s.mu.Unlock()
+			continue
+		}
 		started := time.Time{}
 		if trace {
 			started = time.Now()

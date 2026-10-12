@@ -441,3 +441,35 @@ overlap.copyRect(0, 0, overlap, 1, 0, 3, 1);
 		}
 	}
 }
+
+func TestNativeLayerAffineCopyPointsPreservesPixelAlignment(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	if _, err := session.executeSource("<layer-affine-points-test>", `
+src = new Layer(); dst = new Layer();
+src.setImageSize(2, 1); src.face = dfBoth;
+src.fillRect(0, 0, 1, 1, 0xff102030);
+src.fillRect(1, 0, 1, 1, 0xffa0b0c0);
+dst.setImageSize(2, 1); dst.face = dfBoth;
+dst.affineCopy(src, 0, 0, 2, 1, false, -0.5, -0.5, 1.5, -0.5, -0.5, 0.5, stNearest | stRefNoClip, true);
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	read := func(expression string) int64 {
+		t.Helper()
+		value, err := session.Evaluate(expression)
+		if err != nil {
+			t.Fatal(expression, err)
+		}
+		result, err := value.Int()
+		if err != nil {
+			t.Fatal(expression, err)
+		}
+		return result
+	}
+	if got := [2]int64{read(`dst.getMainPixel(0,0)`), read(`dst.getMainPixel(1,0)`)}; got != [2]int64{0x102030, 0xa0b0c0} {
+		t.Fatalf("affineCopy points RGB = %#x, want %#x", got, [2]int64{0x102030, 0xa0b0c0})
+	}
+	if got := [2]int64{read(`dst.getMaskPixel(0,0)`), read(`dst.getMaskPixel(1,0)`)}; got != [2]int64{255, 255} {
+		t.Fatalf("affineCopy points alpha = %v, want [255 255]", got)
+	}
+}

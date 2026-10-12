@@ -31,9 +31,8 @@ func TestTextModesAndUnits(t *testing.T) {
 		t.Errorf("Shift-JIS: %q, %v", got, err)
 	}
 }
-func TestGBKScriptFixture(t *testing.T) {
-	// These bytes are copied from the BOM-less legacy text in
-	// testdata/amairo's sysscn/system.tjs.
+func TestGBKScriptText(t *testing.T) {
+	// BOM-less legacy script text fixture.
 	data := []byte{
 		'/', '/', ' ',
 		0xb8, 0xf7, 0xb7, 0x4e, 0xbd, 0x4b, 0xc1, 0xcb, 0x84, 0x49,

@@ -68,6 +68,7 @@ type vmObject struct {
 	lexicalContext          ObjectID
 	nativeStatic            bool
 	finalizer               string
+	scriptFinalizer         ObjectID
 	finalizing              bool
 }
 
@@ -2905,6 +2906,13 @@ func (v *VM) constructWithMemberTarget(callee Value, args []Value, targetObject,
 	} else if ok {
 		if invalidatorID, invalidatorErr := v.handle(invalidator); invalidatorErr == nil && v.meta[invalidatorID] != nil && v.meta[invalidatorID].category == CategoryNative {
 			v.meta[instanceID].finalizer = v.meta[invalidatorID].native
+		}
+	}
+	if finalizer, ok, lookupErr := v.getMemberWithRuntime(instanceID, StringValue("finalize"), h, b); lookupErr != nil {
+		return VoidValue, lookupErr
+	} else if ok {
+		if finalizerID, finalizerErr := v.handle(finalizer); finalizerErr == nil && v.meta[finalizerID] != nil && v.meta[finalizerID].category == CategoryFunction {
+			v.meta[instanceID].scriptFinalizer = finalizerID
 		}
 	}
 	return instance, nil

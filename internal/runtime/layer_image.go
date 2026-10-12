@@ -1141,6 +1141,12 @@ func (s *Services) layerAffineCopy(l *Layer, args []tjs.Value) error {
 		matrix[1] = (values[3] - values[1]) / float64(swidth)
 		matrix[2] = (values[4] - values[0]) / float64(sheight)
 		matrix[3] = (values[5] - values[1]) / float64(sheight)
+		// Points mode supplies the destination position of the source
+		// rectangle's top-left pixel edge. Convert that edge position into
+		// the translation for the source-center coordinate system used by
+		// affineCopyPixels.
+		matrix[4] = values[0] + 0.5*(matrix[0]+matrix[2])
+		matrix[5] = values[1] + 0.5*(matrix[1]+matrix[3])
 	} else {
 		matrix[4] = values[4] - 0.5*values[0] - 0.5*values[2]
 		matrix[5] = values[5] - 0.5*values[1] - 0.5*values[3]

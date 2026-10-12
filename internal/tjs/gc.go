@@ -55,6 +55,7 @@ func (v *VM) markObject(id ObjectID, seen map[ObjectID]struct{}, pending *[]Obje
 		markObjectID(m.superContext, seen, pending)
 		markObjectID(m.lexicalContext, seen, pending)
 		markObjectID(m.superOwner, seen, pending)
+		markObjectID(m.scriptFinalizer, seen, pending)
 		for _, base := range m.classBases {
 			markObjectID(base, seen, pending)
 		}

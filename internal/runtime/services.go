@@ -133,6 +133,9 @@ type Services struct {
 	AudioMixer               *AudioMixer
 	Dialogs                  *DialogService
 	Layers                   map[tjs.ObjectID]*Layer
+	MotionResources          map[tjs.ObjectID]*motionResource
+	MotionPlayers            map[tjs.ObjectID]*motionPlayerState
+	MotionAdaptors           map[tjs.ObjectID]tjs.ObjectID
 	Bitmaps                  map[tjs.ObjectID]*Bitmap
 	Fonts                    map[tjs.ObjectID]*FontState
 	TextRenderers            map[tjs.ObjectID]*textRenderState
@@ -345,7 +348,7 @@ func NewServices(storage *assets.Storage, saveDir string, limits core.Limits) *S
 		appLocks:                make(map[string]struct{}),
 		Dates:                   make(map[tjs.ObjectID]*tjs.Date),
 		LayerCursors:            make(map[tjs.ObjectID]tjs.Value),
-		Arguments:               make(map[string]string), MessageMap: make(map[string]string), Natives: NewNativeRegistry(), KAGParsers: make(map[tjs.ObjectID]*KAGParser), CSVParsers: make(map[tjs.ObjectID]*csvParserState), Videos: make(map[tjs.ObjectID]*VideoOverlay), Sounds: make(map[tjs.ObjectID]*WaveSoundBuffer), SoundEvents: make(map[tjs.ObjectID][]SoundEvent), Layers: make(map[tjs.ObjectID]*Layer), Bitmaps: make(map[tjs.ObjectID]*Bitmap), Fonts: make(map[tjs.ObjectID]*FontState), TextRenderers: make(map[tjs.ObjectID]*textRenderState), LayerFonts: make(map[tjs.ObjectID]tjs.ObjectID), LayerDefaultFonts: make(map[tjs.ObjectID]tjs.ObjectID), LayerChildren: make(map[tjs.ObjectID]tjs.Value),
+		Arguments:               make(map[string]string), MessageMap: make(map[string]string), Natives: NewNativeRegistry(), KAGParsers: make(map[tjs.ObjectID]*KAGParser), CSVParsers: make(map[tjs.ObjectID]*csvParserState), Videos: make(map[tjs.ObjectID]*VideoOverlay), Sounds: make(map[tjs.ObjectID]*WaveSoundBuffer), SoundEvents: make(map[tjs.ObjectID][]SoundEvent), Layers: make(map[tjs.ObjectID]*Layer), MotionResources: make(map[tjs.ObjectID]*motionResource), MotionPlayers: make(map[tjs.ObjectID]*motionPlayerState), MotionAdaptors: make(map[tjs.ObjectID]tjs.ObjectID), Bitmaps: make(map[tjs.ObjectID]*Bitmap), Fonts: make(map[tjs.ObjectID]*FontState), TextRenderers: make(map[tjs.ObjectID]*textRenderState), LayerFonts: make(map[tjs.ObjectID]tjs.ObjectID), LayerDefaultFonts: make(map[tjs.ObjectID]tjs.ObjectID), LayerChildren: make(map[tjs.ObjectID]tjs.Value),
 	}
 }
 func DefaultServices() *Services { return NewServices(nil, "", core.DefaultLimits()) }
@@ -1884,6 +1887,12 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 	}
 	if strings.HasPrefix(name, "Motion.ResourceManager.") {
 		return s.motionResourceManagerNative(vm, context, strings.TrimPrefix(name, "Motion.ResourceManager."), args)
+	}
+	if strings.HasPrefix(name, "Motion.Player.") {
+		return s.motionPlayerNative(vm, context, strings.TrimPrefix(name, "Motion.Player."), args)
+	}
+	if strings.HasPrefix(name, "Motion.SeparateLayerAdaptor.") {
+		return s.motionSeparateLayerAdaptorNative(context, strings.TrimPrefix(name, "Motion.SeparateLayerAdaptor."), args)
 	}
 	if strings.HasPrefix(name, "PSBFile.") {
 		return s.psbFileNative(vm, context, strings.TrimPrefix(name, "PSBFile."), args)

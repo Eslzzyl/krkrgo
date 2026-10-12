@@ -267,6 +267,21 @@ func TestVMInvalidationAndStableIDs(t *testing.T) {
 	}
 }
 
+func TestVMScriptFinalizeRunsOnInvalidation(t *testing.T) {
+	got := executeVMSource(t, `
+var finalized = 0;
+class Resource {
+	function finalize() { finalized++; }
+}
+var resource = new Resource();
+invalidate resource;
+return finalized;
+`)
+	if n, _ := got.Int(); n != 1 {
+		t.Fatalf("finalize count = %v, want 1", got)
+	}
+}
+
 type vmNativeClassHost struct {
 	initialized ObjectID
 	invalidated ObjectID

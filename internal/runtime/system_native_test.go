@@ -303,6 +303,35 @@ func TestSystemContinuousHandlersKeepBoundContextsDistinct(t *testing.T) {
 		t.Fatal("removing one bound method removed another instance's handler")
 	}
 }
+func TestSystemContinuousHandlersDropInvalidatedBoundContext(t *testing.T) {
+	services := DefaultServices()
+	session := NewSession(services, 10000)
+	defer session.Close()
+	if _, err := session.executeSource("<system-invalidated-handler-test>", `
+		class Handler {
+			function run(tick) {}
+		}
+		handler = new Handler();
+		System.addContinuousHandler(handler.run);
+	`, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Tick(1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Evaluate("invalidate handler"); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Tick(2); err != nil {
+		t.Fatal(err)
+	}
+	services.mu.RLock()
+	count := len(services.ContinuousHandlers)
+	services.mu.RUnlock()
+	if count != 0 {
+		t.Fatalf("continuous handler count = %d, want 0 after bound context invalidation", count)
+	}
+}
 
 func TestSystemContinuousHandlerMutationUsesTickSnapshot(t *testing.T) {
 	services := DefaultServices()

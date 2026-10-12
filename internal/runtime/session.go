@@ -108,14 +108,14 @@ func openProjectStorage(project string, limits core.Limits) (*assets.Storage, st
 	if _, err := storage.Resolve("startup.tjs"); err == nil {
 		return storage, filepath.Join(storage.Project, "savedata"), nil
 	} else if !errors.Is(err, assets.ErrNotFound) {
-		return nil, "", fmt.Errorf("resolve project startup %q: %w", filepath.Join(storage.Project, "startup.tjs"), err)
+		return nil, "", fmt.Errorf("resolve project startup %q: %w", filepath.Join(project, "startup.tjs"), err)
 	}
 
 	dataDir := filepath.Join(storage.Project, "data")
 	dataStorage, err := assets.OpenStorage(dataDir, limits)
 	if err != nil {
 		return nil, "", fmt.Errorf("project startup.tjs not found; checked %q and %q: %w",
-			filepath.Join(storage.Project, "startup.tjs"), filepath.Join(dataDir, "startup.tjs"), err)
+			filepath.Join(project, "startup.tjs"), filepath.Join(project, "data", "startup.tjs"), err)
 	}
 	if _, err := dataStorage.Resolve("startup.tjs"); err == nil {
 		for _, archive := range dataStorage.Archives {
@@ -142,13 +142,13 @@ func openProjectStorage(project string, limits core.Limits) (*assets.Storage, st
 		for _, archive := range dataStorage.Archives {
 			_ = archive.Close()
 		}
-		return nil, "", fmt.Errorf("resolve project startup %q: %w", filepath.Join(dataStorage.Project, "startup.tjs"), err)
+		return nil, "", fmt.Errorf("resolve project startup %q: %w", filepath.Join(project, "data", "startup.tjs"), err)
 	}
 	for _, archive := range dataStorage.Archives {
 		_ = archive.Close()
 	}
 	return nil, "", fmt.Errorf("project startup.tjs not found; checked %q and %q",
-		filepath.Join(storage.Project, "startup.tjs"), filepath.Join(dataStorage.Project, "startup.tjs"))
+		filepath.Join(project, "startup.tjs"), filepath.Join(project, "data", "startup.tjs"))
 }
 func FromStorage(storage *assets.Storage, saveDir string, budget uint64) (*Session, error) {
 	return fromStorage(storage, saveDir, "", budget)
@@ -817,6 +817,28 @@ func (s *Session) AdvanceClock(timeMS uint64) error {
 	s.Services.clockPolls = 0
 	return nil
 }
+
+// updateScriptWorld refreshes environment-backed script layers before capture.
+// The reference host performs this after dispatching the frame's script events.
+func (s *Session) updateScriptWorld() error {
+	world, err := s.VM.GetMember(tjs.ObjectValue(tjs.NewObjectRef(0, 1)), "world_object", s.Services, &s.Budget)
+	if err != nil {
+		return err
+	}
+	if world.Kind() != tjs.KindObject || world.IsNull() {
+		return nil
+	}
+	updateAll, err := s.VM.GetMember(world, "updateAll", s.Services, &s.Budget)
+	if err != nil {
+		return err
+	}
+	if updateAll.Kind() == tjs.KindVoid {
+		return nil
+	}
+	_, err = s.VM.CallFunction(updateAll, world, []tjs.Value{tjs.IntegerValue(1)}, s.Services, &s.Budget)
+	return err
+}
+
 func (s *Session) Tick(timeMS uint64) error { return s.TickWithFrameSink(timeMS, nil) }
 func (s *Session) TickWithFrameSink(timeMS uint64, sink func(uint64, FrameSnapshot)) error {
 	if err := s.checkOpen(); err != nil {
@@ -846,6 +868,10 @@ func (s *Session) TickWithFrameSink(timeMS uint64, sink func(uint64, FrameSnapsh
 		return err
 	}
 	if err := s.DispatchEvents(); err != nil {
+		restore()
+		return err
+	}
+	if err := s.updateScriptWorld(); err != nil {
 		restore()
 		return err
 	}
@@ -927,6 +953,13 @@ func (s *Session) TickForPresentation(timeMS uint64) (FrameSnapshot, error) {
 		stageStarted = time.Now()
 	}
 	if err := s.DispatchEvents(); err != nil {
+		if profile {
+			dispatchTime = time.Since(stageStarted)
+		}
+		restore()
+		return FrameSnapshot{}, err
+	}
+	if err := s.updateScriptWorld(); err != nil {
 		if profile {
 			dispatchTime = time.Since(stageStarted)
 		}

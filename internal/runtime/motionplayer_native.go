@@ -6,9 +6,8 @@ import (
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
-// installMotionPlayerNative installs the portable Motion namespace and its
-// storage-backed ResourceManager subset. Motion's animation/rendering classes
-// remain unavailable; the namespace itself is not an empty success shim.
+// installMotionPlayerNative installs the portable Motion namespace, PSB
+// resource loading, and the player surface used by motion-backed layers.
 func installMotionPlayerNative(vm *tjs.VM) error {
 	if vm == nil {
 		return fmt.Errorf("motionplayer.dll requires a VM")
@@ -57,6 +56,40 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 			return err
 		}
 	}
+	player, err := vm.RegisterNativeClass("Motion.Player")
+	if err != nil {
+		return err
+	}
+	if err := class.Set("Player", player); err != nil {
+		return err
+	}
+	for _, method := range []string{"@initialize", "@invalidate", "Player", "finalize", "play", "stop", "progress", "clear", "draw", "setVariable", "getVariable", "skipToSync", "setDrawAffineTranslateMatrix"} {
+		if err := vm.RegisterNativeMethod(player, method, "Motion.Player."+method); err != nil {
+			return err
+		}
+	}
+	for _, property := range []string{"chara", "motion", "tickCount", "speed", "playing", "allplaying", "tags", "completionType", "outline", "onAction"} {
+		setter := "Motion.Player.set:" + property
+		switch property {
+		case "playing", "allplaying", "tags":
+			setter = ""
+		}
+		if err := vm.RegisterNativeProperty(player, property, "Motion.Player.get:"+property, setter); err != nil {
+			return err
+		}
+	}
+	adaptor, err := vm.RegisterNativeClass("Motion.SeparateLayerAdaptor")
+	if err != nil {
+		return err
+	}
+	if err := class.Set("SeparateLayerAdaptor", adaptor); err != nil {
+		return err
+	}
+	for _, method := range []string{"@initialize", "@invalidate", "SeparateLayerAdaptor", "finalize"} {
+		if err := vm.RegisterNativeMethod(adaptor, method, "Motion.SeparateLayerAdaptor."+method); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -74,15 +107,27 @@ func (s *Services) motionResourceManagerNative(vm *tjs.VM, context tjs.Value, op
 		}
 		path := args[0].Text()
 		if tjs.HasMember(vm.Objects, cache, path) {
+			if s.motionResource(path, context.ObjectRef().Object) == nil {
+				resource, err := s.loadMotionResource(path)
+				if err != nil {
+					return tjs.VoidValue, err
+				}
+				s.setMotionResource(context.ObjectRef().Object, resource)
+			}
 			return tjs.GetMember(vm.Objects, cache, path)
 		}
-		value, err := s.loadPSBRoot(vm, path)
+		resource, err := s.loadMotionResource(path)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		value, err := psbValueToTJS(vm, resource.doc.Root, resource.data, 0)
 		if err != nil {
 			return tjs.VoidValue, err
 		}
 		if err := tjs.SetMember(vm.Objects, cache, path, value); err != nil {
 			return tjs.VoidValue, err
 		}
+		s.setMotionResource(context.ObjectRef().Object, resource)
 		return value, nil
 	case "unload":
 		if len(args) == 0 {
