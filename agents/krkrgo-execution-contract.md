@@ -70,7 +70,7 @@
 - The required krkr2 path `/Users/eslzzyl/WorkSpace/Go/krkrgo/reference/krkr2-main` is now available for direct read/glob inspection; implementation facts must cite files under this path.
 - `internal/host/ebiten.go` now has an opaque-pixel conversion fast path and changed-bounds subimage upload below half-frame area. Darwin arm64 720p benchmarks are about 2.24–2.32 ms/op with zero allocations for unchanged opaque frames and 2.24–2.35 ms/op with 5–6 B/op amortized for a single-pixel change; the earlier baseline was 4.740 ms/op. Focused host tests, full tests, build, vet and byte-identical replay checks pass.
 
-- lovelyday startup stops at `logo.wmv`: the Go runtime classifies ASF/WMV as `ErrVideoWindowsMediaBackendUnavailable` wrapped by `ErrVideoUnsupported`. Official C++ `krmovie` uses Windows Media/DirectShow; no pure-Go WMV/VC-1 decoder is present.
+- lovelyday startup now enters the FFmpeg-backed ASF/WMV path. The runtime requires the packaged FFmpeg sidecar for WMV3/WMA2 decoding; the sidecar build is defined by `scripts/build-ffmpeg.sh` and `.github/workflows/build-ffmpeg.yml`.
 - Current testdata validation is the active workstream. `testdata/amairo` reaches the initial 1280×720 frame with empty replay input; fresh-save replay reaches 30 seconds without an error and reports `custom.ks:*caution`. The 10-second checkpoint reports `System.title="天色幻想岛 (V1.2016.02.07)"` and `typeof Window.mainWindow="Object"`. The stable frame hash remains `771fa16b358e3195e00973cb8baa582a84f3c38d9ab2218742169515211b9889`.
 - Generic fixes in this path include Window rectangle dictionaries, `RegExp.match`, `Storages.getLocalName`, Window.drawDevice, VM static-property resolution for legacy TJS2100, and WindowEx/MenuItem installation.
 - `testdata/islanddiary` now passes EXTRY, SUB, legacy `RegExp._compile`, ScriptsEx link/partial reflection, and the observed BGM class constant lookup. With temporary `/tmp/krkrgo-islanddiary-data/Config.tjs -> main/config.tjs`, replay loads AppConfig, Config, KAG startup, LayerEx.tjs, and `system/bgm.tjs`; the current exact blocker is compiled class object 1 initialization at legacy offset 15: `CALL Object: TJS object is not callable`. The preceding `property target is void` was caused by the missing ContextType=6 class materialization. Reference path semantics still leave the extracted `main/config.tjs` outside the selected project root.
@@ -106,11 +106,11 @@
 - The latest user instruction selected `cline-pass/deepseek-v4.1-flash:high` for subsequent delegation and kept the concurrency cap at 2.
 
 ## Current work priority
-- The current primary objective is a pure-Go WMV3 decoder and playback of `testdata/lovelyday/movie.xp3 > logo.wmv`.
+- The current primary objective is the FFmpeg 9.0.2 shared-library sidecar and ASF/WMV3/WMA2 playback of `testdata/lovelyday/movie.xp3 > logo.wmv`.
 - The secondary objective is the Amairo startup black-screen investigation and fix.
 - Future delegation uses `cline-pass/deepseek-v4.1-flash:high` with no global configuration changes.
 - The two-agent concurrency cap applies across all subagent types and must be enforced operationally.
-- The WMV3 assessment document is present at `docs/wmv3-go-port-assessment.md`; the ASF and WMV3 implementation work remains subject to coordinator review and end-to-end playback verification.
+- The sidecar build is defined by `scripts/build-ffmpeg.sh` and `.github/workflows/build-ffmpeg.yml`; the prior pure-Go WMV3/ASF assessment is archived by the current implementation.
 
 ## Session handoff
 - The local `krkrgo-execution-contract.md` is migrated to `agents/krkrgo-execution-contract.md` in this project.

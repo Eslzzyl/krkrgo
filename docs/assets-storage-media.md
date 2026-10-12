@@ -33,7 +33,7 @@ The README and sources record PSB v2 structured values/resources, SLI legacy/v2 
 ## Image and audio data
 
 - [`media.go`](../internal/assets/media.go) uses standard GIF/JPEG/PNG decoders and provides bounded BMP/TLG image paths through [`media_indexed.go`](../internal/assets/media_indexed.go) and [`tlg.go`](../internal/assets/tlg.go). TLG5 is supported; TLG6 is limited to 1, 3, or 4 channels, zero flags, Golomb entropy coding, and generic 8×8 filters. Other TLG6 modes are unsupported.
-- WAVE decoding produces bounded interleaved signed-16 PCM. IEEE float32 and WAVE_FORMAT_EXTENSIBLE PCM/float sources are converted to that representation. Ogg/Vorbis is decoded in process to bounded signed-16 PCM.
+- WAVE decoding produces bounded interleaved signed-16 PCM. IEEE float32 and WAVE_FORMAT_EXTENSIBLE PCM/float sources are converted to that representation. Ogg/Vorbis decoding is provided by the FFmpeg sidecar.
 - `assets.Audio` omits C++ `WaveIntf` metadata such as speaker mask, total sample/time fields, and seekability. Runtime stream and mixer behavior is described in [Audio and video](audio-video.md).
 
 ## C++ comparison and remaining scope

@@ -140,7 +140,7 @@ func TestVideoLoopSegmentSeekAndPeriodOrdering(t *testing.T) {
 	}
 }
 
-func TestVideoWindowsMediaUsesEmptyStub(t *testing.T) {
+func TestVideoWindowsMediaRequiresFFmpeg(t *testing.T) {
 	const asfHeader = "\x30\x26\xb2\x75\x8e\x66\xcf\x11\xa6\xd9\x00\xaa\x00\x62\xce\x6c"
 	tests := []struct {
 		name   string
@@ -148,70 +148,28 @@ func TestVideoWindowsMediaUsesEmptyStub(t *testing.T) {
 		data   []byte
 	}{
 		{name: "signature without media extension", source: "movies/logo.bin", data: []byte(asfHeader)},
-		{name: "WMV extension", source: "movies/LoGo.WmV", data: []byte("not an MPEG stream")},
-		{name: "ASF extension", source: "movies/clip.AsF", data: []byte("not an MPEG stream")},
-		{name: "WMA extension", source: "movies/audio.WmA", data: []byte("not an MPEG stream")},
+		{name: "WMV extension", source: "movies/LoGo.WmV", data: []byte("not an ASF stream")},
+		{name: "ASF extension", source: "movies/clip.AsF", data: []byte("not an ASF stream")},
+		{name: "WMA extension", source: "movies/audio.WmA", data: []byte("not an ASF stream")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			v := NewVideoOverlay()
-			if err := v.Open(tt.source, tt.data); err != nil {
-				t.Fatal(err)
+			err := v.Open(tt.source, tt.data)
+			if err == nil {
+				t.Fatal("invalid Windows Media input was accepted")
 			}
-			if v.Status() != VideoStopped {
-				t.Fatalf("stub status = %s", v.Status())
-			}
-			if err := v.Play(); err != nil {
-				t.Fatal(err)
-			}
-			if err := v.Prepare(); err != nil {
-				t.Fatal(err)
-			}
-			if err := v.Seek(0); err != nil {
-				t.Fatal(err)
-			}
-			if err := v.SetFrame(0); err != nil {
-				t.Fatal(err)
+			var ve *VideoError
+			if !errors.As(err, &ve) || ve.Source != tt.source {
+				t.Fatalf("source context = %v", err)
 			}
 			if _, ok := v.Source(); ok {
-				t.Fatal("empty Windows Media stub installed source metadata")
+				t.Fatal("invalid Windows Media input installed metadata")
 			}
 			if _, ok := v.CurrentFrame(); ok {
-				t.Fatal("empty Windows Media stub presented a frame")
+				t.Fatal("invalid Windows Media input presented a frame")
 			}
 		})
-	}
-}
-func TestWindowsMediaStreamCodecDiagnostics(t *testing.T) {
-	const (
-		headerGUID           = "\x30\x26\xb2\x75\x8e\x66\xcf\x11\xa6\xd9\x00\xaa\x00\x62\xce\x6c"
-		streamPropertiesGUID = "\x91\x07\xdc\xb7\xb7\xa9\xcf\x11\x8e\xe6\x00\xc0\x0c\x20\x53\x65"
-		videoMediaGUID       = "\xc0\xef\x19\xbc\x4d\x5b\xcf\x11\xa8\xfd\x00\x80\x5f\x5c\x44\x2b"
-	)
-	objectSize := 78 + 31
-	data := make([]byte, 30+objectSize)
-	copy(data, headerGUID)
-	binary.LittleEndian.PutUint64(data[16:24], uint64(len(data)))
-	binary.LittleEndian.PutUint32(data[24:28], 1)
-	copy(data[30:46], streamPropertiesGUID)
-	binary.LittleEndian.PutUint64(data[46:54], uint64(objectSize))
-	copy(data[54:70], videoMediaGUID)
-	binary.LittleEndian.PutUint32(data[94:98], 31)
-	binary.LittleEndian.PutUint16(data[102:104], 2)
-	copy(data[30+78+27:30+78+31], "WMV3")
-	got := windowsMediaStreamCodecs(data)
-	if len(got) != 1 || got[0] != "video stream 2 codec WMV3" {
-		t.Fatalf("ASF stream codec diagnostics = %v, want video stream 2 codec WMV3", got)
-	}
-	video := NewVideoOverlay()
-	if err := video.Open("clip.asf", data); err != nil {
-		t.Fatal(err)
-	}
-	if video.Status() != VideoStopped {
-		t.Fatalf("stub status = %s", video.Status())
-	}
-	if _, ok := video.Source(); ok {
-		t.Fatal("empty ASF stub installed source metadata")
 	}
 }
 

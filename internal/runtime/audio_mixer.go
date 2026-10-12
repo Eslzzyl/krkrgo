@@ -60,16 +60,104 @@ func (s *MixerSource) Position() uint64 {
 	}
 	return s.position
 }
+type videoMixerState struct {
+	pending      [][2]float32
+	blockLengths []int
+	sourceRate   uint32
+	phase        uint64
+}
 
-// AudioMixer mixes WaveSoundBuffers into bounded interleaved stereo output.
+func (s videoMixerState) clone() videoMixerState {
+	clone := s
+	clone.pending = append([][2]float32(nil), s.pending...)
+	clone.blockLengths = append([]int(nil), s.blockLengths...)
+	return clone
+}
+
+func (s *videoMixerState) append(blocks []VideoAudioBlock) error {
+	for _, block := range blocks {
+		if block.Channels == 0 || block.SampleRate == 0 || len(block.Samples)%int(block.Channels) != 0 {
+			return fmt.Errorf("invalid video audio block")
+		}
+		if s.sourceRate == 0 {
+			s.sourceRate = block.SampleRate
+		}
+		if s.sourceRate != block.SampleRate {
+			return fmt.Errorf("video audio sample rate changed from %d to %d", s.sourceRate, block.SampleRate)
+		}
+		frames := len(block.Samples) / int(block.Channels)
+		for frame := range frames {
+			left := block.Samples[frame*int(block.Channels)]
+			right := left
+			if block.Channels > 1 {
+				right = block.Samples[frame*int(block.Channels)+1]
+			}
+			s.pending = append(s.pending, [2]float32{left, right})
+		}
+		s.blockLengths = append(s.blockLengths, frames)
+	}
+	return nil
+}
+
+func (s *videoMixerState) mix(frames int, target []float32, gain [2]float32) int {
+	if s == nil || s.sourceRate == 0 || len(s.pending) == 0 {
+		return 0
+	}
+	for frame := range frames {
+		position := s.phase / OutputRate
+		if position >= uint64(len(s.pending)) {
+			break
+		}
+		fraction := float32(s.phase%OutputRate) / float32(OutputRate)
+		current := s.pending[position]
+		next := current
+		if position+1 < uint64(len(s.pending)) {
+			next = s.pending[position+1]
+		}
+		left := current[0] + (next[0]-current[0])*fraction
+		right := current[1] + (next[1]-current[1])*fraction
+		target[frame*2] += left * gain[0]
+		target[frame*2+1] += right * gain[1]
+		s.phase += uint64(s.sourceRate)
+	}
+	drop := int(s.phase / OutputRate)
+	if drop > len(s.pending) {
+		drop = len(s.pending)
+	}
+	if drop == 0 {
+		return 0
+	}
+	consumedBlocks := 0
+	remaining := drop
+	for len(s.blockLengths) > 0 && remaining >= s.blockLengths[0] {
+		remaining -= s.blockLengths[0]
+		s.blockLengths = s.blockLengths[1:]
+		consumedBlocks++
+	}
+	copy(s.pending, s.pending[drop:])
+	s.pending = s.pending[:len(s.pending)-drop]
+	s.phase -= uint64(drop) * OutputRate
+	if len(s.pending) == 0 {
+		s.phase = 0
+		s.sourceRate = 0
+		s.blockLengths = nil
+	}
+	return consumedBlocks
+}
+
+// AudioMixer mixes WaveSoundBuffers and VideoOverlay PCM into bounded stereo output.
 type AudioMixer struct {
 	GlobalVolume int32
 	sources      []*WaveSoundBuffer
+	videos       []*VideoOverlay
+	videoStates  map[*VideoOverlay]videoMixerState
 	output       []float32
 }
 
 // NewAudioMixer creates a mixer with full global volume.
-func NewAudioMixer() *AudioMixer { return &AudioMixer{GlobalVolume: 100_000} }
+func NewAudioMixer() *AudioMixer {
+	return &AudioMixer{GlobalVolume: 100_000, videoStates: make(map[*VideoOverlay]videoMixerState)}
+}
 
 // GetGlobalVolume reports the deterministic headless mix gain.
 func (m *AudioMixer) GetGlobalVolume() int32 {
@@ -112,6 +200,37 @@ func (m *AudioMixer) Remove(source *WaveSoundBuffer) {
 			return
 		}
 	}
+}
+// AddVideo registers a VideoOverlay PCM source once.
+func (m *AudioMixer) AddVideo(video *VideoOverlay) {
+	if m == nil || video == nil {
+		return
+	}
+	for _, current := range m.videos {
+		if current == video {
+			return
+		}
+	}
+	m.videos = append(m.videos, video)
+	if m.videoStates == nil {
+		m.videoStates = make(map[*VideoOverlay]videoMixerState)
+	}
+}
+
+// RemoveVideo unregisters a VideoOverlay PCM source and discards resampler state.
+func (m *AudioMixer) RemoveVideo(video *VideoOverlay) {
+	if m == nil {
+		return
+	}
+	for i, current := range m.videos {
+		if current == video {
+			copy(m.videos[i:], m.videos[i+1:])
+			m.videos[len(m.videos)-1] = nil
+			m.videos = m.videos[:len(m.videos)-1]
+			break
+		}
+	}
+	delete(m.videoStates, video)
 }
 
 // Mix renders frames at exactly 48 kHz and replaces (rather than appends to)
@@ -173,6 +292,37 @@ func (m *AudioMixer) Mix(frames int) ([]float32, error) {
 		}
 		staged = append(staged, stagedSource{source: source, loaded: loaded, status: status, events: events})
 	}
+	type stagedVideo struct {
+		video      *VideoOverlay
+		state      videoMixerState
+		takeBlocks int
+	}
+	stagedVideos := make([]stagedVideo, 0, len(m.videos))
+	for _, video := range m.videos {
+		if video == nil {
+			continue
+		}
+		video.mu.Lock()
+		if video.status != VideoPlaying {
+			video.mu.Unlock()
+			continue
+		}
+		blocks := make([]VideoAudioBlock, len(video.audioQueue))
+		for i, block := range video.audioQueue {
+			blocks[i] = block
+			blocks[i].Samples = append([]float32(nil), block.Samples...)
+		}
+		volume := clampGain(video.volume) * global
+		balance := video.balance
+		video.mu.Unlock()
+		state := m.videoStates[video].clone()
+		if err := state.append(blocks); err != nil {
+			return nil, err
+		}
+		gain := [2]float32{volume * (1 - maxFloat(float32(balance)/100000, 0)), volume * (1 + minFloat(float32(balance)/100000, 0))}
+		state.mix(frames, output, gain)
+		stagedVideos = append(stagedVideos, stagedVideo{video: video, state: state, takeBlocks: len(blocks)})
+	}
 	for i := range output {
 		if output[i] < -1 {
 			output[i] = -1
@@ -185,6 +335,18 @@ func (m *AudioMixer) Mix(frames int) ([]float32, error) {
 		*state.source.loaded = *state.loaded
 		state.source.status = state.status
 		state.source.events = state.events
+	}
+	for _, state := range stagedVideos {
+		m.videoStates[state.video] = state.state
+		if state.takeBlocks == 0 {
+			continue
+		}
+		state.video.mu.Lock()
+		if state.takeBlocks > len(state.video.audioQueue) {
+			state.takeBlocks = len(state.video.audioQueue)
+		}
+		state.video.audioQueue = append(state.video.audioQueue[:0], state.video.audioQueue[state.takeBlocks:]...)
+		state.video.mu.Unlock()
 	}
 	m.output = output
 	return m.output, nil

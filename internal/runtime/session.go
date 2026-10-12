@@ -817,6 +817,25 @@ func (s *Session) AdvanceClock(timeMS uint64) error {
 	s.Services.clockPolls = 0
 	return nil
 }
+func (s *Session) queueSoundEventsAfterMix() error {
+	s.Services.mu.RLock()
+	ids := make([]tjs.ObjectID, 0, len(s.Services.Sounds))
+	sounds := make(map[tjs.ObjectID]*WaveSoundBuffer, len(s.Services.Sounds))
+	for id, sound := range s.Services.Sounds {
+		ids = append(ids, id)
+		sounds[id] = sound
+	}
+	s.Services.mu.RUnlock()
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		if sound := sounds[id]; sound != nil {
+			if err := s.Services.queueSoundEvents(id, sound); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 // updateScriptWorld refreshes environment-backed script layers before capture.
 // The reference host performs this after dispatching the frame's script events.
@@ -857,13 +876,17 @@ func (s *Session) TickWithFrameSink(timeMS uint64, sink func(uint64, FrameSnapsh
 	if err := s.consume(1); err != nil {
 		return err
 	}
+	if err := s.AdvanceClock(timeMS); err != nil {
+		restore()
+		return err
+	}
 	out, err := s.Services.AudioMixer.MixMilliseconds(delta)
 	if err != nil {
 		restore()
 		return err
 	}
 	s.AudioOutput = out
-	if err := s.AdvanceClock(timeMS); err != nil {
+	if err := s.queueSoundEventsAfterMix(); err != nil {
 		restore()
 		return err
 	}
@@ -929,18 +952,6 @@ func (s *Session) TickForPresentation(timeMS uint64) (FrameSnapshot, error) {
 	if profile {
 		stageStarted = time.Now()
 	}
-	out, err := s.Services.AudioMixer.MixMilliseconds(delta)
-	if profile {
-		mixerTime = time.Since(stageStarted)
-	}
-	if err != nil {
-		restore()
-		return FrameSnapshot{}, err
-	}
-	s.AudioOutput = out
-	if profile {
-		stageStarted = time.Now()
-	}
 	if err := s.AdvanceClock(timeMS); err != nil {
 		if profile {
 			advanceTime = time.Since(stageStarted)
@@ -951,6 +962,19 @@ func (s *Session) TickForPresentation(timeMS uint64) (FrameSnapshot, error) {
 	if profile {
 		advanceTime = time.Since(stageStarted)
 		stageStarted = time.Now()
+	}
+	out, err := s.Services.AudioMixer.MixMilliseconds(delta)
+	if profile {
+		mixerTime = time.Since(stageStarted)
+	}
+	if err != nil {
+		restore()
+		return FrameSnapshot{}, err
+	}
+	s.AudioOutput = out
+	if err := s.queueSoundEventsAfterMix(); err != nil {
+		restore()
+		return FrameSnapshot{}, err
 	}
 	if err := s.DispatchEvents(); err != nil {
 		if profile {
@@ -1053,9 +1077,12 @@ type tickSnapshot struct {
 	sounds                map[tjs.ObjectID]waveSoundSnapshot
 	mixerSounds           map[*WaveSoundBuffer]waveSoundSnapshot
 	soundEvents           map[tjs.ObjectID][]SoundEvent
+	videos                map[*VideoOverlay]videoTickSnapshot
 	mixer                 *AudioMixer
 	mixerVolume           int32
 	mixerSources          []*WaveSoundBuffer
+	mixerVideos           []*VideoOverlay
+	mixerVideoStates      map[*VideoOverlay]videoMixerState
 	mixerOutput           []float32
 	mixerOwner            *AudioMixer
 	systemEventDisabled   bool
@@ -1082,6 +1109,12 @@ func (s *Session) tickSnapshot() tickSnapshot {
 	for id, sound := range s.Services.Sounds {
 		serviceSounds[id] = sound
 	}
+	serviceVideos := make(map[*VideoOverlay]struct{}, len(s.Services.Videos))
+	for _, video := range s.Services.Videos {
+		if video != nil {
+			serviceVideos[video] = struct{}{}
+		}
+	}
 	serviceSoundEvents := make(map[tjs.ObjectID][]SoundEvent, len(s.Services.SoundEvents))
 	for id, events := range s.Services.SoundEvents {
 		serviceSoundEvents[id] = append([]SoundEvent(nil), events...)
@@ -1094,7 +1127,19 @@ func (s *Session) tickSnapshot() tickSnapshot {
 	terminated := s.Services.Terminated
 	terminationCode := s.Services.TerminationCode
 	s.Services.mu.RUnlock()
-	snapshot := tickSnapshot{budget: s.Budget, timeMS: s.Services.TimeMS, clockPolls: s.Services.clockPolls, audioOutput: append([]float32(nil), s.AudioOutput...), events: s.Services.Events, scheduler: s.Services.Scheduler, timers: s.Services.Timers, mixer: s.Services.AudioMixer, sounds: make(map[tjs.ObjectID]waveSoundSnapshot, len(serviceSounds)), mixerSounds: make(map[*WaveSoundBuffer]waveSoundSnapshot), soundEvents: make(map[tjs.ObjectID][]SoundEvent, len(serviceSoundEvents)), mixerOwner: s.Services.audioMixerOwner, systemEventDisabled: systemEventDisabled, exitOnWindowClose: exitOnWindowClose, drawThreadNum: drawThreadNum, exitOnNoWindowStartup: exitOnNoWindowStartup, terminated: terminated, terminationCode: terminationCode, continuousHandlers: continuousHandlers}
+	snapshot := tickSnapshot{
+		budget: s.Budget, timeMS: s.Services.TimeMS, clockPolls: s.Services.clockPolls,
+		audioOutput: append([]float32(nil), s.AudioOutput...), events: s.Services.Events,
+		scheduler: s.Services.Scheduler, timers: s.Services.Timers, mixer: s.Services.AudioMixer,
+		sounds: make(map[tjs.ObjectID]waveSoundSnapshot, len(serviceSounds)),
+		mixerSounds: make(map[*WaveSoundBuffer]waveSoundSnapshot),
+		soundEvents: make(map[tjs.ObjectID][]SoundEvent, len(serviceSoundEvents)),
+		videos: make(map[*VideoOverlay]videoTickSnapshot, len(serviceVideos)),
+		mixerOwner: s.Services.audioMixerOwner, systemEventDisabled: systemEventDisabled,
+		exitOnWindowClose: exitOnWindowClose, drawThreadNum: drawThreadNum,
+		exitOnNoWindowStartup: exitOnNoWindowStartup, terminated: terminated,
+		terminationCode: terminationCode, continuousHandlers: continuousHandlers,
+	}
 	if snapshot.events != nil {
 		snapshot.eventState = snapshot.events.snapshot()
 	}
@@ -1107,7 +1152,15 @@ func (s *Session) tickSnapshot() tickSnapshot {
 	if snapshot.mixer != nil {
 		snapshot.mixerVolume = snapshot.mixer.GlobalVolume
 		snapshot.mixerSources = append([]*WaveSoundBuffer(nil), snapshot.mixer.sources...)
+		snapshot.mixerVideos = append([]*VideoOverlay(nil), snapshot.mixer.videos...)
+		snapshot.mixerVideoStates = make(map[*VideoOverlay]videoMixerState, len(snapshot.mixer.videoStates))
+		for video, state := range snapshot.mixer.videoStates {
+			snapshot.mixerVideoStates[video] = state.clone()
+		}
 		snapshot.mixerOutput = append([]float32(nil), snapshot.mixer.output...)
+	}
+	for video := range serviceVideos {
+		snapshot.videos[video] = snapshotVideo(video)
 	}
 	for id, sound := range serviceSounds {
 		if sound == nil {
@@ -1192,6 +1245,9 @@ func (snapshot tickSnapshot) restore(s *Session) {
 	for _, state := range snapshot.mixerSounds {
 		restoreWaveSoundSnapshot(state)
 	}
+	for _, state := range snapshot.videos {
+		restoreVideoSnapshot(state)
+	}
 	s.Services.mu.Lock()
 	s.Services.Sounds = make(map[tjs.ObjectID]*WaveSoundBuffer, len(snapshot.sounds))
 	for id, state := range snapshot.sounds {
@@ -1215,6 +1271,14 @@ func (snapshot tickSnapshot) restore(s *Session) {
 	if snapshot.mixer != nil {
 		snapshot.mixer.GlobalVolume = snapshot.mixerVolume
 		snapshot.mixer.sources = append(snapshot.mixer.sources[:0], snapshot.mixerSources...)
+		snapshot.mixer.videos = append(snapshot.mixer.videos[:0], snapshot.mixerVideos...)
+		if snapshot.mixer.videoStates == nil {
+			snapshot.mixer.videoStates = make(map[*VideoOverlay]videoMixerState)
+		}
+		clear(snapshot.mixer.videoStates)
+		for video, state := range snapshot.mixerVideoStates {
+			snapshot.mixer.videoStates[video] = state.clone()
+		}
 		snapshot.mixer.output = append(snapshot.mixer.output[:0], snapshot.mixerOutput...)
 	}
 	s.Services.audioMixerOwner = snapshot.mixerOwner
@@ -1570,11 +1634,22 @@ func (s *Session) Close() error {
 		for _, sound := range s.Services.Sounds {
 			sounds = append(sounds, sound)
 		}
+		videos := make([]*VideoOverlay, 0, len(s.Services.Videos))
+		for _, video := range s.Services.Videos {
+			videos = append(videos, video)
+		}
 		s.Services.mu.RUnlock()
 		for _, sound := range sounds {
 			s.Services.AudioMixer.Remove(sound)
 		}
+		for _, video := range videos {
+			s.Services.AudioMixer.RemoveVideo(video)
+			if video != nil {
+				video.Close()
+			}
+		}
 		s.Services.mu.Lock()
+		s.Services.Videos = make(map[tjs.ObjectID]*VideoOverlay)
 		s.Services.audioMixerOwner = nil
 		s.Services.mu.Unlock()
 		s.AudioOutput = nil

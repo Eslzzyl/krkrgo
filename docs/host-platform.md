@@ -35,7 +35,6 @@ Versions below are declared by [`go.mod`](../go.mod), whose module directive is 
 | `github.com/atotto/clipboard` | `v0.1.4` | Clipboard text reads/writes. |
 | `golang.org/x/text` | `v0.41.0` | Shift_JIS/text decoding and transformation. |
 | `golang.org/x/image` | `v0.45.0` | Font/OpenType interfaces and fixed-point text layout. |
-| `github.com/jfreymuth/oggvorbis` | `v1.0.5` | In-process Ogg/Vorbis decoder. |
 | `github.com/ebitengine/oto/v3` | `v3.5.0` indirect | Ebitengine device-audio path, used only through opt-in `host.AudioOutput`. |
 | `github.com/jfreymuth/pulse` | `v0.1.3` indirect | Present in the Ebitengine audio dependency graph. |
 

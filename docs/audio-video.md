@@ -2,7 +2,7 @@
 
 ## Audio data and runtime path
 
-[`internal/assets/media.go`](../internal/assets/media.go) decodes bounded WAVE and Ogg/Vorbis data into interleaved signed-16 PCM. `runtime.SoundStream` and `WaveSoundBuffer` ([`audio.go`](../internal/runtime/audio.go), [`sound.go`](../internal/runtime/sound.go)) preserve source-rate transport and SLI loop/label state. The runtime mixer ([`audio_mixer.go`](../internal/runtime/audio_mixer.go)) produces bounded 48 kHz stereo float32 data for session extraction/frame-sink delivery.
+[`internal/media/ffmpeg`](../internal/media/ffmpeg) is the primary decoder for WAVE, Ogg/Vorbis, ASF/WMV/WMA, and other formats enabled by the deployed FFmpeg libraries. It uses purego bindings with a bounded memory-backed AVIO reader and converts audio to interleaved signed-16 PCM for `WaveSoundBuffer`; the existing Go WAVE decoder remains available when the FFmpeg sidecar is absent. `runtime.SoundStream` and `WaveSoundBuffer` preserve source-rate transport and SLI loop/label state. The runtime mixer produces bounded 48 kHz stereo float32 data for session extraction/frame-sink delivery.
 
 The script-native `WaveSoundBuffer` in [`sound_native.go`](../internal/runtime/sound_native.go) includes storage/`openBytes`, transport, seek, fade, properties, and deterministic event delivery. This is headless state and sample generation; it does not itself open an OS audio device.
 
@@ -10,15 +10,13 @@ Linking `getSample.dll` installs the source-backed `WaveSoundBuffer.sampleValue`
 
 ## Video path
 
-`VideoOverlay` in [`video.go`](../internal/runtime/video.go) provides bounded source metadata, playback/event state, and frame queues. Supported paths include AMV frame handling and progressive MPEG-1/2 4:2:0 I-frame decode/presentation ([`amv.go`](../internal/assets/amv.go), [`mpeg2.go`](../internal/assets/mpeg2.go), [`mpeg2_decode.go`](../internal/assets/mpeg2_decode.go)). MPEG P/B pictures, interlaced pictures, and non-4:2:0 chroma are unsupported. Visibility updates and `stop()` are also valid before a source is opened; source-dependent playback operations still report a missing-source error.
+`VideoOverlay` in [`video.go`](../internal/runtime/video.go) provides bounded source metadata, playback/event state, frame queues, and native-rate audio queues. Supported paths include AMV frame handling, progressive MPEG-1/2 4:2:0 I-frame decode/presentation, and FFmpeg-backed ASF/WMV/WMA sources. FFmpeg video frames are converted to RGBA and queued with bounded ownership; decoded movie audio is mixed through the shared 48 kHz stereo mixer.
 
-ASF/WMV is recognized by the ASF Header Object GUID signature or `.asf`/`.wmv` filename extension before MPEG parsing. The current implementation intentionally routes these sources to an empty placeholder: `VideoOverlay.Open` succeeds, transport operations are no-ops, and no source metadata, video frame, or audio block is produced. This keeps WMV assets from terminating the demo while real decoding remains pending. The placeholder is not WMV playback support and uses no FFmpeg process or native media library. In the extracted lovelyday project, `movie.xp3` contains `logo.wmv` and `opening.wmv`; `logo.wmv` contains WMV3 / Windows Media Video 9 video and WMA2 audio.
+ASF/WMV sources are opened through the FFmpeg shared-library sidecar. `VideoOverlay.Open` selects the first decodable video and audio streams, reports stream metadata, converts video frames to RGBA, and queues bounded audio blocks. Decoder errors are returned with the source name and operation context.
 
-The lovelyday archive members and their ASF container signature have been directly verified with `go run ./cmd/krkrgo-tool extract --archive /Users/eslzzyl/Games/lovelyday/movie.xp3 --output /tmp/lovelyday-movie-extract-verify`. The extracted `logo.wmv` is 732,593 bytes and `opening.wmv` is 145,529,883 bytes. Each begins with the 16-byte ASF GUID `30 26 b2 75 8e 66 cf 11 a6 d9 00 aa 00 62 ce 6c`; `file` identifies the first as `Microsoft ASF ASF_Extended_Content_Description_Object` and the second as `Microsoft ASF`. A separate long-name protection notice in the extraction manifest was written as `__xp3_extract_manifest.json`; it did not prevent extracting either media member. These checks verify XP3 extraction and ASF identification, not that e…
+The runtime requires `avutil`, `avcodec`, `avformat`, and `swscale` from the deployed FFmpeg 9.0.2 ABI. The loader searches `KRKRGO_FFMPEG_DIR`, `lib/ffmpeg`, and the executable directory; the deployment workflow installs the libraries beside the application.
 
-During a limited logo skip replay, execution reached `macPlayMovie` and proceeded into the title, but the `MovieObj` frame, position, FPS, `numberOfFrame`, and `totalTime` all remained zero. Actual WMV decoding and frame/audio presentation were not verified. The official C++ WMV path uses `BuildWMVGraph` and DirectShow; recognizing the archive members and ASF signature in Go does not implement that playback path.
-
-The native `VideoOverlay` currently reports zero audio streams and one video stream. Audio-stream selection, mixing-layer operations, and movie color/effect controls return unsupported errors. The current video model is not full C++ video-device parity.
+The current video model retains headless transport and frame/audio queue semantics. Audio-stream selection beyond the first decodable stream, movie color/effect controls, and OS video-device parity remain outside this runtime contract.
 
 ## Device output
 

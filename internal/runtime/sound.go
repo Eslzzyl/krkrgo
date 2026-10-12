@@ -1,9 +1,11 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
+	"github.com/eslzzyl/krkrgo/internal/media/ffmpeg"
 )
 
 const (
@@ -244,14 +246,21 @@ func (s *WaveSoundBuffer) Open(audio assets.Audio, info assets.LoopInfo) error {
 	return s.OpenAudio(audio, info)
 }
 
-// OpenBytes decodes a WAVE/Ogg resource through the assets media boundary.
-// Ogg/Vorbis remains an explicit unsupported error when no decoder is linked.
+// OpenBytes decodes through the FFmpeg sidecar. The bounded Go decoder remains
+// available when the sidecar is absent in a development environment.
 func (s *WaveSoundBuffer) OpenBytes(data []byte, info assets.LoopInfo) error {
-	audio, err := assets.ReadAudio(data, 32_000_000)
+	pcm, err := ffmpeg.DecodeAudioBytes("<memory>", data, 32_000_000)
+	if errors.Is(err, ffmpeg.ErrUnavailable) {
+		audio, fallbackErr := assets.ReadAudio(data, 32_000_000)
+		if fallbackErr != nil {
+			return fallbackErr
+		}
+		return s.OpenAudio(audio, info)
+	}
 	if err != nil {
 		return err
 	}
-	return s.OpenAudio(audio, info)
+	return s.OpenAudio(assets.Audio{Channels: pcm.Channels, SampleRate: pcm.SampleRate, Samples: pcm.Samples}, info)
 }
 
 // Play starts a loaded source and clears stale source events.

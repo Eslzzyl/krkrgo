@@ -1,0 +1,203 @@
+name: Build FFmpeg sidecar
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: ffmpeg-sidecar-${{ github.ref }}
+  cancel-in-progress: true
+
+  FFMPEG_VERSION: 9.0.2
+  FFMPEG_SOURCE_SHA256: 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            runner: ubuntu-24.04
+            ffmpeg_os: linux
+            ffmpeg_arch: x86_64
+            goos: linux
+            goarch: amd64
+            cc: gcc
+            cross_prefix: none
+            install: gcc make nasm pkg-config
+            native_test: true
+          - name: linux-aarch64
+            runner: ubuntu-24.04
+            ffmpeg_os: linux
+            ffmpeg_arch: aarch64
+            goos: linux
+            goarch: arm64
+            cc: aarch64-linux-gnu-gcc
+            cross_prefix: aarch64-linux-gnu-
+            install: gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu make nasm pkg-config
+          - name: macos-arm64
+            runner: macos-14
+            ffmpeg_os: macos
+            ffmpeg_arch: arm64
+            goos: darwin
+            goarch: arm64
+            cc: clang
+            cross_prefix: none
+            install: nasm pkg-config
+            native_test: true
+          - name: macos-x86_64
+            runner: macos-13
+            ffmpeg_os: macos
+            ffmpeg_arch: x86_64
+            goos: darwin
+            goarch: amd64
+            cc: clang
+            cross_prefix: none
+            install: nasm pkg-config
+            native_test: true
+          - name: windows-x86_64
+            runner: windows-2025
+            ffmpeg_os: windows
+            ffmpeg_arch: x86_64
+            goos: windows
+            goarch: amd64
+            cc: x86_64-w64-mingw32-gcc
+            cross_prefix: x86_64-w64-mingw32-
+            msystem: MINGW64
+            install: base-devel make mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-nasm
+            native_test: true
+          - name: windows-arm64
+            runner: windows-2025
+            ffmpeg_os: windows
+            ffmpeg_arch: aarch64
+            goos: windows
+            goarch: arm64
+            cc: clang
+            cross_prefix: none
+            enable_cross_compile: '1'
+            msystem: CLANGARM64
+            install: base-devel make mingw-w64-clang-aarch64-gcc mingw-w64-clang-aarch64-binutils mingw-w64-clang-aarch64-nasm
+
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+
+    steps:
+      - name: Checkout krkrgo
+        uses: actions/checkout@v7
+
+      - name: Install Linux tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.install }}
+
+      - name: Install macOS tools
+        if: runner.os == 'macOS'
+        run: brew install ${{ matrix.install }}
+
+      - name: Install Windows toolchain
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          install: ${{ matrix.install }}
+
+      - name: Fetch and verify FFmpeg source
+        run: |
+          archive=ffmpeg.tar.xz
+          curl -fL --retry 3 -o "$archive" "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
+          actual_sha256=$(sha256sum "$archive" 2>/dev/null | awk '{print $1}' || true)
+          if [[ -z "$actual_sha256" ]]; then
+            actual_sha256=$(shasum -a 256 "$archive" | awk '{print $1}')
+          fi
+          test "$actual_sha256" = "$FFMPEG_SOURCE_SHA256"
+          mkdir ffmpeg-source
+          tar -xJf "$archive" --strip-components=1 -C ffmpeg-source
+          test "$(tr -d '\r\n' < ffmpeg-source/RELEASE)" = "$FFMPEG_VERSION"
+
+      - name: Build FFmpeg sidecar
+        env:
+          OS: ${{ matrix.ffmpeg_os }}
+          ARCH: ${{ matrix.ffmpeg_arch }}
+          CC: ${{ matrix.cc }}
+          CROSS_PREFIX: ${{ matrix.cross_prefix }}
+          ENABLE_CROSS_COMPILE: ${{ matrix.enable_cross_compile || '0' }}
+          FFMPEG_SOURCE_DIR: ${{ github.workspace }}/ffmpeg-source
+          PREFIX: ${{ github.workspace }}/stage/krkrgo-${{ matrix.name }}
+          BUILD_DIR: ${{ github.workspace }}/.build/ffmpeg-${{ matrix.name }}
+        run: scripts/build-ffmpeg.sh
+
+      - name: Build Go binaries
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          PREFIX: ${{ github.workspace }}/stage/krkrgo-${{ matrix.name }}
+        run: |
+          suffix=
+          if [[ "$GOOS" == windows ]]; then suffix=.exe; fi
+          go build -trimpath -o "$PREFIX/krkrgo$suffix" ./cmd/krkrgo
+          go build -trimpath -o "$PREFIX/krkrgo-tool$suffix" ./cmd/krkrgo-tool
+
+      - name: Check sidecar layout and dynamic dependencies
+        env:
+          PREFIX: ${{ github.workspace }}/stage/krkrgo-${{ matrix.name }}
+          FF_PLATFORM: ${{ matrix.ffmpeg_os }}
+        run: |
+          test -f "$PREFIX/LICENSES/FFmpeg/COPYING.LGPLv2.1"
+          test -f "$PREFIX/LICENSES/FFmpeg/source-version.txt"
+          test -f "$PREFIX/LICENSES/FFmpeg/configure.txt"
+          test -d "$PREFIX/lib/ffmpeg"
+          case "$FF_PLATFORM" in
+            linux)
+              for lib in libavutil.so.61 libavcodec.so.63 libavformat.so.63 libswscale.so.10; do test -f "$PREFIX/lib/ffmpeg/$lib"; done
+              for lib in "$PREFIX/lib/ffmpeg"/*.so.*; do readelf -d "$lib" | grep -E 'NEEDED.*(libavutil|libavcodec|libavformat|libswscale)' || true; done
+              ;;
+            macos)
+              for lib in libavutil.61.dylib libavcodec.63.dylib libavformat.63.dylib libswscale.10.dylib; do test -f "$PREFIX/lib/ffmpeg/$lib"; done
+              ;;
+            windows)
+              for lib in avutil-61.dll avcodec-63.dll avformat-63.dll swscale-10.dll; do test -f "$PREFIX/lib/ffmpeg/$lib"; done
+              ;;
+          esac
+          test ! -d "$PREFIX/bin"
+          test ! -d "$PREFIX/sbin"
+      - name: Run native sidecar tests
+        if: matrix.native_test == true
+        env:
+          PREFIX: ${{ github.workspace }}/stage/krkrgo-${{ matrix.name }}
+        run: |
+          ffmpeg_dir="$PREFIX/lib/ffmpeg"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            ffmpeg_dir=$(cygpath -w "$ffmpeg_dir")
+          fi
+          KRKRGO_FFMPEG_DIR="$ffmpeg_dir" go test ./internal/media/ffmpeg ./internal/runtime -count=1
+
+      - name: Archive sidecar
+        env:
+          PREFIX: ${{ github.workspace }}/stage/krkrgo-${{ matrix.name }}
+          ARCHIVE_NAME: krkrgo-${{ matrix.name }}
+        run: |
+          archive_path="$PWD/$ARCHIVE_NAME"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            (cd "$(dirname "$PREFIX")" && 7z a "$archive_path.zip" "$(basename "$PREFIX")")
+          else
+            tar -C "$(dirname "$PREFIX")" -czf "$archive_path.tar.gz" "$(basename "$PREFIX")"
+          fi
+
+      - name: Upload sidecar
+        uses: actions/upload-artifact@v7
+        with:
+          name: krkrgo-${{ matrix.name }}
+          path: |
+            krkrgo-${{ matrix.name }}.tar.gz
+            krkrgo-${{ matrix.name }}.zip
+          compression-level: 0
+          if-no-files-found: error

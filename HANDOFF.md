@@ -5,12 +5,11 @@ Repository: `/Users/eslzzyl/WorkSpace/Go/krkrgo` (macOS) and `D:/WorkSpace/Go/kr
 
 ## Current objectives
 
-1. Translate the FFmpeg WMV3 decoder to pure Go and play the Lovelyday startup movie `testdata/lovelyday/movie.xp3 > logo.wmv`.
-2. Continue the Amairo startup black-screen fix.
+1. Build and package the FFmpeg 9.0.2 shared-library sidecar for the six desktop matrix targets.
+2. Validate FFmpeg-backed ASF/WMV3/WMA2 playback against the local Lovelyday fixture.
+3. Continue the Amairo startup black-screen investigation.
 
-No subagents are currently running. The WMV3 and ASF agents used `cline-pass/mimo-v2.6-flash`. The Amairo takeover agent used `cline-pass/deepseek-v4.1-flash:high`.
-
-The Amairo work below was verified on the Windows host. Earlier Amairo and WMV3 notes were written on macOS; platform assumptions in the storage and host layers only surface on Windows.
+No subagents are currently running. The current media path uses purego bindings and does not run an FFmpeg executable.
 
 ## Commits
 
@@ -20,81 +19,45 @@ The Amairo work below was verified on the Windows host. Earlier Amairo and WMV3 
 - `febd39c Fix Windows storage paths and the Amairo opening sequence`
   - Windows drive-qualified storage names, `Layer.affineCopy`, `callOnPaint`, and the TJS2 `with` scope rules; see "Amairo status" below.
 
-The current code and WMV3 assessment document listed below are included in the handoff commit.
+The FFmpeg sidecar implementation is in the current worktree and has not been built locally.
 
 ## Verification completed
 
-The following commands passed against the current worktree on Windows:
+The current Go test suite passes on the development host:
 
 ```text
-go test ./... -count=1
-go vet ./...
-go build ./...
+go test ./...
 ```
 
-Focused checks also passed:
+The sidecar build is defined by `scripts/build-ffmpeg.sh` and `.github/workflows/build-ffmpeg.yml`; no FFmpeg build has been executed locally.
 
-```text
-go test ./internal/assets/... ./internal/core/... -count=1
-go test ./internal/runtime/... ./internal/tjs/... -count=1
-```
 
-The WMV3 package currently reports 33 passing tests. The ASF package has no implementation tests yet.
+## FFmpeg media status
 
-Windows-specific test facts discovered while fixing Amairo:
+Implemented in `internal/media/ffmpeg/`:
 
-- `internal/assets` and `internal/runtime` tests leaked XP3 file handles, so `t.TempDir` cleanup failed on Windows. New helpers `closeArchivesOnCleanup` close the archives on test cleanup.
-- Symlink tests must tolerate a missing `SeCreateSymbolicLinkPrivilege`; `os.Symlink` fails with "A required privilege is not held by the client" on this machine (Developer Mode is off), so `TestSaveStorageAtomicContained` now skips that part with `t.Skipf`.
+- purego dynamic loading for `avutil`, `avcodec`, `avformat`, and `swscale`;
+- bounded memory-backed AVIO input;
+- ASF/WMV/WMA stream discovery, WMV3 frame conversion, and WMA2 PCM conversion;
+- runtime `VideoOverlay` integration with the shared 48 kHz stereo mixer;
+- seek, close, tick snapshot, and error-retry state handling.
 
-## WMV3 implementation status
+The unfinished pure-Go WMV3 and ASF packages, Ogg/Vorbis Go decoder, and their tests have been removed. `WaveSoundBuffer` retains bounded WAVE fallback decoding when the FFmpeg sidecar is absent.
 
-Implemented under `internal/assets/wmv3/`:
+The sidecar build is implemented by `scripts/build-ffmpeg.sh` and `.github/workflows/build-ffmpeg.yml`. The workflow pins the latest FFmpeg 9.0.2 source archive with SHA-256 verification. The build produces the four shared libraries, FFmpeg LGPL license, source version, configure manifest, and ABI probe output for each matrix target. Hardware acceleration and FFmpeg command-line programs are disabled.
 
-- Existing bounded MSB-first bit reader and WMV3 Simple/Main extradata parser.
-- Scalar VLC, unary, bitplane, intensity-compensation, quantizer, motion-mode, transform, and B-fraction support needed by the frame-header layer.
-- `NewDecoder`, persistent decoder state, `Frame`, `FrameHeader`, picture-type handling, and explicit unsupported-picture errors.
-- I/P/B/BI/X8 frame-header parsing, including PQ, HalfPQ, PQuantizer, MV modes, bitplanes, DQuant, transform fields, AC/DC table selectors, and B-fraction fields.
-- FFmpeg LGPL provenance in package documentation.
-- Focused deterministic tests in `frameheader_test.go` plus existing parser and bit-reader tests.
+The sidecar has not been built locally. Full Go tests pass with `go test ./...`.
 
-Verified behavior:
+## Remaining FFmpeg work
 
-- Simple/Main sequence and frame-header parsing compiles and passes its package tests.
-- The decoder has a stable shape for the next macroblock implementation stage.
-- `Decode` still returns `ErrPictureUnavailable` for I/P pictures because the picture layer is not implemented.
-- B/BI/X8 and other unsupported paths return typed unsupported errors.
+The following verification is still pending:
 
-Missing WMV3 work:
+- Run the manually triggered six-target FFmpeg 9.0.2 sidecar workflow and retain the uploaded artifacts.
+- Validate `testdata/lovelyday/movie.xp3 > logo.wmv` with the sidecar: metadata, first-frame RGBA output, WMA2 PCM output, seek, rewind, loop, and close.
+- Run the clean-staging loader integration test for each native target and complete the dynamic dependency scan.
+- Add and run fixture golden checks for the first-frame dimensions, PTS, RGBA hash, audio rate/channel count, and fixed PCM hash.
 
-- Macroblock parsing and coefficient VLC tables.
-- DC/AC prediction and inverse transforms.
-- Motion-vector prediction, luma/chroma motion compensation, and reference pictures.
-- YUV420 output and frame reorder/flush behavior.
-- ASF access-unit input, runtime `VideoOverlay` integration, clock handling, and playback.
-
-Consequently, `logo.wmv` still does not play.
-
-## ASF status
-
-`internal/assets/asf/doc.go` contains the package-level design/provenance note. The ASF implementation agent stopped before writing the parser at the user's instruction.
-
-Verified target facts from `logo.wmv`:
-
-- 732,593 bytes.
-- ASF header: 5,319 bytes, 7 objects.
-- 61 packets, 11,920-byte packet size.
-- Video stream 2: WMV3, 1280x720, 5-byte extradata.
-- Audio stream 1: WMA2, 44.1 kHz, stereo, 10-byte extradata.
-- Packet layout uses ECC, multi-payload video, replicated object data, and fragmented media objects.
-- Packet walk yielded 106 video access units, one keyframe, first video unit 4,508 bytes at PTS 0, and 10 audio units with monotonic timestamps after preroll adjustment.
-
-Missing ASF work:
-
-- Header, file-properties, and stream-descriptor parser.
-- Bounded packet iterator.
-- ECC, payload, replicated-data, fragment, timestamp, and keyframe parsing.
-- Media-object reassembly.
-- Malformed-input and target-fixture tests.
+The FFmpeg build has not been run locally. The workflow is manual-only.
 
 ## Amairo status
 
@@ -171,12 +134,11 @@ internal/tjs/vm.go
 internal/tjs/vm_test.go
 ```
 
-The WMV3/ASF files listed by the previous handoff are unchanged by this work.
+The prior WMV3/ASF handoff notes are superseded by the FFmpeg sidecar path.
 
 ## Recommended next order
 
-1. Implement bounded ASF parsing and media-object reassembly for `logo.wmv`.
-2. Implement WMV3 macroblock decode, coefficients, transforms, motion compensation, and YUV output.
-3. Connect ASF video access units to the WMV3 decoder and `VideoOverlay` clock/frame queue.
-4. Add WMA2 only if audio parity is required for the opening movie milestone.
-5. Amairo: validate broader PSB motion parity, then fix the separate window-drag issue in `internal/host/ebiten.go`.
+1. Build the six sidecar artifacts in the GitHub Actions matrix.
+2. Run clean-staging loader integration with the local `logo.wmv` fixture.
+3. Validate playback, seek, rewind, loop, audio output, and close/reopen events.
+4. Amairo: validate broader PSB motion parity, then fix the separate window-drag issue in `internal/host/ebiten.go`.

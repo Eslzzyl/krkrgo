@@ -16,7 +16,7 @@ The project brings the engine's scripting, storage, rendering, input, audio, and
 - Deterministic headless replay and XP3 extraction tools for development and verification.
 - Pure-Go desktop implementation with platform support centered on macOS, Linux, and Windows.
 
-The implementation is actively expanding toward the behavior of the official C++ engine. Current compatibility gaps are tracked in the [verification and gaps guide](docs/verification-and-gaps.md). WMV playback remains a documented gap; the archive and ASF resources can be recognized and extracted, while full video playback is still pending.
+The runtime loads ASF/WMV/WMA media through the FFmpeg 9.0.2 shared-library sidecar. AMV, MPEG, and WAVE paths remain available; the FFmpeg sidecar is required for the ASF/WMV/WMA profile.
 
 ## Quick start
 
@@ -71,6 +71,22 @@ Build the two command targets for the current platform:
 go build -trimpath ./cmd/krkrgo
 go build -trimpath ./cmd/krkrgo-tool
 ```
+
+### Build the FFmpeg sidecar
+
+The checked-in workflow builds the latest FFmpeg 9.0.2 release for six desktop targets. The build enables shared `avutil`, `avcodec`, `avformat`, and `swscale` libraries with ASF, VC-1, WMV3, and WMA2 support. Hardware acceleration and FFmpeg command-line programs are disabled; runtime decoding uses the purego loader.
+
+For a local build from the verified FFmpeg 9.0.2 source archive:
+
+```sh
+FFMPEG_VERSION=9.0.2 \
+FFMPEG_SOURCE_DIR=/path/to/ffmpeg-9.0.2 \
+OS=macos ARCH=arm64 \
+PREFIX="$PWD/stage/krkrgo-macos-arm64" \
+scripts/build-ffmpeg.sh
+```
+
+The workflow is [`.github/workflows/build-ffmpeg.yml`](.github/workflows/build-ffmpeg.yml). It packages the Go binaries, shared libraries, FFmpeg LGPL license, source version, and configure manifest.
 
 The repository keeps generated binaries, profiles, logs, local replay data, and local test fixtures out of version control through [.gitignore](.gitignore).
 

@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -9,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
+	"github.com/eslzzyl/krkrgo/internal/media/ffmpeg"
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
@@ -20,13 +20,10 @@ const (
 )
 
 var (
-	ErrVideoClosed                            = errors.New("video overlay is closed")
-	ErrVideoNoSource                          = errors.New("video overlay has no source")
-	ErrVideoUnsupported                       = errors.New("unsupported video")
-	ErrVideoWindowsMediaBackendUnavailable    = errors.New("Windows Media ASF/WMV backend unavailable")
-	ErrVideoWindowsMediaCodecUnsupported      = errors.New("unsupported Windows Media stream codec")
-	ErrVideoWindowsMediaStreamInfoUnavailable = errors.New("Windows Media stream information unavailable")
-	ErrVideoQueueFull                         = errors.New("video frame queue is full")
+	ErrVideoClosed      = errors.New("video overlay is closed")
+	ErrVideoNoSource    = errors.New("video overlay has no source")
+	ErrVideoUnsupported = errors.New("unsupported video")
+	ErrVideoQueueFull   = errors.New("video frame queue is full")
 )
 
 // VideoError preserves the source name while retaining a typed underlying cause.
@@ -76,7 +73,7 @@ type VideoEvent struct {
 	Reason     int
 }
 
-// VideoSource is bounded metadata parsed from an MPEG/AMV source.
+// VideoSource is bounded metadata parsed from an MPEG/AMV/FFmpeg source.
 type VideoSource struct {
 	Name          string
 	Format        string
@@ -107,14 +104,14 @@ type VideoAudioBlock struct {
 }
 
 // VideoOverlay is a deterministic, bounded movie state model. AMV sources
-// retain their checked movie and one decoded frame; MPEG sources retain at
-// most MaxVideoFrames converted RGBA frames. Audio and host-queued frames are
-// independently bounded by their respective limits.
+// retain their checked movie and one decoded frame; MPEG and FFmpeg sources
+// retain bounded decoded state. Audio and host-queued frames are independently
+// bounded by their respective limits.
 type VideoOverlay struct {
 	mu               sync.Mutex
 	owner            tjs.ObjectID
 	source           *VideoSource
-	windowsMediaStub bool
+	ffmpeg           *ffmpeg.Decoder
 	status           VideoStatus
 	amv              *assets.Movie
 	mpeg             []VideoFrame
@@ -337,11 +334,33 @@ func (v *VideoOverlay) Open(name string, data []byte) error {
 		return videoErr(name, fmt.Errorf("source exceeds %d bytes", MaxVideoSourceBytes))
 	}
 	if isWindowsMediaSource(name, data) {
-		return v.installWindowsMediaStub(name)
+		decoder, err := ffmpeg.OpenBytes(name, data)
+		if err != nil {
+			return videoErr(name, err)
+		}
+		meta := videoSourceFromFFmpeg(decoder.Metadata())
+		initial, audio, err := decoder.DecodeUntil(0)
+		if err != nil || initial == nil {
+			_ = decoder.Close()
+			if err == nil {
+				err = ErrVideoUnsupported
+			}
+			return videoErr(name, err)
+		}
+		if err := v.installSource(name, meta, nil, nil, decoder, &VideoFrame{
+			Index: initial.Index, Width: initial.Width, Height: initial.Height,
+			PTSMS: initial.PTSMS, RGBA: initial.RGBA,
+		}); err != nil {
+			_ = decoder.Close()
+			return err
+		}
+		if err := v.enqueueFFmpegAudio(audio); err != nil {
+			v.Close()
+			return videoErr(name, err)
+		}
+		return nil
 	}
 	if len(data) >= 4 && string(data[:4]) == "AJPM" {
-		// Movie.Data is intentionally retained by the overlay. Copy the input
-		// once so callers may reuse their storage after Open.
 		owned := append([]byte(nil), data...)
 		movie, err := assets.ParseAMV(owned)
 		if err != nil {
@@ -362,41 +381,16 @@ func (v *VideoOverlay) Open(name string, data []byte) error {
 		if err := validateAMVFrame(&meta, initial); err != nil {
 			return videoErr(name, err)
 		}
-		return v.installSource(name, meta, movie, nil, initial)
+		return v.installSource(name, meta, movie, nil, nil, initial)
 	}
 	meta, mpeg, err := decodeMPEGSource(name, data)
 	if err != nil {
 		return err
 	}
-	return v.installSource(name, meta, nil, mpeg, &mpeg[0])
-}
-
-// installWindowsMediaStub accepts Windows Media sources while their decoder is
-// pending. It keeps the runtime transport callable without presenting pixels.
-func (v *VideoOverlay) installWindowsMediaStub(name string) error {
-	if err := v.ensure(); err != nil {
-		return err
-	}
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	v.generation++
-	v.events = nil
-	v.source = nil
-	v.amv = nil
-	v.mpeg = nil
-	v.positionMS = 0
-	v.clockSet = false
-	v.frameQueue = nil
-	v.audioQueue = nil
-	v.current = nil
-	v.windowsMediaStub = true
-	v.bounds = Rect{}
-	v.setStatusLocked(VideoStopped)
-	return nil
+	return v.installSource(name, meta, nil, mpeg, nil, &mpeg[0])
 }
 
 func isWindowsMediaSource(name string, data []byte) bool {
-	// ASF Header Object GUID (the signature used by ASF, including WMV files).
 	const asfHeader = "\x30\x26\xb2\x75\x8e\x66\xcf\x11\xa6\xd9\x00\xaa\x00\x62\xce\x6c"
 	if len(data) >= len(asfHeader) && string(data[:len(asfHeader)]) == asfHeader {
 		return true
@@ -410,71 +404,6 @@ func isWindowsMediaSource(name string, data []byte) bool {
 	return false
 }
 
-// windowsMediaStreamCodecs extracts only codec identifiers from bounded ASF
-// Stream Properties Objects. It does not demux packets or imply decoder support.
-func windowsMediaStreamCodecs(data []byte) []string {
-	const (
-		headerGUID           = "\x30\x26\xb2\x75\x8e\x66\xcf\x11\xa6\xd9\x00\xaa\x00\x62\xce\x6c"
-		streamPropertiesGUID = "\x91\x07\xdc\xb7\xb7\xa9\xcf\x11\x8e\xe6\x00\xc0\x0c\x20\x53\x65"
-		videoMediaGUID       = "\xc0\xef\x19\xbc\x4d\x5b\xcf\x11\xa8\xfd\x00\x80\x5f\x5c\x44\x2b"
-		audioMediaGUID       = "\x40\x9e\x69\xf8\x4d\x5b\xcf\x11\xa8\xfd\x00\x80\x5f\x5c\x44\x2b"
-	)
-	if len(data) < 30 || string(data[:16]) != headerGUID {
-		return nil
-	}
-	headerSize := binary.LittleEndian.Uint64(data[16:24])
-	if headerSize > uint64(len(data)) || headerSize < 30 {
-		return nil
-	}
-	count := binary.LittleEndian.Uint32(data[24:28])
-	offset := uint64(30)
-	codecs := make([]string, 0, 2)
-	for i := uint32(0); i < count && offset+24 <= headerSize; i++ {
-		objectSize := binary.LittleEndian.Uint64(data[offset+16 : offset+24])
-		if objectSize < 24 || objectSize > headerSize-offset {
-			return codecs
-		}
-		if string(data[offset:offset+16]) == streamPropertiesGUID && objectSize >= 78 {
-			streamType := string(data[offset+24 : offset+40])
-			typeSize := uint64(binary.LittleEndian.Uint32(data[offset+64 : offset+68]))
-			streamNumber := binary.LittleEndian.Uint16(data[offset+72:offset+74]) & 0x7f
-			typeStart := offset + 78
-			if typeSize <= objectSize-78 {
-				switch streamType {
-				case videoMediaGUID:
-					codec := fmt.Sprintf("video stream %d with unknown codec", streamNumber)
-					// Video media type data: width, height, reserved byte,
-					// BITMAPINFOHEADER size, then its compression FOURCC.
-					if typeSize >= 31 {
-						fourcc := strings.TrimRight(string(data[typeStart+27:typeStart+31]), "\x00 ")
-						if fourcc != "" {
-							codec = fmt.Sprintf("video stream %d codec %s", streamNumber, fourcc)
-						}
-					}
-					codecs = append(codecs, codec)
-				case audioMediaGUID:
-					codec := fmt.Sprintf("audio stream %d with unknown codec", streamNumber)
-					if typeSize >= 2 {
-						tag := binary.LittleEndian.Uint16(data[typeStart : typeStart+2])
-						switch tag {
-						case 0x0161:
-							codec = fmt.Sprintf("audio stream %d codec WMA2 (0x0161)", streamNumber)
-						case 0x0162:
-							codec = fmt.Sprintf("audio stream %d codec WMA Pro (0x0162)", streamNumber)
-						case 0x0163:
-							codec = fmt.Sprintf("audio stream %d codec WMA Lossless (0x0163)", streamNumber)
-						default:
-							codec = fmt.Sprintf("audio stream %d codec tag 0x%04x", streamNumber, tag)
-						}
-					}
-					codecs = append(codecs, codec)
-				}
-			}
-		}
-		offset += objectSize
-	}
-	return codecs
-}
 
 func decodeMPEGSource(name string, data []byte) (VideoSource, []VideoFrame, error) {
 	s, err := assets.ParseMPEGStream(data)
@@ -627,7 +556,43 @@ func validateAMVFrame(source *VideoSource, frame *VideoFrame) error {
 	return nil
 }
 
-func (v *VideoOverlay) installSource(name string, meta VideoSource, movie *assets.Movie, mpeg []VideoFrame, initial *VideoFrame) error {
+func videoSourceFromFFmpeg(meta ffmpeg.Metadata) VideoSource {
+	return VideoSource{
+		Name: meta.Name, Format: meta.Format, Width: meta.Width, Height: meta.Height,
+		FPS: meta.FPS, Frames: meta.Frames, DurationMS: meta.DurationMS,
+		AudioRate: meta.AudioRate, AudioChannels: meta.AudioChannels, HasAudio: meta.HasAudio,
+	}
+}
+
+func (v *VideoOverlay) enqueueFFmpegAudio(blocks []ffmpeg.AudioBlock) error {
+	if len(blocks) == 0 {
+		return nil
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.appendFFmpegAudioLocked(blocks)
+}
+
+func (v *VideoOverlay) appendFFmpegAudioLocked(blocks []ffmpeg.AudioBlock) error {
+	for _, block := range blocks {
+		if block.Channels == 0 || block.SampleRate == 0 ||
+			len(block.Samples)%int(block.Channels) != 0 ||
+			len(block.Samples)/int(block.Channels) > MaxAudioBlockFrames ||
+			!allFinite(block.Samples) {
+			return fmt.Errorf("invalid FFmpeg audio block")
+		}
+		if len(v.audioQueue) >= MaxVideoAudioBlocks {
+			return ErrVideoQueueFull
+		}
+		v.audioQueue = append(v.audioQueue, VideoAudioBlock{
+			StartMS: block.StartMS, SampleRate: block.SampleRate, Channels: block.Channels,
+			Samples: append([]float32(nil), block.Samples...),
+		})
+	}
+	return nil
+}
+
+func (v *VideoOverlay) installSource(name string, meta VideoSource, movie *assets.Movie, mpeg []VideoFrame, decoder *ffmpeg.Decoder, initial *VideoFrame) error {
 	if meta.Width == 0 || meta.Height == 0 || meta.Frames == 0 || !isFinite(meta.FPS) || meta.FPS <= 0 {
 		return videoErr(name, ErrVideoUnsupported)
 	}
@@ -636,10 +601,13 @@ func (v *VideoOverlay) installSource(name string, meta VideoSource, movie *asset
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if v.ffmpeg != nil && v.ffmpeg != decoder {
+		_ = v.ffmpeg.Close()
+	}
 	v.generation++
 	v.events = nil
 	v.source = &meta
-	v.windowsMediaStub = false
+	v.ffmpeg = decoder
 	v.amv = movie
 	v.mpeg = mpeg
 	v.positionMS = 0
@@ -654,7 +622,7 @@ func (v *VideoOverlay) installSource(name string, meta VideoSource, movie *asset
 }
 
 func (v *VideoOverlay) setSourceMetadata(name string, meta VideoSource) error {
-	return v.installSource(name, meta, nil, nil, nil)
+	return v.installSource(name, meta, nil, nil, nil, nil)
 }
 
 // SetSourceMetadata installs metadata supplied by a host decoder. It does not
@@ -688,7 +656,10 @@ func (v *VideoOverlay) Close() {
 	defer v.mu.Unlock()
 	v.generation++
 	v.source = nil
-	v.windowsMediaStub = false
+	if v.ffmpeg != nil {
+		_ = v.ffmpeg.Close()
+		v.ffmpeg = nil
+	}
 	v.amv = nil
 	v.mpeg = nil
 	v.current = nil
@@ -708,10 +679,6 @@ func (v *VideoOverlay) transport(s VideoStatus) error {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.windowsMediaStub {
-		v.setStatusLocked(VideoStopped)
-		return nil
-	}
 	if v.source == nil {
 		if s == VideoStopped {
 			return nil
@@ -723,9 +690,6 @@ func (v *VideoOverlay) transport(s VideoStatus) error {
 }
 func (v *VideoOverlay) Rewind() error { return v.Seek(0) }
 func (v *VideoOverlay) Prepare() error {
-	if v.windowsMediaStub {
-		return nil
-	}
 	if err := v.Rewind(); err != nil {
 		return err
 	}
@@ -742,14 +706,16 @@ func (v *VideoOverlay) Seek(positionMS uint64) error {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.windowsMediaStub {
-		return nil
-	}
 	if v.source == nil {
 		return ErrVideoNoSource
 	}
 	if positionMS > v.source.DurationMS {
 		positionMS = v.source.DurationMS
+	}
+	if v.ffmpeg != nil {
+		if err := v.ffmpeg.Seek(positionMS); err != nil {
+			return videoErr(v.source.Name, err)
+		}
 	}
 	v.positionMS = float64(positionMS)
 	v.current = nil
@@ -761,9 +727,6 @@ func (v *VideoOverlay) SetFrame(frame uint64) error {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.windowsMediaStub {
-		return nil
-	}
 	if v.source == nil {
 		return ErrVideoNoSource
 	}
@@ -771,6 +734,11 @@ func (v *VideoOverlay) SetFrame(frame uint64) error {
 		frame = v.source.Frames - 1
 	}
 	v.positionMS = float64(frame) * 1000 / v.source.FPS
+	if v.ffmpeg != nil {
+		if err := v.ffmpeg.Seek(uint64(v.positionMS)); err != nil {
+			return videoErr(v.source.Name, err)
+		}
+	}
 	v.current = nil
 	return v.presentLocked()
 }
@@ -964,7 +932,20 @@ func (v *VideoOverlay) AudioBlocks() []VideoAudioBlock {
 func (v *VideoOverlay) presentLocked() error {
 	idx := v.frameAtLocked()
 	shouldPresent := false
-	if v.amv != nil {
+	if v.ffmpeg != nil {
+		frame, audio, err := v.ffmpeg.DecodeUntil(uint64(v.positionMS))
+		if err != nil {
+			return videoErr(v.source.Name, err)
+		}
+		if err := v.appendFFmpegAudioLocked(audio); err != nil {
+			return videoErr(v.source.Name, err)
+		}
+		if frame != nil {
+			frame.Index = idx
+			v.current = &VideoFrame{Index: frame.Index, Width: frame.Width, Height: frame.Height, PTSMS: frame.PTSMS, RGBA: frame.RGBA}
+		}
+		shouldPresent = v.current != nil
+	} else if v.amv != nil {
 		if v.current == nil || v.current.Index != idx {
 			image, err := v.amv.DecodePacket(int(idx))
 			if err != nil {
@@ -1059,7 +1040,7 @@ func (v *VideoOverlay) Advance(timeMS uint64) error {
 	}
 	ended := v.positionMS >= duration
 	now := v.frameAtLocked()
-	if now != old || (v.amv != nil && (v.current == nil || v.current.Index != now)) {
+	if now != old || (v.amv != nil && (v.current == nil || v.current.Index != now)) || v.ffmpeg != nil {
 		if err := v.presentLocked(); err != nil {
 			return err
 		}
@@ -1089,8 +1070,14 @@ func (s *Services) RegisterVideo(id tjs.ObjectID, video *VideoOverlay) error {
 	if s.Videos == nil {
 		s.Videos = make(map[tjs.ObjectID]*VideoOverlay)
 	}
+	previous := s.Videos[id]
+	if previous != nil && previous != video {
+		s.AudioMixer.RemoveVideo(previous)
+		previous.Close()
+	}
 	video.SetClock(s.TimeMS)
 	s.Videos[id] = video
+	s.AudioMixer.AddVideo(video)
 	return nil
 }
 
@@ -1118,17 +1105,24 @@ func (s *Services) VideoNative(vm *tjs.VM, context tjs.Value, operation string, 
 	v := s.Videos[id]
 	if operation == "@initialize" {
 		if v == nil {
-			s.Videos[id] = NewVideoOverlay()
+			v = NewVideoOverlay()
+			s.Videos[id] = v
+			s.AudioMixer.AddVideo(v)
 		}
 		return tjs.VoidValue, nil
 	}
 	if operation == "@invalidate" {
+		s.AudioMixer.RemoveVideo(v)
+		if v != nil {
+			v.Close()
+		}
 		delete(s.Videos, id)
 		return tjs.VoidValue, nil
 	}
 	if v == nil {
 		v = NewVideoOverlay()
 		s.Videos[id] = v
+		s.AudioMixer.AddVideo(v)
 	}
 	defer func() {
 		if callErr != nil {

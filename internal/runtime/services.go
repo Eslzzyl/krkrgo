@@ -497,6 +497,9 @@ func (s *Services) ensureInit() {
 		for _, sound := range s.Sounds {
 			s.AudioMixer.Add(sound)
 		}
+		for _, video := range s.Videos {
+			s.AudioMixer.AddVideo(video)
+		}
 		s.audioMixerOwner = s.AudioMixer
 	}
 }

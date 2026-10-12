@@ -9,11 +9,9 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
-	"io"
 	"math"
 	"os"
 
-	"github.com/jfreymuth/oggvorbis"
 )
 
 const (
@@ -445,118 +443,11 @@ func waveFloat16(sample float32) int16 {
 	return int16(scaled + 0.5)
 }
 
-// DecodeVorbis decodes an Ogg/Vorbis stream to interleaved signed 16-bit PCM.
-// The decoder is entirely in-process; malformed pages, packets, and headers
-// are reported as FormatError values and never produce partial audio.
-func DecodeVorbis(data []byte, maxFrames int) (audio Audio, err error) {
-	defer func() {
-		if recover() != nil {
-			audio = Audio{}
-			err = malformed("Ogg/Vorbis", "decoder rejected malformed stream")
-		}
-	}()
-	if maxFrames < 0 {
-		return Audio{}, malformed("Ogg/Vorbis", "negative frame limit")
-	}
-	if len(data) < 4 || !bytes.Equal(data[:4], []byte("OggS")) {
-		return Audio{}, malformed("Ogg/Vorbis", "invalid Ogg header")
-	}
 
-	reader, err := oggvorbis.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return Audio{}, malformed("Ogg/Vorbis", err.Error())
-	}
-	channels := reader.Channels()
-	rate := reader.SampleRate()
-	if channels <= 0 {
-		return Audio{}, malformed("Ogg/Vorbis", "invalid channel count")
-	}
-	if channels > int(maxAudioChannels) {
-		return Audio{}, unsupported("Vorbis channel count")
-	}
-	if rate <= 0 {
-		return Audio{}, malformed("Ogg/Vorbis", "invalid sample rate")
-	}
-	if uint64(rate) > uint64(maxSampleRate) {
-		return Audio{}, unsupported("Vorbis sample rate")
-	}
-
-	// Keep each decoder read bounded independently of the caller's frame limit.
-	// A Vorbis packet can produce zero frames, so continue until clean EOF.
-	const chunkFrames = 4096
-	buffer := make([]float32, chunkFrames*channels)
-	samples := make([]int16, 0, minAudioCapacity(maxFrames, channels, chunkFrames))
-	limitExceeded := false
-	for {
-		n, readErr := reader.Read(buffer)
-		if n < 0 || n > len(buffer) || n%channels != 0 {
-			return Audio{}, malformed("Ogg/Vorbis", "decoder returned an invalid sample count")
-		}
-		frames := n / channels
-		if !limitExceeded {
-			if frames > maxFrames-len(samples)/channels {
-				limitExceeded = true
-			} else {
-				for _, sample := range buffer[:n] {
-					samples = append(samples, vorbisSample16(sample))
-				}
-			}
-		}
-		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				if limitExceeded {
-					return Audio{}, malformed("Ogg/Vorbis", "decoded audio exceeds frame limit")
-				}
-				return Audio{Channels: uint8(channels), SampleRate: uint32(rate), Samples: samples}, nil
-			}
-			return Audio{}, malformed("Ogg/Vorbis", readErr.Error())
-		}
-		if n == 0 {
-			return Audio{}, malformed("Ogg/Vorbis", "decoder made no progress")
-		}
-	}
-}
-
-func minAudioCapacity(maxFrames, channels, chunkFrames int) int {
-	frames := maxFrames
-	if frames > chunkFrames {
-		frames = chunkFrames
-	}
-	if frames > int(^uint(0)>>1)/channels {
-		frames = int(^uint(0)>>1) / channels
-	}
-	return frames * channels
-}
-
-func vorbisSample16(sample float32) int16 {
-	// The Vorbis reference API's signed-16 path scales by 2^15 and clips.
-	// Handle NaN explicitly so conversion remains deterministic on all hosts.
-	if sample != sample {
-		return 0
-	}
-	if sample <= -1 {
-		return -32768
-	}
-	if sample >= 1 {
-		return 32767
-	}
-	value := int32(sample * 32768)
-	if value < -32768 {
-		return -32768
-	}
-	if value > 32767 {
-		return 32767
-	}
-	return int16(value)
-}
-
-// ReadAudio dispatches the bounded PCM and Ogg/Vorbis decoders.
+// ReadAudio dispatches the bounded PCM decoder.
 func ReadAudio(data []byte, maxFrames int) (Audio, error) {
 	if bytes.HasPrefix(data, []byte("RIFF")) {
 		return DecodeWave(data, maxFrames)
-	}
-	if bytes.HasPrefix(data, []byte("OggS")) {
-		return DecodeVorbis(data, maxFrames)
 	}
 	return Audio{}, unsupported("audio format")
 }
@@ -564,11 +455,6 @@ func ReadAudio(data []byte, maxFrames int) (Audio, error) {
 // DecodeWave is a method-shaped adapter for Audio::decode_wave.
 func (Audio) DecodeWave(data []byte, maxFrames int) (Audio, error) {
 	return DecodeWave(data, maxFrames)
-}
-
-// DecodeVorbis is a method-shaped adapter for Audio::decode_vorbis.
-func (Audio) DecodeVorbis(data []byte, maxFrames int) (Audio, error) {
-	return DecodeVorbis(data, maxFrames)
 }
 
 // The implementation intentionally accepts a byte slice rather than an open
