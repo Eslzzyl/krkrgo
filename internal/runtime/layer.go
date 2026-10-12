@@ -548,6 +548,7 @@ func resizeLayerImage(l *Layer, width, height int32) error {
 		return ErrProvinceSizeMismatch
 	}
 	rgba := make([]byte, int(pixels*4))
+	fillLayerNeutral(rgba, l.Type)
 	if len(oldRGBA) != 0 {
 		copyWidth, copyHeight := min(width, oldWidth), min(height, oldHeight)
 		rowBytes := int(copyWidth) * 4
@@ -598,6 +599,27 @@ func (l *Layer) GetParent() *Layer {
 	return l.Parent
 }
 func (l *Layer) GetChildren() []*Layer { return l.Children() }
+
+func layerNeutralColor(t LayerType) [4]byte {
+	switch t {
+	case LayerAdditive, LayerDodge, LayerLighten, LayerScreen, LayerAddAlpha,
+		LayerPSNormal, LayerPSAdditive, LayerPSScreen,
+		LayerPSColorDodge, LayerPSColorDodge5, LayerPSLighten,
+		LayerPSDifference, LayerPSDifference5, LayerPSExclusion:
+		return [4]byte{0, 0, 0, 0}
+	case LayerPSOverlay, LayerPSHardLight, LayerPSSoftLight:
+		return [4]byte{128, 128, 128, 0}
+	default:
+		return [4]byte{255, 255, 255, 0}
+	}
+}
+
+func fillLayerNeutral(rgba []byte, layerType LayerType) {
+	neutral := layerNeutralColor(layerType)
+	for i := 0; i+3 < len(rgba); i += 4 {
+		copy(rgba[i:i+4], neutral[:])
+	}
+}
 
 // SetImage accepts the canonical decoded asset representation.
 func (l *Layer) SetImage(im assets.Image) error {

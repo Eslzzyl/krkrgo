@@ -201,7 +201,7 @@ func TestNativeLayerPixelsAndClip(t *testing.T) {
 	outsideAlpha := valueAt(`l.getMaskPixel(0,0)`)
 	insideRGB := valueAt(`l.getMainPixel(1,1)`)
 	insideAlpha := valueAt(`l.getMaskPixel(1,1)`)
-	if outsideRGB != 0 || outsideAlpha != 0 || insideRGB != 4202512 || insideAlpha != 128 {
+	if outsideRGB != 0xffffff || outsideAlpha != 0 || insideRGB != 4202512 || insideAlpha != 128 {
 		t.Fatalf("pixels=%d,%d,%d,%d", outsideRGB, outsideAlpha, insideRGB, insideAlpha)
 	}
 

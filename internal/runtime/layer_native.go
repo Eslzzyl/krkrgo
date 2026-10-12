@@ -21,6 +21,7 @@ func nativeLayerDefaults(id tjs.ObjectID) *Layer {
 	l.Visible = false
 	l.HitThreshold = 16
 	l.RGBA = make([]byte, nativeLayerDefaultSize*nativeLayerDefaultSize*4)
+	fillLayerNeutral(l.RGBA, l.Type)
 	l.ImageWidth, l.ImageHeight = nativeLayerDefaultSize, nativeLayerDefaultSize
 	_ = l.SetClip(Rect{Width: nativeLayerDefaultSize, Height: nativeLayerDefaultSize})
 	return l
