@@ -269,7 +269,7 @@ check_symbol() {
             output=$("$OBJDUMP" -p "$library" 2>/dev/null || true)
             ;;
     esac
-    printf '%s\n' "$output" | grep -Eq "(^|[[:space:]])_?${symbol}(@[^[:space:]]+)?($|[[:space:]])" || fail "missing exported symbol $symbol in $library"
+    printf '%s\n' "$output" | tr -d '\r' | grep -Eq "(^|[[:space:]])_?${symbol}(@[^[:space:]]+)?($|[[:space:]])" || fail "missing exported symbol $symbol in $library"
 }
 windows_system_dll() {
     case "$1" in
