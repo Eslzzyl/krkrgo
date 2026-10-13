@@ -206,7 +206,7 @@ jobs:
         with:
           name: ffmpeg-${{ matrix.name }}
           path: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
-          compression-level: 0
+          compression-level: 6
           if-no-files-found: error
   publish-release:
     name: Publish FFmpeg sidecar release
@@ -222,7 +222,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Download sidecar artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-inputs
       - name: Determine sidecar release tag
@@ -233,8 +233,8 @@ jobs:
           tag_prefix="ffmpeg-sidecar-v${FFMPEG_VERSION}-r"
           latest_revision=$(
             gh api --paginate \
-              "repos/${GITHUB_REPOSITORY}/git/refs/tags?per_page=100" \
-              --jq '.[].ref | sub("^refs/tags/"; "")' |
+              "repos/${GITHUB_REPOSITORY}/tags?per_page=100" \
+              --jq '.[].name' |
               awk -v prefix="$tag_prefix" '
                 index($0, prefix) == 1 {
                   revision = substr($0, length(prefix) + 1)
@@ -263,14 +263,15 @@ jobs:
             windows-arm64
           )
           for platform in "${platforms[@]}"; do
-            source_dir="release-inputs/$platform"
+            archive_dir="ffmpeg-$platform"
+            source_dir="release-inputs/$archive_dir"
             test -d "$source_dir"
             case "$platform" in
               windows-*)
-                (cd release-inputs && zip -qr "$GITHUB_WORKSPACE/release-assets/$RELEASE_TAG-$platform.zip" "$platform")
+                (cd release-inputs && zip -qr "$GITHUB_WORKSPACE/release-assets/$RELEASE_TAG-$platform.zip" "$archive_dir")
                 ;;
               *)
-                tar -C release-inputs -czf "release-assets/$RELEASE_TAG-$platform.tar.gz" "$platform"
+                tar -C release-inputs -czf "release-assets/$RELEASE_TAG-$platform.tar.gz" "$archive_dir"
                 ;;
             esac
           done
