@@ -200,24 +200,11 @@ jobs:
           test ! -d "$PREFIX/bin"
           test ! -d "$PREFIX/sbin"
 
-      - name: Archive sidecar
-        env:
-          PREFIX: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
-          ARCHIVE_NAME: ffmpeg-${{ matrix.name }}
-        run: |
-          archive_path="$PWD/$ARCHIVE_NAME"
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            (cd "$(dirname "$PREFIX")" && 7z a "$archive_path.zip" "$(basename "$PREFIX")")
-          else
-            tar -C "$(dirname "$PREFIX")" -czf "$archive_path.tar.gz" "$(basename "$PREFIX")"
-          fi
 
       - name: Upload sidecar
         uses: actions/upload-artifact@v7
         with:
           name: ffmpeg-${{ matrix.name }}
-          path: |
-            ffmpeg-${{ matrix.name }}.tar.gz
-            ffmpeg-${{ matrix.name }}.zip
+          path: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
           compression-level: 0
           if-no-files-found: error
