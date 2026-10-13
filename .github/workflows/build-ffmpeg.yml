@@ -72,6 +72,7 @@ jobs:
             ffmpeg_arch: aarch64
             cc: clang
             host_cc: clang
+            windres: llvm-windres -F aarch64-w64-mingw32
             cross_prefix: aarch64-w64-windows-gnu-
             enable_cross_compile: '1'
             sysroot: /clangarm64
@@ -139,10 +140,11 @@ jobs:
           ARCH: ${{ matrix.ffmpeg_arch }}
           CC: ${{ matrix.cc }}
           HOST_CC: ${{ matrix.host_cc || '' }}
+          WINDRES: ${{ matrix.windres || '' }}
           CCACHE: ccache
           CROSS_PREFIX: ${{ matrix.cross_prefix }}
           SYSROOT: ${{ matrix.sysroot || '' }}
-          FFMPEG_SOURCE_DIR: ${{ github.workspace }}/ffmpeg-source
+          ENABLE_CROSS_COMPILE: ${{ matrix.enable_cross_compile || '0' }}
           PREFIX: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
           BUILD_DIR: ${{ github.workspace }}/.build/ffmpeg-${{ matrix.name }}
         run: |

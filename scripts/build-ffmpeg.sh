@@ -20,7 +20,7 @@ SYSROOT=${SYSROOT:-}
 CROSS_PREFIX=${CROSS_PREFIX:-}
 ENABLE_CROSS_COMPILE=${ENABLE_CROSS_COMPILE:-0}
 ABI_PROBE_RUNNER=${ABI_PROBE_RUNNER:-}
-OBJDUMP=${OBJDUMP:-}
+WINDRES=${WINDRES:-}
 READELF=${READELF:-}
 
 fail() {
@@ -187,8 +187,12 @@ if [[ "$PLATFORM" == windows && -n "$CROSS_PREFIX" ]]; then
         "--nm=nm"
         "--ranlib=ranlib"
         "--strip=strip"
-        "--windres=windres"
     )
+    if [[ -n "$WINDRES" ]]; then
+        configure_args+=("--windres=$WINDRES")
+    else
+        configure_args+=("--windres=windres")
+    fi
 fi
 
 if [[ -n "$SYSROOT" ]]; then
