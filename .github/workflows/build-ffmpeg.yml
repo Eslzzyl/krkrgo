@@ -62,8 +62,9 @@ jobs:
             shell: msys2 {0}
             ffmpeg_os: windows
             ffmpeg_arch: x86_64
-            cc: gcc
+            cc: x86_64-w64-mingw32-gcc
             cross_prefix: none
+            enable_cross_compile: '1'
             msystem: MINGW64
             install: base-devel ccache make mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-nasm
           - name: windows-arm64
@@ -76,7 +77,7 @@ jobs:
             enable_cross_compile: '1'
             sysroot: /clangarm64
             msystem: CLANG64
-            install: base-devel ccache make mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-llvm-tools mingw-w64-clang-x86_64-nasm mingw-w64-clang-aarch64-headers mingw-w64-clang-aarch64-crt mingw-w64-clang-aarch64-libwinpthread
+            install: base-devel ccache make mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-llvm-tools mingw-w64-clang-x86_64-nasm mingw-w64-clang-aarch64-headers mingw-w64-clang-aarch64-crt mingw-w64-clang-aarch64-libwinpthread mingw-w64-clang-aarch64-winpthreads mingw-w64-clang-aarch64-compiler-rt
 
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
