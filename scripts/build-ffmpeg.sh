@@ -18,6 +18,8 @@ SYSROOT=${SYSROOT:-}
 CROSS_PREFIX=${CROSS_PREFIX:-}
 ENABLE_CROSS_COMPILE=${ENABLE_CROSS_COMPILE:-0}
 ABI_PROBE_RUNNER=${ABI_PROBE_RUNNER:-}
+OBJDUMP=${OBJDUMP:-}
+READELF=${READELF:-}
 
 fail() {
     printf 'build-ffmpeg: %s\n' "$*" >&2
@@ -87,6 +89,27 @@ fi
 
 need_command make
 need_command "$CC"
+if [[ "$PLATFORM" == windows ]]; then
+    if [[ -z "$OBJDUMP" ]]; then
+        if [[ -n "$CROSS_PREFIX" ]] && command -v "${CROSS_PREFIX}objdump" >/dev/null 2>&1; then
+            OBJDUMP="${CROSS_PREFIX}objdump"
+        elif command -v objdump >/dev/null 2>&1; then
+            OBJDUMP=objdump
+        else
+            OBJDUMP=llvm-objdump
+        fi
+    fi
+    need_command "$OBJDUMP"
+elif [[ "$PLATFORM" == linux ]]; then
+    if [[ -z "$READELF" ]]; then
+        if [[ -n "$CROSS_PREFIX" ]] && command -v "${CROSS_PREFIX}readelf" >/dev/null 2>&1; then
+            READELF="${CROSS_PREFIX}readelf"
+        else
+            READELF=readelf
+        fi
+    fi
+    need_command "$READELF"
+fi
 
 [[ -x "$FFMPEG_SOURCE_DIR/configure" ]] || fail "FFmpeg source is missing configure: $FFMPEG_SOURCE_DIR"
 [[ -f "$FFMPEG_SOURCE_DIR/RELEASE" ]] || fail "FFmpeg source is missing RELEASE: $FFMPEG_SOURCE_DIR"
@@ -101,7 +124,7 @@ extra_ldflags=()
 configure_args=(
     "--prefix=$PREFIX"
     "--libdir=$PREFIX/lib/ffmpeg"
-    "--arch=$TARGET_ARCH"
+    "--shlibdir=$PREFIX/lib/ffmpeg"
     "--target-os=$TARGET_OS"
     "--cc=$CC"
     "--enable-shared"
@@ -154,9 +177,12 @@ fi
 if [[ "$PLATFORM" == macos ]]; then
     extra_cflags+=("-arch" "$TARGET_ARCH")
     extra_ldflags+=("-arch" "$TARGET_ARCH")
+    configure_args+=("--install-name-dir=@loader_path")
 elif [[ "$PLATFORM" == windows && "$TARGET_ARCH" == aarch64 && "$CC" == clang* ]]; then
     extra_cflags+=("--target=aarch64-w64-windows-gnu")
     extra_ldflags+=("--target=aarch64-w64-windows-gnu")
+elif [[ "$PLATFORM" == windows && "$CC" != clang* ]]; then
+    extra_ldflags+=("-static-libgcc")
 fi
 
 if ((${#extra_cflags[@]})); then
@@ -215,6 +241,103 @@ check_symbol() {
     esac
     printf '%s\n' "$output" | grep -Eq "(^|[[:space:]])_?${symbol}(\$|[[:space:]])" || fail "missing exported symbol $symbol in $library"
 }
+windows_system_dll() {
+    case "$1" in
+        api-ms-win-*.dll|ext-ms-win-*.dll|advapi32.dll|bcrypt.dll|combase.dll|comdlg32.dll|crypt32.dll|gdi32.dll|imm32.dll|iphlpapi.dll|kernel32.dll|kernelbase.dll|msvcrt.dll|ntdll.dll|ole32.dll|oleaut32.dll|rpcrt4.dll|secur32.dll|shell32.dll|shlwapi.dll|ucrtbase.dll|user32.dll|version.dll|winmm.dll|ws2_32.dll)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+validate_linux_dependencies() {
+    local library dep
+    for library in "${library_names[@]}"; do
+        while IFS= read -r dep; do
+            [[ -n "$dep" ]] || continue
+            case "$dep" in
+                libavutil.so.61|libavcodec.so.63|libavformat.so.63|libswscale.so.10)
+                    [[ -f "$lib_dir/$dep" ]] || fail "Linux FFmpeg dependency is missing: $dep"
+                    ;;
+                libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|libgcc_s.so.*|libatomic.so.*|libresolv.so.*|ld-linux-*.so.*|linux-vdso.so.*)
+                    ;;
+                *)
+                    fail "unexpected Linux FFmpeg dependency: $dep"
+                    ;;
+            esac
+        done < <("$READELF" -d "$lib_dir/$library" | awk -F'[][]' '/NEEDED/{print $2}')
+    done
+}
+
+validate_macos_dependencies() {
+    local library dep
+    for library in "${library_names[@]}"; do
+        while IFS= read -r dep; do
+            [[ -n "$dep" ]] || continue
+            case "$dep" in
+                @loader_path/*|/usr/lib/*|/System/Library/*)
+                    ;;
+                *)
+                    fail "unexpected macOS FFmpeg dependency: $dep"
+                    ;;
+            esac
+        done < <(otool -L "$lib_dir/$library" | awk 'NR > 1 {print $1}')
+    done
+}
+
+stage_windows_runtime_dependencies() {
+    local toolchain_bin dep dep_lower library library_path runtime_path
+    local checked_library staged_path already_checked staged discovered
+    local -a checked=()
+
+    toolchain_bin=$(CDPATH= cd -- "$(dirname -- "$(command -v "$CC")")" && pwd)
+    while :; do
+        discovered=0
+        for library_path in "$lib_dir"/*.dll; do
+            [[ -f "$library_path" ]] || continue
+            library=$(basename "$library_path")
+            already_checked=0
+            for checked_library in "${checked[@]}"; do
+                if [[ "$checked_library" == "$library" ]]; then
+                    already_checked=1
+                    break
+                fi
+            done
+            if ((already_checked)); then
+                continue
+            fi
+            checked+=("$library")
+            while IFS= read -r dep; do
+                [[ -n "$dep" ]] || continue
+                dep_lower=$(printf '%s' "$dep" | tr '[:upper:]' '[:lower:]')
+                if windows_system_dll "$dep_lower"; then
+                    continue
+                fi
+                staged=0
+                for staged_path in "$lib_dir"/*.dll; do
+                    [[ -f "$staged_path" ]] || continue
+                    if [[ "$(basename "$staged_path" | tr '[:upper:]' '[:lower:]')" == "$dep_lower" ]]; then
+                        staged=1
+                        break
+                    fi
+                done
+                if ((staged)); then
+                    continue
+                fi
+                runtime_path=$(find "$toolchain_bin" -maxdepth 1 -type f -iname "$dep" -print -quit)
+                [[ -n "$runtime_path" ]] || fail "Windows runtime dependency is missing: $dep (required by $library)"
+                cp "$runtime_path" "$lib_dir/$(basename "$runtime_path")"
+                discovered=1
+            done < <("$OBJDUMP" -p "$library_path" | awk '/DLL Name:/{print $3}')
+        done
+        if ((discovered == 0)); then
+            break
+        fi
+    done
+}
+
 
 check_symbol "$lib_dir/${library_names[0]}" avutil_version
 check_symbol "$lib_dir/${library_names[1]}" avcodec_version
@@ -223,6 +346,19 @@ check_symbol "$lib_dir/${library_names[3]}" swscale_version
 check_symbol "$lib_dir/${library_names[2]}" avformat_open_input
 check_symbol "$lib_dir/${library_names[1]}" avcodec_send_packet
 check_symbol "$lib_dir/${library_names[3]}" sws_scale
+case "$PLATFORM" in
+    linux)
+        validate_linux_dependencies
+        ;;
+    macos)
+        need_command otool
+        validate_macos_dependencies
+        ;;
+    windows)
+        stage_windows_runtime_dependencies
+        ;;
+esac
+
 
 probe_c="$BUILD_DIR/abi_probe.c"
 probe_bin="$BUILD_DIR/abi_probe"

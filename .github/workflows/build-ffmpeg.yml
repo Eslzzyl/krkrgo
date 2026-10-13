@@ -5,12 +5,14 @@ on:
 
 permissions:
   contents: read
+
+env:
+  FFMPEG_VERSION: 9.0.2
+  FFMPEG_SOURCE_SHA256: 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
+
 concurrency:
   group: ffmpeg-sidecar-${{ github.ref }}
   cancel-in-progress: true
-
-  FFMPEG_VERSION: 9.0.2
-  FFMPEG_SOURCE_SHA256: 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
 
 jobs:
   build:
@@ -20,28 +22,32 @@ jobs:
       matrix:
         include:
           - name: linux-x86_64
-            runner: ubuntu-24.04
+            runner: ubuntu-26.04
+            shell: bash
             ffmpeg_os: linux
             ffmpeg_arch: x86_64
             cc: gcc
             cross_prefix: none
             install: gcc make nasm pkg-config
           - name: linux-aarch64
-            runner: ubuntu-24.04
+            runner: ubuntu-26.04-arm
+            shell: bash
             ffmpeg_os: linux
             ffmpeg_arch: aarch64
             cc: aarch64-linux-gnu-gcc
             cross_prefix: aarch64-linux-gnu-
             install: gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu make nasm pkg-config
           - name: macos-arm64
-            runner: macos-14
+            runner: macos-26
+            shell: bash
             ffmpeg_os: macos
             ffmpeg_arch: arm64
             cc: clang
             cross_prefix: none
             install: nasm pkg-config
           - name: macos-x86_64
-            runner: macos-13
+            runner: macos-26-intel
+            shell: bash
             ffmpeg_os: macos
             ffmpeg_arch: x86_64
             cc: clang
@@ -49,6 +55,7 @@ jobs:
             install: nasm pkg-config
           - name: windows-x86_64
             runner: windows-2025
+            shell: msys2 {0}
             ffmpeg_os: windows
             ffmpeg_arch: x86_64
             cc: x86_64-w64-mingw32-gcc
@@ -57,6 +64,7 @@ jobs:
             install: base-devel make mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-nasm
           - name: windows-arm64
             runner: windows-2025
+            shell: msys2 {0}
             ffmpeg_os: windows
             ffmpeg_arch: aarch64
             cc: clang
@@ -69,7 +77,7 @@ jobs:
     timeout-minutes: 60
     defaults:
       run:
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        shell: ${{ matrix.shell }}
 
     steps:
       - name: Checkout build scripts
@@ -118,7 +126,7 @@ jobs:
           BUILD_DIR: ${{ github.workspace }}/.build/ffmpeg-${{ matrix.name }}
         run: scripts/build-ffmpeg.sh
 
-      - name: Check sidecar layout and dynamic dependencies
+      - name: Check sidecar layout
         env:
           PREFIX: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
           FF_PLATFORM: ${{ matrix.ffmpeg_os }}
@@ -130,7 +138,6 @@ jobs:
           case "$FF_PLATFORM" in
             linux)
               for lib in libavutil.so.61 libavcodec.so.63 libavformat.so.63 libswscale.so.10; do test -f "$PREFIX/lib/ffmpeg/$lib"; done
-              for lib in "$PREFIX/lib/ffmpeg"/*.so.*; do readelf -d "$lib" | grep -E 'NEEDED.*(libavutil|libavcodec|libavformat|libswscale)' || true; done
               ;;
             macos)
               for lib in libavutil.61.dylib libavcodec.63.dylib libavformat.63.dylib libswscale.10.dylib; do test -f "$PREFIX/lib/ffmpeg/$lib"; done
