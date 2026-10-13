@@ -14,4 +14,8 @@ Each domain guide links the relevant Go source and records current implementatio
 - [Verification and cross-cutting gaps](verification-and-gaps.md)
 - [Launcher architecture](launcher.md)
 
+Design notes that are not porting status:
+
+- [Built-in translation](builtin-translation.md): where a dictionary-driven translation layer fits in the current text pipeline.
+
 For launch and package navigation, see the [root README](../README.md). Recorded verification scope is in [Verification and cross-cutting gaps](verification-and-gaps.md).
