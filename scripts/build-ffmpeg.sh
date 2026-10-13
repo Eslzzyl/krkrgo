@@ -20,6 +20,7 @@ SYSROOT=${SYSROOT:-}
 CROSS_PREFIX=${CROSS_PREFIX:-}
 ENABLE_CROSS_COMPILE=${ENABLE_CROSS_COMPILE:-0}
 ABI_PROBE_RUNNER=${ABI_PROBE_RUNNER:-}
+NM=${NM:-}
 OBJDUMP=${OBJDUMP:-}
 WINDRES=${WINDRES:-}
 READELF=${READELF:-}
@@ -30,7 +31,11 @@ fail() {
 }
 
 need_command() {
-    command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+    if [[ "$1" == */* ]]; then
+        [[ -x "$1" ]] || fail "required command not found: $1"
+    else
+        command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+    fi
 }
 
 if [[ -z "$JOBS" ]]; then
@@ -100,6 +105,8 @@ fi
 compiler_command_string=$(printf '%q ' "${compiler_command[@]}")
 compiler_command_string=${compiler_command_string% }
 if [[ "$PLATFORM" == windows ]]; then
+    NM=${NM:-nm}
+    need_command "$NM"
     if [[ -z "$OBJDUMP" ]]; then
         if [[ -n "$CROSS_PREFIX" ]] && command -v "${CROSS_PREFIX}objdump" >/dev/null 2>&1; then
             OBJDUMP="${CROSS_PREFIX}objdump"
@@ -182,10 +189,12 @@ if [[ -n "$CROSS_PREFIX" || "$ENABLE_CROSS_COMPILE" == 1 ]]; then
         configure_args+=("--cross-prefix=$CROSS_PREFIX")
     fi
 fi
+if [[ "$PLATFORM" == windows ]]; then
+    configure_args+=("--nm=$NM")
+fi
 if [[ "$PLATFORM" == windows && -n "$CROSS_PREFIX" ]]; then
     configure_args+=(
         "--ar=ar"
-        "--nm=nm"
         "--ranlib=ranlib"
         "--strip=strip"
     )
@@ -195,7 +204,6 @@ if [[ "$PLATFORM" == windows && -n "$CROSS_PREFIX" ]]; then
         configure_args+=("--windres=windres")
     fi
 fi
-
 if [[ -n "$SYSROOT" ]]; then
     extra_cflags+=("--sysroot=$SYSROOT")
     extra_ldflags+=("--sysroot=$SYSROOT")

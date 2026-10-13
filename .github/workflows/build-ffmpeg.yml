@@ -63,6 +63,7 @@ jobs:
             ffmpeg_os: windows
             ffmpeg_arch: x86_64
             cc: x86_64-w64-mingw32-gcc
+            nm: /ucrt64/bin/nm
             msystem: UCRT64
             install: base-devel ccache make mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-binutils mingw-w64-ucrt-x86_64-nasm
           - name: windows-arm64
@@ -72,6 +73,7 @@ jobs:
             ffmpeg_arch: aarch64
             cc: clang
             host_cc: clang
+            nm: /clang64/bin/nm
             windres: llvm-windres -F aarch64-w64-mingw32
             cross_prefix: aarch64-w64-windows-gnu-
             enable_cross_compile: '1'
@@ -144,6 +146,7 @@ jobs:
           OS: ${{ matrix.ffmpeg_os }}
           ARCH: ${{ matrix.ffmpeg_arch }}
           CC: ${{ matrix.cc }}
+          NM: ${{ matrix.nm || '' }}
           HOST_CC: ${{ matrix.host_cc || '' }}
           WINDRES: ${{ matrix.windres || '' }}
           CCACHE: ccache
