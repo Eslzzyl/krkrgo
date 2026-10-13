@@ -20,6 +20,8 @@ reference/*
 !reference/.gitkeep
 temp/*
 !temp/.gitkeep
+lib/*
+!lib/.gitkeep
 
 # Generated project-root binaries
 /krkrgo
