@@ -1,7 +1,6 @@
 package ffmpeg
 
 import (
-	"errors"
 	"fmt"
 	"math"
 )
@@ -17,19 +16,9 @@ type PCM struct {
 func DecodeAudioBytes(name string, data []byte, maxFrames int) (PCM, error) {
 	loader, err := DefaultLoader()
 	if err != nil {
-		if isOgg(data) {
-			return decodeOggBytes(data, maxFrames)
-		}
 		return PCM{}, err
 	}
-	pcm, err := loader.DecodeAudioBytes(name, data, maxFrames)
-	if err == nil {
-		return pcm, nil
-	}
-	if isOgg(data) && (errors.Is(err, ErrMalformed) || errors.Is(err, ErrUnsupported)) {
-		return decodeOggBytes(data, maxFrames)
-	}
-	return PCM{}, err
+	return loader.DecodeAudioBytes(name, data, maxFrames)
 }
 
 // DecodeAudioBytes decodes an audio source through this loader.

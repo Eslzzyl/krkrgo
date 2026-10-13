@@ -55,26 +55,25 @@ Implemented in `internal/media/ffmpeg/`:
 
 - purego dynamic loading for `avutil`, `avcodec`, `avformat`, and `swscale`;
 - bounded memory-backed AVIO input;
-- ASF/WMV/WMA stream discovery, WMV3 frame conversion, WMA2 PCM conversion, and bounded Ogg/Vorbis fallback decoding;
+- ASF/WMV/WMA and Ogg/Vorbis stream discovery and decoding, WMV3 frame conversion, and WMA2 PCM conversion;
 - runtime `VideoOverlay` integration with the shared 48 kHz stereo mixer;
 - seek, close, tick snapshot, and error-retry state handling.
 
-Ogg/Vorbis decoding has a bounded Go fallback for deployments whose sidecar lacks the Ogg demuxer or Vorbis decoder. `WaveSoundBuffer` retains bounded WAVE fallback decoding when the FFmpeg sidecar is absent.
+Ogg/Vorbis decoding is provided by the FFmpeg sidecar. `WaveSoundBuffer` retains bounded WAVE fallback decoding when the FFmpeg sidecar is absent.
 
 The sidecar build is implemented by `scripts/build-ffmpeg.sh` and `.github/workflows/build-ffmpeg.yml`. The workflow pins the latest FFmpeg 9.0.2 source archive with SHA-256 verification. The build produces the four shared libraries, FFmpeg LGPL license, source version, configure manifest, and ABI probe output for each matrix target. Hardware acceleration and FFmpeg command-line programs are disabled.
 
-The sidecar has not been built locally. Full Go tests pass with `go test ./...`.
+The sidecar was built by CI and published as `ffmpeg-sidecar-v9.0.2-r2`. Full Go tests pass with `go test ./...`.
 
 ## Remaining FFmpeg work
 
 The following verification is still pending:
 
-- Run the manually triggered six-target FFmpeg 9.0.2 sidecar workflow and retain the uploaded artifacts.
 - Validate `testdata/lovelyday/movie.xp3 > logo.wmv` with the sidecar: metadata, first-frame RGBA output, WMA2 PCM output, seek, rewind, loop, and close.
 - Run the clean-staging loader integration test for each native target and complete the dynamic dependency scan.
 - Add and run fixture golden checks for the first-frame dimensions, PTS, RGBA hash, audio rate/channel count, and fixed PCM hash.
 
-The FFmpeg build has not been run locally. The workflow is manual-only.
+The sidecar was built in CI and published as `ffmpeg-sidecar-v9.0.2-r2`. The workflow remains manual-only.
 
 ## Amairo status
 
