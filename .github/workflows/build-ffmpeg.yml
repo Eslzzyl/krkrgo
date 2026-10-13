@@ -72,7 +72,7 @@ jobs:
             ffmpeg_arch: aarch64
             cc: clang
             host_cc: clang
-            cross_prefix: none
+            cross_prefix: aarch64-w64-windows-gnu-
             enable_cross_compile: '1'
             sysroot: /clangarm64
             msystem: CLANG64
