@@ -76,6 +76,7 @@ jobs:
             host_cc: clang
             ar: /clang64/bin/ar
             nm: /clang64/bin/nm
+            objdump: /clang64/bin/llvm-objdump
             windres: llvm-windres -F aarch64-w64-mingw32
             cross_prefix: aarch64-w64-windows-gnu-
             enable_cross_compile: '1'
@@ -150,6 +151,7 @@ jobs:
           CC: ${{ matrix.cc }}
           AR: ${{ matrix.ar || '' }}
           NM: ${{ matrix.nm || '' }}
+          OBJDUMP: ${{ matrix.objdump || '' }}
           HOST_CC: ${{ matrix.host_cc || '' }}
           WINDRES: ${{ matrix.windres || '' }}
           CCACHE: ccache
