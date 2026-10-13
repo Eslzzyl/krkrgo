@@ -75,7 +75,7 @@ jobs:
             cc: clang
             host_cc: clang
             ar: /clang64/bin/ar
-            nm: /clang64/bin/llvm-nm
+            nm: /clang64/bin/nm
             windres: llvm-windres -F aarch64-w64-mingw32
             cross_prefix: aarch64-w64-windows-gnu-
             enable_cross_compile: '1'
