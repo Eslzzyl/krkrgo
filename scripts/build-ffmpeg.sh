@@ -177,6 +177,15 @@ if [[ -n "$CROSS_PREFIX" || "$ENABLE_CROSS_COMPILE" == 1 ]]; then
         configure_args+=("--cross-prefix=$CROSS_PREFIX")
     fi
 fi
+if [[ "$PLATFORM" == windows && -n "$CROSS_PREFIX" ]]; then
+    configure_args+=(
+        "--ar=ar"
+        "--nm=nm"
+        "--ranlib=ranlib"
+        "--strip=strip"
+        "--windres=windres"
+    )
+fi
 
 if [[ -n "$SYSROOT" ]]; then
     extra_cflags+=("--sysroot=$SYSROOT")

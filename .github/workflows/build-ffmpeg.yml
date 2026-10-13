@@ -137,17 +137,12 @@ jobs:
           FFMPEG_SOURCE_DIR: ${{ github.workspace }}/ffmpeg-source
           PREFIX: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
           BUILD_DIR: ${{ github.workspace }}/.build/ffmpeg-${{ matrix.name }}
-        run: scripts/build-ffmpeg.sh
-      - name: Show configure log on failure
-        if: failure()
-        env:
-          BUILD_DIR: ${{ github.workspace }}/.build/ffmpeg-${{ matrix.name }}
         run: |
-          if [[ -f "$BUILD_DIR/ffbuild/config.log" ]]; then
-            cat "$BUILD_DIR/ffbuild/config.log"
-          else
-            echo "FFmpeg configure log is unavailable: $BUILD_DIR/ffbuild/config.log"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            export CCACHE_BASEDIR="$PWD"
+            export CCACHE_DIR="$PWD/.ccache"
           fi
+          scripts/build-ffmpeg.sh
 
       - name: Check sidecar layout
         env:
