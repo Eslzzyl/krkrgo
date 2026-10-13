@@ -15,9 +15,9 @@ BUILD_DIR=${BUILD_DIR:-"$ROOT_DIR/.build/ffmpeg-build"}
 JOBS=${JOBS:-}
 CC=${CC:-}
 CCACHE=${CCACHE:-}
+HOST_CC=${HOST_CC:-}
 SYSROOT=${SYSROOT:-}
 CROSS_PREFIX=${CROSS_PREFIX:-}
-ENABLE_CROSS_COMPILE=${ENABLE_CROSS_COMPILE:-0}
 ABI_PROBE_RUNNER=${ABI_PROBE_RUNNER:-}
 OBJDUMP=${OBJDUMP:-}
 READELF=${READELF:-}
@@ -175,6 +175,9 @@ if [[ -n "$CROSS_PREFIX" || "$ENABLE_CROSS_COMPILE" == 1 ]]; then
     configure_args+=("--enable-cross-compile")
     if [[ -n "$CROSS_PREFIX" ]]; then
         configure_args+=("--cross-prefix=$CROSS_PREFIX")
+    fi
+    if [[ -n "$HOST_CC" ]]; then
+        configure_args+=("--host-cc=$HOST_CC")
     fi
 fi
 if [[ "$PLATFORM" == windows && -n "$CROSS_PREFIX" ]]; then

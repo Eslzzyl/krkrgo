@@ -71,6 +71,7 @@ jobs:
             ffmpeg_os: windows
             ffmpeg_arch: aarch64
             cc: clang
+            host_cc: clang
             cross_prefix: none
             enable_cross_compile: '1'
             sysroot: /clangarm64
@@ -137,10 +138,10 @@ jobs:
           OS: ${{ matrix.ffmpeg_os }}
           ARCH: ${{ matrix.ffmpeg_arch }}
           CC: ${{ matrix.cc }}
+          HOST_CC: ${{ matrix.host_cc || '' }}
           CCACHE: ccache
           CROSS_PREFIX: ${{ matrix.cross_prefix }}
           SYSROOT: ${{ matrix.sysroot || '' }}
-          ENABLE_CROSS_COMPILE: ${{ matrix.enable_cross_compile || '0' }}
           FFMPEG_SOURCE_DIR: ${{ github.workspace }}/ffmpeg-source
           PREFIX: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
           BUILD_DIR: ${{ github.workspace }}/.build/ffmpeg-${{ matrix.name }}
