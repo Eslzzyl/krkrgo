@@ -120,6 +120,11 @@ jobs:
           mkdir -p "$runtime_dir"
           ln -sf /clangarm64/lib/clang/23/lib/windows/libclang_rt.builtins-aarch64.a "$runtime_dir/libclang_rt.builtins.a"
           test -f "$runtime_dir/libclang_rt.builtins.a"
+      - name: Link ARM64 import-library tool
+        if: matrix.name == 'windows-arm64'
+        run: |
+          test -x /clang64/bin/dlltool.exe
+          ln -sf /clang64/bin/dlltool.exe /usr/bin/aarch64-w64-windows-gnu-dlltool
 
       - name: Fetch and verify FFmpeg source
         run: |
