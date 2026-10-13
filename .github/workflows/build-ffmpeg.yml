@@ -221,6 +221,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
       - name: Download sidecar artifacts
         uses: actions/download-artifact@v8
         with:
