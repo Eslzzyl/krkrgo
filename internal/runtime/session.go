@@ -68,6 +68,8 @@ type Session struct {
 	mu                           sync.Mutex
 	deferTransitionCompletions   bool
 	pendingTransitionCompletions []tjs.ObjectID
+	gpuCapture                   bool
+	gpuPlan                      RenderPlan
 }
 
 func NewSession(services *Services, budget uint64) *Session {
@@ -1037,6 +1039,18 @@ func (s *Session) TickForPresentation(timeMS uint64) (FrameSnapshot, error) {
 	return frame, nil
 }
 
+// TickForGPUPresentation advances the session using the same deterministic
+// tick ordering as CPU presentation and returns a borrowed render plan.
+func (s *Session) TickForGPUPresentation(timeMS uint64) (RenderPlan, error) {
+	s.gpuPlan = RenderPlan{}
+	s.gpuCapture = true
+	defer func() { s.gpuCapture = false }()
+	if _, err := s.TickForPresentation(timeMS); err != nil {
+		return RenderPlan{}, err
+	}
+	return s.gpuPlan, nil
+}
+
 func (s *Session) TickWithFrame(timeMS uint64, sink func(uint64, FrameSnapshot)) error {
 	return s.TickWithFrameSink(timeMS, sink)
 }
@@ -1131,11 +1145,11 @@ func (s *Session) tickSnapshot() tickSnapshot {
 		budget: s.Budget, timeMS: s.Services.TimeMS, clockPolls: s.Services.clockPolls,
 		audioOutput: append([]float32(nil), s.AudioOutput...), events: s.Services.Events,
 		scheduler: s.Services.Scheduler, timers: s.Services.Timers, mixer: s.Services.AudioMixer,
-		sounds: make(map[tjs.ObjectID]waveSoundSnapshot, len(serviceSounds)),
+		sounds:      make(map[tjs.ObjectID]waveSoundSnapshot, len(serviceSounds)),
 		mixerSounds: make(map[*WaveSoundBuffer]waveSoundSnapshot),
 		soundEvents: make(map[tjs.ObjectID][]SoundEvent, len(serviceSoundEvents)),
-		videos: make(map[*VideoOverlay]videoTickSnapshot, len(serviceVideos)),
-		mixerOwner: s.Services.audioMixerOwner, systemEventDisabled: systemEventDisabled,
+		videos:      make(map[*VideoOverlay]videoTickSnapshot, len(serviceVideos)),
+		mixerOwner:  s.Services.audioMixerOwner, systemEventDisabled: systemEventDisabled,
 		exitOnWindowClose: exitOnWindowClose, drawThreadNum: drawThreadNum,
 		exitOnNoWindowStartup: exitOnNoWindowStartup, terminated: terminated,
 		terminationCode: terminationCode, continuousHandlers: continuousHandlers,
@@ -1446,6 +1460,14 @@ func (s *Session) captureFrameFor(forPresentation bool) (FrameSnapshot, error) {
 			layer.callOnPaint = true
 			return FrameSnapshot{}, err
 		}
+	}
+	if s.gpuCapture {
+		plan, err := s.Services.CaptureRenderPlan()
+		if err != nil {
+			return FrameSnapshot{}, err
+		}
+		s.gpuPlan = plan
+		return FrameSnapshot{}, nil
 	}
 	if forPresentation {
 		return s.Services.CaptureFrameForPresentation()

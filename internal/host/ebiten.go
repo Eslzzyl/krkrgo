@@ -21,6 +21,13 @@ const (
 	fixedTickMS = uint64(16)
 )
 
+type rendererMode uint8
+
+const (
+	rendererGPU rendererMode = iota
+	rendererCPU
+)
+
 // Game is the Ebitengine presentation boundary for one runtime Session. It
 // owns only presentation resources and input sampling; VM and window state stay
 // in runtime.Session and runtime.Services.
@@ -45,6 +52,10 @@ type Game struct {
 	presentationChanges int
 	frameSerial         uint64
 	renderStats         renderStats
+	rendererMode        rendererMode
+	gpu                 *GPUCompositor
+	gpuImage            *ebiten.Image
+	gpuInitAttempted    bool
 }
 
 // renderStats is opt-in to keep clock reads and logging out of normal runs.
@@ -229,13 +240,30 @@ func percentage(part, total int) float64 {
 // session. A nil session is retained so Update can return a useful error rather
 // than panicking, which is friendlier to embedding applications.
 func NewGame(session *runtime.Session) *Game {
-	return newGame(session)
+	return newGameWithRenderer(session, rendererGPU)
+}
+
+// NewCPUGame creates an Ebitengine game that presents the existing CPU
+// compositor path. It is intended for deterministic presentation and hosts
+// that require the software renderer explicitly.
+func NewCPUGame(session *runtime.Session) *Game {
+	return newGameWithRenderer(session, rendererCPU)
+}
+
+// NewCPUGameWithInitialWindowSize creates a CPU-rendered Game with a
+// preconfigured initial window size.
+func NewCPUGameWithInitialWindowSize(session *runtime.Session, width, height int) *Game {
+	game := newGameWithRenderer(session, rendererCPU)
+	game.initialWindowSizeSet = true
+	game.initialWindowWidth = width
+	game.initialWindowHeight = height
+	return game
 }
 
 // NewGameWithInitialWindowSize creates a Game when the caller has already
 // configured the Ebitengine window to the given initial size.
 func NewGameWithInitialWindowSize(session *runtime.Session, width, height int) *Game {
-	game := newGame(session)
+	game := newGameWithRenderer(session, rendererGPU)
 	game.initialWindowSizeSet = true
 	game.initialWindowWidth = width
 	game.initialWindowHeight = height
@@ -243,10 +271,15 @@ func NewGameWithInitialWindowSize(session *runtime.Session, width, height int) *
 }
 
 func newGame(session *runtime.Session) *Game {
+	return newGameWithRenderer(session, rendererGPU)
+}
+
+func newGameWithRenderer(session *runtime.Session, mode rendererMode) *Game {
 	game := &Game{
 		session:       session,
 		runtimeEvents: make([]runtime.InputEvent, 0, len(trackedKeys)+8),
 		resizeWindow:  ebiten.SetWindowSize,
+		rendererMode:  mode,
 	}
 	game.renderStats.enabled = os.Getenv("KRKRGO_RENDER_STATS") == "1"
 	if session != nil && session.Services != nil {
@@ -273,8 +306,8 @@ func (g *Game) SetWindowID(id uint64) {
 }
 
 // Update polls device state, dispatches transitions to the runtime, and then
-// advances the runtime by one fixed deterministic tick. The latest complete
-// RGBA snapshot is copied into a bounded presentation buffer.
+// advances the runtime by one fixed deterministic tick. GPU mode consumes a
+// borrowed RenderPlan synchronously; CPU mode retains the RGBA presentation path.
 func (g *Game) Update() error {
 	if g == nil || g.session == nil {
 		return fmt.Errorf("host game has no runtime session")
@@ -298,16 +331,39 @@ func (g *Game) Update() error {
 			return fmt.Errorf("dispatch input: %w", err)
 		}
 	}
+	var err error
+	if g.rendererMode == rendererGPU && !g.gpuInitAttempted {
+		g.gpuInitAttempted = true
+		g.gpu, err = NewGPUCompositor()
+		if err != nil {
+			log.Printf("krkrgo: GPU renderer unavailable, falling back to CPU: %v", err)
+			g.rendererMode = rendererCPU
+			g.gpu = nil
+		}
+	}
 	var tickTime time.Duration
 	var captureTime time.Duration
 	var frame runtime.FrameSnapshot
-	var err error
-	if statsEnabled {
-		stageStarted := time.Now()
-		frame, err = g.session.TickForPresentation(g.timeMS)
-		tickTime = time.Since(stageStarted)
+	var plan runtime.RenderPlan
+	var totalPixels int
+	if g.rendererMode == rendererGPU {
+		if statsEnabled {
+			stageStarted := time.Now()
+			plan, err = g.session.TickForGPUPresentation(g.timeMS)
+			tickTime = time.Since(stageStarted)
+		} else {
+			plan, err = g.session.TickForGPUPresentation(g.timeMS)
+		}
+		totalPixels = int(plan.Width) * int(plan.Height)
 	} else {
-		frame, err = g.session.TickForPresentation(g.timeMS)
+		if statsEnabled {
+			stageStarted := time.Now()
+			frame, err = g.session.TickForPresentation(g.timeMS)
+			tickTime = time.Since(stageStarted)
+		} else {
+			frame, err = g.session.TickForPresentation(g.timeMS)
+		}
+		totalPixels = int(frame.Width) * int(frame.Height)
 	}
 	if err != nil {
 		return fmt.Errorf("runtime tick and capture: %w", err)
@@ -326,8 +382,24 @@ func (g *Game) Update() error {
 	var presentationTime time.Duration
 	if statsEnabled {
 		stageStarted := time.Now()
-		err = g.updatePresentation(frame)
+		if g.rendererMode == rendererGPU {
+			g.gpuImage, err = g.gpu.Compose(plan)
+			if err != nil {
+				err = fmt.Errorf("GPU composition: %w", err)
+			} else {
+				err = g.updateGPUPresentation(plan)
+			}
+		} else {
+			err = g.updatePresentation(frame)
+		}
 		presentationTime = time.Since(stageStarted)
+	} else if g.rendererMode == rendererGPU {
+		g.gpuImage, err = g.gpu.Compose(plan)
+		if err != nil {
+			err = fmt.Errorf("GPU composition: %w", err)
+		} else {
+			err = g.updateGPUPresentation(plan)
+		}
 	} else {
 		err = g.updatePresentation(frame)
 	}
@@ -337,8 +409,33 @@ func (g *Game) Update() error {
 	g.timeMS += fixedTickMS
 	if statsEnabled {
 		g.frameSerial++
-		g.renderStats.recordUpdate(g.frameSerial, g.presentationChanges, int(frame.Width)*int(frame.Height), time.Since(updateStarted), tickTime, audioTime, captureTime, presentationTime)
+		g.renderStats.recordUpdate(g.frameSerial, g.presentationChanges, totalPixels, time.Since(updateStarted), tickTime, audioTime, captureTime, presentationTime)
 	}
+	return nil
+}
+
+func (g *Game) updateGPUPresentation(plan runtime.RenderPlan) error {
+	if plan.Width <= 0 || plan.Height <= 0 {
+		return fmt.Errorf("runtime returned invalid render-plan dimensions")
+	}
+	if g.gpuImage == nil {
+		return fmt.Errorf("GPU compositor returned no image")
+	}
+	width, height := int(plan.Width), int(plan.Height)
+	changed := g.imageWidth != width || g.imageHeight != height
+	g.imageWidth, g.imageHeight = width, height
+	g.presentationChanges = 0
+	if changed {
+		resizeWindow := true
+		if g.initialWindowSizeSet {
+			resizeWindow = width != g.initialWindowWidth || height != g.initialWindowHeight
+			g.initialWindowSizeSet = false
+		}
+		if resizeWindow && g.resizeWindow != nil {
+			g.resizeWindow(width, height)
+		}
+	}
+	g.presentationChanges = 1
 	return nil
 }
 
@@ -563,16 +660,20 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	if g.renderStats.enabled {
 		g.renderStats.recordDrawEntry(time.Now())
 	}
-	if screen == nil || g.image == nil {
+	surface := g.image
+	if g.rendererMode == rendererGPU {
+		surface = g.gpuImage
+	}
+	if screen == nil || surface == nil {
 		return
 	}
 	if g.renderStats.enabled {
 		started := time.Now()
-		screen.DrawImage(g.image, nil)
+		screen.DrawImage(surface, nil)
 		g.renderStats.recordDraw(g.frameSerial, time.Since(started))
 		return
 	}
-	screen.DrawImage(g.image, nil)
+	screen.DrawImage(surface, nil)
 }
 
 // Layout supplies the stable logical canvas dimensions. Runtime frame sizes

@@ -9,6 +9,23 @@ Repository: `/Users/eslzzyl/WorkSpace/Go/krkrgo` (macOS) and `D:/WorkSpace/Go/kr
 2. Validate FFmpeg-backed ASF/WMV3/WMA2 playback against the local Lovelyday fixture.
 3. Continue the Amairo startup black-screen investigation.
 
+## GPU composition status
+
+The interactive Ebitengine path now defaults to GPU composition, with `-renderer gpu|cpu` on `krkrgo run`. The CPU compositor remains available through `NewCPUGame`, GPU initialization fallback, and headless replay.
+
+The GPU composition logic may still be incomplete relative to the CPU semantic reference. Animation and transition coverage received follow-up fixes, but broader visual parity remains unverified across project content and supported layer combinations.
+
+GPU composition performance has not been measured. No benchmark, frame-time comparison, memory profile, or driver/platform comparison is currently available.
+
+Recent automated checks passed:
+
+```text
+go test ./... -count=1
+go build ./...
+```
+
+Kage shader sampling uses the v2.10 `imageSrcNAtFromSrc0Pos` APIs, and GPU resource release uses `Deallocate`.
+
 No subagents are currently running. The current media path uses purego bindings and does not run an FFmpeg executable.
 
 ## Commits

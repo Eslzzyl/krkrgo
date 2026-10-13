@@ -16,16 +16,21 @@ func TestParseLaunchArgs(t *testing.T) {
 		args []string
 		want krkrgocli.LaunchOptions
 	}{
-		{name: "defaults", want: krkrgocli.LaunchOptions{Budget: ^uint64(0)}},
+		{name: "defaults", want: krkrgocli.LaunchOptions{Budget: ^uint64(0), Renderer: "gpu"}},
 		{
 			name: "project without diagnostic budget",
 			args: []string{"-project", "/games/sample"},
-			want: krkrgocli.LaunchOptions{Project: "/games/sample", Budget: ^uint64(0)},
+			want: krkrgocli.LaunchOptions{Project: "/games/sample", Budget: ^uint64(0), Renderer: "gpu"},
 		},
 		{
 			name: "project options",
 			args: []string{"-project", "/games/sample", "-save-dir", "/tmp/sample-saves", "-budget", "42"},
-			want: krkrgocli.LaunchOptions{Project: "/games/sample", SaveDir: "/tmp/sample-saves", Budget: 42},
+			want: krkrgocli.LaunchOptions{Project: "/games/sample", SaveDir: "/tmp/sample-saves", Budget: 42, Renderer: "gpu"},
+		},
+		{
+			name: "explicit CPU renderer",
+			args: []string{"-renderer", "cpu"},
+			want: krkrgocli.LaunchOptions{Budget: ^uint64(0), Renderer: "cpu"},
 		},
 	}
 	for _, tt := range tests {
@@ -40,6 +45,12 @@ func TestParseLaunchArgs(t *testing.T) {
 		})
 	}
 }
+func TestParseLaunchArgsRejectsUnknownRenderer(t *testing.T) {
+	if _, err := krkrgocli.ParseLaunchArgs([]string{"-renderer", "vulkan"}); err == nil {
+		t.Fatal("unknown renderer was accepted")
+	}
+}
+
 func TestProjectStartupRunsWithoutExplicitBudget(t *testing.T) {
 	project := t.TempDir()
 	startup := []byte("var n=0; while(n<400000) n++;")

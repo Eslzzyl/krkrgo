@@ -24,6 +24,17 @@ func TestLayoutTracksRuntimeCanvasBeforeAndAfterFrame(t *testing.T) {
 		t.Fatalf("captured layout = %d,%d", w, h)
 	}
 }
+func TestGameConstructorsSelectGPUAndCPUModes(t *testing.T) {
+	services := runtime.DefaultServices()
+	session := runtime.NewSession(services, 32)
+	defer session.Close()
+	if NewGame(session).rendererMode != rendererGPU {
+		t.Fatal("NewGame did not select GPU mode")
+	}
+	if NewCPUGame(session).rendererMode != rendererCPU {
+		t.Fatal("NewCPUGame did not select CPU mode")
+	}
+}
 
 func TestPresentationBufferReusesAndUpdatesFrameStorage(t *testing.T) {
 	game := &Game{}

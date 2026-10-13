@@ -24,20 +24,30 @@ const (
 )
 
 type LaunchOptions struct {
-	Project string
-	SaveDir string
-	Budget  uint64
+	Project  string
+	SaveDir  string
+	Budget   uint64
+	Renderer string
 }
 
+const (
+	rendererGPU = "gpu"
+	rendererCPU = "cpu"
+)
+
 func ParseLaunchArgs(args []string) (LaunchOptions, error) {
-	opts := LaunchOptions{Budget: unlimitedBudget}
+	opts := LaunchOptions{Budget: unlimitedBudget, Renderer: rendererGPU}
 	fs := flag.NewFlagSet("krkrgo run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&opts.Project, "project", "", "project root or data directory")
 	fs.StringVar(&opts.SaveDir, "save-dir", "", "save-data directory")
 	fs.Uint64Var(&opts.Budget, "budget", unlimitedBudget, "diagnostic session instruction limit (default: unlimited)")
+	fs.StringVar(&opts.Renderer, "renderer", rendererGPU, "renderer backend: gpu or cpu (default: gpu)")
 	if err := fs.Parse(args); err != nil {
 		return LaunchOptions{}, err
+	}
+	if opts.Renderer != rendererGPU && opts.Renderer != rendererCPU {
+		return LaunchOptions{}, fmt.Errorf("unsupported renderer %q; want gpu or cpu", opts.Renderer)
 	}
 	if fs.NArg() != 0 {
 		return LaunchOptions{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
@@ -175,7 +185,12 @@ func RunGame(args []string) {
 	if stopCPUProfile != nil {
 		defer stopCPUProfile()
 	}
-	game := host.NewGameWithInitialWindowSize(session, defaultWidth, defaultHeight)
+	var game *host.Game
+	if opts.Renderer == rendererCPU {
+		game = host.NewCPUGameWithInitialWindowSize(session, defaultWidth, defaultHeight)
+	} else {
+		game = host.NewGameWithInitialWindowSize(session, defaultWidth, defaultHeight)
+	}
 	audioDiagnostics := os.Getenv("KRKRGO_AUDIO_DIAGNOSTICS") == "1"
 	audioContext := audio.NewContext(runtime.OutputRate)
 	audioOutput, err := host.NewAudioOutput(audioContext, host.AudioOutputOptions{Diagnostics: audioDiagnostics})

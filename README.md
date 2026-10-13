@@ -34,7 +34,7 @@ The equivalent single-file entry point is `go run ./cmd/krkrgo/main.go`; it also
 go run ./cmd/krkrgo run -project /path/to/project
 ```
 
-`-project` accepts a project root or a directory containing the project's runtime data (for example, `startup.tjs`, `data.xp3`). `-save-dir` overrides the save-data directory and `-budget` applies an optional instruction limit (zero means unlimited).
+`-project` accepts a project root or a directory containing the project's runtime data (for example, `startup.tjs`, `data.xp3`). `-save-dir` overrides the save-data directory, `-budget` applies an optional instruction limit (zero means unlimited), and `-renderer` selects `gpu` or `cpu` with `gpu` as the default.
 
 ### Extract an XP3 archive
 
