@@ -20,6 +20,7 @@ SYSROOT=${SYSROOT:-}
 CROSS_PREFIX=${CROSS_PREFIX:-}
 ENABLE_CROSS_COMPILE=${ENABLE_CROSS_COMPILE:-0}
 ABI_PROBE_RUNNER=${ABI_PROBE_RUNNER:-}
+AR=${AR:-}
 NM=${NM:-}
 OBJDUMP=${OBJDUMP:-}
 WINDRES=${WINDRES:-}
@@ -105,7 +106,9 @@ fi
 compiler_command_string=$(printf '%q ' "${compiler_command[@]}")
 compiler_command_string=${compiler_command_string% }
 if [[ "$PLATFORM" == windows ]]; then
+    AR=${AR:-ar}
     NM=${NM:-nm}
+    need_command "$AR"
     need_command "$NM"
     if [[ -z "$OBJDUMP" ]]; then
         if [[ -n "$CROSS_PREFIX" ]] && command -v "${CROSS_PREFIX}objdump" >/dev/null 2>&1; then
@@ -190,11 +193,10 @@ if [[ -n "$CROSS_PREFIX" || "$ENABLE_CROSS_COMPILE" == 1 ]]; then
     fi
 fi
 if [[ "$PLATFORM" == windows ]]; then
-    configure_args+=("--nm=$NM")
+    configure_args+=("--ar=$AR" "--nm=$NM")
 fi
 if [[ "$PLATFORM" == windows && -n "$CROSS_PREFIX" ]]; then
     configure_args+=(
-        "--ar=ar"
         "--ranlib=ranlib"
         "--strip=strip"
     )
