@@ -14,6 +14,7 @@ PREFIX=${PREFIX:-"$ROOT_DIR/.build/ffmpeg-prefix"}
 BUILD_DIR=${BUILD_DIR:-"$ROOT_DIR/.build/ffmpeg-build"}
 JOBS=${JOBS:-}
 CC=${CC:-}
+CCACHE=${CCACHE:-}
 SYSROOT=${SYSROOT:-}
 CROSS_PREFIX=${CROSS_PREFIX:-}
 ENABLE_CROSS_COMPILE=${ENABLE_CROSS_COMPILE:-0}
@@ -89,6 +90,13 @@ fi
 
 need_command make
 need_command "$CC"
+compiler_command=("$CC")
+if [[ -n "$CCACHE" ]]; then
+    need_command "$CCACHE"
+    compiler_command=("$CCACHE" "$CC")
+fi
+compiler_command_string=$(printf '%q ' "${compiler_command[@]}")
+compiler_command_string=${compiler_command_string% }
 if [[ "$PLATFORM" == windows ]]; then
     if [[ -z "$OBJDUMP" ]]; then
         if [[ -n "$CROSS_PREFIX" ]] && command -v "${CROSS_PREFIX}objdump" >/dev/null 2>&1; then
@@ -125,8 +133,9 @@ configure_args=(
     "--prefix=$PREFIX"
     "--libdir=$PREFIX/lib/ffmpeg"
     "--shlibdir=$PREFIX/lib/ffmpeg"
+    "--arch=$TARGET_ARCH"
     "--target-os=$TARGET_OS"
-    "--cc=$CC"
+    "--cc=$compiler_command_string"
     "--enable-shared"
     "--disable-static"
     "--disable-programs"
@@ -175,8 +184,12 @@ if [[ -n "$SYSROOT" ]]; then
 fi
 
 if [[ "$PLATFORM" == macos ]]; then
-    extra_cflags+=("-arch" "$TARGET_ARCH")
-    extra_ldflags+=("-arch" "$TARGET_ARCH")
+    mac_arch=$TARGET_ARCH
+    if [[ "$mac_arch" == aarch64 ]]; then
+        mac_arch=arm64
+    fi
+    extra_cflags+=("-arch" "$mac_arch")
+    extra_ldflags+=("-arch" "$mac_arch")
     configure_args+=("--install-name-dir=@loader_path")
 elif [[ "$PLATFORM" == windows && "$TARGET_ARCH" == aarch64 && "$CC" == clang* ]]; then
     extra_cflags+=("--target=aarch64-w64-windows-gnu")
@@ -415,7 +428,7 @@ EOF
 
 probe_include=("-I$PREFIX/include")
 probe_libs=("-L$lib_dir" -lavformat -lavcodec -lavutil -lswscale)
-"$CC" "${probe_include[@]}" "$probe_c" "${probe_libs[@]}" -o "$probe_bin"
+"${compiler_command[@]}" "${probe_include[@]}" "$probe_c" "${probe_libs[@]}" -o "$probe_bin"
 if [[ -n "$ABI_PROBE_RUNNER" ]]; then
     "$ABI_PROBE_RUNNER" "$probe_bin" > "$PREFIX/LICENSES/FFmpeg/abi-offsets.txt"
 elif [[ "$PLATFORM" == "$(printf '%s' "$(uname -s)" | tr '[:upper:]' '[:lower:]')" && "$TARGET_ARCH" == "$(uname -m)" ]]; then

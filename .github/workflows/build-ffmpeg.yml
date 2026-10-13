@@ -9,6 +9,10 @@ permissions:
 env:
   FFMPEG_VERSION: 9.0.2
   FFMPEG_SOURCE_SHA256: 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_BASEDIR: ${{ github.workspace }}
+  CCACHE_COMPILERCHECK: content
+  CCACHE_MAXSIZE: 1G
 
 concurrency:
   group: ffmpeg-sidecar-${{ github.ref }}
@@ -28,7 +32,7 @@ jobs:
             ffmpeg_arch: x86_64
             cc: gcc
             cross_prefix: none
-            install: gcc make nasm pkg-config
+            install: ccache gcc make nasm pkg-config
           - name: linux-aarch64
             runner: ubuntu-26.04-arm
             shell: bash
@@ -36,7 +40,7 @@ jobs:
             ffmpeg_arch: aarch64
             cc: aarch64-linux-gnu-gcc
             cross_prefix: aarch64-linux-gnu-
-            install: gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu make nasm pkg-config
+            install: ccache gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu make nasm pkg-config
           - name: macos-arm64
             runner: macos-26
             shell: bash
@@ -44,7 +48,7 @@ jobs:
             ffmpeg_arch: arm64
             cc: clang
             cross_prefix: none
-            install: nasm pkg-config
+            install: ccache nasm pkg-config
           - name: macos-x86_64
             runner: macos-26-intel
             shell: bash
@@ -52,7 +56,7 @@ jobs:
             ffmpeg_arch: x86_64
             cc: clang
             cross_prefix: none
-            install: nasm pkg-config
+            install: ccache nasm pkg-config
           - name: windows-x86_64
             runner: windows-2025
             shell: msys2 {0}
@@ -61,7 +65,7 @@ jobs:
             cc: x86_64-w64-mingw32-gcc
             cross_prefix: x86_64-w64-mingw32-
             msystem: MINGW64
-            install: base-devel make mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-nasm
+            install: base-devel make mingw-w64-x86_64-ccache mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-nasm
           - name: windows-arm64
             runner: windows-2025
             shell: msys2 {0}
@@ -71,7 +75,7 @@ jobs:
             cross_prefix: none
             enable_cross_compile: '1'
             msystem: CLANGARM64
-            install: base-devel make mingw-w64-clang-aarch64-gcc mingw-w64-clang-aarch64-binutils mingw-w64-clang-aarch64-nasm
+            install: base-devel make mingw-w64-clang-aarch64-ccache mingw-w64-clang-aarch64-gcc mingw-w64-clang-aarch64-binutils mingw-w64-clang-aarch64-nasm
 
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -82,7 +86,13 @@ jobs:
     steps:
       - name: Checkout build scripts
         uses: actions/checkout@v7
-
+      - name: Restore compiler cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ffmpeg-ccache-${{ matrix.name }}-${{ env.FFMPEG_VERSION }}-${{ hashFiles('scripts/build-ffmpeg.sh', '.github/workflows/build-ffmpeg.yml') }}
+          restore-keys: |
+            ffmpeg-ccache-${{ matrix.name }}-${{ env.FFMPEG_VERSION }}-
       - name: Install Linux tools
         if: runner.os == 'Linux'
         run: |
@@ -119,6 +129,7 @@ jobs:
           OS: ${{ matrix.ffmpeg_os }}
           ARCH: ${{ matrix.ffmpeg_arch }}
           CC: ${{ matrix.cc }}
+          CCACHE: ccache
           CROSS_PREFIX: ${{ matrix.cross_prefix }}
           ENABLE_CROSS_COMPILE: ${{ matrix.enable_cross_compile || '0' }}
           FFMPEG_SOURCE_DIR: ${{ github.workspace }}/ffmpeg-source
