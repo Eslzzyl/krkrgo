@@ -145,8 +145,8 @@ jobs:
           CROSS_PREFIX: ${{ matrix.cross_prefix }}
           SYSROOT: ${{ matrix.sysroot || '' }}
           ENABLE_CROSS_COMPILE: ${{ matrix.enable_cross_compile || '0' }}
+          FFMPEG_SOURCE_DIR: ${{ github.workspace }}/ffmpeg-source
           PREFIX: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
-          BUILD_DIR: ${{ github.workspace }}/.build/ffmpeg-${{ matrix.name }}
         run: |
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             export CCACHE_BASEDIR="$PWD"
