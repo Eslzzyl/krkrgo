@@ -75,7 +75,7 @@ if [[ "$CROSS_PREFIX" == none ]]; then
     CROSS_PREFIX=
 fi
 if [[ "$PLATFORM" == windows ]]; then
-    if [[ -z "$CROSS_PREFIX" && "$CC" != clang* && "$CC" != *-w64-mingw32-gcc ]]; then
+    if [[ -z "$CROSS_PREFIX" && "$CC" != clang* && "$CC" != gcc && "$CC" != *-w64-mingw32-gcc ]]; then
         CROSS_PREFIX="${TARGET_ARCH}-w64-mingw32-"
     fi
     CC=${CC:-"${CROSS_PREFIX}gcc"}
@@ -301,11 +301,15 @@ validate_macos_dependencies() {
 }
 
 stage_windows_runtime_dependencies() {
-    local toolchain_bin dep dep_lower library library_path runtime_path
+    local toolchain_bin dep dep_lower library library_path runtime_path runtime_dir
     local checked_library staged_path already_checked staged discovered
-    local -a checked=()
+    local -a checked=() runtime_dirs=()
 
     toolchain_bin=$(CDPATH= cd -- "$(dirname -- "$(command -v "$CC")")" && pwd)
+    runtime_dirs+=("$toolchain_bin")
+    if [[ -n "$SYSROOT" && -d "$SYSROOT/bin" ]]; then
+        runtime_dirs+=("$SYSROOT/bin")
+    fi
     while :; do
         discovered=0
         for library_path in "$lib_dir"/*.dll; do
@@ -339,8 +343,11 @@ stage_windows_runtime_dependencies() {
                 if ((staged)); then
                     continue
                 fi
-                runtime_path=$(find "$toolchain_bin" -maxdepth 1 -type f -iname "$dep" -print -quit)
-                [[ -n "$runtime_path" ]] || fail "Windows runtime dependency is missing: $dep (required by $library)"
+                runtime_path=
+                for runtime_dir in "${runtime_dirs[@]}"; do
+                    runtime_path=$(find "$runtime_dir" -maxdepth 1 -type f -iname "$dep" -print -quit)
+                    [[ -n "$runtime_path" ]] && break
+                done
                 cp "$runtime_path" "$lib_dir/$(basename "$runtime_path")"
                 discovered=1
             done < <("$OBJDUMP" -p "$library_path" | awk '/DLL Name:/{print $3}')

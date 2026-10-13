@@ -62,7 +62,7 @@ jobs:
             shell: msys2 {0}
             ffmpeg_os: windows
             ffmpeg_arch: x86_64
-            cc: x86_64-w64-mingw32-gcc
+            cc: gcc
             cross_prefix: none
             msystem: MINGW64
             install: base-devel ccache make mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-nasm
@@ -74,8 +74,9 @@ jobs:
             cc: clang
             cross_prefix: none
             enable_cross_compile: '1'
-            msystem: CLANGARM64
-            install: base-devel ccache make mingw-w64-clang-aarch64-gcc mingw-w64-clang-aarch64-binutils mingw-w64-clang-aarch64-nasm
+            sysroot: /clangarm64
+            msystem: CLANG64
+            install: base-devel ccache make mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-llvm-tools mingw-w64-clang-x86_64-nasm mingw-w64-clang-aarch64-headers mingw-w64-clang-aarch64-crt mingw-w64-clang-aarch64-libwinpthread
 
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -131,6 +132,7 @@ jobs:
           CC: ${{ matrix.cc }}
           CCACHE: ccache
           CROSS_PREFIX: ${{ matrix.cross_prefix }}
+          SYSROOT: ${{ matrix.sysroot || '' }}
           ENABLE_CROSS_COMPILE: ${{ matrix.enable_cross_compile || '0' }}
           FFMPEG_SOURCE_DIR: ${{ github.workspace }}/ffmpeg-source
           PREFIX: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
