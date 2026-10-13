@@ -261,7 +261,7 @@ check_symbol() {
             output=$(nm -g "$library" 2>/dev/null || true)
             ;;
     esac
-    printf '%s\n' "$output" | grep -Eq "(^|[[:space:]])_?${symbol}(@[^[:space:]]+)?(\$|[[:space:]])" || fail "missing exported symbol $symbol in $library"
+    printf '%s\n' "$output" | grep -Eq "(^|[[:space:]])_?${symbol}(@[^[:space:]]+)?($|[[:space:]])" || fail "missing exported symbol $symbol in $library"
 }
 windows_system_dll() {
     case "$1" in
@@ -357,6 +357,7 @@ stage_windows_runtime_dependencies() {
                     runtime_path=$(find "$runtime_dir" -maxdepth 1 -type f -iname "$dep" -print -quit)
                     [[ -n "$runtime_path" ]] && break
                 done
+                [[ -n "$runtime_path" ]] || fail "Windows FFmpeg dependency not found: $dep"
                 cp "$runtime_path" "$lib_dir/$(basename "$runtime_path")"
                 discovered=1
             done < <("$OBJDUMP" -p "$library_path" | awk '/DLL Name:/{print $3}')
