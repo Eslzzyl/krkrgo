@@ -63,8 +63,8 @@ jobs:
             ffmpeg_os: windows
             ffmpeg_arch: x86_64
             cc: x86_64-w64-mingw32-gcc
-            msystem: MINGW64
-            install: base-devel ccache make mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-nasm
+            msystem: UCRT64
+            install: base-devel ccache make mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-binutils mingw-w64-ucrt-x86_64-nasm
           - name: windows-arm64
             runner: windows-2025
             shell: msys2 {0}
