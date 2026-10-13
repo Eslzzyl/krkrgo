@@ -76,25 +76,29 @@ var callbackState = struct {
 	read map[uint64]*memoryReader
 }{read: make(map[uint64]*memoryReader)}
 
+func callbackResult(value int64) uintptr {
+	return uintptr(value)
+}
+
 var (
-	avioReadCallback = purego.NewCallback(func(handle uintptr, buffer uintptr, size int32) int32 {
+	avioReadCallback = purego.NewCallback(func(handle uintptr, buffer uintptr, size int32) uintptr {
 		callbackState.RLock()
 		reader := callbackState.read[uint64(handle)]
 		callbackState.RUnlock()
 		if reader == nil || buffer == 0 || size <= 0 {
-			return avErrorEOF
+			return callbackResult(int64(avErrorEOF))
 		}
 		data := unsafe.Slice((*byte)(unsafe.Pointer(buffer)), int(size))
-		return int32(reader.read(data))
+		return uintptr(reader.read(data))
 	})
-	avioSeekCallback = purego.NewCallback(func(handle uintptr, offset int64, whence int32) int64 {
+	avioSeekCallback = purego.NewCallback(func(handle uintptr, offset int64, whence int32) uintptr {
 		callbackState.RLock()
 		reader := callbackState.read[uint64(handle)]
 		callbackState.RUnlock()
 		if reader == nil {
-			return -1
+			return callbackResult(-1)
 		}
-		return reader.seek(offset, int(whence))
+		return uintptr(reader.seek(offset, int(whence)))
 	})
 )
 
