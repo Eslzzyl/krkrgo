@@ -26,11 +26,16 @@ rule value in red and opaque alpha.
 ## GPU composition contract
 
 Interactive Ebitengine mode defaults to GPU. CPU composition remains available for
-an explicit CPU renderer, GPU initialization failure, and all headless replay. GPU
-composition uses two render targets (ping-pong): each operation copies the current
-destination to the other target, then a Kage shader samples that destination while
-writing the result with replace blending. This avoids framebuffer-fetch assumptions
-and preserves destination-alpha and hold-alpha behavior across backends.
+explicit CPU renderer, GPU initialization failure, and all headless replay. The GPU
+composition uses two render targets (ping-pong): each layer operation copies the
+current destination to the other target. `LayerOpaque` uses a dedicated GPU copy:
+opacity 255 uses replace blending, while lower opacity uses source-over after the
+source texture has been made opaque. Normal `LayerAlpha` layers directly under a
+binder use Ebitengine source-over blending, preserving the CPU compositor's fade
+semantics. Other supported layer modes and transitions use Kage shaders with
+replace blending. Opaque-layer textures preserve RGB while forcing alpha to 1
+during premultiplication. Offscreen and source images use unmanaged Ebitengine
+images, matching krkr2's independently updated GPU textures.
 
 Layer shaders receive the destination and source images plus uniforms for opacity,
 source/destination rectangles, target layer type, and hold-alpha. Supported blend

@@ -54,10 +54,10 @@ func TestCaptureRenderPlanTreeAndHashes(t *testing.T) {
 			t.Errorf("node %d id=%d", i, id)
 		}
 	}
-	if !bytes.Equal([]byte{1, 2, 3}, []byte{byte(p.ChildIndices[0]), byte(p.ChildIndices[1]), byte(p.ChildIndices[2])}) {
+	if !bytes.Equal([]byte{2, 1, 3}, []byte{byte(p.ChildIndices[0]), byte(p.ChildIndices[1]), byte(p.ChildIndices[2])}) {
 		t.Errorf("child indices=%v", p.ChildIndices)
 	}
-	if p.Nodes[0].ChildStart != 0 || p.Nodes[0].ChildCount != 2 || p.Nodes[1].ChildStart != 1 || p.Nodes[1].ChildCount != 1 {
+	if p.Nodes[0].ChildStart != 1 || p.Nodes[0].ChildCount != 2 || p.Nodes[1].ChildStart != 0 || p.Nodes[1].ChildCount != 1 {
 		t.Errorf("child ranges=%+v %+v", p.Nodes[0], p.Nodes[1])
 	}
 	if p.Nodes[2].Bounds.X != 13 || p.Nodes[2].Bounds.Y != 16 || p.Nodes[2].ImageLeft != -1 || p.Nodes[2].ImageTop != -1 {

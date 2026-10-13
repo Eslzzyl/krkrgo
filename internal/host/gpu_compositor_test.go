@@ -42,8 +42,11 @@ func TestGPUCompositorComposeCreatesNativeTarget(t *testing.T) {
 		Width:  1,
 		Height: 1,
 		Nodes: []runtime.RenderNode{{
+			ID:          1,
 			Bounds:      runtime.Rect{Width: 1, Height: 1},
 			Type:        runtime.LayerOpaque,
+			Visible:     true,
+			Opacity:     255,
 			ImageWidth:  1,
 			ImageHeight: 1,
 			RGBA:        []byte{32, 64, 128, 255},
@@ -62,11 +65,23 @@ func TestGPUCompositorComposeCreatesNativeTarget(t *testing.T) {
 func TestPremultipliedPixelsMatchesPresentationContract(t *testing.T) {
 	src := []byte{200, 100, 50, 128, 10, 20, 30, 255}
 	dst := make([]byte, len(src))
-	premultipliedPixels(src, dst)
+	premultipliedPixels(src, dst, false)
 	want := []byte{100, 50, 25, 128, 10, 20, 30, 255}
 	for i := range want {
 		if dst[i] != want[i] {
 			t.Fatalf("premultiplied[%d] = %d, want %d; got %v", i, dst[i], want[i], dst)
+		}
+	}
+}
+
+func TestPremultipliedPixelsPreservesOpaqueRGB(t *testing.T) {
+	src := []byte{200, 100, 50, 0, 10, 20, 30, 128}
+	dst := make([]byte, len(src))
+	premultipliedPixels(src, dst, true)
+	want := []byte{200, 100, 50, 255, 10, 20, 30, 255}
+	for i := range want {
+		if dst[i] != want[i] {
+			t.Fatalf("opaque premultiplied[%d] = %d, want %d; got %v", i, dst[i], want[i], dst)
 		}
 	}
 }

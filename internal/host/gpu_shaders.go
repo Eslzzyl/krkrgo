@@ -134,9 +134,6 @@ func unpremultiply(v vec4) vec4 {
 }
 func applyOpacity(dst, src vec4, op float) vec4 {
 	op = clamp01(op)
-	if op >= 1 {
-		return src
-	}
 	sa := src.a * op
 	oa := sa + dst.a*(1-sa)
 	return vec4(src.rgb*op+dst.rgb*(1-sa), oa)
@@ -148,7 +145,7 @@ func Fragment(dstPos vec4, src0Pos vec2, color vec4) vec4 {
 	var out vec4
 	if ZeroDestinationOpaque > 0 {
 		q := 1 - p
-		out = vec4(d.rgb*q, q)
+		out = vec4(d.rgb*q*q, q)
 	} else if Opaque > 0 {
 		out = vec4(mix(d.rgb, s.rgb, p), 1)
 	} else {

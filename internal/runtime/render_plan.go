@@ -158,25 +158,23 @@ func (s *Services) CaptureRenderPlan() (RenderPlan, error) {
 		if childTarget == LayerBinder {
 			childTarget = target
 		}
-		childStart := len(p.ChildIndices)
-		p.Nodes[i].ChildStart = childStart
+		// Keep each parent's child slots contiguous; recursion appends descendant slots separately.
 		parentX, parentY := p.Nodes[i].Bounds.X, p.Nodes[i].Bounds.Y
-		childCount := 0
+		childIndices := make([]int, 0, len(l.children))
 		for _, ch := range l.children {
 			if ch == nil {
 				continue
 			}
-			childSlot := len(p.ChildIndices)
 			childIndex := len(p.Nodes)
-			p.ChildIndices = append(p.ChildIndices, childIndex)
-			childCount++
-			ci, err := walk(ch, parentX, parentY, childTarget)
-			if err != nil {
+			if _, err := walk(ch, parentX, parentY, childTarget); err != nil {
 				return -1, err
 			}
-			p.ChildIndices[childSlot] = ci
+			childIndices = append(childIndices, childIndex)
 		}
-		p.Nodes[i].ChildCount = childCount
+		childStart := len(p.ChildIndices)
+		p.ChildIndices = append(p.ChildIndices, childIndices...)
+		p.Nodes[i].ChildStart = childStart
+		p.Nodes[i].ChildCount = len(childIndices)
 		return i, nil
 	}
 	if c.Root != nil {

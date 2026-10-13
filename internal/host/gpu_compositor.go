@@ -2,10 +2,10 @@ package host
 
 import (
 	"fmt"
-	"image/color"
-
 	runtime "github.com/eslzzyl/krkrgo/internal/runtime"
 	"github.com/hajimehoshi/ebiten/v2"
+	"image"
+	"image/color"
 )
 
 type gpuTextureRole uint8
@@ -51,6 +51,13 @@ var gpuReplaceBlend = ebiten.Blend{
 	BlendFactorDestinationAlpha: ebiten.BlendFactorZero,
 	BlendOperationRGB:           ebiten.BlendOperationAdd,
 	BlendOperationAlpha:         ebiten.BlendOperationAdd,
+}
+var gpuUnmanagedImageOptions = ebiten.NewImageOptions{Unmanaged: true}
+
+func newGPUImage(width, height int) *ebiten.Image {
+	// Keep dynamic textures out of Ebitengine's atlas, matching krkr2's mutable
+	// GPU texture path for video and render targets.
+	return ebiten.NewImageWithOptions(image.Rect(0, 0, width, height), &gpuUnmanagedImageOptions)
 }
 
 func NewGPUCompositor() (*GPUCompositor, error) {
@@ -116,7 +123,7 @@ func (c *GPUCompositor) ensureTargets(width, height int, background [4]uint8) er
 		if c.back != nil {
 			c.back.Deallocate()
 		}
-		c.front, c.back = ebiten.NewImage(width, height), ebiten.NewImage(width, height)
+		c.front, c.back = newGPUImage(width, height), newGPUImage(width, height)
 		c.width, c.height = width, height
 	}
 	bg := color.RGBA{R: background[0], G: background[1], B: background[2], A: background[3]}
@@ -125,9 +132,12 @@ func (c *GPUCompositor) ensureTargets(width, height int, background [4]uint8) er
 	return nil
 }
 
-func premultipliedPixels(src []byte, dst []byte) {
+func premultipliedPixels(src []byte, dst []byte, opaque bool) {
 	for i := 0; i+3 < len(src); i += 4 {
 		a := uint16(src[i+3])
+		if opaque {
+			a = 255
+		}
 		dst[i+3] = byte(a)
 		dst[i] = byte((uint16(src[i])*a + 127) / 255)
 		dst[i+1] = byte((uint16(src[i+1])*a + 127) / 255)
@@ -144,18 +154,18 @@ func (c *GPUCompositor) texture(key gpuTextureKey, width, height int32, src []by
 		if t != nil && t.image != nil {
 			t.image.Deallocate()
 		}
-		t = &gpuTexture{image: ebiten.NewImage(int(width), int(height)), width: width, height: height}
+		t = &gpuTexture{image: newGPUImage(int(width), int(height)), width: width, height: height}
 		t.upload = make([]byte, len(src))
 		c.textures[key] = t
 		t.hash = ^uint64(0)
 	}
-	if t.hash != hash || len(t.upload) != len(src) {
+	if t.hash != hash || t.opaque != opaque || len(t.upload) != len(src) {
 		if cap(t.upload) < len(src) {
 			t.upload = make([]byte, len(src))
 		} else {
 			t.upload = t.upload[:len(src)]
 		}
-		premultipliedPixels(src, t.upload)
+		premultipliedPixels(src, t.upload, opaque)
 		t.image.WritePixels(t.upload)
 		t.hash = hash
 	}
@@ -279,15 +289,21 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 				if err != nil {
 					return err
 				}
-				shader = c.shaders[gpuMethodKey{n.Type, targetType, n.HoldAlpha}]
-				if shader == nil {
-					return fmt.Errorf("unsupported GPU layer type %d", n.Type)
+				if n.Type == runtime.LayerOpaque {
+					c.drawOpaqueLayer(source, x0, y0, x1, y1, ax, ay, n)
+				} else if n.Type == runtime.LayerAlpha && targetType == runtime.LayerBinder {
+					c.drawAlphaLayer(source, x0, y0, x1, y1, ax, ay, n)
+				} else {
+					shader = c.shaders[gpuMethodKey{n.Type, targetType, n.HoldAlpha}]
+					if shader == nil {
+						return fmt.Errorf("unsupported GPU layer type %d", n.Type)
+					}
+					c.copyFrontToBack()
+					c.drawQuad(c.back, shader, [4]*ebiten.Image{c.front, source, nil, nil}, float32(ax+n.ImageLeft+int32(x0)), float32(ay+n.ImageTop+int32(y0)), float32(ax+n.ImageLeft+int32(x1)), float32(ay+n.ImageTop+int32(y1)), float32(ax+n.ImageLeft), float32(ay+n.ImageTop), map[string]any{
+						"Mode": float32(n.Type), "TargetType": float32(targetType), "Opacity": float32(n.Opacity) / 255, "HoldAlpha": boolToFloat(n.HoldAlpha),
+					})
+					c.front, c.back = c.back, c.front
 				}
-				c.copyFrontToBack()
-				c.drawQuad(c.back, shader, [4]*ebiten.Image{c.front, source, nil, nil}, float32(ax+n.ImageLeft+int32(x0)), float32(ay+n.ImageTop+int32(y0)), float32(ax+n.ImageLeft+int32(x1)), float32(ay+n.ImageTop+int32(y1)), float32(ax+n.ImageLeft), float32(ay+n.ImageTop), map[string]any{
-					"Mode": float32(n.Type), "TargetType": float32(targetType), "Opacity": float32(n.Opacity) / 255, "HoldAlpha": boolToFloat(n.HoldAlpha),
-				})
-				c.front, c.back = c.back, c.front
 			}
 		}
 	}
@@ -307,6 +323,35 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 	return nil
 }
 
+// drawOpaqueLayer mirrors krkr2's CopyOpaqueImage/bmCopy path. The source
+// texture has alpha 1 by the time it reaches this function.
+func (c *GPUCompositor) drawOpaqueLayer(source *ebiten.Image, x0, y0, x1, y1 int64, ax, ay int32, n runtime.RenderNode) {
+	c.copyFrontToBack()
+	visible := source.SubImage(image.Rect(int(x0), int(y0), int(x1), int(y1))).(*ebiten.Image)
+	blend := ebiten.BlendSourceOver
+	if n.Opacity == 255 {
+		blend = gpuReplaceBlend
+	}
+	options := &ebiten.DrawImageOptions{Blend: blend}
+	options.GeoM.Translate(float64(ax+n.ImageLeft+int32(x0)), float64(ay+n.ImageTop+int32(y0)))
+	options.ColorScale.ScaleAlpha(float32(n.Opacity) / 255)
+	c.back.DrawImage(visible, options)
+	c.front, c.back = c.back, c.front
+}
+
+// drawAlphaLayer uses Ebitengine's premultiplied source-over path. For a
+// normal layer under a binder, this is the same operation as the CPU alpha
+// compositor and keeps layer opacity in the native blend stage.
+func (c *GPUCompositor) drawAlphaLayer(source *ebiten.Image, x0, y0, x1, y1 int64, ax, ay int32, n runtime.RenderNode) {
+	c.copyFrontToBack()
+	visible := source.SubImage(image.Rect(int(x0), int(y0), int(x1), int(y1))).(*ebiten.Image)
+	options := &ebiten.DrawImageOptions{Blend: ebiten.BlendSourceOver}
+	options.GeoM.Translate(float64(ax+n.ImageLeft+int32(x0)), float64(ay+n.ImageTop+int32(y0)))
+	options.ColorScale.ScaleAlpha(float32(n.Opacity) / 255)
+	c.back.DrawImage(visible, options)
+	c.front, c.back = c.back, c.front
+}
+
 func boolToFloat(v bool) float32 {
 	if v {
 		return 1
@@ -323,7 +368,7 @@ func (c *GPUCompositor) ruleTexture(id runtime.LayerID, tr *runtime.RenderTransi
 		if t != nil && t.image != nil {
 			t.image.Deallocate()
 		}
-		t = &gpuTexture{image: ebiten.NewImage(int(tr.RuleWidth), int(tr.RuleHeight)), width: tr.RuleWidth, height: tr.RuleHeight, hash: ^uint64(0)}
+		t = &gpuTexture{image: newGPUImage(int(tr.RuleWidth), int(tr.RuleHeight)), width: tr.RuleWidth, height: tr.RuleHeight, hash: ^uint64(0)}
 		t.upload = make([]byte, len(tr.Rule)*4)
 		c.textures[gpuTextureKey{id, gpuTextureRule}] = t
 	}
