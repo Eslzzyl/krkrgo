@@ -63,9 +63,9 @@ jobs:
             ffmpeg_os: windows
             ffmpeg_arch: x86_64
             cc: x86_64-w64-mingw32-gcc
-            cross_prefix: x86_64-w64-mingw32-
+            cross_prefix: none
             msystem: MINGW64
-            install: base-devel make mingw-w64-x86_64-ccache mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-nasm
+            install: base-devel ccache make mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-nasm
           - name: windows-arm64
             runner: windows-2025
             shell: msys2 {0}
@@ -75,7 +75,7 @@ jobs:
             cross_prefix: none
             enable_cross_compile: '1'
             msystem: CLANGARM64
-            install: base-devel make mingw-w64-clang-aarch64-ccache mingw-w64-clang-aarch64-gcc mingw-w64-clang-aarch64-binutils mingw-w64-clang-aarch64-nasm
+            install: base-devel ccache make mingw-w64-clang-aarch64-gcc mingw-w64-clang-aarch64-binutils mingw-w64-clang-aarch64-nasm
 
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60

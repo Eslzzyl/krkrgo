@@ -75,7 +75,7 @@ if [[ "$CROSS_PREFIX" == none ]]; then
     CROSS_PREFIX=
 fi
 if [[ "$PLATFORM" == windows ]]; then
-    if [[ -z "$CROSS_PREFIX" && "$CC" != clang* ]]; then
+    if [[ -z "$CROSS_PREFIX" && "$CC" != clang* && "$CC" != *-w64-mingw32-gcc ]]; then
         CROSS_PREFIX="${TARGET_ARCH}-w64-mingw32-"
     fi
     CC=${CC:-"${CROSS_PREFIX}gcc"}
@@ -252,7 +252,7 @@ check_symbol() {
             output=$(nm -g "$library" 2>/dev/null || true)
             ;;
     esac
-    printf '%s\n' "$output" | grep -Eq "(^|[[:space:]])_?${symbol}(\$|[[:space:]])" || fail "missing exported symbol $symbol in $library"
+    printf '%s\n' "$output" | grep -Eq "(^|[[:space:]])_?${symbol}(@[^[:space:]]+)?(\$|[[:space:]])" || fail "missing exported symbol $symbol in $library"
 }
 windows_system_dll() {
     case "$1" in
