@@ -76,6 +76,35 @@ func TestCaptureRenderPlanTreeAndHashes(t *testing.T) {
 		t.Fatal("direct RGBA mutation did not change hashes")
 	}
 }
+func TestCaptureRenderPlanReusesBackingStorage(t *testing.T) {
+	root := NewRootLayer(1, 16, 16)
+	child := NewLayer(2)
+	if err := child.SetRGBA(2, 2, make([]byte, 16)); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.AddChild(child); err != nil {
+		t.Fatal(err)
+	}
+	services := DefaultServices()
+	services.Root = root
+	var scratch RenderPlan
+	first, err := services.captureRenderPlanInto(&scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstNode, firstChild := &first.Nodes[0], &first.ChildIndices[0]
+	second, err := services.captureRenderPlanInto(&scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if &second.Nodes[0] != firstNode {
+		t.Fatal("render-plan node storage was not reused")
+	}
+	if &second.ChildIndices[0] != firstChild {
+		t.Fatal("render-plan child-index storage was not reused")
+	}
+}
+
 func TestTickForGPUPresentationDispatchesOnPaintAndCapturesFrame(t *testing.T) {
 	session := NewSession(DefaultServices(), 10_000)
 	defer session.Close()

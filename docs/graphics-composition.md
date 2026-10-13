@@ -67,6 +67,9 @@ software reference used for parity tests. The GPU path avoids full-frame CPU cop
 and readbacks during interactive presentation, while retaining CPU-side preparation
 for text, bitmaps, video, and image APIs. Window layout follows the runtime frame
 size, so presentation does not introduce an additional resampling step.
+GPU render-plan capture reuses its node and child-index storage between ticks and
+computes each source buffer hash once per capture. Mutable RGBA, province, and
+transition buffers remain part of the render fingerprint.
 
 GPU output is compared with the CPU reference using per-channel tolerances. Exact
 bytes can differ across graphics drivers, shader precision, and premultiplied

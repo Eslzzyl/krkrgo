@@ -1042,7 +1042,10 @@ func (s *Session) TickForPresentation(timeMS uint64) (FrameSnapshot, error) {
 // TickForGPUPresentation advances the session using the same deterministic
 // tick ordering as CPU presentation and returns a borrowed render plan.
 func (s *Session) TickForGPUPresentation(timeMS uint64) (RenderPlan, error) {
-	s.gpuPlan = RenderPlan{}
+	s.gpuPlan = RenderPlan{
+		Nodes:        s.gpuPlan.Nodes[:0],
+		ChildIndices: s.gpuPlan.ChildIndices[:0],
+	}
 	s.gpuCapture = true
 	defer func() { s.gpuCapture = false }()
 	if _, err := s.TickForPresentation(timeMS); err != nil {
@@ -1462,7 +1465,7 @@ func (s *Session) captureFrameFor(forPresentation bool) (FrameSnapshot, error) {
 		}
 	}
 	if s.gpuCapture {
-		plan, err := s.Services.CaptureRenderPlan()
+		plan, err := s.Services.captureRenderPlanInto(&s.gpuPlan)
 		if err != nil {
 			return FrameSnapshot{}, err
 		}

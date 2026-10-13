@@ -46,17 +46,25 @@ const (
 	RenderTransitionUniversal
 )
 
-func renderBytesHash(seed maphash.Seed, b []byte) uint64 {
-	var h maphash.Hash
-	h.SetSeed(seed)
-	_, _ = h.Write(b)
-	return h.Sum64()
-}
-
 // CaptureRenderPlan returns a borrowed, backend-neutral view of the current tree.
 func (s *Services) CaptureRenderPlan() (RenderPlan, error) {
+	return s.captureRenderPlanInto(nil)
+}
+
+// captureRenderPlanInto fills dst when provided. The returned plan borrows the
+// destination slices until the next capture into the same destination.
+func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 	var p RenderPlan
+	if dst != nil {
+		p = *dst
+		p.Nodes = p.Nodes[:0]
+		p.ChildIndices = p.ChildIndices[:0]
+		p.StateHash = 0
+	}
 	if s.Compositor == nil && s.Root == nil {
+		if dst != nil {
+			*dst = p
+		}
 		return p, nil
 	}
 	if s.Compositor == nil {
@@ -75,6 +83,13 @@ func (s *Services) CaptureRenderPlan() (RenderPlan, error) {
 		seed = maphash.MakeSeed()
 		s.frameCacheSeed = seed
 	}
+	var bytesHash maphash.Hash
+	bytesHash.SetSeed(seed)
+	hashBytes := func(b []byte) uint64 {
+		bytesHash.Reset()
+		_, _ = bytesHash.Write(b)
+		return bytesHash.Sum64()
+	}
 	var state maphash.Hash
 	state.SetSeed(seed)
 	var word [8]byte
@@ -87,8 +102,71 @@ func (s *Services) CaptureRenderPlan() (RenderPlan, error) {
 	for _, v := range p.Background {
 		write(uint64(v))
 	}
-	var walk func(*Layer, int32, int32, LayerType) (int, error)
-	walk = func(l *Layer, px, py int32, target LayerType) (int, error) {
+	type renderHashes struct {
+		rgba, province, transition uint64
+	}
+	writeLayerState := func(layer *Layer, visible bool, hashes renderHashes) {
+		var values [25]uint64
+		values[0] = 1
+		values[1] = uint64(uint32(layer.Bounds.X))
+		values[2] = uint64(uint32(layer.Bounds.Y))
+		values[3] = uint64(uint32(layer.Bounds.Width))
+		values[4] = uint64(uint32(layer.Bounds.Height))
+		values[5] = uint64(layer.Opacity)
+		values[6] = boolUint64(layer.Visible)
+		values[7] = uint64(layer.Type)
+		values[8] = uint64(uint32(layer.ImageWidth))
+		values[9] = uint64(uint32(layer.ImageHeight))
+		values[10] = uint64(uint32(layer.ImageLeft))
+		values[11] = uint64(uint32(layer.ImageTop))
+		values[12] = boolUint64(layer.clipSet)
+		values[13] = uint64(uint32(layer.clip.X))
+		values[14] = uint64(uint32(layer.clip.Y))
+		values[15] = uint64(uint32(layer.clip.Width))
+		values[16] = uint64(uint32(layer.clip.Height))
+		values[17] = boolUint64(layer.transitionHidden)
+		values[18] = boolUint64(layer.inTransition)
+		values[19] = uint64(len(layer.children))
+		values[20] = uint64(uint32(layer.ProvinceWidth))
+		values[21] = uint64(uint32(layer.ProvinceHeight))
+		values[22] = uint64(len(layer.RGBA))
+		values[23] = uint64(len(layer.Province))
+		values[24] = uint64(len(layer.transitionPixels))
+		var encoded [len(values) * 8]byte
+		for i, value := range values {
+			binary.LittleEndian.PutUint64(encoded[i*8:], value)
+		}
+		_, _ = state.Write(encoded[:])
+		if visible {
+			write(hashes.rgba)
+			write(hashes.province)
+			write(hashes.transition)
+		}
+	}
+	writeNodeState := func(node *RenderNode) {
+		write(uint64(node.ID))
+		write(uint64(uint32(node.Bounds.X)))
+		write(uint64(uint32(node.Bounds.Y)))
+		write(uint64(uint32(node.Bounds.Width)))
+		write(uint64(uint32(node.Bounds.Height)))
+		write(uint64(node.Opacity))
+		write(uint64(node.ImageHash))
+		write(uint64(node.ChildStart))
+		write(uint64(node.ChildCount))
+		if node.Transition != nil {
+			write(uint64(node.Transition.Method))
+			write(uint64(node.Transition.Phase))
+			write(uint64(node.Transition.Vague))
+			write(boolUint64(node.Transition.Opaque))
+			write(boolUint64(node.Transition.ZeroDestinationOpaque))
+			write(boolUint64(node.Transition.WithChildren))
+			write(node.Transition.DestinationHash)
+			write(node.Transition.SourceHash)
+			write(node.Transition.RuleHash)
+		}
+	}
+	var walk func(*Layer, int32, int32, LayerType, bool) (int, error)
+	walk = func(l *Layer, px, py int32, target LayerType, ancestorsVisible bool) (int, error) {
 		if l == nil {
 			return -1, nil
 		}
@@ -111,12 +189,14 @@ func (s *Services) CaptureRenderPlan() (RenderPlan, error) {
 		n.ImageLeft = l.ImageLeft
 		n.ImageTop = l.ImageTop
 		n.RGBA = l.RGBA
-		n.ImageHash = renderBytesHash(seed, n.RGBA)
+		hashes := renderHashes{rgba: hashBytes(l.RGBA)}
+		n.ImageHash = hashes.rgba
 		n.Clip = l.clip
 		n.ClipSet = l.clipSet
-		if l.inTransition && len(l.transitionPixels) != 0 {
+		if len(l.transitionPixels) != 0 {
+			hashes.transition = hashBytes(l.transitionPixels)
 			n.RGBA = l.transitionPixels
-			n.ImageHash = renderBytesHash(seed, n.RGBA)
+			n.ImageHash = hashes.transition
 		}
 		if l.inTransition {
 			method := RenderTransitionCrossfade
@@ -149,10 +229,14 @@ func (s *Services) CaptureRenderPlan() (RenderPlan, error) {
 				Opaque:                l.transitionOpaque,
 				ZeroDestinationOpaque: l.transitionZeroOpaque,
 				WithChildren:          l.transitionChildren,
-				DestinationHash:       renderBytesHash(seed, l.transitionDestImage),
-				SourceHash:            renderBytesHash(seed, l.transitionSourceImage),
-				RuleHash:              renderBytesHash(seed, l.transitionRule),
+				DestinationHash:       hashBytes(l.transitionDestImage),
+				SourceHash:            hashBytes(l.transitionSourceImage),
+				RuleHash:              hashBytes(l.transitionRule),
 			}
+		}
+		visible := ancestorsVisible && !l.transitionHidden && l.Visible && l.Opacity != 0
+		if visible {
+			hashes.province = hashBytes(l.Province)
 		}
 		childTarget := l.Type
 		if childTarget == LayerBinder {
@@ -160,13 +244,17 @@ func (s *Services) CaptureRenderPlan() (RenderPlan, error) {
 		}
 		// Keep each parent's child slots contiguous; recursion appends descendant slots separately.
 		parentX, parentY := p.Nodes[i].Bounds.X, p.Nodes[i].Bounds.Y
-		childIndices := make([]int, 0, len(l.children))
+		var childIndexStorage [8]int
+		childIndices := childIndexStorage[:0]
+		if len(l.children) > len(childIndexStorage) {
+			childIndices = make([]int, 0, len(l.children))
+		}
 		for _, ch := range l.children {
 			if ch == nil {
 				continue
 			}
 			childIndex := len(p.Nodes)
-			if _, err := walk(ch, parentX, parentY, childTarget); err != nil {
+			if _, err := walk(ch, parentX, parentY, childTarget, visible); err != nil {
 				return -1, err
 			}
 			childIndices = append(childIndices, childIndex)
@@ -175,38 +263,18 @@ func (s *Services) CaptureRenderPlan() (RenderPlan, error) {
 		p.ChildIndices = append(p.ChildIndices, childIndices...)
 		p.Nodes[i].ChildStart = childStart
 		p.Nodes[i].ChildCount = len(childIndices)
+		writeLayerState(l, visible, hashes)
+		writeNodeState(&p.Nodes[i])
 		return i, nil
 	}
 	if c.Root != nil {
-		if _, err := walk(c.Root, 0, 0, c.Root.Type); err != nil {
+		if _, err := walk(c.Root, 0, 0, c.Root.Type, true); err != nil {
 			return RenderPlan{}, err
 		}
 	}
-	if err := hashLayerRenderState(&state, c.Root, write); err != nil {
-		return RenderPlan{}, err
-	}
-	for _, n := range p.Nodes {
-		write(uint64(n.ID))
-		write(uint64(uint32(n.Bounds.X)))
-		write(uint64(uint32(n.Bounds.Y)))
-		write(uint64(uint32(n.Bounds.Width)))
-		write(uint64(uint32(n.Bounds.Height)))
-		write(uint64(n.Opacity))
-		write(uint64(n.ImageHash))
-		write(uint64(n.ChildStart))
-		write(uint64(n.ChildCount))
-		if n.Transition != nil {
-			write(uint64(n.Transition.Method))
-			write(uint64(n.Transition.Phase))
-			write(uint64(n.Transition.Vague))
-			write(boolUint64(n.Transition.Opaque))
-			write(boolUint64(n.Transition.ZeroDestinationOpaque))
-			write(boolUint64(n.Transition.WithChildren))
-			write(n.Transition.DestinationHash)
-			write(n.Transition.SourceHash)
-			write(n.Transition.RuleHash)
-		}
-	}
 	p.StateHash = state.Sum64()
+	if dst != nil {
+		*dst = p
+	}
 	return p, nil
 }
