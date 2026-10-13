@@ -74,8 +74,8 @@ jobs:
             cross_prefix: none
             enable_cross_compile: '1'
             sysroot: /clangarm64
-            msystem: CLANGARM64
-            install: base-devel ccache make mingw-w64-clang-aarch64-clang mingw-w64-clang-aarch64-llvm-tools mingw-w64-clang-aarch64-headers mingw-w64-clang-aarch64-crt mingw-w64-clang-aarch64-libwinpthread mingw-w64-clang-aarch64-winpthreads mingw-w64-clang-aarch64-compiler-rt mingw-w64-clang-aarch64-libunwind
+            msystem: CLANG64
+            install: base-devel ccache make mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-llvm-tools mingw-w64-clang-x86_64-nasm mingw-w64-clang-aarch64-headers mingw-w64-clang-aarch64-crt mingw-w64-clang-aarch64-libwinpthread mingw-w64-clang-aarch64-winpthreads mingw-w64-clang-aarch64-compiler-rt mingw-w64-clang-aarch64-libunwind
 
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -110,6 +110,14 @@ jobs:
           msystem: ${{ matrix.msystem }}
           update: true
           install: ${{ matrix.install }}
+      - name: Link ARM64 compiler runtime
+        if: matrix.name == 'windows-arm64'
+        run: |
+          resource_dir=$(clang -print-resource-dir)
+          runtime_dir="$resource_dir/lib/aarch64-w64-windows-gnu"
+          mkdir -p "$runtime_dir"
+          ln -sf /clangarm64/lib/clang/23/lib/windows/libclang_rt.builtins-aarch64.a "$runtime_dir/libclang_rt.builtins.a"
+          test -f "$runtime_dir/libclang_rt.builtins.a"
 
       - name: Fetch and verify FFmpeg source
         run: |
