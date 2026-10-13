@@ -74,7 +74,7 @@ go build -trimpath ./cmd/krkrgo-tool
 
 ### Build the FFmpeg sidecar
 
-The checked-in workflow builds the latest FFmpeg 9.0.2 release for six desktop targets. The build enables shared `avutil`, `avcodec`, `avformat`, and `swscale` libraries with ASF, VC-1, WMV3, and WMA2 support. Hardware acceleration and FFmpeg command-line programs are disabled; runtime decoding uses the purego loader.
+The workflow builds and uploads FFmpeg 9.0.2 shared libraries for six desktop targets. It enables Ogg/Vorbis, ASF, VC-1, WMV3, and WMA2 support. Hardware acceleration and FFmpeg command-line programs are disabled; runtime decoding uses the purego loader.
 
 For a local build from the verified FFmpeg 9.0.2 source archive:
 

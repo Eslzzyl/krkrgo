@@ -1,6 +1,7 @@
 package ffmpeg
 
 import (
+	"syscall"
 	"unsafe"
 )
 
@@ -153,7 +154,7 @@ const (
 	avSeekBackward   = 1
 	avFormatCustomIO = 0x0080
 	avNoPTSValue     = int64(-1 << 63)
-	avErrorAgain     = int32(-11)
+	avErrorAgain     = -int32(syscall.EAGAIN)
 	avErrorEOF       = int32(-541478725)
 )
 

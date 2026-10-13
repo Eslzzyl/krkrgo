@@ -178,7 +178,9 @@ configure_args=(
     "--disable-bsfs"
     "--disable-protocols"
     "--enable-demuxer=asf"
+    "--enable-demuxer=ogg"
     "--enable-parser=vc1"
+    "--enable-decoder=vorbis"
     "--enable-decoder=wmv3"
     "--enable-decoder=wmav2"
 )

@@ -55,11 +55,11 @@ Implemented in `internal/media/ffmpeg/`:
 
 - purego dynamic loading for `avutil`, `avcodec`, `avformat`, and `swscale`;
 - bounded memory-backed AVIO input;
-- ASF/WMV/WMA stream discovery, WMV3 frame conversion, and WMA2 PCM conversion;
+- ASF/WMV/WMA stream discovery, WMV3 frame conversion, WMA2 PCM conversion, and bounded Ogg/Vorbis fallback decoding;
 - runtime `VideoOverlay` integration with the shared 48 kHz stereo mixer;
 - seek, close, tick snapshot, and error-retry state handling.
 
-The unfinished pure-Go WMV3 and ASF packages, Ogg/Vorbis Go decoder, and their tests have been removed. `WaveSoundBuffer` retains bounded WAVE fallback decoding when the FFmpeg sidecar is absent.
+Ogg/Vorbis decoding has a bounded Go fallback for deployments whose sidecar lacks the Ogg demuxer or Vorbis decoder. `WaveSoundBuffer` retains bounded WAVE fallback decoding when the FFmpeg sidecar is absent.
 
 The sidecar build is implemented by `scripts/build-ffmpeg.sh` and `.github/workflows/build-ffmpeg.yml`. The workflow pins the latest FFmpeg 9.0.2 source archive with SHA-256 verification. The build produces the four shared libraries, FFmpeg LGPL license, source version, configure manifest, and ABI probe output for each matrix target. Hardware acceleration and FFmpeg command-line programs are disabled.
 
