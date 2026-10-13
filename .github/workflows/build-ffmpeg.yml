@@ -63,7 +63,6 @@ jobs:
             ffmpeg_os: windows
             ffmpeg_arch: x86_64
             cc: x86_64-w64-mingw32-gcc
-            cross_prefix: x86_64-w64-mingw32-
             msystem: MINGW64
             install: base-devel ccache make mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-nasm
           - name: windows-arm64
@@ -143,6 +142,16 @@ jobs:
             export CCACHE_DIR="$PWD/.ccache"
           fi
           scripts/build-ffmpeg.sh
+      - name: Show configure log on failure
+        if: failure()
+        env:
+          BUILD_DIR: ${{ github.workspace }}/.build/ffmpeg-${{ matrix.name }}
+        run: |
+          if [[ -f "$BUILD_DIR/ffbuild/config.log" ]]; then
+            cat "$BUILD_DIR/ffbuild/config.log"
+          else
+            echo "FFmpeg configure log is unavailable: $BUILD_DIR/ffbuild/config.log"
+          fi
 
       - name: Check sidecar layout
         env:
