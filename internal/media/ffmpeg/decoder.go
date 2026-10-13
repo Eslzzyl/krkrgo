@@ -15,6 +15,8 @@ const (
 	MaxFrameBytes  = 64 * 1024 * 1024
 	MaxPacketBytes = 16 * 1024 * 1024
 	MaxAudioBlocks = 32
+
+	maxPendingFrames = 8
 )
 
 // Metadata describes the selected ASF/WMV media streams.
@@ -353,8 +355,15 @@ func (d *Decoder) DecodeUntil(targetMS uint64) (*Frame, []AudioBlock, error) {
 	}
 	for {
 		frame := d.promote(targetMS)
-		if frame != nil || d.eof {
+		if frame != nil {
 			return frame, d.takeAudio(), nil
+		}
+		if d.last != nil && len(d.pending) > 0 {
+			frame := *d.last
+			return &frame, d.takeAudio(), nil
+		}
+		if d.eof {
+			return nil, d.takeAudio(), nil
 		}
 		if err := d.readPacket(); err != nil {
 			return nil, d.takeAudio(), err
@@ -443,11 +452,7 @@ func (d *Decoder) receiveFrames(state *streamState) error {
 			if err != nil {
 				return err
 			}
-			d.pending = append(d.pending, *frame)
-			if len(d.pending) > 8 {
-				sort.SliceStable(d.pending, func(i, j int) bool { return d.pending[i].PTSMS < d.pending[j].PTSMS })
-				d.pending = d.pending[len(d.pending)-8:]
-			}
+			d.queueVideoFrame(*frame)
 		} else {
 			block, err := d.convertAudio(state)
 			if err != nil {
@@ -462,6 +467,17 @@ func (d *Decoder) receiveFrames(state *streamState) error {
 		}
 		d.api.avFrameUnref(state.frame)
 	}
+}
+
+// queueVideoFrame retains the earliest decoded frames so read-ahead cannot
+// discard the next frame before DecodeUntil advances the presentation clock.
+func (d *Decoder) queueVideoFrame(frame Frame) {
+	d.pending = append(d.pending, frame)
+	if len(d.pending) <= maxPendingFrames {
+		return
+	}
+	sort.SliceStable(d.pending, func(i, j int) bool { return d.pending[i].PTSMS < d.pending[j].PTSMS })
+	d.pending = d.pending[:maxPendingFrames]
 }
 
 func (d *Decoder) drain() error {
