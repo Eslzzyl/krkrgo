@@ -258,7 +258,7 @@ check_symbol() {
             output=$(nm -gU "$library" 2>/dev/null || true)
             ;;
         windows)
-            output=$(nm -g "$library" 2>/dev/null || true)
+            output=$("$OBJDUMP" -p "$library" 2>/dev/null || true)
             ;;
     esac
     printf '%s\n' "$output" | grep -Eq "(^|[[:space:]])_?${symbol}(@[^[:space:]]+)?($|[[:space:]])" || fail "missing exported symbol $symbol in $library"
