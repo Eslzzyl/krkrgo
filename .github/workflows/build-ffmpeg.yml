@@ -208,3 +208,82 @@ jobs:
           path: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
           compression-level: 0
           if-no-files-found: error
+  publish-release:
+    name: Publish FFmpeg sidecar release
+    needs: build
+    runs-on: ubuntu-26.04
+    permissions:
+      actions: read
+      contents: write
+    concurrency:
+      group: ffmpeg-sidecar-release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download sidecar artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-inputs
+      - name: Determine sidecar release tag
+        id: version
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          tag_prefix="ffmpeg-sidecar-v${FFMPEG_VERSION}-r"
+          latest_revision=$(
+            gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/git/refs/tags?per_page=100" \
+              --jq '.[].ref | sub("^refs/tags/"; "")' |
+              awk -v prefix="$tag_prefix" '
+                index($0, prefix) == 1 {
+                  revision = substr($0, length(prefix) + 1)
+                  if (revision ~ /^[0-9]+$/ && revision + 0 > max) {
+                    max = revision + 0
+                  }
+                }
+                END { print max + 0 }
+              '
+          )
+          release_tag="${tag_prefix}$((latest_revision + 1))"
+          printf 'release_tag=%s\n' "$release_tag" >> "$GITHUB_OUTPUT"
+          printf 'Sidecar release tag: %s\n' "$release_tag"
+      - name: Package release assets
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p release-assets
+          platforms=(
+            linux-x86_64
+            linux-aarch64
+            macos-x86_64
+            macos-arm64
+            windows-x86_64
+            windows-arm64
+          )
+          for platform in "${platforms[@]}"; do
+            source_dir="release-inputs/$platform"
+            test -d "$source_dir"
+            case "$platform" in
+              windows-*)
+                (cd release-inputs && zip -qr "$GITHUB_WORKSPACE/release-assets/$RELEASE_TAG-$platform.zip" "$platform")
+                ;;
+              *)
+                tar -C release-inputs -czf "release-assets/$RELEASE_TAG-$platform.tar.gz" "$platform"
+                ;;
+            esac
+          done
+          find release-assets -maxdepth 1 -type f -printf '%f\n' | sort
+      - name: Create GitHub Release
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          set -Eeuo pipefail
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --target "$GITHUB_SHA" \
+            --title "$RELEASE_TAG" \
+            --notes "FFmpeg ${FFMPEG_VERSION} sidecar release.
+
+          Build: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          Commit: ${GITHUB_SHA}"
