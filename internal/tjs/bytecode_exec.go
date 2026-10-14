@@ -271,7 +271,7 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		if target == registerBase-2 {
 			value, err = read(thisContext, name, flags|MemberMustExist)
 			if errors.Is(err, ErrMemberNotFound) {
-				value, err = read(global, name, flags)
+				value, err = read(global, name, flags|MemberMustExist)
 			}
 		} else {
 			value, err = read(regs[target], name, flags)
