@@ -19,13 +19,18 @@ type BytecodeObject struct {
 	Parent, Name                                     int32
 	ContextType                                      uint32
 	MaxVariables, VariableReserve, MaxFrames         uint32
-	ArgumentCount, UnnamedArgumentBase, CollapseBase uint32
+	ArgumentCount, UnnamedArgumentBase               uint32
 	PropertySetter, PropertyGetter, SuperclassGetter uint32
-	CodePositions, SourcePositions                   []uint32
-	Code                                             []int16
-	Constants                                        []BytecodeConstant
-	SuperclassGetters                                []int32
-	Properties                                       []BytecodeProperty
+	// CollapseBase, when non-nil, is the argument index that receives a single
+	// array of all arguments from that index on. The file format encodes an
+	// absent collapse base as -1, which decodes to nil so a zero-value record
+	// means "no collapse".
+	CollapseBase                   *int32
+	CodePositions, SourcePositions []uint32
+	Code                           []int16
+	Constants                      []BytecodeConstant
+	SuperclassGetters              []int32
+	Properties                     []BytecodeProperty
 }
 
 // BytecodeProperty binds a property string index to an object index.
@@ -115,7 +120,10 @@ func DecodeBytecode(data []byte) (*DecodedBytecode, error) {
 		o.MaxFrames, _ = r.u32("maximum frame count")
 		o.ArgumentCount, _ = r.u32("argument count")
 		o.UnnamedArgumentBase, _ = r.u32("unnamed argument base")
-		o.CollapseBase, _ = r.u32("collapse base")
+		if base, _ := r.u32("collapse base"); int32(base) >= 0 {
+			signed := int32(base)
+			o.CollapseBase = &signed
+		}
 		o.PropertySetter, _ = r.u32("property setter index")
 		o.PropertyGetter, _ = r.u32("property getter index")
 		o.SuperclassGetter, _ = r.u32("superclass getter index")

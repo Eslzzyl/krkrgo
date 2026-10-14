@@ -3,6 +3,7 @@ package tjs
 import (
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 // ExecuteLegacy runs the real TJS2 intercode subset currently needed by
@@ -156,6 +157,19 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 	}
 	registerBase := argumentSlots + 2
 	maxArgumentSlot := argumentSlots + int(o.MaxVariables) + int(o.VariableReserve) + 2
+	// CollapseBase names the argument register that receives an array of all
+	// arguments from that index on, matching the reference VM's target register
+	// at depth 3+CollapseBase below the frame base. The record must reserve room
+	// for it within the argument region.
+	collapse := -1
+	if o.CollapseBase != nil {
+		collapse = int(*o.CollapseBase)
+		if slot := 3 + collapse; slot > maxArgumentSlot {
+			return VoidValue, fmt.Errorf("legacy intercode object %d: collapse base %d out of range", object, collapse)
+		} else if slot > registerBase {
+			registerBase = slot
+		}
+	}
 	for _, instruction := range instructions {
 		for _, operand := range instruction.Operands {
 			slot := -int(operand)
@@ -173,6 +187,22 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			break
 		}
 		regs[registerBase-3-i] = arg
+	}
+	if collapse >= 0 {
+		collapseRegister := registerBase - 3 - collapse
+		if collapseRegister < 0 || collapseRegister >= len(regs) {
+			return VoidValue, fmt.Errorf("legacy intercode object %d: collapse base %d addresses register %d out of range", object, collapse, collapseRegister)
+		}
+		if table == nil {
+			return VoidValue, fmt.Errorf("legacy intercode object %d: argument collapse requires an object table", object)
+		}
+		collapsed := table.New(CategoryArray)
+		for i := collapse; i < len(args); i++ {
+			if err := collapsed.Set(strconv.Itoa(i-collapse), args[i]); err != nil {
+				return VoidValue, fmt.Errorf("legacy intercode object %d: collapse argument %d: %w", object, i, err)
+			}
+		}
+		regs[collapseRegister] = ObjectValue(collapsed.Ref())
 	}
 	if thisContext.Kind() != KindObject || thisContext.IsNull() {
 		thisContext = global
