@@ -52,3 +52,572 @@ These are open research directions, not pending production optimizations:
 - **Guarded property fast path:** profile repeated access before considering guards around `OpGet`/`OpSet` (`internal/tjs/vm.go:1582-1754`) and object storage (`internal/tjs/object.go:101-120`). Mutation, prototypes, accessors, and dynamic receiver/key patterns constrain safe caching.
 - **Frame arena or lazy scope representation:** the Go/C++ allocation comparison above motivates research only; correctness constraints include GC roots, closure capture, reentrancy, and exceptions.
 - **JIT and GPU:** deferred, non-general paths. JIT would require runtime code generation, GC/root maps, unwinding, tracing, budgets, and portability; ordinary dynamic TJS execution is a stateful sequential stream, not a general GPU workload. Reconsider only with measured workload evidence and an explicit runtime/support case.
+ 
+## Optimization architecture assessment
+
+The current implementation has two execution paths: the source compiler emits a serializable register program consumed by `(*VM).run`, while decoded TJS2 intercode is interpreted through `ExecuteLegacy...`. Neither path currently has a JIT or native-code AOT tier. The most valuable next steps are interpreter and metadata improvements that preserve the existing semantic contract.
+
+### Recommended execution tiers
+
+1. **Cached preparation:** retain decoded Legacy instructions, offset-to-IP tables, compact constant metadata, and call-site metadata on the decoded program instead of rebuilding them for every invocation.
+2. **Private execution form:** lower `Program` into integer opcodes and compact operands while retaining the current serializable/debug representation as the public form. The private form must preserve validation, source locations, budgets, tracing, exception/finally unwinding, and GC roots.
+3. **Interpreter fast paths:** specialize integer arithmetic, local register moves, direct jumps, and common load/store operations. Trace and diagnostic checks can use a separate execution mode so ordinary execution pays less fixed cost.
+4. **Feedback-guided caches:** add guarded caches for repeated member reads, writes, and calls. A cache needs an object-layout/version guard and a generic fallback for mutation, accessors, dynamic receivers, `with`, `eval`, and class lookup.
+5. **Specialized bytecode:** after hotness data is available, produce specialized versions for stable call sites and numeric loops. This tier can provide JIT-like benefits without introducing native code generation.
+
+### Compiler and object-model opportunities
+
+The compiler currently allocates registers monotonically. Constant folding, copy propagation, jump-chain cleanup, basic-block metadata, and live-range-based register reuse are natural compiler passes. Fixed local names can use slots in functions that do not require dynamic `with` lookup; closures and dynamic scope retain the existing map-based path.
+
+Object member lookup currently combines UTF-16 key handling, object-table lookup, locking, map access, VM metadata, and class/property fallback. A future shape-and-slot layout, combined with guarded inline caches, could make stable instance members direct slot accesses. The dynamic map path remains necessary for dictionary-like objects and structural mutation.
+
+### JIT and AOT assessment
+
+A persistent optimized bytecode cache is the practical AOT direction: compile source once, predecode Legacy intercode, build instruction metadata, and reload the prepared form on later starts. Native-code AOT or JIT requires platform-specific code generation, executable-memory policy, Go ABI integration, precise GC root maps, exception unwinding, tracing, budgets, and deoptimization back to the interpreter. Those requirements make native code generation a later tier after measured hot functions justify the runtime complexity.
+
+The recommended overall sequence is:
+
+```text
+predecode cache → compact interpreter → compiler passes → guarded inline caches
+→ specialized bytecode → native JIT only for measured hot functions
+```
+
+These directions are research guidance. They are not claims of whole-application speedup and do not replace workload-specific profiling.
+ 
+## Comprehensive optimization report
+
+### Executive summary
+
+The TJS runtime is a register-based Go interpreter with a separate TJS2 intercode interpreter. The current design prioritizes compatibility, explicit resource limits, source locations, host tracing, and precise GC rooting. It does not currently have a JIT, native-code AOT tier, inline caches, object shapes, or a persistent prepared-program cache.
+
+The highest-value path is a tiered runtime:
+
+```text
+source / TJS2
+    ↓
+validated prepared representation
+    ↓
+compact interpreter
+    ↓ hot functions and call sites
+specialized bytecode + guarded caches
+    ↓ measured high-value functions
+optional native JIT
+```
+
+Native JIT should remain an optional late tier. The first tiers can address instruction decoding, object lookup, call overhead, allocation pressure, and startup cost while preserving the existing Go runtime contract.
+
+### Scope and non-goals
+
+This report covers:
+
+- `internal/tjs/compiler.go`;
+- `internal/tjs/vm.go`;
+- `internal/tjs/bytecode_decode.go`;
+- `internal/tjs/bytecode_exec.go`;
+- `internal/tjs/object.go`;
+- `internal/tjs/dispatch.go`;
+- `internal/tjs/gc.go`;
+- TJS benchmarks and runtime startup behavior.
+
+It covers interpreter, compiler, object-layout, caching, AOT, JIT, GC, measurement, and rollout concerns.
+
+It does not propose changing TJS language semantics, removing `eval`, weakening execution budgets, changing exception behavior, or requiring every script to use native code.
+
+### Existing execution model
+
+#### Source compiler
+
+The source compiler emits `Program`, a serializable register program containing `[]Instruction`. The instruction representation uses a string opcode and one tagged operand structure. Registers are allocated monotonically by `compiler.reg()`. The compiler performs semantic lowering, control-flow patching, function hoisting, and validation, but it does not currently expose a distinct optimization IR or a liveness-based register allocator.
+
+#### Source interpreter
+
+`(*VM).run` validates the program, allocates a register slice, maintains frame roots, checks the execution budget, increments the instruction counter, optionally invokes host tracing, and dispatches through a large opcode switch. The same loop handles ordinary arithmetic, dynamic name lookup, object access, calls, constructors, exceptions, `with`, `eval`, and class behavior.
+
+#### TJS2 intercode
+
+`DecodeBytecode` validates and decodes TJS2100 records. `ExecuteLegacy...` decodes instruction boundaries, builds an offset-to-instruction map, allocates the register file, resolves operands, and executes the legacy instruction set. Repeated calls can therefore repeat preparation work unless the decoded representation retains prepared metadata.
+
+#### Object and value model
+
+`Value` is a tagged value containing TJS integers, reals, UTF-16 strings, octets, or stable object references. Objects have stable IDs, a member map, category-specific VM metadata, and synchronization around member storage. VM lookup combines object resolution, UTF-16 key handling, member-map lookup, class fallback, properties, native methods, and receiver binding.
+
+#### Memory management
+
+The VM uses explicit roots and mark-sweep collection. Roots include globals, explicit roots, literals, transient call roots, interpreter registers, frames, legacy registers, and host-provided references. Automatic collection occurs at interpreter safe points after an allocation threshold. This root model is a strong foundation for an optimized interpreter and a future JIT, provided compiled frames publish equivalent root information.
+
+### Workload model
+
+Optimization decisions should use separate workload classes because each stresses a different subsystem:
+
+| Workload | Dominant paths | Primary metrics |
+| --- | --- | --- |
+| Startup script | compile, decode, VM setup, native calls, allocation | time to first scene, compile time, first execution |
+| Numeric loop | opcode dispatch, `Value` arithmetic, branches | ns/instruction, instructions/iteration |
+| Local-variable function | frame creation, scopes, registers, calls | ns/call, allocations/call |
+| Member loop | UTF-16 keys, object map, class fallback | ns/get, ns/set, cache hit rate |
+| Method loop | member lookup, receiver binding, invocation | ns/call, allocations/call |
+| Array loop | array indexing, holes, length handling | ns/access, allocations |
+| Property loop | getter/setter invocation and scopes | ns/access, allocations |
+| Closure workload | captured scopes, lifetime, GC roots | allocation rate, collection time |
+| KAG event script | VM/native transitions, short-lived programs | event latency, startup overhead |
+| Legacy TJS2 workload | predecode and intercode dispatch | decode time, execution time |
+
+The project already has isolated VM call, member, trace, UTF-16, and run-phase benchmarks. Those should be supplemented with representative scripts from `testdata` and a small set of repeatable startup traces.
+
+### Measurement protocol
+
+Every optimization should report:
+
+- wall-clock time;
+- CPU time where available;
+- allocations per operation;
+- bytes allocated per operation;
+- instruction count;
+- instructions per second;
+- GC count and collection time;
+- cache hit/miss counts;
+- first-run and repeated-run behavior;
+- semantic test status.
+
+Measurements should separate:
+
+1. compilation;
+2. one-time preparation;
+3. first execution;
+4. repeated execution;
+5. steady-state execution;
+6. garbage collection;
+7. native calls.
+
+The benchmark harness should use fixed source, fixed input, a large enough budget, disabled tracing unless tracing is the subject, and a stable VM state. Results should record OS, architecture, Go version, compiler flags, and benchmark commit.
+
+### Cost model
+
+The current likely costs are:
+
+1. per-instruction interpreter dispatch and loop bookkeeping;
+2. dynamic name and member lookup;
+3. function frame and argument slice creation;
+4. map and UTF-16 key work;
+5. VM-to-native and native-to-VM transitions;
+6. temporary object and slice allocation;
+7. periodic full GC;
+8. TJS2 instruction preparation on repeated calls;
+9. source compilation during startup;
+10. trace and budget checks in hot loops.
+
+These are hypotheses to validate with profiles and counters. They should not be treated as a fixed ranking for every game.
+
+## Tier 0: preparation and cache
+
+### TJS2 predecode cache
+
+Store prepared Legacy metadata on `DecodedBytecode`:
+
+- decoded instructions;
+- offset-to-IP mapping;
+- operand classifications;
+- branch targets;
+- constant classifications;
+- call-site descriptors;
+- source-location references;
+- maximum register requirements.
+
+The cache must be immutable after publication or protected for concurrent readers. `ExecuteLegacy...` should reuse it and preserve the current validation errors.
+
+### Source-program preparation
+
+Add a private prepared form derived from `Program`:
+
+- integer opcode;
+- compact operands;
+- prevalidated register references;
+- direct branch indexes;
+- interned names and member keys;
+- instruction flags;
+- basic-block indexes;
+- call-site indexes.
+
+Keep `Program` as the serializable/debug contract. Prepared data can be ephemeral or persisted separately.
+
+### Persistent AOT cache
+
+A practical AOT cache can store optimized bytecode and metadata rather than native machine code. Its key should include:
+
+- source or compiled-bytecode content hash;
+- compiler version;
+- TJS semantic version;
+- platform-independent format version;
+- relevant preprocessor state;
+- feature flags affecting code generation.
+
+The loader must validate lengths, counts, references, version fields, and checksums before use. A stale or invalid cache should compile from the original source or decoded bytecode.
+
+## Tier 1: compact interpreter
+
+### Integer opcodes
+
+Use an internal `uint16` or `uint32` opcode while retaining names for diagnostics. A compact instruction should separate common register operands from uncommon metadata. This reduces instruction size and makes dispatch more predictable.
+
+### Dispatch choices
+
+Candidate implementations, from conservative to aggressive:
+
+1. integer `switch`;
+2. grouped opcode handlers;
+3. direct handler table;
+4. computed-goto style dispatch where the target platform and Go toolchain justify it;
+5. a specialized loop for a small set of arithmetic and register instructions.
+
+The first option is the preferred starting point because it keeps stack traces, budgets, and debugging straightforward.
+
+### Fast and slow paths
+
+Fast paths should cover:
+
+- integer arithmetic and comparison;
+- register move;
+- direct jump;
+- local slot load/store;
+- constant load;
+- known array index;
+- cached member access;
+- cached script/native call.
+
+Slow paths should cover:
+
+- `eval`;
+- `with`;
+- dynamic `delete`;
+- property access;
+- class resolution;
+- receiver rebinding;
+- exceptions;
+- invalid or unusual types;
+- host callbacks.
+
+The slow path must retain identical observable behavior.
+
+### Instruction accounting
+
+Budget accounting and `VM.Executed` are observable through errors and diagnostics. Any grouped or superinstruction design must define whether one fused unit consumes one budget unit or the original instruction count. The safer compatibility choice is to retain logical instruction accounting even when physical dispatch is fused.
+
+## Tier 2: compiler optimization
+
+### Safe local transformations
+
+The first compiler passes should include:
+
+- constant folding for side-effect-free primitive expressions;
+- copy propagation;
+- redundant move removal;
+- jump-chain cleanup;
+- unreachable block removal;
+- basic-block metadata;
+- live-range-based register reuse;
+- direct constant-name encoding.
+
+Each pass must preserve source locations used in errors and tracing.
+
+### Register allocation
+
+Monotonic register allocation increases register-file size and root scanning work. A linear-scan allocator can reuse registers after their last use. Values that cross calls, exception handlers, closures, or `with` operations require conservative liveness treatment.
+
+The allocator must retain:
+
+- values live across native calls;
+- values referenced by pending finally handlers;
+- closure-captured values;
+- receiver and lexical context;
+- values needed by source-level tracing;
+- GC-visible object references.
+
+### Local slots and dynamic scope
+
+Functions with ordinary lexical locals can use fixed slots. Functions containing `with`, dynamic declaration behavior, or relevant `eval` should retain a map-backed scope path. This creates a fast lexical mode and a dynamic-scope mode without changing language behavior.
+
+### Superinstructions
+
+Common sequences can be fused:
+
+```text
+load local → constant → integer add → store local
+```
+
+```text
+load object → load constant key → get member
+```
+
+Fused instructions must retain source mapping and logical budget accounting.
+
+## Tier 3: object layout and inline caches
+
+### Shape-and-slot layout
+
+Dictionary-like objects can retain map storage. Stable class instances can use a shape plus value slots:
+
+```go
+type Shape struct {
+    ID       uint32
+    Parent   *Shape
+    Slots    map[string]uint32
+}
+```
+
+An object shape changes when member layout changes. Shape transitions should be immutable and shareable. `delete`, dynamic member insertion, accessors, and unusual flags can transition to a dictionary representation.
+
+### Inline-cache forms
+
+Use a cache per member or call site:
+
+- uninitialized;
+- monomorphic;
+- small polymorphic;
+- megamorphic/generic.
+
+A cache entry can contain:
+
+- receiver shape or category;
+- member key;
+- slot or member ID;
+- callable category;
+- receiver-binding rule;
+- property/accessor metadata.
+
+### Invalidation
+
+Invalidation must account for:
+
+- shape changes;
+- member deletion;
+- accessor installation;
+- member flags;
+- class-base changes;
+- native method replacement;
+- `eval` or dynamic declaration affecting lookup;
+- global and `with` scope changes.
+
+An epoch counter is simpler than trying to enumerate every dependent cache. Each relevant mutation increments the epoch; entries compare their recorded epoch before using cached data.
+
+### Call-site caching
+
+For `obj.method(args)`, a combined cache can skip separate lookup and receiver binding. Script function, native function, method, property, and class constructor calls need distinct cache actions.
+
+## Tier 4: feedback and specialized bytecode
+
+### Runtime feedback
+
+Collect compact counters at:
+
+- function entry;
+- loop back edges;
+- member reads and writes;
+- call sites;
+- type checks;
+- cache misses;
+- exception paths.
+
+Counters should be disabled or sampled in low-overhead production mode. They can be enabled through a diagnostic configuration for profiling runs.
+
+### Specialization candidates
+
+Generate specialized bytecode for:
+
+- integer-only arithmetic loops;
+- stable member slots;
+- direct script calls;
+- direct native calls;
+- fixed-arity calls;
+- arrays with packed numeric indexes;
+- functions without dynamic scope.
+
+Each specialized operation needs a guard and a generic fallback. A guard failure should switch the call site to generic execution or trigger deoptimization.
+
+### On-stack replacement
+
+OSR can replace a hot loop while it is running. It requires a mapping from interpreter registers and scope state to specialized-frame slots. This is useful for long-running numeric or animation loops, but it requires more machinery than function-entry specialization.
+
+## Tier 5: native JIT
+
+### Feasibility
+
+Native JIT is technically possible, but the current runtime needs an explicit machine-code ABI. The generated code would need stable access to:
+
+- `Value`;
+- object IDs;
+- VM state;
+- budget state;
+- exception state;
+- frame roots;
+- host/native calls.
+
+### Required runtime services
+
+A production JIT needs:
+
+- executable-memory allocation;
+- instruction-cache synchronization on arm64;
+- platform-specific calling conventions;
+- code lifetime management;
+- safepoints;
+- stack maps;
+- GC root maps;
+- exception and finally unwinding;
+- source-location mapping;
+- tracing hooks;
+- budget checks;
+- deoptimization;
+- invalidation of stale compiled code.
+
+### Deoptimization
+
+Optimized code should retain enough metadata to reconstruct:
+
+- interpreter instruction pointer;
+- register values;
+- lexical scopes;
+- receiver and owner;
+- pending exception/finally state;
+- source location.
+
+Without this mapping, dynamic features such as `eval`, property calls, class dispatch, and exceptions cannot safely return to the interpreter.
+
+### Implementation choices
+
+Possible implementation families include:
+
+1. a small platform-specific assembler backend;
+2. a portable machine-code assembler library;
+3. LLVM or Cranelift integration;
+4. WebAssembly as a portable compiled tier;
+5. a specialized bytecode tier with no native machine code.
+
+The specialized-bytecode option has the lowest integration cost. LLVM or Cranelift provides stronger code generation but adds toolchain, binary-size, and deployment complexity. WebAssembly gives a portable sandboxed target but still requires a value ABI, host-call bridge, GC integration, and deoptimization strategy.
+
+## GC and allocation strategy
+
+### Immediate opportunities
+
+Profile and reduce:
+
+- argument slice copies;
+- closure scope copies;
+- register-frame allocation;
+- temporary UTF-16 key buffers;
+- temporary arrays from spread/rest;
+- repeated Legacy instruction slices;
+- map creation for short-lived scopes;
+- full object-ID sorting during GC.
+
+### Frame reuse
+
+A frame arena or reusable register storage can reduce allocations. It must handle nested execution, reentrancy, host callbacks, exceptions, and closures. Reuse is valid only when all live values remain visible to the GC root system.
+
+### Generational collection
+
+A nursery/old-generation design may help workloads with many temporary arrays and intermediate objects. It requires write barriers or an equivalent remembered-set mechanism. This should follow allocation profiles, because the existing explicit mark-sweep collector is simpler and already integrated with host roots.
+ 
+
+## Native-call and host-boundary optimization
+
+Native calls are a major semantic boundary. Candidate improvements include:
+
+- stable native function IDs instead of repeated string dispatch;
+- pre-resolved native call descriptors;
+- fixed-arity argument paths;
+- direct `Value` argument access for common native methods;
+- reduced temporary slices for zero- and one-argument calls;
+- explicit result-needed flags;
+- batching only for APIs whose semantics permit it.
+
+Native calls that can re-enter the VM must retain all current transient roots and budget behavior.
+
+## Correctness contract
+
+Every optimization must preserve:
+
+- TJS value conversion rules;
+- UTF-16 code-unit behavior;
+- object identity and bound contexts;
+- property getter/setter order;
+- evaluation order and side effects;
+- `with` lookup;
+- `eval`;
+- exception and finally unwinding;
+- `delete`;
+- class and superclass resolution;
+- native re-entry;
+- source locations;
+- instruction budgets;
+- host tracing;
+- GC roots;
+- deterministic replay behavior where applicable.
+
+The optimization test suite should emphasize observable transitions and semantic cases rather than internal implementation details.
+
+## Risk matrix
+
+| Area | Expected benefit | Main risk | Suggested entry point |
+| --- | ---: | --- | --- |
+| Legacy predecode | high startup and call benefit | stale metadata | immutable prepared cache |
+| Compact opcode | high interpreter benefit | debug/source mapping drift | private execution form |
+| Compiler passes | medium to high | side-effect or jump errors | constant folding and copy propagation |
+| Local slots | high in ordinary functions | closure and `with` interaction | functions without dynamic scope |
+| Inline caches | high member/call benefit | invalidation errors | monomorphic read cache |
+| Shape layout | high stable-object benefit | object API complexity | class instances only |
+| Specialized bytecode | high hot-loop benefit | guard/deopt complexity | function-entry specialization |
+| Frame reuse | medium allocation benefit | GC root omissions | isolated benchmark first |
+| Generational GC | workload-dependent | collector complexity | allocation-profile gate |
+| Native JIT | potentially very high | ABI, GC, portability | prototype after hot-path proof |
+
+## Recommended decision gates
+
+### Gate A: preparation cost
+
+Proceed with prepared caches if repeated execution spends a measurable fraction of time decoding, validating, or constructing instruction metadata.
+
+### Gate B: interpreter cost
+
+Proceed with compact opcodes and fast paths if instruction dispatch and loop bookkeeping dominate CPU profiles after preparation is cached.
+
+### Gate C: dynamic lookup cost
+
+Proceed with inline caches if member and call sites dominate representative script profiles and show stable receiver shapes or callable targets.
+
+### Gate D: allocation cost
+
+Proceed with slots, frame reuse, or collector changes if allocation and GC profiles dominate after dispatch and lookup improvements.
+
+### Gate E: native code
+
+Proceed with a JIT only if representative long-running functions remain CPU-dominant after the earlier tiers and the project accepts platform-specific runtime code generation.
+
+## External design references
+
+The following primary references provide useful design patterns:
+
+- V8 hidden classes/maps: <https://v8.dev/docs/hidden-classes>
+- V8 fast properties: <https://v8.dev/blog/fast-properties>
+- V8 code caching: <https://v8.dev/blog/improved-code-caching>
+- Oracle HotSpot compilation optimization: <https://docs.oracle.com/en/java/javase/11/jrockit-hotspot/compilation-optimization.html>
+- Oracle HotSpot performance enhancements: <https://docs.oracle.com/en/java/javase/17/vm/java-hotspot-virtual-machine-performance-enhancements.html>
+- Bun runtime and its JavaScriptCore foundation: <https://bun.sh/docs/runtime>
+- Bun benchmarking guidance: <https://bun.sh/docs/project/benchmarking>
+
+These systems validate recurring patterns: tiered execution, runtime feedback, stable object layouts, guarded specialization, code caching, and deoptimization. Their implementations are substantially larger than this runtime, so the applicable ideas should be introduced incrementally.
+
+## Final recommendation
+
+The project should treat native JIT as the final optimization tier, not the starting point. The strongest near-term architecture is:
+
+```text
+prepared metadata
+→ compact interpreter
+→ low-risk compiler passes
+→ local slots
+→ guarded member/call caches
+→ specialized bytecode
+→ optional native JIT
+```
+
+This sequence improves startup, steady-state execution, allocation behavior, and future JIT readiness while retaining one semantic execution model.
