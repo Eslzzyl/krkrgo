@@ -5,9 +5,7 @@ Repository: `/Users/eslzzyl/WorkSpace/Go/krkrgo` (macOS) and `D:/WorkSpace/Go/kr
 
 ## Current objectives
 
-1. Build and package the FFmpeg 9.0.2 shared-library sidecar for the six desktop matrix targets.
-2. Validate FFmpeg-backed ASF/WMV3/WMA2 playback against the local Lovelyday fixture.
-3. Continue the Amairo startup black-screen investigation.
+1. Continue the Amairo startup black-screen investigation.
 
 ## GPU composition status
 
@@ -26,7 +24,7 @@ go build ./...
 
 Kage shader sampling uses the v2.10 `imageSrcNAtFromSrc0Pos` APIs, and GPU resource release uses `Deallocate`.
 
-No subagents are currently running. The current media path uses purego bindings and does not run an FFmpeg executable.
+No subagents are currently running.
 
 ## Commits
 
@@ -36,8 +34,6 @@ No subagents are currently running. The current media path uses purego bindings 
 - `febd39c Fix Windows storage paths and the Amairo opening sequence`
   - Windows drive-qualified storage names, `Layer.affineCopy`, `callOnPaint`, and the TJS2 `with` scope rules; see "Amairo status" below.
 
-The FFmpeg sidecar implementation is in the current worktree and has not been built locally.
-
 ## Verification completed
 
 The current Go test suite passes on the development host:
@@ -45,35 +41,6 @@ The current Go test suite passes on the development host:
 ```text
 go test ./...
 ```
-
-The sidecar build is defined by `scripts/build-ffmpeg.sh` and `.github/workflows/build-ffmpeg.yml`; no FFmpeg build has been executed locally.
-
-
-## FFmpeg media status
-
-Implemented in `internal/media/ffmpeg/`:
-
-- purego dynamic loading for `avutil`, `avcodec`, `avformat`, and `swscale`;
-- bounded memory-backed AVIO input;
-- ASF/WMV/WMA and Ogg/Vorbis stream discovery and decoding, WMV3 frame conversion, and WMA2 PCM conversion;
-- runtime `VideoOverlay` integration with the shared 48 kHz stereo mixer;
-- seek, close, tick snapshot, and error-retry state handling.
-
-Ogg/Vorbis decoding is provided by the FFmpeg sidecar. `WaveSoundBuffer` retains bounded WAVE fallback decoding when the FFmpeg sidecar is absent.
-
-The sidecar build is implemented by `scripts/build-ffmpeg.sh` and `.github/workflows/build-ffmpeg.yml`. The workflow pins the latest FFmpeg 9.0.2 source archive with SHA-256 verification. The build produces the four shared libraries, FFmpeg LGPL license, source version, configure manifest, and ABI probe output for each matrix target. Hardware acceleration and FFmpeg command-line programs are disabled.
-
-The sidecar was built by CI and published as `ffmpeg-sidecar-v9.0.2-r2`. Full Go tests pass with `go test ./...`.
-
-## Remaining FFmpeg work
-
-The following verification is still pending:
-
-- Validate `testdata/lovelyday/movie.xp3 > logo.wmv` with the sidecar: metadata, first-frame RGBA output, WMA2 PCM output, seek, rewind, loop, and close.
-- Run the clean-staging loader integration test for each native target and complete the dynamic dependency scan.
-- Add and run fixture golden checks for the first-frame dimensions, PTS, RGBA hash, audio rate/channel count, and fixed PCM hash.
-
-The sidecar was built in CI and published as `ffmpeg-sidecar-v9.0.2-r2`. The workflow remains manual-only.
 
 ## Amairo status
 
@@ -150,11 +117,6 @@ internal/tjs/vm.go
 internal/tjs/vm_test.go
 ```
 
-The prior WMV3/ASF handoff notes are superseded by the FFmpeg sidecar path.
-
 ## Recommended next order
 
-1. Build the six sidecar artifacts in the GitHub Actions matrix.
-2. Run clean-staging loader integration with the local `logo.wmv` fixture.
-3. Validate playback, seek, rewind, loop, audio output, and close/reopen events.
-4. Amairo: validate broader PSB motion parity, then fix the separate window-drag issue in `internal/host/ebiten.go`.
+1. Amairo: validate broader PSB motion parity, then fix the separate window-drag issue in `internal/host/ebiten.go`.
