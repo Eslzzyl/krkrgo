@@ -323,7 +323,7 @@ func (s *Session) registerNatives() error {
 	if err := s.VM.RegisterNativeMethod(storages, "@initialize", "Storages.@initialize"); err != nil {
 		return err
 	}
-	for _, method := range []string{"addArchive", "addAutoPath", "removeAutoPath", "getFullPath", "getPlacedPath", "getLocalName", "isExistentStorage", "getListAt", "fstat", "extractStorageExt", "extractStorageName", "extractStoragePath", "chopStorageExt", "clearArchiveCache"} {
+	for _, method := range []string{"addArchive", "addAutoPath", "removeAutoPath", "getFullPath", "getPlacedPath", "getLocalName", "isExistentStorage", "getListAt", "fstat", "dirlist", "dirlistEx", "extractStorageExt", "extractStorageName", "extractStoragePath", "chopStorageExt", "clearArchiveCache"} {
 		if err := s.VM.RegisterNativeStaticMethod(storages, method, "Storages."+method); err != nil {
 			return err
 		}

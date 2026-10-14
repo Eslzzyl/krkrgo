@@ -724,3 +724,396 @@ func TestScriptsStorageExecutesModeOneTextStream(t *testing.T) {
 		t.Fatalf("mode-1 TextStream script result = %v, err=%v", value, err)
 	}
 }
+
+func TestLegacyCompiledPropertyDispatchesLazyGetterAndSetter(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	// Index 1 is the property context: it owns no bytecode and points at its
+	// getter (index 2) and setter (index 3), like the top-level `property`
+	// declarations KAG's Initialize.tjs relies on for lazy script loading.
+	decoded := &tjs.DecodedBytecode{
+		Strings: []string{"", "LazyValue", "seen", "assigned"},
+		Objects: []tjs.BytecodeObject{
+			{
+				Name:        0,
+				Parent:      -1,
+				ContextType: 0,
+				Constants:   []tjs.BytecodeConstant{{Type: 2, Index: 1, Value: tjs.VoidValue}},
+			},
+			{
+				Name:           1,
+				Parent:         0,
+				ContextType:    3,
+				PropertyGetter: 2,
+				PropertySetter: 3,
+				Properties:     []tjs.BytecodeProperty{{Name: 1, Object: 1}},
+			},
+			{
+				Name:         1,
+				Parent:       1,
+				ContextType:  5,
+				MaxVariables: 1,
+				Constants: []tjs.BytecodeConstant{
+					{Value: tjs.StringValue("seen")},
+					{Value: tjs.IntegerValue(7)},
+				},
+				// CONST r0, 7; SPDS this.seen, r0; SRV r0; RET
+				Code: []int16{1, 0, 1, 111, -1, 0, 0, 118, 0, 119},
+			},
+			{
+				Name:          1,
+				Parent:        1,
+				ContextType:   4,
+				ArgumentCount: 1,
+				Constants: []tjs.BytecodeConstant{
+					{Value: tjs.StringValue("assigned")},
+				},
+				// SPDS this.assigned, arg0; SRV arg0; RET
+				Code: []int16{111, -1, 0, -3, 118, -3, 119},
+			},
+		},
+	}
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	if err := bindLegacyScriptFunctions(session.VM, decoded, global, session.Services, nil); err != nil {
+		t.Fatal(err)
+	}
+	property := decoded.Objects[0].Constants[0].Value
+	if property.Kind() != tjs.KindObject || property.IsNull() {
+		t.Fatalf("compiled property constant = %v; want a materialized property object", property)
+	}
+	globalObject, ok := session.VM.Objects.Lookup(0)
+	if !ok {
+		t.Fatal("global object missing")
+	}
+	bound, exists := globalObject.Get("LazyValue")
+	if !exists || !bound.StrictEqual(property) {
+		t.Fatalf("global LazyValue member = %v, %v; want the compiled property", bound, exists)
+	}
+	if _, exists := globalObject.Get("seen"); exists {
+		t.Fatal("property getter ran while binding the compiled script; want lazy dispatch")
+	}
+	got, err := session.VM.GetMember(global, "LazyValue", session.Services, nil)
+	if err != nil || got.IntegerValue() != 7 {
+		t.Fatalf("property read = %v, %v; want 7", got, err)
+	}
+	if stamped, exists := globalObject.Get("seen"); !exists || stamped.IntegerValue() != 7 {
+		t.Fatalf("getter this-context = %v, %v; want the global object to hold 7", stamped, exists)
+	}
+	if err := session.VM.SetMemberWithRuntime(global, "LazyValue", tjs.IntegerValue(9), 0, session.Services, nil); err != nil {
+		t.Fatal(err)
+	}
+	if assigned, exists := globalObject.Get("assigned"); !exists || assigned.IntegerValue() != 9 {
+		t.Fatalf("setter argument = %v, %v; want the assigned value 9", assigned, exists)
+	}
+	if got, err := session.VM.GetMember(global, "LazyValue", session.Services, nil); err != nil || got.IntegerValue() != 7 {
+		t.Fatalf("property read after write = %v, %v; want the getter result 7", got, err)
+	}
+}
+
+func TestLegacyDerivedClassResolvesSuperclassAndInheritsCompiledProperty(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	// The base class lives in its own storage, the way system/*.tjs files
+	// declare the classes a later script extends.
+	base := &tjs.DecodedBytecode{
+		Strings: []string{"", "LegacyBase", "state", "stamped"},
+		Objects: []tjs.BytecodeObject{
+			{
+				Name:        0,
+				Parent:      -1,
+				ContextType: 0,
+				Constants:   []tjs.BytecodeConstant{{Type: 2, Index: 1, Value: tjs.VoidValue}},
+			},
+			{Name: 1, Parent: 0, ContextType: 6},
+			{
+				Name:           2,
+				Parent:         1,
+				ContextType:    3,
+				PropertyGetter: 3,
+				Properties:     []tjs.BytecodeProperty{{Name: 2, Object: 2}},
+			},
+			{
+				Name:         2,
+				Parent:       2,
+				ContextType:  5,
+				MaxVariables: 1,
+				Constants: []tjs.BytecodeConstant{
+					{Value: tjs.StringValue("stamped")},
+					{Value: tjs.IntegerValue(23)},
+				},
+				Code: []int16{1, 0, 1, 111, -1, 0, 0, 118, 0, 119},
+			},
+		},
+	}
+	// The derived class body resolves its superclass by global name, which is
+	// the code path that failed when a compiled property context was left as
+	// the TJS void value.
+	derived := &tjs.DecodedBytecode{
+		Strings: []string{"", "LegacyDerived", "LegacyBase"},
+		Objects: []tjs.BytecodeObject{
+			{
+				Name:        0,
+				Parent:      -1,
+				ContextType: 0,
+				Constants:   []tjs.BytecodeConstant{{Type: 2, Index: 1, Value: tjs.VoidValue}},
+			},
+			{
+				Name:             1,
+				Parent:           0,
+				ContextType:      6,
+				SuperclassGetter: 2,
+				MaxVariables:     1,
+				Constants: []tjs.BytecodeConstant{
+					{Value: tjs.StringValue("LegacyDerived")},
+					{Value: tjs.StringValue("LegacyBase")},
+				},
+				Code: []int16{
+					1, 1, 0, // CONST r1, class name
+					125, -1, 1, // ADDCI this, class name
+					3, 1, // CL r1
+					103, 1, -2, 1, // GPD r1, this-proxy, "LegacyBase"
+					123, 1, -1, // CHGTHIS r1, this
+					99, 0, 1, 0, // CALL r0, r1, 0
+					126,    // REGMEMBER
+					118, 0, // SRV r0
+					119, // RET
+				},
+			},
+			{
+				Name:              1,
+				Parent:            1,
+				ContextType:       7,
+				MaxVariables:      1,
+				SuperclassGetters: []int32{0},
+				Constants:         []tjs.BytecodeConstant{{Value: tjs.StringValue("LegacyBase")}},
+				Code:              []int16{103, 1, -2, 0, 118, 1, 119},
+			},
+		},
+	}
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	if err := bindLegacyScriptFunctions(session.VM, base, global, session.Services, nil); err != nil {
+		t.Fatalf("bind base storage: %v", err)
+	}
+	if err := bindLegacyScriptFunctions(session.VM, derived, global, session.Services, nil); err != nil {
+		t.Fatalf("bind derived storage: %v", err)
+	}
+	baseClass := session.VM.Globals["LegacyBase"]
+	derivedClass := session.VM.Globals["LegacyDerived"]
+	if baseClass.Kind() != tjs.KindObject || derivedClass.Kind() != tjs.KindObject {
+		t.Fatalf("registered classes = %v, %v; want class objects", baseClass, derivedClass)
+	}
+	instance, err := session.VM.Construct(derivedClass, nil, session.Services, nil)
+	if err != nil {
+		t.Fatalf("construct compiled derived class: %v", err)
+	}
+	got, err := session.VM.GetMember(instance, "state", session.Services, nil)
+	if err != nil || got.IntegerValue() != 23 {
+		t.Fatalf("inherited compiled class property = %v, %v; want 23", got, err)
+	}
+	instanceObject, ok := session.VM.Objects.Lookup(instance.ObjectRef().Object)
+	if !ok {
+		t.Fatal("constructed instance missing from the object table")
+	}
+	if stamped, exists := instanceObject.Get("stamped"); !exists || stamped.IntegerValue() != 23 {
+		t.Fatalf("class property getter this-context = %v, %v; want the instance to hold 23", stamped, exists)
+	}
+	baseObject, ok := session.VM.Objects.Lookup(baseClass.ObjectRef().Object)
+	if !ok {
+		t.Fatal("base class object missing")
+	}
+	if _, exists := baseObject.Get("stamped"); exists {
+		t.Fatal("class property getter ran with the class as its this-context; want the receiving instance")
+	}
+}
+
+// legacyVMOpsTestGlobal returns the object-0 value legacy intercode receives
+// as its global/this proxy.
+func legacyVMOpsTestGlobal() tjs.Value {
+	return tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+}
+
+// TestLegacyVMOpsReachCompiledFunctionEntry proves a bound compiled function
+// reaches the owning VM for CHKINS, INV and CHKINV. CHKINS would otherwise
+// fail with "requires instanceof support", and INV would fall back to the
+// object table: only the VM hook refuses to finalize object 0 (the TJS global)
+// and reports an unregistered handle as invalid instead of erroring.
+func TestLegacyVMOpsReachCompiledFunctionEntry(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	global := legacyVMOpsTestGlobal()
+	decoded := &tjs.DecodedBytecode{
+		Strings: []string{"", "vmOpsProbe"},
+		Objects: []tjs.BytecodeObject{
+			{Constants: []tjs.BytecodeConstant{{Type: 2, Index: 1, Value: tjs.VoidValue}}},
+			{
+				Name:          1,
+				ContextType:   1,
+				ArgumentCount: 0,
+				MaxVariables:  5,
+				Constants: []tjs.BytecodeConstant{
+					{Value: tjs.IntegerValue(1)},
+					{Value: tjs.StringValue("Number")},
+					{Value: global},
+					{Value: tjs.ObjectValue(tjs.NewObjectRef(9999))},
+					{Value: tjs.StringValue("vm_ops_chkins")},
+					{Value: tjs.StringValue("vm_ops_inv")},
+					{Value: tjs.StringValue("vm_ops_chkinv")},
+				},
+				Code: []int16{
+					1, 1, 0, // CONST r1 = 1
+					1, 2, 1, // CONST r2 = "Number"
+					88, 1, 2, // CHKINS r1, r2
+					104, -2, 4, 1, // global.vm_ops_chkins = r1
+					1, 3, 2, // CONST r3 = global object
+					93, 3, // INV r3
+					104, -2, 5, 3, // global.vm_ops_inv = r3
+					1, 4, 3, // CONST r4 = unregistered object handle
+					94, 4, // CHKINV r4
+					104, -2, 6, 4, // global.vm_ops_chkinv = r4
+					118, 1, // SRV r1
+					119, // RET
+				},
+			},
+		},
+	}
+	if err := bindLegacyScriptFunctions(session.VM, decoded, global, session.Services, nil); err != nil {
+		t.Fatalf("bind compiled function with legacy VM ops: %v", err)
+	}
+	function := decoded.Objects[0].Constants[0].Value
+	got, err := session.VM.InvokeLegacy(function, global, nil, session.Services, nil, true)
+	if err != nil {
+		t.Fatalf("compiled function with legacy VM ops: %v", err)
+	}
+	if got.IntegerValue() != 1 {
+		t.Fatalf("CHKINS result through the compiled function entry = %v; want 1 (1 is Number)", got)
+	}
+	globalObject, ok := session.VM.Objects.Lookup(0)
+	if !ok {
+		t.Fatal("global object missing")
+	}
+	for name, want := range map[string]int64{
+		"vm_ops_chkins": 1, // 1 instanceof Number
+		"vm_ops_inv":    0, // the VM owns object 0 and never finalizes it
+		"vm_ops_chkinv": 0, // an unregistered handle is invalid, not an error
+	} {
+		value, exists := globalObject.Get(name)
+		if !exists {
+			t.Fatalf("legacy VM op %s did not run; member is missing", name)
+		}
+		if value.IntegerValue() != want {
+			t.Errorf("legacy VM op %s = %v; want %d", name, value, want)
+		}
+	}
+	if session.VM.IsValid(global).IntegerValue() != 1 {
+		t.Fatal("INV invalidated the TJS global: it used the object-table fallback instead of the VM hook")
+	}
+}
+
+// TestLegacyVMOpsReachClassBodyAndSuperclassGetter proves the class body
+// (registration and construction) and the deferred superclass getter execute
+// CHKINS through the VM: without the hooks each entry fails with
+// "CHKINS requires instanceof support", and the getter records that it ran.
+func TestLegacyVMOpsReachClassBodyAndSuperclassGetter(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	global := legacyVMOpsTestGlobal()
+	base := &tjs.DecodedBytecode{
+		Strings: []string{"", "VMOpsBase"},
+		Objects: []tjs.BytecodeObject{
+			{
+				Name:        0,
+				Parent:      -1,
+				ContextType: 0,
+				Constants:   []tjs.BytecodeConstant{{Type: 2, Index: 1, Value: tjs.VoidValue}},
+			},
+			{Name: 1, Parent: 0, ContextType: 6},
+		},
+	}
+	derived := &tjs.DecodedBytecode{
+		Strings: []string{"", "VMOpsDerived", "VMOpsBase", "vm_ops_class_body", "vm_ops_getter"},
+		Objects: []tjs.BytecodeObject{
+			{
+				Name:        0,
+				Parent:      -1,
+				ContextType: 0,
+				Constants:   []tjs.BytecodeConstant{{Type: 2, Index: 1, Value: tjs.VoidValue}},
+			},
+			{
+				Name:             1,
+				Parent:           0,
+				ContextType:      6,
+				SuperclassGetter: 2,
+				MaxVariables:     3,
+				Constants: []tjs.BytecodeConstant{
+					{Value: tjs.StringValue("vm_ops_class_body")},
+					{Value: tjs.IntegerValue(1)},
+					{Value: tjs.StringValue("Number")},
+				},
+				Code: []int16{
+					1, 1, 1, // CONST r1 = 1
+					1, 2, 2, // CONST r2 = "Number"
+					88, 1, 2, // CHKINS r1, r2
+					104, -2, 0, 1, // global.vm_ops_class_body = r1
+					118, 1, // SRV r1
+					119, // RET
+				},
+			},
+			{
+				Name:              1,
+				Parent:            1,
+				ContextType:       7,
+				MaxVariables:      3,
+				SuperclassGetters: []int32{0},
+				Constants: []tjs.BytecodeConstant{
+					{Value: tjs.StringValue("vm_ops_getter")},
+					{Value: tjs.StringValue("VMOpsBase")},
+					{Value: tjs.IntegerValue(1)},
+					{Value: tjs.StringValue("Number")},
+				},
+				Code: []int16{
+					1, 1, 2, // CONST r1 = 1
+					1, 2, 3, // CONST r2 = "Number"
+					88, 1, 2, // CHKINS r1, r2
+					104, -2, 0, 1, // global.vm_ops_getter = r1
+					103, 0, -2, 1, // GPD r0, this-proxy, "VMOpsBase"
+					118, 0, // SRV r0
+					119, // RET
+				},
+			},
+		},
+	}
+	if err := bindLegacyScriptFunctions(session.VM, base, global, session.Services, nil); err != nil {
+		t.Fatalf("bind base class: %v", err)
+	}
+	// Binding runs each top-level class body through the class-initialization
+	// entry point.
+	if err := bindLegacyScriptFunctions(session.VM, derived, global, session.Services, nil); err != nil {
+		t.Fatalf("bind derived class with CHKINS in its class body: %v", err)
+	}
+	derivedClass := session.VM.Globals["VMOpsDerived"]
+	if derivedClass.Kind() != tjs.KindObject {
+		t.Fatalf("registered class = %v; want a class object", derivedClass)
+	}
+	// Calling the class runs the compiled class body through its registered
+	// dispatcher, the entry point construction uses for superclass setup.
+	if _, err := session.VM.InvokeLegacy(derivedClass, global, nil, session.Services, nil, true); err != nil {
+		t.Fatalf("call compiled class body with CHKINS: %v", err)
+	}
+	// Constructing the class resolves the deferred superclass getter.
+	if _, err := session.VM.Construct(derivedClass, nil, session.Services, nil); err != nil {
+		t.Fatalf("construct class with CHKINS in its superclass getter: %v", err)
+	}
+	globalObject, ok := session.VM.Objects.Lookup(0)
+	if !ok {
+		t.Fatal("global object missing")
+	}
+	for _, name := range []string{"vm_ops_class_body", "vm_ops_getter"} {
+		value, exists := globalObject.Get(name)
+		if !exists {
+			t.Fatalf("legacy CHKINS did not run in %s; member is missing", name)
+		}
+		if value.IntegerValue() != 1 {
+			t.Errorf("%s = %v; want 1 (1 is Number)", name, value)
+		}
+	}
+}

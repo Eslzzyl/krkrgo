@@ -18,12 +18,15 @@ func TestBuiltinPluginLinksNormalizePathsCaseAndExtensions(t *testing.T) {
 		`Plugins.link("PLUGIN/WINDOWEX.dll")`,
 		`Plugins.link("plugin/LayerExImage.TPM")`,
 		`Plugins.link("PLUGIN\\layereximage.dll")`,
+		`Plugins.link("plugin/TextRender.TPM")`,
+		`Plugins.link("plugin/LayerExRaster.TPM")`,
+		`Plugins.link("plugin/LayerExDraw.TPM")`,
 	} {
 		if _, err := session.Evaluate(link); err != nil {
 			t.Fatalf("%s: %v", link, err)
 		}
 	}
-	if len(services.Plugins) != 4 {
+	if len(services.Plugins) != 7 {
 		t.Fatalf("normalized plugin list = %v, want one entry per built-in module", services.Plugins)
 	}
 	for _, source := range []string{

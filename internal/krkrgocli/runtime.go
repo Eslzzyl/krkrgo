@@ -1,11 +1,13 @@
 package krkrgocli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"runtime/pprof"
+	"strings"
 	"sync"
 	"time"
 
@@ -164,6 +166,26 @@ func startCPUProfileFromEnv() func() {
 		})
 	}
 }
+func formatErrorChain(err error) string {
+	if err == nil {
+		return ""
+	}
+	lines := make([]string, 0, 4)
+	for depth := 0; err != nil; depth++ {
+		message := err.Error()
+		next := errors.Unwrap(err)
+		if next != nil {
+			suffix := ": " + next.Error()
+			message = strings.TrimSuffix(message, suffix)
+		}
+		if depth > 0 {
+			message = "\t" + message
+		}
+		lines = append(lines, message)
+		err = next
+	}
+	return strings.Join(lines, "\n")
+}
 
 func RunGame(args []string) {
 	opts, err := ParseLaunchArgs(args)
@@ -171,11 +193,11 @@ func RunGame(args []string) {
 		return
 	}
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal(formatErrorChain(err))
 	}
 	session, err := NewSession(opts.Project, opts.SaveDir, opts.Budget)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal(formatErrorChain(err))
 	}
 	defer func() { _ = session.Close() }()
 

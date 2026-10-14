@@ -87,6 +87,8 @@ func TestStoragesStaticPathHelpersWithoutStorage(t *testing.T) {
 		"Storages.getLocalName('path/file.tjs')",
 		"Storages.isExistentStorage('path/file.tjs')",
 		"Storages.fstat('path/file.tjs')",
+		"Storages.dirlist('path/')",
+		"Storages.dirlistEx('path/')",
 		"Storages.addArchive('path.xp3')",
 		"Storages.clearArchiveCache()",
 	} {
@@ -439,5 +441,138 @@ func TestStoragesAutoPathFindsIslandDiaryArchiveConfig(t *testing.T) {
 	}
 	if _, err := storage.Read("Config.tjs"); err != nil {
 		t.Fatalf("read archive config through auto path: %v", err)
+	}
+}
+
+// dirlistProject builds a project directory tree used by the directory-listing
+// tests and returns the opened storage plus the session that drives it.
+func dirlistProject(t *testing.T) (*assets.Storage, *Session) {
+	t.Helper()
+	project := t.TempDir()
+	lookup := filepath.Join(project, "lookup")
+	if err := os.MkdirAll(filepath.Join(lookup, "Sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lookup, "Found.TJS"), []byte("first search path"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lookup, "Sub", "inner.txt"), []byte("inner"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "ReadMe.TXT"), []byte("readme"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := assets.OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeArchivesOnCleanup(t, storage)
+	return storage, NewSession(NewServices(storage, "", core.DefaultLimits()), 50_000)
+}
+
+func TestStoragesDirlistEnumeratesProjectDirectory(t *testing.T) {
+	storage, session := dirlistProject(t)
+	defer session.Close()
+
+	for _, test := range []struct {
+		source string
+		want   string
+	}{
+		{`Storages.dirlist('lookup/').join(',')`, "Found.TJS,Sub"},
+		{`Storages.dirlist('lookup/').count`, "2"},
+		{`Storages.dirlist('LOOKUP/').join(',')`, "Found.TJS,Sub"},
+		{`Storages.dirlist('lookup/./Sub/../Sub/').join(',')`, "inner.txt"},
+		{`Storages.dirlist('./').join(',')`, "ReadMe.TXT,lookup"},
+		{`Storages.dirlist(Storages.getFullPath('lookup/')).join(',')`, "Found.TJS,Sub"},
+		{`Storages.dirlist(` + strconv.Quote(filepath.ToSlash(storage.Project)) + ` + '/lookup/').join(',')`, "Found.TJS,Sub"},
+		{`typeof Storages.dirlist`, "Object"},
+		{`typeof Storages.dirlistEx`, "Object"},
+	} {
+		value, err := session.Evaluate(test.source)
+		if err != nil {
+			t.Fatalf("%s: %v", test.source, err)
+		}
+		if got := value.Text(); got != test.want {
+			t.Errorf("%s = %q, want %q", test.source, got, test.want)
+		}
+	}
+
+	// The listing covers direct children only; the exact name list above
+	// excludes the nested lookup/Sub/inner.txt entry.
+}
+
+func TestStoragesDirlistExReportsEntryMetadata(t *testing.T) {
+	_, session := dirlistProject(t)
+	defer session.Close()
+
+	contents := "first search path"
+	for _, test := range []struct {
+		source string
+		want   string
+	}{
+		{`Storages.dirlistEx('lookup/').count`, "2"},
+		{`Storages.dirlistEx('lookup/')[0].name`, "Found.TJS"},
+		{`Storages.dirlistEx('lookup/')[0].size`, strconv.Itoa(len(contents))},
+		{`Storages.dirlistEx('lookup/')[1].name`, "Sub"},
+		{`Storages.dirlistEx('lookup/')[1].size`, "0"},
+		{`typeof Storages.dirlistEx('lookup/')[0]`, "Object"},
+	} {
+		value, err := session.Evaluate(test.source)
+		if err != nil {
+			t.Fatalf("%s: %v", test.source, err)
+		}
+		if got := value.Text(); got != test.want {
+			t.Errorf("%s = %q, want %q", test.source, got, test.want)
+		}
+	}
+
+	// attrib carries the POSIX file-type bits so scripts can distinguish
+	// directories from files, and the timestamps stay positive Unix seconds.
+	for _, source := range []string{
+		`(Storages.dirlistEx('lookup/')[0].attrib & 0x8000) != 0`,
+		`(Storages.dirlistEx('lookup/')[0].attrib & 0x4000) == 0`,
+		`(Storages.dirlistEx('lookup/')[1].attrib & 0x4000) != 0`,
+		`(Storages.dirlistEx('lookup/')[1].attrib & 0x8000) == 0`,
+		`Storages.dirlistEx('lookup/')[0].mtime > 0`,
+		`Storages.dirlistEx('lookup/')[0].atime > 0`,
+		`Storages.dirlistEx('lookup/')[0].ctime > 0`,
+	} {
+		value, err := session.Evaluate(source)
+		if err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+		if ok, _ := value.Truth(); !ok {
+			t.Errorf("%s is not true", source)
+		}
+	}
+}
+
+func TestStoragesDirlistRejectsInvalidDirectoryNames(t *testing.T) {
+	storage, session := dirlistProject(t)
+	defer session.Close()
+
+	for _, source := range []string{
+		`Storages.dirlist('lookup')`,
+		`Storages.dirlist('')`,
+		`Storages.dirlist('lookup/Found.TJS/')`,
+		`Storages.dirlist('missing/')`,
+		`Storages.dirlist('../')`,
+		`Storages.dirlist('/')`,
+		`Storages.dirlist('Mounted.XP3>archive/')`,
+		`Storages.dirlist(` + strconv.Quote(filepath.ToSlash(filepath.Dir(storage.Project))+"/") + `)`,
+		`Storages.dirlistEx('lookup')`,
+		`Storages.dirlistEx('missing/')`,
+		`Storages.dirlistEx('')`,
+	} {
+		if _, err := session.Evaluate(source); err == nil {
+			t.Errorf("%s unexpectedly returned a directory listing", source)
+		}
+	}
+
+	if _, err := session.Evaluate(`Storages.dirlist('missing/')`); !errors.Is(err, assets.ErrNotFound) {
+		t.Errorf("missing directory error = %v, want ErrNotFound", err)
+	}
+	if _, err := session.Evaluate(`Storages.dirlist('lookup')`); err == nil || !strings.Contains(err.Error(), "'/' must be specified") {
+		t.Errorf("trailing separator error = %v, want the reference message", err)
 	}
 }

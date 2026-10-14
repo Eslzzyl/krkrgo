@@ -826,6 +826,139 @@ func (s *Storage) StatSize(name string) (uint64, error) {
 	return entry.Size, nil
 }
 
+// DirEntry describes one direct child of a project-local directory. Mode keeps
+// the operating-system file mode so callers can derive file-type/permission
+// bits, and the timestamps are Unix seconds. Symbolic-link entries report the
+// link itself rather than its target, so a listing never exposes metadata that
+// lives outside the project.
+type DirEntry struct {
+	Name    string
+	IsDir   bool
+	Mode    os.FileMode
+	Size    int64
+	ModTime int64
+	Atime   int64
+	Ctime   int64
+}
+
+// ReadDirNames lists the direct children of a project-local directory using
+// their on-disk spelling, sorted by name. Archive-qualified directories are
+// rejected because only the local file-media storage can be enumerated.
+func (s *Storage) ReadDirNames(name string) ([]string, error) {
+	dir, err := s.readDirPath(name)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names, nil
+}
+
+// ReadDirEntries lists the direct children of a project-local directory with
+// the metadata used by Storages.dirlistEx. Entries whose metadata cannot be
+// read are omitted rather than failing the whole listing, matching the
+// reference plugin's stat-based enumeration.
+func (s *Storage) ReadDirEntries(name string) ([]DirEntry, error) {
+	dir, err := s.readDirPath(name)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]DirEntry, 0, len(entries))
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		item := DirEntry{
+			Name:    entry.Name(),
+			IsDir:   info.IsDir(),
+			Mode:    info.Mode(),
+			ModTime: info.ModTime().Unix(),
+		}
+		if info.Mode().IsRegular() {
+			item.Size = info.Size()
+		}
+		item.Atime, item.Ctime = fileTimes(info, item.ModTime)
+		result = append(result, item)
+	}
+	return result, nil
+}
+
+// readDirPath validates a storage directory name and resolves it to a
+// canonical path the caller may enumerate.
+func (s *Storage) readDirPath(name string) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("nil storage")
+	}
+	if strings.ContainsRune(name, '>') {
+		return "", fmt.Errorf("archive directories are not locally accessible: %s", name)
+	}
+	normalized, err := s.normalize(name, true)
+	if err != nil {
+		return "", err
+	}
+	return s.resolveDirectory(normalized)
+}
+
+// resolveDirectory maps a normalized, project-relative directory name to its
+// canonical OS path. It reuses the storage component cache for
+// case-insensitive lookup and rechecks every resolved component against the
+// canonical project root, so neither ".." nor a symlinked component can escape
+// the project.
+func (s *Storage) resolveDirectory(name string) (string, error) {
+	path := s.Project
+	for _, component := range strings.Split(name, "/") {
+		if component == "" {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return "", err
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("%w: %s", ErrNotFound, name)
+		}
+		entries, err := s.directoryEntries(path, info)
+		if err != nil {
+			return "", err
+		}
+		entry, ok := entries[asciiLower(component)]
+		if !ok {
+			return "", fmt.Errorf("%w: %s", ErrNotFound, name)
+		}
+		if entry.collision {
+			return "", fmt.Errorf("ambiguous case-insensitive storage name: %s", name)
+		}
+		path = filepath.Join(path, entry.name)
+		canonical, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", err
+		}
+		if !within(s.Project, canonical) {
+			return "", fmt.Errorf("storage symlink escapes game directory: %s", name)
+		}
+		path = canonical
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%w: %s", ErrNotFound, name)
+	}
+	return path, nil
+}
+
 func storageRelativeCaseInsensitive(path, root string) (string, bool) {
 	path = filepath.ToSlash(filepath.Clean(path))
 	root = filepath.ToSlash(filepath.Clean(root))

@@ -342,8 +342,25 @@ func (v Value) Unary(op string) (Value, error) {
 			return Value{}, err
 		}
 		return StringUnits([]uint16{uint16(n)}), nil
+	case "octet":
+		return v.ToOctet()
 	default:
 		return Value{}, fmt.Errorf("unsupported TJS unary operator %s", op)
+	}
+}
+
+// ToOctet implements the reference VM's tTJSVariant::ToOctet conversion: the
+// void value becomes the null octet and an octet is copied unchanged; every
+// other kind raises the shared variant conversion error because TJS has no
+// implicit string/number/object-to-octet coercion.
+func (v Value) ToOctet() (Value, error) {
+	switch v.kind {
+	case KindVoid:
+		return OctetValue(nil), nil
+	case KindOctet:
+		return OctetValue(v.octet), nil
+	default:
+		return Value{}, fmt.Errorf("cannot convert TJS %s to Octet", v.TypeName())
 	}
 }
 

@@ -9,7 +9,7 @@
 
 ## Delegation
 - All newly spawned subagents use `cline-pass/deepseek-v4.1-flash:high` through the current session's `task.agentModelOverrides`; do not write global model configuration.
-- The total active subagent limit is two. Enforce it in dispatch and keep the session `task.maxConcurrency` at 2.
+- The total active subagent limit is four. Enforce it in dispatch and keep the session `task.maxConcurrency` at 4.
 - Already-running agents retain their launch-time model and continue bounded work.
 - Repetitive implementation and data collection go to subagents. The parent owns direction, contract decisions, code review, acceptance, integration, and necessary corrective edits.
 - Subagents MAY run tests and builds when assigned.
@@ -99,17 +99,17 @@
 - Before continuing after a context change, reread this contract, the active goal, and todo state.
 
 ## Current session overrides
-- The active subagent concurrency cap is 2. This cap applies to every new delegation and remains active after context compaction.
+- The active subagent concurrency cap is 4. This cap applies to every new delegation and remains active after context compaction.
 
 ## Delegation history
 - Earlier tasks used `cline-pass/mimo-v2.6-flash`; already-running agents retain their launch-time model.
-- The latest user instruction selected `cline-pass/deepseek-v4.1-flash:high` for subsequent delegation and kept the concurrency cap at 2.
+- The latest user instruction selected `cline-pass/deepseek-v4.1-flash:high` for subsequent delegation and set the concurrency cap at 4.
 
 ## Current work priority
 - The current primary objective is the FFmpeg 9.0.2 shared-library sidecar and ASF/WMV3/WMA2 playback of `testdata/lovelyday/movie.xp3 > logo.wmv`.
 - The secondary objective is the Amairo startup black-screen investigation and fix.
 - Future delegation uses `cline-pass/deepseek-v4.1-flash:high` with no global configuration changes.
-- The two-agent concurrency cap applies across all subagent types and must be enforced operationally.
+- The four-agent concurrency cap applies across all subagent types and must be enforced operationally.
 - The sidecar build is defined by `scripts/build-ffmpeg.sh` and `.github/workflows/build-ffmpeg.yml`; the prior pure-Go WMV3/ASF assessment is archived by the current implementation.
 
 ## Session handoff

@@ -590,7 +590,7 @@ func (s *Services) textRenderNative(vm *tjs.VM, context tjs.Value, operation str
 		return tjs.VoidValue, err
 	}
 	s.ensureInit()
-	if operation == "@initialize" {
+	if operation == "@initialize" || operation == "TextRenderBase" {
 		s.mu.Lock()
 		if s.TextRenderers[id] == nil {
 			if len(s.TextRenderers) >= textRenderMaxObjects {
@@ -630,12 +630,6 @@ func (s *Services) textRenderNative(vm *tjs.VM, context tjs.Value, operation str
 			return tjs.VoidValue, e
 		}
 		return tjs.StringValue(value.Text()), nil
-	}
-	if operation == "TextRenderBase" {
-		s.mu.Lock()
-		s.TextRenderers[id] = newTextRenderState()
-		s.mu.Unlock()
-		return tjs.VoidValue, nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

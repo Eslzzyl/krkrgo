@@ -99,6 +99,14 @@ func classMetaHasName(class *classMeta, name string, seen map[*classMeta]struct{
 	}
 	return false
 }
+
+// InstanceOfValue exposes the VM's class-membership operator to the legacy
+// intercode executor's CHKINS hook: classValue is either a class object or the
+// class name that value is tested against.
+func (v *VM) InstanceOfValue(value, classValue Value) (Value, error) {
+	return v.instanceOfValue(value, classValue)
+}
+
 func (v *VM) instanceOfValue(value, classValue Value) (Value, error) {
 	if classValue.Kind() == KindObject && !classValue.IsNull() {
 		id := classValue.ObjectRef().Object

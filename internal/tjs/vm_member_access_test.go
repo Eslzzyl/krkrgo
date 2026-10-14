@@ -133,3 +133,87 @@ return C.setCursorMoveTime();
 		t.Fatalf("class-bound function this.defaultCursorMove = %v, want 300", got)
 	}
 }
+
+func TestVMLegacyPropertyDispatchesCompiledAccessors(t *testing.T) {
+	vm := NewVM()
+	receiver, err := vm.NewDictionary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := vm.NewDictionary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := nopHost{}
+	var budget uint64 = 4096
+	var (
+		getterContext, setterContext Value
+		getterHost                   Host
+		getterBudget                 *uint64
+		getterCalls, setterCalls     int
+		setterArgs                   []Value
+	)
+	getter, err := vm.RegisterLegacyFunction("value.get", func(context Value, args []Value, h Host, b *uint64, resultNeeded bool) (Value, error) {
+		getterCalls++
+		if len(args) != 0 || !resultNeeded {
+			t.Errorf("legacy getter args = %v, resultNeeded = %t; want no arguments and a needed result", args, resultNeeded)
+		}
+		getterContext, getterHost, getterBudget = context, h, b
+		return IntegerValue(11), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setter, err := vm.RegisterLegacyFunction("value.set", func(context Value, args []Value, _ Host, _ *uint64, _ bool) (Value, error) {
+		setterCalls++
+		setterContext, setterArgs = context, args
+		return VoidValue, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	property, err := vm.RegisterLegacyProperty("value", getter, setter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetMemberWithRuntime(receiver, "value", property, MemberEnsure, host, &budget); err != nil {
+		t.Fatal(err)
+	}
+	if getterCalls != 0 {
+		t.Fatalf("legacy getter ran %d times while binding the member; want lazy dispatch", getterCalls)
+	}
+	got, err := vm.GetMember(receiver, "value", host, &budget)
+	if err != nil || got.IntegerValue() != 11 {
+		t.Fatalf("legacy property read = %v, %v; want 11", got, err)
+	}
+	if getterContext.ObjectRef() != receiver.ObjectRef() {
+		t.Fatalf("legacy getter this-context = %v; want the reading receiver %v", getterContext, receiver)
+	}
+	if getterHost != host || getterBudget != &budget {
+		t.Fatalf("legacy getter host/budget = %v, %v; want the caller's host and budget", getterHost, getterBudget)
+	}
+	if err := vm.SetMemberWithRuntime(receiver, "value", IntegerValue(5), 0, host, &budget); err != nil {
+		t.Fatal(err)
+	}
+	if setterCalls != 1 || len(setterArgs) != 1 || setterArgs[0].IntegerValue() != 5 {
+		t.Fatalf("legacy setter calls/args = %d, %v; want one call carrying the assigned value", setterCalls, setterArgs)
+	}
+	if setterContext.ObjectRef() != receiver.ObjectRef() {
+		t.Fatalf("legacy setter this-context = %v; want the written receiver %v", setterContext, receiver)
+	}
+	if got, err := vm.GetMember(receiver, "value", host, &budget); err != nil || got.IntegerValue() != 11 {
+		t.Fatalf("legacy property read after write = %v, %v; want the getter result 11", got, err)
+	}
+	// A property member keeps the owner it was bound to as its this-context,
+	// which is what compiled top-level declarations express with CHGTHIS.
+	bound := ObjectValue(NewObjectRef(property.ObjectRef().Object, receiver.ObjectRef().Object))
+	if err := vm.SetMemberWithRuntime(other, "value", bound, MemberEnsure, host, &budget); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.GetMember(other, "value", host, &budget); err != nil {
+		t.Fatal(err)
+	}
+	if getterContext.ObjectRef() != receiver.ObjectRef() {
+		t.Fatalf("bound legacy getter this-context = %v; want the bound owner %v", getterContext, receiver)
+	}
+}

@@ -121,6 +121,9 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 		}
 		return s.listVarStorage(vm, name)
 	}
+	if operation == "dirlist" || operation == "dirlistEx" {
+		return s.storagesDirList(vm, operation, args)
+	}
 	if operation != "addAutoPath" && operation != "removeAutoPath" && operation != "getFullPath" && operation != "getPlacedPath" && operation != "isExistentStorage" {
 		return tjs.VoidValue, fmt.Errorf("unknown Storages operation: %s", operation)
 	}
@@ -190,6 +193,89 @@ func storagesStorage(s *Services) *assets.Storage {
 		return nil
 	}
 	return s.Storage
+}
+
+// POSIX file-type bits carried by the Storages.dirlistEx "attrib" field. The
+// plugin manual tells scripts to determine directory status from attrib, so the
+// value keeps the S_IFMT type bits alongside the permission bits.
+const (
+	storageAttribDirectory = 0x4000
+	storageAttribRegular   = 0x8000
+)
+
+// storagesDirList implements the read-only directory enumeration of fstat.dll.
+// Both methods require a directory name ending in a separator, resolve it
+// inside the local file-media storage space, and return the direct children of
+// that directory: Storages.dirlist yields entry names and Storages.dirlistEx
+// yields dictionaries with name, size, attrib, mtime, atime, and ctime. Like
+// the reference plugin, the listing covers the project-local directory and does
+// not enumerate XP3 archive contents.
+func (s *Services) storagesDirList(vm *tjs.VM, operation string, args []tjs.Value) (tjs.Value, error) {
+	if len(args) == 0 {
+		return tjs.VoidValue, fmt.Errorf("Storages.%s requires argument 0", operation)
+	}
+	name := args[0].Text()
+	if name == "" || (name[len(name)-1] != '/' && name[len(name)-1] != '\\') {
+		return tjs.VoidValue, fmt.Errorf("Storages.%s: '/' must be specified at the end of given directory name.", operation)
+	}
+	storage := storagesStorage(s)
+	if storage == nil {
+		return tjs.VoidValue, UnsupportedDevice("storage")
+	}
+	if operation == "dirlist" {
+		names, err := storage.ReadDirNames(name)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		values := make([]tjs.Value, len(names))
+		for i, item := range names {
+			values[i] = tjs.StringValue(item)
+		}
+		return vm.NewArray(values)
+	}
+	entries, err := storage.ReadDirEntries(name)
+	if err != nil {
+		return tjs.VoidValue, err
+	}
+	values := make([]tjs.Value, 0, len(entries))
+	for _, entry := range entries {
+		info, err := tjsDictionary(vm)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		fields := []struct {
+			name  string
+			value tjs.Value
+		}{
+			{"name", tjs.StringValue(entry.Name)},
+			{"size", tjs.IntegerValue(entry.Size)},
+			{"attrib", tjs.IntegerValue(storageDirAttrib(entry))},
+			{"mtime", tjs.IntegerValue(entry.ModTime)},
+			{"atime", tjs.IntegerValue(entry.Atime)},
+			{"ctime", tjs.IntegerValue(entry.Ctime)},
+		}
+		for _, field := range fields {
+			if err := info.Set(field.name, field.value); err != nil {
+				return tjs.VoidValue, fmt.Errorf("Storages.%s %s: %w", operation, field.name, err)
+			}
+		}
+		values = append(values, tjs.ObjectValue(info.Ref()))
+	}
+	return vm.NewArray(values)
+}
+
+// storageDirAttrib maps a directory entry to the Storages.dirlistEx attrib
+// value: POSIX permission bits plus the file-type bit for directories and
+// regular files.
+func storageDirAttrib(entry assets.DirEntry) int64 {
+	attrib := int64(entry.Mode.Perm())
+	switch {
+	case entry.IsDir:
+		attrib |= storageAttribDirectory
+	case entry.Mode.IsRegular():
+		attrib |= storageAttribRegular
+	}
+	return attrib
 }
 
 func storagesPathArg(args []tjs.Value, operation string) (string, error) {

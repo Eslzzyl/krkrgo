@@ -5,7 +5,10 @@ Repository: `/Users/eslzzyl/WorkSpace/Go/krkrgo` (macOS) and `D:/WorkSpace/Go/kr
 
 ## Current objectives
 
-1. Continue the Amairo startup black-screen investigation.
+1. Prioritize repairing `testdata/islanddiary` startup and continue generic TJS2100 instruction migration.
+2. Complete instruction coverage, run focused tests and full build checks, then re-run the IslandDiary startup command.
+3. Deferred follow-up: after the TJS2100 migration and startup verification are complete, rename krkrgo's internal `legacy` files, symbols, comments, tests, and documentation to the official `InterCode`/`TJS2100` terminology. Preserve behavior during the rename.
+4. Continue the Amairo startup black-screen investigation.
 
 ## GPU composition status
 

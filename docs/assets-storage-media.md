@@ -16,6 +16,8 @@ These project-relative and executable-relative XP3 names are the resource paths 
 
 `Storages.addArchive(path)` dynamically mounts a local XP3 archive addressed relative to the project (or by a normalized local `file://.` path). It adds the archive after current mounts, so its entries take precedence over earlier archive entries; malformed, missing, or non-local archive paths fail rather than being ignored.
 
+`Storage.ReadDirNames` and `Storage.ReadDirEntries` enumerate the direct children of a project-local directory for the runtime `Storages.dirlist`/`Storages.dirlistEx` natives. Both resolve the directory through the same case-insensitive component cache as ordinary lookups and recheck every component against the canonical project root, so `..`, absolute paths, escaping symlinks, and archive-qualified names are rejected. Entries keep their on-disk spelling, are not case-folded, and are not recursed into; metadata entries report the link itself for symbolic links and are omitted when their metadata cannot be read. Archive directories have no local directory to enumerate and are not listed this way.
+
 - Runtime storage reads accept `file://.` paths under the active project or configured save directory. Absolute local paths are resolved through existing ancestors before component-aware containment checks, accepting symlink aliases of approved roots while rejecting outside targets. Writes through absolute project paths are redirected into the save overlay; relative storage names remain rooted in the save overlay before project lookup.
 
 ### Storage gaps

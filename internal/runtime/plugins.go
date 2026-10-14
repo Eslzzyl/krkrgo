@@ -31,7 +31,7 @@ func pluginLinkKey(name string) string {
 // normal ErrUnsupportedNative path instead of being claimed as successful.
 func isImplementedNativePlugin(key string) bool {
 	switch path.Base(key) {
-	case "addfont.dll", "alphamovie.dll", "csvparser.dll", "extnagano.dll", "extrans.dll", "fftgraph.dll", "getabout.dll", "getsample.dll", "kagparser.dll", "layereximage.dll", "menu.dll", "motionplayer.dll", "packinone.dll", "psbfile.dll", "scriptsex.dll", "varfile.dll", "win32dialog.dll", "windowex.dll":
+	case "addfont.dll", "alphamovie.dll", "csvparser.dll", "extnagano.dll", "extrans.dll", "fftgraph.dll", "getabout.dll", "getsample.dll", "kagparser.dll", "layerexbtoa.dll", "layerexdraw.dll", "layereximage.dll", "layerexraster.dll", "menu.dll", "motionplayer.dll", "packinone.dll", "psbfile.dll", "scriptsex.dll", "textrender.dll", "varfile.dll", "win32dialog.dll", "windowex.dll":
 		return true
 	default:
 		return false

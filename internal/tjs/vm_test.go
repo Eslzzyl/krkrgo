@@ -1279,22 +1279,32 @@ func TestLegacySuperclassGetterWithoutGetterIsNoop(t *testing.T) {
 		t.Fatalf("missing getter linked superclass bases: %v", vm.meta[derivedID].superclassBases)
 	}
 }
-func TestLegacySuperclassGetterRecursionAndErrorContext(t *testing.T) {
-	t.Run("recursive lookup", func(t *testing.T) {
+func TestLegacySuperclassGetterNestedLookupAndErrorContext(t *testing.T) {
+	t.Run("nested lookup falls through while base is loading", func(t *testing.T) {
 		vm := NewVM()
 		derived, err := vm.RegisterLegacyClass("SuperclassGetterRecursive")
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := vm.SetLegacyClassSuperclassGetter(derived, []int{31}, func(_ int, host Host, budget *uint64) (Value, error) {
-			_, _, err := vm.GetMemberIfPresent(derived, "absent", host, budget)
-			return VoidValue, err
+			value, found, err := vm.GetMemberIfPresent(derived, "absent", host, budget)
+			if err != nil || found || !value.IsVoid() {
+				t.Fatalf("nested superclass lookup = value %v, found %v, err %v; want unresolved", value, found, err)
+			}
+			return VoidValue, nil
 		}); err != nil {
 			t.Fatal(err)
 		}
-		_, _, err = vm.GetMemberIfPresent(derived, "absent", vmTestHost{}, nil)
-		if err == nil || !strings.Contains(err.Error(), "recursive TJS superclass getter") || !strings.Contains(err.Error(), "offset 31") {
-			t.Fatalf("recursive getter error = %v, want recursion and getter-offset context", err)
+		value, found, err := vm.GetMemberIfPresent(derived, "absent", vmTestHost{}, nil)
+		if err != nil || found || !value.IsVoid() {
+			t.Fatalf("superclass lookup = value %v, found %v, err %v; want unresolved", value, found, err)
+		}
+		id, err := vm.handle(derived)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !vm.meta[id].superclassBasesResolved[0] {
+			t.Fatal("void superclass result was not cached")
 		}
 	})
 	t.Run("getter failure context", func(t *testing.T) {
