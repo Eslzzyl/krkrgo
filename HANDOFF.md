@@ -20,14 +20,29 @@ go run ./cmd/krkrgo/main.go run -project ./testdata/islanddiary/
 Startup now reaches `custom.tjs:56` after loading `system/Initialize.tjs`, `Override.tjs`, and `system.tjs`. The current blocker is:
 
 ```text
-legacy intercode object 177 code offset 124: get property "count"
+legacy intercode object 22 code offset 8: get property "WIN32GenericDialogEX"
 TJS member not found
 ```
 
-Static tracing identified the receiver as the string `simpleanim.tjs`. The remaining compatibility gap is the TJS string `count` property, which should expose the UTF-16 string length. The next implementation target is the string-property path in `internal/tjs/vm.go` and `internal/tjs/dispatch.go`.
+The startup line exposed three compatibility gaps and they are implemented in commits `747dc38`, `b22bec7`, and `3cdcb5a`:
+
+- TJS string `count` exposes UTF-16 code-unit length in VM and Dispatcher primitive paths.
+- TJS string numeric properties expose UTF-16 code units in the Dispatcher primitive path.
+- TJS2100 `CollapseBase` materializes trailing function arguments into a GC-visible array.
+- Legacy this-proxy global fallback preserves `MemberMustExist`, exposing the missing compiled base name.
+
+The remaining blocker is the missing `WIN32GenericDialogEX` base class during `uimain.tjs` class initialization. The launcher remains unchanged.
+
+Latest targeted startup command remains:
+
+```text
+go run ./cmd/krkrgo/main.go run -project ./testdata/islanddiary/
+```
+
+The command reaches the missing `WIN32GenericDialogEX` base-class lookup above and exits with status 1.
+
 
 Completed during this session:
-
 - GPDS/GPIS now preserve `IgnoreProperty` and can read raw property descriptors.
 - Nested legacy function/class properties replay onto their loader parent.
 - Legacy intercode registers are published to VM GC tracing during nested source execution.
@@ -38,13 +53,15 @@ Completed during this session:
 - Dispatcher-created string-split arrays are registered in the active object table.
 - Legacy member resolution falls back to the dispatcher for dynamic members and primitive receivers.
 
-Focused verification passed after the latest implementation steps:
+Focused and full verification passed after the latest implementation steps:
 
 ```text
 go test ./internal/tjs ./internal/runtime -count=1
+go test ./... -count=1
+go build ./...
 ```
 
-The worktree contains uncommitted changes for this startup line. Commit them before the next implementation phase, then add the string `count` behavior and rerun the focused tests plus the startup command.
+The worktree is clean except for this handoff update. Continue by implementing the real `WIN32GenericDialogEX` plugin surface or loading its project script before `uimain.tjs`; preserve the existing Windows plugin semantics.
 
 ## GPU composition status
 
@@ -73,6 +90,12 @@ No subagents are currently running.
 - `febd39c Fix Windows storage paths and the Amairo opening sequence`
   - Windows drive-qualified storage names, `Layer.affineCopy`, `callOnPaint`, and the TJS2 `with` scope rules; see "Amairo status" below.
 
+- `747dc38 Support TJS string count and indexing`
+  - Adds UTF-16 `count` and numeric string properties to VM and Dispatcher paths with focused coverage.
+- `b22bec7 Materialize legacy collapsed arguments`
+  - Implements TJS2100 `CollapseBase` arrays in legacy frame setup with focused coverage.
+- `3cdcb5a Preserve missing errors in legacy base lookup`
+  - Keeps `MemberMustExist` on the global fallback for legacy `extends` resolution.
 ## Verification completed
 
 The current Go test suite passes on the development host:
@@ -121,41 +144,13 @@ Known unfinished Amairo work:
 
 ## Pending worktree files
 
-The current worktree includes:
+The current worktree has only this handoff update:
 
 ```text
 HANDOFF.md
-reference/FreeMote
-internal/assets/psb_image.go
-internal/assets/psb_image_test.go
-internal/assets/storage.go
-internal/assets/storage_path_test.go
-internal/assets/text_cx_test.go
-internal/core/core.go
-internal/core/project.go
-internal/runtime/layer_image.go
-internal/runtime/layer_image_native_test.go
-internal/runtime/layer_native.go
-internal/runtime/motion_render.go
-internal/runtime/motionplayer_native.go
-internal/runtime/motionplayer_runtime.go
-internal/runtime/runtime_kag_save_test.go
-internal/runtime/save_storage.go
-internal/runtime/services.go
-internal/runtime/session.go
-internal/runtime/session_project_test.go
-internal/runtime/storages_native.go
-internal/runtime/storages_native_test.go
-internal/runtime/system_native.go
-internal/runtime/system_native_test.go
-internal/tjs/compiler.go
-internal/tjs/gc.go
-internal/tjs/lifetime.go
-internal/tjs/sound_expression_test.go
-internal/tjs/vm.go
-internal/tjs/vm_test.go
 ```
 
 ## Recommended next order
 
-1. Amairo: validate broader PSB motion parity, then fix the separate window-drag issue in `internal/host/ebiten.go`.
+1. Implement or load the real `WIN32GenericDialogEX` plugin surface before `uimain.tjs` startup.
+2. Amairo: validate broader PSB motion parity, then fix the separate window-drag issue in `internal/host/ebiten.go`.
