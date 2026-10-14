@@ -427,8 +427,14 @@ func stringUTF16LastIndex(haystack, needle []uint16) int {
 	return -1
 }
 func stringMethod(d *Dispatcher, value Value, name string) (Value, error) {
+	if index, ok := canonicalArrayIndex(name); ok {
+		if index >= int64(len(value.string)) {
+			return VoidValue, nil
+		}
+		return StringUnits(value.string[index : index+1]), nil
+	}
 	switch name {
-	case "length":
+	case "length", "count":
 		return IntegerValue(int64(len(value.string))), nil
 	case "sprintf":
 		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {

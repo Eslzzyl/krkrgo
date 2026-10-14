@@ -1524,7 +1524,7 @@ func vmArrayIndex(key Value) (int64, bool) {
 }
 
 func vmStringProperty(value, key Value) (Value, bool) {
-	if key.Kind() == KindString && key.Text() == "length" {
+	if key.Kind() == KindString && (key.Text() == "length" || key.Text() == "count") {
 		return IntegerValue(int64(len(value.string))), true
 	}
 	index, ok := vmArrayIndex(key)

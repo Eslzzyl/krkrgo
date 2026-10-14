@@ -163,6 +163,81 @@ func TestVMStringMethodCacheAndPublicMemberAccess(t *testing.T) {
 	}
 }
 
+func TestVMStringCountMatchesLength(t *testing.T) {
+	vm := NewVM()
+	for _, test := range []struct {
+		text string
+		want int64
+	}{
+		{text: "abc", want: 3},
+		{text: "", want: 0},
+		{text: "😀", want: 2},
+		{text: "A😀B", want: 4},
+	} {
+		length, err := vm.GetMember(StringValue(test.text), "length", vmTestHost{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		count, err := vm.GetMember(StringValue(test.text), "count", vmTestHost{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if length.IntegerValue() != test.want {
+			t.Errorf("%q length = %v, want %d", test.text, length, test.want)
+		}
+		if count.IntegerValue() != test.want {
+			t.Errorf("%q count = %v, want %d", test.text, count, test.want)
+		}
+	}
+}
+
+func TestVMStringCountSource(t *testing.T) {
+	got := executeVMSource(t, `
+return "abc".count == 3 && "😀".count == 2 && "A😀B".count == "A😀B".length;
+`)
+	truth, err := got.Truth()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truth {
+		t.Fatalf("String.count in source returned %v", got)
+	}
+}
+
+func TestDispatchStringCountMatchesLength(t *testing.T) {
+	d := NewDispatcher(NewObjectTable())
+	for _, test := range []struct {
+		text string
+		want int64
+	}{
+		{text: "abc", want: 3},
+		{text: "", want: 0},
+		{text: "😀", want: 2},
+		{text: "A😀B", want: 4},
+	} {
+		length, err := d.Get(StringValue(test.text), "length")
+		if err != nil {
+			t.Fatal(err)
+		}
+		count, err := d.Get(StringValue(test.text), "count")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if length.IntegerValue() != test.want {
+			t.Errorf("%q length = %v, want %d", test.text, length, test.want)
+		}
+		if count.IntegerValue() != test.want {
+			t.Errorf("%q count = %v, want %d", test.text, count, test.want)
+		}
+		if test.want > 0 {
+			indexed, indexErr := d.Get(StringValue(test.text), "0")
+			if indexErr != nil || indexed.Kind() != KindString {
+				t.Fatalf("%q index = %v, %v", test.text, indexed, indexErr)
+			}
+		}
+	}
+}
+
 func TestDispatchStringSearchUsesUTF16Indices(t *testing.T) {
 	d := NewDispatcher(NewObjectTable())
 	for _, test := range []struct {
