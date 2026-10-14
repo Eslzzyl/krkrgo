@@ -174,6 +174,12 @@ func (v *VM) collectGarbage(host Host) (int, error) {
 			markValue(frame.pending.value, seen, &pending)
 		}
 	}
+	for _, frameRoots := range v.legacyRoots {
+		for _, value := range frameRoots.registers {
+			markValue(value, seen, &pending)
+		}
+		markValue(frameRoots.context, seen, &pending)
+	}
 	hosts := make([]Host, 0, len(v.frameRoots)+1)
 	hosts = appendGCTraceHost(hosts, host)
 	for _, frameRoots := range v.frameRoots {

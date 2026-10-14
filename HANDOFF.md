@@ -1,6 +1,6 @@
 # krkrgo Handoff
 
-Status: 2026-10-12
+Status: 2026-10-14
 Repository: `/Users/eslzzyl/WorkSpace/Go/krkrgo` (macOS) and `D:/WorkSpace/Go/krkrgo` (Windows)
 
 ## Current objectives
@@ -9,6 +9,42 @@ Repository: `/Users/eslzzyl/WorkSpace/Go/krkrgo` (macOS) and `D:/WorkSpace/Go/kr
 2. Complete instruction coverage, run focused tests and full build checks, then re-run the IslandDiary startup command.
 3. Deferred follow-up: after the TJS2100 migration and startup verification are complete, rename krkrgo's internal `legacy` files, symbols, comments, tests, and documentation to the official `InterCode`/`TJS2100` terminology. Preserve behavior during the rename.
 4. Continue the Amairo startup black-screen investigation.
+## IslandDiary startup status
+
+The launcher was left unchanged. The latest targeted startup command was:
+
+```text
+go run ./cmd/krkrgo/main.go run -project ./testdata/islanddiary/
+```
+
+Startup now reaches `custom.tjs:56` after loading `system/Initialize.tjs`, `Override.tjs`, and `system.tjs`. The current blocker is:
+
+```text
+legacy intercode object 177 code offset 124: get property "count"
+TJS member not found
+```
+
+Static tracing identified the receiver as the string `simpleanim.tjs`. The remaining compatibility gap is the TJS string `count` property, which should expose the UTF-16 string length. The next implementation target is the string-property path in `internal/tjs/vm.go` and `internal/tjs/dispatch.go`.
+
+Completed during this session:
+
+- GPDS/GPIS now preserve `IgnoreProperty` and can read raw property descriptors.
+- Nested legacy function/class properties replay onto their loader parent.
+- Legacy intercode registers are published to VM GC tracing during nested source execution.
+- Compiled function/class/property objects and valid decoded object constants are rooted for script-block lifetime.
+- `Scripts.setCallMissing` registers the missing-member protocol flag.
+- TJS eval callbacks use `CompileEval`, allowing statement scripts such as generated property declarations.
+- ADDCI/REGMEMBER accepts any valid dispatch object, matching the official `ClassInstanceInfo` dispatch entry.
+- Dispatcher-created string-split arrays are registered in the active object table.
+- Legacy member resolution falls back to the dispatcher for dynamic members and primitive receivers.
+
+Focused verification passed after the latest implementation steps:
+
+```text
+go test ./internal/tjs ./internal/runtime -count=1
+```
+
+The worktree contains uncommitted changes for this startup line. Commit them before the next implementation phase, then add the string `count` behavior and rerun the focused tests plus the startup command.
 
 ## GPU composition status
 

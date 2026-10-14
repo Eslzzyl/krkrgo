@@ -22,7 +22,7 @@ func (d *DecodedBytecode) ExecuteLegacyWithEval(object int, global Value, evalua
 // ExecuteLegacyWithRuntime also routes callable values through the owning VM,
 // which is required for native and script callables held in VM metadata.
 func (d *DecodedBytecode) ExecuteLegacyWithRuntime(object int, global Value, evaluate func(string, Value, bool) (Value, error), invoke func(Value, Value, []Value, bool) (Value, error), tables ...*ObjectTable) (Value, error) {
-	return d.executeLegacyWithRuntime(object, -1, global, global, nil, evaluate, invoke, nil, nil, nil, nil, nil, nil, tables...)
+	return d.executeLegacyWithRuntime(object, -1, global, global, nil, evaluate, invoke, nil, nil, nil, nil, nil, nil, nil, tables...)
 }
 
 // ExecuteLegacyWithConstruction routes NEW through the VM's class-construction lifecycle.
@@ -39,7 +39,7 @@ func (d *DecodedBytecode) ExecuteLegacyWithContextAndConstruction(object int, gl
 // ExecuteLegacyWithContextAndConstructionAndPropertyResolver delegates member
 // reads to the owning VM before using legacy dispatch for non-VM properties.
 func (d *DecodedBytecode) ExecuteLegacyWithContextAndConstructionAndPropertyResolver(object int, global, thisContext Value, evaluate func(string, Value, bool) (Value, error), invoke func(Value, Value, []Value, bool) (Value, error), construct func(Value, []Value) (Value, error), resolve func(Value, string, uint32) (Value, bool, error), tables ...*ObjectTable) (Value, error) {
-	return d.executeLegacyWithRuntime(object, -1, global, thisContext, nil, evaluate, invoke, construct, resolve, nil, nil, nil, nil, tables...)
+	return d.executeLegacyWithRuntime(object, -1, global, thisContext, nil, evaluate, invoke, construct, resolve, nil, nil, nil, nil, nil, tables...)
 }
 
 // ExecuteLegacyWithContextAndConstructionAndArguments executes a script function
@@ -51,39 +51,39 @@ func (d *DecodedBytecode) ExecuteLegacyWithContextAndConstructionAndArguments(ob
 // ExecuteLegacyWithContextAndConstructionAndArgumentsAndPropertyResolver executes
 // a script function with VM-aware property reads.
 func (d *DecodedBytecode) ExecuteLegacyWithContextAndConstructionAndArgumentsAndPropertyResolver(object int, global, thisContext Value, args []Value, evaluate func(string, Value, bool) (Value, error), invoke func(Value, Value, []Value, bool) (Value, error), construct func(Value, []Value) (Value, error), resolve func(Value, string, uint32) (Value, bool, error), tables ...*ObjectTable) (Value, error) {
-	return d.executeLegacyWithRuntime(object, -1, global, thisContext, args, evaluate, invoke, construct, resolve, nil, nil, nil, nil, tables...)
+	return d.executeLegacyWithRuntime(object, -1, global, thisContext, args, evaluate, invoke, construct, resolve, nil, nil, nil, nil, nil, tables...)
 }
 
 // ExecuteLegacyAtOffset executes one deferred expression at a decoded code-unit
 // boundary while preserving its parent object's constants and register layout.
 func (d *DecodedBytecode) ExecuteLegacyAtOffset(object, startOffset int, global, thisContext Value, evaluate func(string, Value, bool) (Value, error), invoke func(Value, Value, []Value, bool) (Value, error), construct func(Value, []Value) (Value, error), resolve func(Value, string, uint32) (Value, bool, error), tables ...*ObjectTable) (Value, error) {
-	return d.executeLegacyWithRuntime(object, startOffset, global, thisContext, nil, evaluate, invoke, construct, resolve, nil, nil, nil, nil, tables...)
+	return d.executeLegacyWithRuntime(object, startOffset, global, thisContext, nil, evaluate, invoke, construct, resolve, nil, nil, nil, nil, nil, tables...)
 }
 
 // ExecuteLegacyWithContextAndConstructionAndMemberResolvers routes member
 // reads and writes through the owning VM while retaining the legacy dispatcher
 // for operations the VM does not implement.
 func (d *DecodedBytecode) ExecuteLegacyWithContextAndConstructionAndMemberResolvers(object int, global, thisContext Value, evaluate func(string, Value, bool) (Value, error), invoke func(Value, Value, []Value, bool) (Value, error), construct func(Value, []Value) (Value, error), resolve func(Value, string, uint32) (Value, bool, error), set func(Value, string, Value, uint32) error, tables ...*ObjectTable) (Value, error) {
-	return d.executeLegacyWithRuntime(object, -1, global, thisContext, nil, evaluate, invoke, construct, resolve, set, nil, nil, nil, tables...)
+	return d.executeLegacyWithRuntime(object, -1, global, thisContext, nil, evaluate, invoke, construct, resolve, set, nil, nil, nil, nil, tables...)
 }
 
 // ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolvers is
 // the argument-preserving counterpart of ExecuteLegacyWithContextAndConstructionAndMemberResolvers.
 func (d *DecodedBytecode) ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolvers(object int, global, thisContext Value, args []Value, evaluate func(string, Value, bool) (Value, error), invoke func(Value, Value, []Value, bool) (Value, error), construct func(Value, []Value) (Value, error), resolve func(Value, string, uint32) (Value, bool, error), set func(Value, string, Value, uint32) error, tables ...*ObjectTable) (Value, error) {
-	return d.executeLegacyWithRuntime(object, -1, global, thisContext, args, evaluate, invoke, construct, resolve, set, nil, nil, nil, tables...)
+	return d.executeLegacyWithRuntime(object, -1, global, thisContext, args, evaluate, invoke, construct, resolve, set, nil, nil, nil, nil, tables...)
 }
 
 // ExecuteLegacyAtOffsetAndMemberResolvers executes a deferred expression at
 // an instruction boundary with VM-aware member reads and writes.
 func (d *DecodedBytecode) ExecuteLegacyAtOffsetAndMemberResolvers(object, startOffset int, global, thisContext Value, evaluate func(string, Value, bool) (Value, error), invoke func(Value, Value, []Value, bool) (Value, error), construct func(Value, []Value) (Value, error), resolve func(Value, string, uint32) (Value, bool, error), set func(Value, string, Value, uint32) error, tables ...*ObjectTable) (Value, error) {
-	return d.executeLegacyWithRuntime(object, startOffset, global, thisContext, nil, evaluate, invoke, construct, resolve, set, nil, nil, nil, tables...)
+	return d.executeLegacyWithRuntime(object, startOffset, global, thisContext, nil, evaluate, invoke, construct, resolve, set, nil, nil, nil, nil, tables...)
 }
 
 // ExecuteLegacyAtOffsetAndVMOps is the VM-hook-aware counterpart of
 // ExecuteLegacyAtOffsetAndMemberResolvers: deferred superclass getter
 // expressions reach CHKINS, INV and CHKINV through the owning VM as well.
 func (d *DecodedBytecode) ExecuteLegacyAtOffsetAndVMOps(object, startOffset int, global, thisContext Value, evaluate func(string, Value, bool) (Value, error), invoke func(Value, Value, []Value, bool) (Value, error), construct func(Value, []Value) (Value, error), resolve func(Value, string, uint32) (Value, bool, error), set func(Value, string, Value, uint32) error, instanceOf func(Value, Value) (Value, error), invalidate func(Value) (Value, error), isValid func(Value) Value, tables ...*ObjectTable) (Value, error) {
-	return d.executeLegacyWithRuntime(object, startOffset, global, thisContext, nil, evaluate, invoke, construct, resolve, set, instanceOf, invalidate, isValid, tables...)
+	return d.executeLegacyWithRuntime(object, startOffset, global, thisContext, nil, evaluate, invoke, construct, resolve, set, instanceOf, invalidate, isValid, nil, tables...)
 }
 
 // ExecuteLegacyWithContextAndConstructionAndMemberResolversAndVMOps is the
@@ -93,16 +93,35 @@ func (d *DecodedBytecode) ExecuteLegacyAtOffsetAndVMOps(object, startOffset int,
 // reach the class-membership and finalization state the shared object table
 // alone cannot express.
 func (d *DecodedBytecode) ExecuteLegacyWithContextAndConstructionAndMemberResolversAndVMOps(object int, global, thisContext Value, evaluate func(string, Value, bool) (Value, error), invoke func(Value, Value, []Value, bool) (Value, error), construct func(Value, []Value) (Value, error), resolve func(Value, string, uint32) (Value, bool, error), set func(Value, string, Value, uint32) error, instanceOf func(Value, Value) (Value, error), invalidate func(Value) (Value, error), isValid func(Value) Value, tables ...*ObjectTable) (Value, error) {
-	return d.executeLegacyWithRuntime(object, -1, global, thisContext, nil, evaluate, invoke, construct, resolve, set, instanceOf, invalidate, isValid, tables...)
+	return d.executeLegacyWithRuntime(object, -1, global, thisContext, nil, evaluate, invoke, construct, resolve, set, instanceOf, invalidate, isValid, nil, tables...)
 }
 
 // ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolversAndVMOps
 // is the argument-preserving counterpart of
 // ExecuteLegacyWithContextAndConstructionAndMemberResolversAndVMOps.
 func (d *DecodedBytecode) ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolversAndVMOps(object int, global, thisContext Value, args []Value, evaluate func(string, Value, bool) (Value, error), invoke func(Value, Value, []Value, bool) (Value, error), construct func(Value, []Value) (Value, error), resolve func(Value, string, uint32) (Value, bool, error), set func(Value, string, Value, uint32) error, instanceOf func(Value, Value) (Value, error), invalidate func(Value) (Value, error), isValid func(Value) Value, tables ...*ObjectTable) (Value, error) {
-	return d.executeLegacyWithRuntime(object, -1, global, thisContext, args, evaluate, invoke, construct, resolve, set, instanceOf, invalidate, isValid, tables...)
+	return d.executeLegacyWithRuntime(object, -1, global, thisContext, args, evaluate, invoke, construct, resolve, set, instanceOf, invalidate, isValid, nil, tables...)
 }
-func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, global, thisContext Value, args []Value, evaluate func(string, Value, bool) (Value, error), invoke func(Value, Value, []Value, bool) (Value, error), construct func(Value, []Value) (Value, error), resolve func(Value, string, uint32) (Value, bool, error), set func(Value, string, Value, uint32) error, instanceOf func(Value, Value) (Value, error), invalidate func(Value) (Value, error), isValid func(Value) Value, tables ...*ObjectTable) (Value, error) {
+
+// ExecuteLegacyAtOffsetAndVMOpsWithRoots is the root-aware deferred-expression
+// entry point used by a VM that owns the legacy frame.
+func (d *DecodedBytecode) ExecuteLegacyAtOffsetAndVMOpsWithRoots(object, startOffset int, global, thisContext Value, evaluate func(string, Value, bool) (Value, error), invoke func(Value, Value, []Value, bool) (Value, error), construct func(Value, []Value) (Value, error), resolve func(Value, string, uint32) (Value, bool, error), set func(Value, string, Value, uint32) error, instanceOf func(Value, Value) (Value, error), invalidate func(Value) (Value, error), isValid func(Value) Value, roots LegacyFrameRoots, tables ...*ObjectTable) (Value, error) {
+	return d.executeLegacyWithRuntime(object, startOffset, global, thisContext, nil, evaluate, invoke, construct, resolve, set, instanceOf, invalidate, isValid, roots, tables...)
+}
+
+// ExecuteLegacyWithContextAndConstructionAndMemberResolversAndVMOpsWithRoots
+// publishes the legacy register file for nested garbage collection.
+func (d *DecodedBytecode) ExecuteLegacyWithContextAndConstructionAndMemberResolversAndVMOpsWithRoots(object int, global, thisContext Value, evaluate func(string, Value, bool) (Value, error), invoke func(Value, Value, []Value, bool) (Value, error), construct func(Value, []Value) (Value, error), resolve func(Value, string, uint32) (Value, bool, error), set func(Value, string, Value, uint32) error, instanceOf func(Value, Value) (Value, error), invalidate func(Value) (Value, error), isValid func(Value) Value, roots LegacyFrameRoots, tables ...*ObjectTable) (Value, error) {
+	return d.executeLegacyWithRuntime(object, -1, global, thisContext, nil, evaluate, invoke, construct, resolve, set, instanceOf, invalidate, isValid, roots, tables...)
+}
+
+// ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolversAndVMOpsWithRoots
+// is the argument-preserving root-aware legacy entry point.
+func (d *DecodedBytecode) ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolversAndVMOpsWithRoots(object int, global, thisContext Value, args []Value, evaluate func(string, Value, bool) (Value, error), invoke func(Value, Value, []Value, bool) (Value, error), construct func(Value, []Value) (Value, error), resolve func(Value, string, uint32) (Value, bool, error), set func(Value, string, Value, uint32) error, instanceOf func(Value, Value) (Value, error), invalidate func(Value) (Value, error), isValid func(Value) Value, roots LegacyFrameRoots, tables ...*ObjectTable) (Value, error) {
+	return d.executeLegacyWithRuntime(object, -1, global, thisContext, args, evaluate, invoke, construct, resolve, set, instanceOf, invalidate, isValid, roots, tables...)
+}
+
+func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, global, thisContext Value, args []Value, evaluate func(string, Value, bool) (Value, error), invoke func(Value, Value, []Value, bool) (Value, error), construct func(Value, []Value) (Value, error), resolve func(Value, string, uint32) (Value, bool, error), set func(Value, string, Value, uint32) error, instanceOf func(Value, Value) (Value, error), invalidate func(Value) (Value, error), isValid func(Value) Value, roots LegacyFrameRoots, tables ...*ObjectTable) (Value, error) {
 	var table *ObjectTable
 	if len(tables) != 0 {
 		table = tables[0]
@@ -160,6 +179,11 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 	}
 	regs[registerBase-1] = thisContext
 	regs[registerBase-2] = global
+	if roots != nil {
+		if pop := roots(regs, thisContext); pop != nil {
+			defer pop()
+		}
+	}
 	flag := false
 	returnValue := VoidValue
 	reg := func(addr int16, pc int) (int, error) {
@@ -201,12 +225,9 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		return o.Constants[ci].Value.Text(), nil
 	}
 	read := func(target Value, name string, flags uint32) (Value, error) {
-		if resolve != nil {
+		if resolve != nil && target.Kind() == KindObject && !target.IsNull() {
 			if value, found, err := resolve(target, name, flags); err != nil || found {
 				return value, err
-			}
-			if flags&MemberMustExist != 0 {
-				return VoidValue, ErrMemberNotFound
 			}
 		}
 		return dispatcher.Get(target, name, flags)
@@ -1318,14 +1339,27 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			if e != nil {
 				return VoidValue, e
 			}
-			if err := table.AddClassInstanceMember(regs[target].ObjectRef().Object, name); err != nil {
+			classID := regs[target].ObjectRef().Object
+			if targetObject, ok := table.Lookup(classID); ok && targetObject.Category == CategoryInstance {
+				if mapped, mappedOK := table.ClassForInstance(classID); mappedOK {
+					classID = mapped
+				}
+			}
+			if err := table.AddClassInstanceMember(classID, name); err != nil {
 				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: ADDCI: %w", object, in.Offset, err)
 			}
 		case 126: // REGMEMBER enables the registered class members for instances.
-			if e := propertyTarget(regs[registerBase-1], in.Offset); e != nil {
+			target := regs[registerBase-1]
+			if e := propertyTarget(target, in.Offset); e != nil {
 				return VoidValue, e
 			}
-			if err := table.RegisterClassInstanceMembers(regs[registerBase-1].ObjectRef().Object); err != nil {
+			classID := target.ObjectRef().Object
+			if targetObject, ok := table.Lookup(classID); ok && targetObject.Category == CategoryInstance {
+				if mapped, mappedOK := table.ClassForInstance(classID); mappedOK {
+					classID = mapped
+				}
+			}
+			if err := table.RegisterClassInstanceMembers(classID); err != nil {
 				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: REGMEMBER: %w", object, in.Offset, err)
 			}
 		case 127: // DEBUGGER -- the reference VM calls TJSNativeDebuggerBreak, which

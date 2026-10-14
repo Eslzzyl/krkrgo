@@ -54,6 +54,7 @@ type vmObject struct {
 	legacyFunction          LegacyFunction
 	legacyClassBody         LegacyFunction
 	legacyClassInitializer  func(Host, *uint64) error
+	callMissing             bool
 	legacyClassInitializing bool
 	legacyClassInitialized  bool
 	legacySuperclassGetter  func(int, Host, *uint64) (Value, error)
@@ -234,14 +235,21 @@ type vmTraceFrame struct {
 	owner        ObjectID
 }
 
-// vmFrameRoots captures references visible at an interpreter safe point, plus
-// allocations still being assembled by the current multi-allocation opcode.
+type vmLegacyFrameRoots struct {
+	registers []Value
+	context   Value
+}
+
+// LegacyFrameRoots publishes the register file of a legacy intercode frame
+// while nested VM execution may trigger garbage collection.
+type LegacyFrameRoots func(registers []Value, context Value) func()
+
 type vmFrameRoots struct {
 	registers        []Value
 	frame            *vmFrame
 	host             Host
-	trackAllocations bool
 	instructionRoots []Value
+	trackAllocations bool
 }
 
 // VM owns the script heap and the global namespace. Objects are retained in an
@@ -258,6 +266,7 @@ type VM struct {
 	depth              int
 	roots              map[ObjectRef]struct{}
 	frameRoots         []vmFrameRoots
+	legacyRoots        []vmLegacyFrameRoots
 	transientRoots     []Value
 	meta               map[ObjectID]*vmObject
 	literals           map[ObjectID]Value
@@ -783,6 +792,7 @@ func (v *VM) GetMemberIfPresent(receiver Value, name string, host Host, budget *
 	value, err := v.getValue(receiver, member, false, host, budget)
 	return value, true, err
 }
+
 // GetMemberRawIfPresent returns a member descriptor without invoking a script
 // property accessor. Legacy GPDS/GPIS use this for address-style access.
 func (v *VM) GetMemberRawIfPresent(receiver Value, name string, host Host, budget *uint64) (Value, bool, error) {
@@ -1073,6 +1083,32 @@ func (v *VM) InitializeLegacyClass(class Value, host Host, budget *uint64) error
 		return err
 	}
 	return v.ensureLegacyClassInitialized(id, host, budget)
+}
+
+// PublishLegacyFrameRoots keeps a legacy intercode register file visible to GC.
+func (v *VM) PublishLegacyFrameRoots(registers []Value, context Value) func() {
+	index := len(v.legacyRoots)
+	v.legacyRoots = append(v.legacyRoots, vmLegacyFrameRoots{registers: registers, context: context})
+	return func() {
+		if index < len(v.legacyRoots) {
+			v.legacyRoots[index] = vmLegacyFrameRoots{}
+			v.legacyRoots = v.legacyRoots[:index]
+		}
+	}
+}
+
+// SetCallMissing enables the TJS missing-member protocol for an object.
+func (v *VM) SetCallMissing(value Value) error {
+	id, err := v.handle(value)
+	if err != nil {
+		return err
+	}
+	meta := v.meta[id]
+	if meta == nil {
+		return errors.New("TJS missing-member target is unavailable")
+	}
+	meta.callMissing = true
+	return nil
 }
 
 // SetLegacyClassSuperclassGetter installs deferred base-expression entry points
@@ -3103,6 +3139,7 @@ func (v *VM) constructWithMemberTarget(callee Value, args []Value, targetObject,
 	defer func() { v.constructing = v.constructing[:constructionDepth] }()
 	v.meta[instanceID].class = meta.class
 	v.meta[instanceID].classObject = id
+	v.Objects.RegisterClassInstance(instanceID, id)
 	if publishTarget {
 		targetID, targetErr := v.handle(targetObject)
 		if targetErr != nil {

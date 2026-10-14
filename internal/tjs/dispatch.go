@@ -563,7 +563,12 @@ func stringMethod(d *Dispatcher, value Value, name string) (Value, error) {
 				}
 			}
 			parts := splitTJSString(v.string, UTF16FromString(separator), purgeEmpty)
-			o := NewObject(CategoryArray)
+			var o *Object
+			if d != nil && d.Table != nil {
+				o = d.Table.New(CategoryArray)
+			} else {
+				o = NewObject(CategoryArray)
+			}
 			for i, part := range parts {
 				_ = o.Set(strconv.Itoa(i), part)
 			}

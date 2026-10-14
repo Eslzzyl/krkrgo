@@ -432,6 +432,7 @@ type ObjectTable struct {
 	objects             map[ObjectID]*Object
 	classInstanceNames  map[ObjectID][]string
 	registeredClassInfo map[ObjectID]bool
+	instanceClasses     map[ObjectID]ObjectID
 }
 
 func NewObjectTable() *ObjectTable {
@@ -439,7 +440,26 @@ func NewObjectTable() *ObjectTable {
 		objects:             make(map[ObjectID]*Object),
 		classInstanceNames:  make(map[ObjectID][]string),
 		registeredClassInfo: make(map[ObjectID]bool),
+		instanceClasses:     make(map[ObjectID]ObjectID),
 	}
+}
+func (t *ObjectTable) RegisterClassInstance(instanceID, classID ObjectID) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.instanceClasses[instanceID] = classID
+	t.mu.Unlock()
+}
+
+func (t *ObjectTable) ClassForInstance(instanceID ObjectID) (ObjectID, bool) {
+	if t == nil {
+		return 0, false
+	}
+	t.mu.RLock()
+	classID, ok := t.instanceClasses[instanceID]
+	t.mu.RUnlock()
+	return classID, ok
 }
 func (t *ObjectTable) New(categories ...ObjectCategory) *Object {
 	o := NewObject(categories...)
@@ -469,31 +489,29 @@ func (t *ObjectTable) Lookup(id ObjectID) (*Object, bool) {
 	o, ok := t.objects[id]
 	return o, ok
 }
-func (t *ObjectTable) AddClassInstanceMember(classID ObjectID, name string) error {
+func (t *ObjectTable) AddClassInstanceMember(objectID ObjectID, name string) error {
 	if t == nil {
 		return errInvalidObject
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	classObject, ok := t.objects[classID]
-	if !ok || classObject.Category != CategoryClass {
-		return errors.New("TJS class instance metadata target is not a class")
+	if _, ok := t.objects[objectID]; !ok {
+		return errors.New("TJS class instance metadata target is unavailable")
 	}
-	t.classInstanceNames[classID] = append(t.classInstanceNames[classID], name)
+	t.classInstanceNames[objectID] = append(t.classInstanceNames[objectID], name)
 	return nil
 }
 
-func (t *ObjectTable) RegisterClassInstanceMembers(classID ObjectID) error {
+func (t *ObjectTable) RegisterClassInstanceMembers(objectID ObjectID) error {
 	if t == nil {
 		return errInvalidObject
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	classObject, ok := t.objects[classID]
-	if !ok || classObject.Category != CategoryClass {
-		return errors.New("TJS class instance metadata target is not a class")
+	if _, ok := t.objects[objectID]; !ok {
+		return errors.New("TJS class instance metadata target is unavailable")
 	}
-	t.registeredClassInfo[classID] = true
+	t.registeredClassInfo[objectID] = true
 	return nil
 }
 

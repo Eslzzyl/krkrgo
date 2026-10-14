@@ -83,7 +83,7 @@ func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Ho
 		return vm.SetMemberWithRuntime(receiver, name, value, flags, host, budget)
 	}
 	instanceOf, invalidate, isValid := legacyVMOps(vm, host, budget)
-	value, err := decoded.ExecuteLegacyWithContextAndConstructionAndMemberResolversAndVMOps(top, legacyGlobal, context, evaluate, invoke, construct, resolve, set, instanceOf, invalidate, isValid, vm.Objects)
+	value, err := decoded.ExecuteLegacyWithContextAndConstructionAndMemberResolversAndVMOpsWithRoots(top, legacyGlobal, context, evaluate, invoke, construct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects)
 	if err != nil {
 		if strings.Contains(err.Error(), "unsupported ") {
 			return tjs.VoidValue, fmt.Errorf("%w: compiled TJS2100 %v", ErrUnsupportedNative, err)
@@ -92,7 +92,6 @@ func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Ho
 	}
 	return value, nil
 }
-
 
 // legacyVMOps adapts the owning VM's class-membership and lifetime hooks to
 // the legacy intercode executor. CHKINS delegates to the VM's instanceof
@@ -135,7 +134,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				if source == "" {
 					return tjs.VoidValue, nil
 				}
-				program, compileErr := tjs.CompileExpression("<eval>", source)
+				program, compileErr := tjs.CompileEval("<eval>", source)
 				if compileErr != nil {
 					return tjs.VoidValue, compileErr
 				}
@@ -161,7 +160,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				return vm.SetMemberWithRuntime(value, member, assigned, flags, callHost, callBudget)
 			}
 			instanceOf, invalidate, isValid := legacyVMOps(vm, callHost, callBudget)
-			return decoded.ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolversAndVMOps(classIndex, global, receiver, args, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.Objects)
+			return decoded.ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolversAndVMOpsWithRoots(classIndex, global, receiver, args, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects)
 		})
 	}
 	bindSuperclassGetter := func(classIndex int, class tjs.Value) error {
@@ -195,7 +194,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				if source == "" {
 					return tjs.VoidValue, nil
 				}
-				program, compileErr := tjs.CompileExpression("<eval>", source)
+				program, compileErr := tjs.CompileEval("<eval>", source)
 				if compileErr != nil {
 					return tjs.VoidValue, compileErr
 				}
@@ -221,7 +220,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				return vm.SetMemberWithRuntime(value, member, assigned, flags, callHost, callBudget)
 			}
 			instanceOf, invalidate, isValid := legacyVMOps(vm, callHost, callBudget)
-			return decoded.ExecuteLegacyAtOffsetAndVMOps(int(getterIndex), offset, global, global, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.Objects)
+			return decoded.ExecuteLegacyAtOffsetAndVMOpsWithRoots(int(getterIndex), offset, global, global, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects)
 		})
 	}
 	objectName := func(index int) string {
@@ -246,7 +245,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				if source == "" {
 					return tjs.VoidValue, nil
 				}
-				program, compileErr := tjs.CompileExpression("<eval>", source)
+				program, compileErr := tjs.CompileEval("<eval>", source)
 				if compileErr != nil {
 					return tjs.VoidValue, compileErr
 				}
@@ -272,9 +271,12 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				return vm.SetMemberWithRuntime(value, member, assigned, flags, callHost, callBudget)
 			}
 			instanceOf, invalidate, isValid := legacyVMOps(vm, callHost, callBudget)
-			return decoded.ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolversAndVMOps(index, global, receiver, args, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.Objects)
+			return decoded.ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolversAndVMOpsWithRoots(index, global, receiver, args, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects)
 		})
 		if err != nil {
+			return tjs.VoidValue, false, err
+		}
+		if err := vm.Root(function); err != nil {
 			return tjs.VoidValue, false, err
 		}
 		functions[index] = function
@@ -311,6 +313,9 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 		}
 		property, err := vm.RegisterLegacyProperty(objectName(index), getter, setter)
 		if err != nil {
+			return tjs.VoidValue, err
+		}
+		if err := vm.Root(property); err != nil {
 			return tjs.VoidValue, err
 		}
 		functions[index] = property
@@ -356,6 +361,9 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 		if err != nil {
 			return fmt.Errorf("register compiled TJS class %q: %w", name, err)
 		}
+		if err := vm.Root(class); err != nil {
+			return fmt.Errorf("root compiled TJS class %q: %w", name, err)
+		}
 		if err := bindClassBody(objectIndex, class); err != nil {
 			return fmt.Errorf("bind compiled TJS class body %d: %w", objectIndex, err)
 		}
@@ -387,6 +395,9 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 					class, err = vm.RegisterLegacyClass(name)
 					if err != nil {
 						return fmt.Errorf("register compiled TJS class %q: %w", name, err)
+					}
+					if err := vm.Root(class); err != nil {
+						return err
 					}
 					functions[index] = class
 				}
@@ -428,25 +439,75 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 			constant.Value = function
 		}
 	}
-	// Function contexts carry their class-member names on their own property
-	// entries. Replay those entries onto the class object so instance lookups
-	// can resolve compiled methods before the class body runs.
+	// Decoded script blocks retain their DATA constants for the lifetime of
+	// the loaded storage, so mirror that ownership in the VM GC roots.
+	for _, object := range decoded.Objects {
+		for _, constant := range object.Constants {
+			if constant.Value.Kind() == tjs.KindObject && !constant.Value.IsNull() {
+				if _, ok := vm.Objects.Lookup(constant.Value.ObjectRef().Object); !ok {
+					continue
+				}
+				if err := vm.Root(constant.Value); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	// Function contexts carry their named members on their own property
+	// objects. Replay them onto the owning class or function, matching the
+	// loader's context tree for nested helper functions as well.
 	for objectIndex := range decoded.Objects {
 		object := &decoded.Objects[objectIndex]
-		if object.ContextType != 1 && object.ContextType != 2 {
+		if object.ContextType != 1 && object.ContextType != 2 && object.ContextType != 6 {
 			continue
 		}
 		parent := int(object.Parent)
-		if parent < 0 || parent >= len(decoded.Objects) || decoded.Objects[parent].ContextType != 6 {
+		if parent < 0 || parent >= len(decoded.Objects) {
 			continue
 		}
-		class, exists := functions[parent]
+		parentType := decoded.Objects[parent].ContextType
+		if parentType != 6 && parentType != 1 && parentType != 2 {
+			continue
+		}
+		owner, exists := functions[parent]
 		if !exists {
-			continue
+			if parentType == 6 {
+				continue
+			}
+			var err error
+			owner, _, err = callable(parent)
+			if err != nil {
+				return fmt.Errorf("bind compiled function owner %d: %w", parent, err)
+			}
 		}
-		function, _, err := callable(objectIndex)
-		if err != nil {
-			return fmt.Errorf("bind compiled TJS class method %d: %w", objectIndex, err)
+		var member tjs.Value
+		if object.ContextType == 6 {
+			class, exists := functions[objectIndex]
+			if !exists {
+				name := ""
+				if object.Name >= 0 && int(object.Name) < len(decoded.Strings) {
+					name = decoded.Strings[object.Name]
+				}
+				var classErr error
+				class, classErr = vm.RegisterLegacyClass(name)
+				if classErr != nil {
+					return fmt.Errorf("bind compiled nested class %d: %w", objectIndex, classErr)
+				}
+				if classErr = bindClassBody(objectIndex, class); classErr != nil {
+					return fmt.Errorf("bind compiled nested class body %d: %w", objectIndex, classErr)
+				}
+				if classErr = bindSuperclassGetter(objectIndex, class); classErr != nil {
+					return fmt.Errorf("bind compiled nested class superclass %d: %w", objectIndex, classErr)
+				}
+				functions[objectIndex] = class
+			}
+			member = class
+		} else {
+			var memberErr error
+			member, _, memberErr = callable(objectIndex)
+			if memberErr != nil {
+				return fmt.Errorf("bind compiled function member %d: %w", objectIndex, memberErr)
+			}
 		}
 		for _, property := range object.Properties {
 			if property.Name < 0 || int(property.Name) >= len(decoded.Strings) {
@@ -456,8 +517,8 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 			if memberName == "" {
 				continue
 			}
-			if err := vm.RegisterNativeStaticValue(class, memberName, function); err != nil {
-				return fmt.Errorf("bind compiled TJS class method %q: %w", memberName, err)
+			if err := vm.RegisterNativeStaticValue(owner, memberName, member); err != nil {
+				return fmt.Errorf("bind compiled function member %q: %w", memberName, err)
 			}
 		}
 	}
@@ -529,7 +590,6 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 	// VM's in-progress guard for lazily triggered initialization.
 	initializedClasses := make(map[int]bool)
 	initializeClass := func(objectIndex int, callHost tjs.Host, callBudget *uint64) error {
-		classObject := &decoded.Objects[objectIndex]
 		class, ok := functions[objectIndex]
 		if !ok {
 			return nil
@@ -538,30 +598,11 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 			return nil
 		}
 		initializedClasses[objectIndex] = true
-		for _, property := range classObject.Properties {
-			if property.Object < 0 || int(property.Object) >= len(decoded.Objects) {
-				return fmt.Errorf("compiled TJS2100 class property object index %d is out of range", property.Object)
-			}
-			memberName := ""
-			if property.Name >= 0 && int(property.Name) < len(decoded.Strings) {
-				memberName = decoded.Strings[property.Name]
-			}
-			if memberName == "" {
-				continue
-			}
-			member, exists := functions[int(property.Object)]
-			if !exists {
-				continue
-			}
-			if err := vm.RegisterNativeStaticValue(class, memberName, member); err != nil {
-				return fmt.Errorf("bind compiled TJS class member %q: %w", memberName, err)
-			}
-		}
 		callEvaluate := func(source string, evalContext tjs.Value, needed bool) (tjs.Value, error) {
 			if source == "" {
 				return tjs.VoidValue, nil
 			}
-			program, err := tjs.CompileExpression("<eval>", source)
+			program, err := tjs.CompileEval("<eval>", source)
 			if err != nil {
 				return tjs.VoidValue, err
 			}
@@ -587,8 +628,8 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 			return vm.SetMemberWithRuntime(receiver, name, value, flags, callHost, callBudget)
 		}
 		instanceOf, invalidate, isValid := legacyVMOps(vm, callHost, callBudget)
-		if _, err := decoded.ExecuteLegacyWithContextAndConstructionAndMemberResolversAndVMOps(
-			objectIndex, global, class, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.Objects,
+		if _, err := decoded.ExecuteLegacyWithContextAndConstructionAndMemberResolversAndVMOpsWithRoots(
+			objectIndex, global, class, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects,
 		); err != nil {
 			return fmt.Errorf("initialize compiled TJS2100 class %d: %w", objectIndex, err)
 		}
@@ -920,10 +961,10 @@ func (s *Services) scriptsNative(vm *tjs.VM, operation string, args []tjs.Value,
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		if value.Kind() != tjs.KindObject || value.IsNull() {
-			return tjs.VoidValue, nil
+		if err := vm.SetCallMissing(value); err != nil {
+			return tjs.VoidValue, err
 		}
-		return unsupported("TJS missing-member dispatch is unavailable")
+		return tjs.VoidValue, nil
 	default:
 		return tjs.VoidValue, fmt.Errorf("%w: Scripts.%s", ErrUnsupportedNative, operation)
 	}

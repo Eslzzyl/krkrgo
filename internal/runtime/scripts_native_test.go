@@ -371,10 +371,12 @@ func TestScriptsClassNamesAndUnsupportedOperations(t *testing.T) {
 			t.Errorf("Scripts.getClassNames %s = %q, err=%v, want %q", name, value.Text(), err, want)
 		}
 	}
+	if _, err := session.Evaluate(`Scripts.setCallMissing(%[x:1])`); err != nil {
+		t.Fatalf("Scripts.setCallMissing = %v", err)
+	}
 	for _, source := range []string{
 		`Scripts.compileStorage("source.tjs", "out.tjs")`,
 		`Scripts.dump()`,
-		`Scripts.setCallMissing(%[x:1])`,
 	} {
 		if _, err := session.Evaluate(source); !errors.Is(err, ErrUnsupportedNative) {
 			t.Errorf("%s error = %v, want ErrUnsupportedNative", source, err)
@@ -564,7 +566,6 @@ func TestLegacyClassConstantBindsClassAndMemberMethod(t *testing.T) {
 				},
 				Code:         []int16{1, 0, 1, 104, -1, 0, 0, 119},
 				MaxVariables: 1,
-				Properties:   []tjs.BytecodeProperty{{Name: 2, Object: 2}},
 			},
 			{
 				Name:          2,
@@ -572,6 +573,7 @@ func TestLegacyClassConstantBindsClassAndMemberMethod(t *testing.T) {
 				ContextType:   1,
 				ArgumentCount: 1,
 				Code:          []int16{118, -3, 119},
+				Properties:   []tjs.BytecodeProperty{{Name: 2, Object: 2}},
 			},
 		},
 	}
