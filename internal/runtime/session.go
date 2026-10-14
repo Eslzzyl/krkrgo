@@ -673,7 +673,12 @@ func (s *Session) executeStorage(name string, useConfiguredEncoding bool) (tjs.V
 	}
 	return s.executeSource(name, src, false)
 }
-func (s *Session) Startup() (tjs.Value, error) { return s.executeStorage("startup.tjs", true) }
+func (s *Session) Startup() (tjs.Value, error) {
+	if err := s.Services.preloadWin32Dialog(s.VM, &s.Budget); err != nil {
+		return tjs.VoidValue, err
+	}
+	return s.executeStorage("startup.tjs", true)
+}
 func (s *Session) Evaluate(source string) (tjs.Value, error) {
 	if err := s.checkOpen(); err != nil {
 		return tjs.VoidValue, err

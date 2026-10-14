@@ -17,29 +17,31 @@ The launcher was left unchanged. The latest targeted startup command was:
 go run ./cmd/krkrgo/main.go run -project ./testdata/islanddiary/
 ```
 
-Startup now reaches `custom.tjs:56` after loading `system/Initialize.tjs`, `Override.tjs`, and `system.tjs`. The current blocker is:
+Startup now preloads the project `system/win32dialog.tjs` script and installs a portable `WIN32Dialog` native registry before loading `startup.tjs`. The current blocker is:
 
 ```text
-legacy intercode object 22 code offset 8: get property "WIN32GenericDialogEX"
+Scripts.execStorage storage "uimain.tjs"
+legacy intercode object 0 code offset 281: CALLD "add" lookup
 TJS member not found
 ```
 
-The startup line exposed three compatibility gaps and they are implemented in commits `747dc38`, `b22bec7`, and `3cdcb5a`:
+The preload path proves that `WIN32GenericDialogEX` is now defined. The remaining missing surface is the `add` operation used during `uimain.tjs` class initialization.
 
-- TJS string `count` exposes UTF-16 code-unit length in VM and Dispatcher primitive paths.
-- TJS string numeric properties expose UTF-16 code units in the Dispatcher primitive path.
-- TJS2100 `CollapseBase` materializes trailing function arguments into a GC-visible array.
-- Legacy this-proxy global fallback preserves `MemberMustExist`, exposing the missing compiled base name.
+The startup path now includes:
 
-The remaining blocker is the missing `WIN32GenericDialogEX` base class during `uimain.tjs` class initialization. The launcher remains unchanged.
+- project `system/win32dialog.tjs` loading through the existing storage decoder;
+- portable `WIN32Dialog` constants for the initial dialog/control styles;
+- nested `Header`, `Items`, `Bitmap`, `SolidBrush`, `DrawItem`, `Notify`, and `Blob` native class values.
 
-Latest targeted startup command remains:
+The Rust reference for this surface is `reference/krkrz_rs/crates/krkrz_runtime/src/dialog.rs` with data in `reference/krkrz_rs/crates/krkrz_runtime/data/win32dialog.json`. The current registry migration is partial; `add` remains unresolved during `uimain.tjs` initialization.
+
+Latest targeted startup command:
 
 ```text
 go run ./cmd/krkrgo/main.go run -project ./testdata/islanddiary/
 ```
 
-The command reaches the missing `WIN32GenericDialogEX` base-class lookup above and exits with status 1.
+The command loads `Initialize.tjs`, `Override.tjs`, `system/win32dialog.tjs`, and `uimain.tjs`, then exits with the missing `add` member above.
 
 
 Completed during this session:
@@ -144,10 +146,14 @@ Known unfinished Amairo work:
 
 ## Pending worktree files
 
-The current worktree has only this handoff update:
+The current worktree contains the startup/plugin migration changes plus this handoff update:
 
 ```text
 HANDOFF.md
+internal/runtime/lightweight_plugins_native.go
+internal/runtime/scripts_native.go
+internal/runtime/services.go
+internal/runtime/session.go
 ```
 
 ## Recommended next order

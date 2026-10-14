@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -92,6 +93,29 @@ func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Ho
 	}
 	return value, nil
 }
+func (s *Services) executePluginScript(vm *tjs.VM, name string, budget *uint64) error {
+	if s == nil || s.Storage == nil {
+		return nil
+	}
+	data, err := s.readStorage(name)
+	if err != nil {
+		if errors.Is(err, assets.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if len(data) >= 4 && string(data[:4]) == "TJS2" {
+		_, err = executeTJS2Bytecode(vm, data, tjs.ObjectValue(tjs.NewObjectRef(0, 1)), s, budget)
+		return err
+	}
+	source, err := s.decodeScriptStorage(data)
+	if err != nil {
+		return err
+	}
+	_, err = executeScriptSource(vm, s, budget, s.preprocessorFor(vm), name, source, false, 0, tjs.VoidValue)
+	return err
+}
+
 
 // legacyVMOps adapts the owning VM's class-membership and lifetime hooks to
 // the legacy intercode executor. CHKINS delegates to the VM's instanceof

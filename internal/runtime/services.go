@@ -1775,6 +1775,25 @@ func (s *Services) Call(vm *tjs.VM, name string, args []tjs.Value, budget *uint6
 func (s *Services) CallWithContext(vm *tjs.VM, name string, context tjs.Value, args []tjs.Value, budget *uint64) (tjs.Value, error) {
 	return s.call(vm, name, context, args, budget, true)
 }
+func (s *Services) preloadWin32Dialog(vm *tjs.VM, budget *uint64) error {
+	if s == nil || s.Storage == nil {
+		return nil
+	}
+	if _, err := s.readStorage("system/win32dialog.tjs"); err != nil {
+		if errors.Is(err, assets.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if err := installWin32DialogNative(vm); err != nil {
+		return err
+	}
+	if _, ok := vm.Globals["WIN32GenericDialogEX"]; ok {
+		return nil
+	}
+	return s.executePluginScript(vm, "system/win32dialog.tjs", budget)
+}
+
 func (s *Services) CallWithResult(vm *tjs.VM, name string, context tjs.Value, args []tjs.Value, budget *uint64, resultNeeded bool) (tjs.Value, error) {
 	return s.call(vm, name, context, args, budget, resultNeeded)
 }
@@ -2040,6 +2059,11 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		if strings.HasSuffix(key, "win32dialog.dll") {
 			if e := installWin32DialogNative(vm); e != nil {
 				return tjs.VoidValue, e
+			}
+			if _, ok := vm.Globals["WIN32GenericDialogEX"]; !ok {
+				if e := s.executePluginScript(vm, "system/win32dialog.tjs", budget); e != nil {
+					return tjs.VoidValue, fmt.Errorf("win32dialog.tjs: %w", e)
+				}
 			}
 		}
 		if strings.HasSuffix(key, "fftgraph.dll") {
