@@ -45,7 +45,11 @@ func TestInputStateResetClearsEveryDeviceState(t *testing.T) {
 	p := &InputPoller{x: 4, y: 5, havePointer: true, focused: true, haveFocus: true}
 	p.keys[3], p.buttons[1] = true, true
 	p.Reset()
-	if *p != (InputPoller{}) {
+	zero := InputPoller{}
+	if p.keys != zero.keys || p.x != zero.x || p.y != zero.y ||
+		p.buttons != zero.buttons || p.havePointer != zero.havePointer ||
+		p.focused != zero.focused || p.haveFocus != zero.haveFocus ||
+		p.touchIDs != nil || p.touchPoints != nil || p.touch != zero.touch {
 		t.Fatalf("Reset left state behind: %#v", p)
 	}
 }
@@ -64,5 +68,60 @@ func TestInputEventSequenceUsesRuntimeKinds(t *testing.T) {
 	}
 	if ebiten.KeyShift == ebiten.KeyControl {
 		t.Fatal("Ebitengine modifier keys must remain distinct")
+	}
+}
+
+func TestTouchMapsPrimaryContactToMouseEvents(t *testing.T) {
+	const firstID, secondID = ebiten.TouchID(1), ebiten.TouchID(2)
+	p := &InputPoller{}
+	events := p.appendTouchEvents(nil, []touchPoint{{id: firstID, x: 20, y: 30}})
+	events = p.appendTouchEvents(events, []touchPoint{
+		{id: secondID, x: 90, y: 90},
+		{id: firstID, x: 24, y: 30},
+	})
+	events = p.appendTouchEvents(events, []touchPoint{{id: secondID, x: 90, y: 90}})
+	events = p.appendTouchEvents(events, []touchPoint{{id: secondID, x: 90, y: 90}})
+
+	wantKinds := []runtime.InputKind{
+		runtime.InputPointerDown,
+		runtime.InputPointerMove,
+		runtime.InputPointerUp,
+		runtime.InputClick,
+		runtime.InputPointerDown,
+	}
+	if len(events) != len(wantKinds) {
+		t.Fatalf("got %d events, want %d: %#v", len(events), len(wantKinds), events)
+	}
+	for i, want := range wantKinds {
+		if events[i].Kind != want {
+			t.Errorf("event %d kind = %v, want %v", i, events[i].Kind, want)
+		}
+	}
+	if events[0].X != 20 || events[0].Y != 30 || events[0].Button != 0 || events[0].Shift&ShiftStateLeft == 0 {
+		t.Fatalf("touch start did not become left-button down: %#v", events[0])
+	}
+	if events[1].X != 24 || events[1].Y != 30 || events[1].Shift&ShiftStateLeft == 0 {
+		t.Fatalf("primary contact movement was not preserved: %#v", events[1])
+	}
+	if events[3].X != 24 || events[3].Y != 30 {
+		t.Fatalf("tap click position = (%d,%d), want (24,30)", events[3].X, events[3].Y)
+	}
+}
+
+func TestTouchDragThresholdControlsTapClick(t *testing.T) {
+	for _, test := range []struct {
+		delta     int
+		wantClick bool
+	}{{10, true}, {11, false}} {
+		p := &InputPoller{}
+		point := touchPoint{id: ebiten.TouchID(1), x: 10, y: 20}
+		p.appendTouchEvents(nil, []touchPoint{point})
+		point.x += test.delta
+		p.appendTouchEvents(nil, []touchPoint{point})
+		events := p.appendTouchEvents(nil, nil)
+		gotClick := len(events) == 2 && events[1].Kind == runtime.InputClick
+		if gotClick != test.wantClick {
+			t.Errorf("delta %d click = %v, want %v; events %#v", test.delta, gotClick, test.wantClick, events)
+		}
 	}
 }

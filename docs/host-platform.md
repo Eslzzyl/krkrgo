@@ -23,7 +23,7 @@ The runtime `Window.mainWindow` object is registered before `startup.tjs` execut
 
 The Ebitengine host resizes its presentation window to each newly observed runtime frame size. Keeping the window and logical canvas dimensions equal avoids resampling game pixels (including antialiased text) through a non-integer fit scale.
 
-[`internal/host/input.go`](../internal/host/input.go) converts Ebitengine device state into portable key, pointer, wheel, text, and focus events. Audio output is separate and opt-in; see [Audio and video](audio-video.md). Dialogs, file dialogs, and shell execution are host-injected services, not automatic OS integrations.
+[`internal/host/input.go`](../internal/host/input.go) converts Ebitengine keyboard, pointer, touch, wheel, text, and focus state into portable events. On backends that expose touch IDs, the primary contact maps to left-button down/move/up; release within a 10-logical-pixel slop also emits a click. Ebitengine's `AppendTouchIDs` returns no contacts on desktop, so direct touch polling is available only on backends that expose touch IDs. Audio output is separate and opt-in; see [Audio and video](audio-video.md). Dialogs, file dialogs, and shell execution are host-injected services, not automatic OS integrations.
 
 ## Dependencies
 

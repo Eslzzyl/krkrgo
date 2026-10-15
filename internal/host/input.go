@@ -9,6 +9,9 @@ import (
 	runtime "github.com/eslzzyl/krkrgo/internal/runtime"
 )
 
+// A 10-pixel slop approximates krkr2's DPI/10 touch-move threshold at 96 DPI.
+const touchMouseMoveThresholdSq = 10 * 10
+
 // Kirikiri's shift-state bits are part of the script-visible input contract.
 const (
 	ShiftStateShift  int32 = 0x01
@@ -29,6 +32,23 @@ type InputPoller struct {
 	havePointer bool
 	focused     bool
 	haveFocus   bool
+
+	touchIDs    []ebiten.TouchID
+	touchPoints []touchPoint
+	touch       touchMouseState
+}
+
+type touchPoint struct {
+	id ebiten.TouchID
+	x  int
+	y  int
+}
+
+type touchMouseState struct {
+	id             ebiten.TouchID
+	x, y           int
+	startX, startY int
+	active, moved  bool
 }
 
 // trackedKeys is a fixed physical-key set. Ebitengine intentionally exposes
@@ -138,8 +158,8 @@ func (p *InputPoller) Poll(dst []core.InputEvent, timeMS uint64) []core.InputEve
 
 // PollRuntime returns the complete portable event set consumed by Session.Input.
 // Ordering is fixed: focus transition, key edges, pointer motion, button edges,
-// wheel, then text. Losing focus emits releases for sampled state before the
-// poller's state is cleared, preventing a stuck key or mouse button.
+// touch contacts, wheel, then text. Losing focus emits releases for sampled
+// state before the poller's state is cleared, preventing stuck input.
 func (p *InputPoller) PollRuntime(dst []runtime.InputEvent) []runtime.InputEvent {
 	if p == nil {
 		return dst
@@ -161,6 +181,15 @@ func (p *InputPoller) PollRuntime(dst []runtime.InputEvent) []runtime.InputEvent
 					dst = append(dst, runtime.InputEvent{Kind: runtime.InputPointerUp, X: int32(x), Y: int32(y), Button: int32(i), Shift: shift | buttonShift(i)})
 				}
 			}
+			if p.touch.active {
+				dst = append(dst, runtime.InputEvent{
+					Kind: runtime.InputPointerUp, X: int32(p.touch.x), Y: int32(p.touch.y),
+					Button: 0, Shift: shift | buttonShift(0),
+				})
+			}
+			p.touch = touchMouseState{}
+			p.touchIDs = p.touchIDs[:0]
+			p.touchPoints = p.touchPoints[:0]
 			p.keys = [len(trackedKeys)]bool{}
 			p.buttons = [3]bool{}
 			p.havePointer = false
@@ -198,6 +227,10 @@ func (p *InputPoller) PollRuntime(dst []runtime.InputEvent) []runtime.InputEvent
 		p.buttons[i] = pressed
 	}
 	p.x, p.y, p.havePointer = x, y, true
+	if focused {
+		dst = p.pollTouch(dst)
+	}
+
 	// Runtime.InputEvent carries one scalar delta. Preserve vertical wheel
 	// motion when both axes are present; use horizontal motion as a fallback.
 	xoff, yoff := ebiten.Wheel()
@@ -210,6 +243,63 @@ func (p *InputPoller) PollRuntime(dst []runtime.InputEvent) []runtime.InputEvent
 	if len(chars) != 0 {
 		dst = append(dst, runtime.InputEvent{Kind: runtime.InputText, Text: string(chars)})
 	}
+	return dst
+}
+
+func (p *InputPoller) pollTouch(dst []runtime.InputEvent) []runtime.InputEvent {
+	p.touchIDs = ebiten.AppendTouchIDs(p.touchIDs[:0])
+	p.touchPoints = p.touchPoints[:0]
+	for _, id := range p.touchIDs {
+		x, y := ebiten.TouchPosition(id)
+		p.touchPoints = append(p.touchPoints, touchPoint{id: id, x: x, y: y})
+	}
+	return p.appendTouchEvents(dst, p.touchPoints)
+}
+
+func (p *InputPoller) appendTouchEvents(dst []runtime.InputEvent, points []touchPoint) []runtime.InputEvent {
+	if !p.touch.active {
+		if len(points) == 0 {
+			return dst
+		}
+		point := points[0]
+		p.touch = touchMouseState{
+			id: point.id, x: point.x, y: point.y,
+			startX: point.x, startY: point.y, active: true,
+		}
+		return append(dst, runtime.InputEvent{
+			Kind: runtime.InputPointerDown, X: int32(point.x), Y: int32(point.y),
+			Button: 0, Shift: p.shiftState() | p.mouseState() | ShiftStateLeft,
+		})
+	}
+
+	for _, point := range points {
+		if point.id != p.touch.id {
+			continue
+		}
+		if point.x != p.touch.x || point.y != p.touch.y {
+			dx, dy := point.x-p.touch.startX, point.y-p.touch.startY
+			if dx*dx+dy*dy > touchMouseMoveThresholdSq {
+				p.touch.moved = true
+			}
+			p.touch.x, p.touch.y = point.x, point.y
+			dst = append(dst, runtime.InputEvent{
+				Kind: runtime.InputPointerMove, X: int32(point.x), Y: int32(point.y),
+				Shift: p.shiftState() | p.mouseState() | ShiftStateLeft,
+			})
+		}
+		return dst
+	}
+
+	dst = append(dst, runtime.InputEvent{
+		Kind: runtime.InputPointerUp, X: int32(p.touch.x), Y: int32(p.touch.y),
+		Button: 0, Shift: p.shiftState() | p.mouseState(),
+	})
+	if !p.touch.moved {
+		dst = append(dst, runtime.InputEvent{
+			Kind: runtime.InputClick, X: int32(p.touch.x), Y: int32(p.touch.y),
+		})
+	}
+	p.touch = touchMouseState{}
 	return dst
 }
 
