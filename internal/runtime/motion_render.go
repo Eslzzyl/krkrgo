@@ -136,19 +136,43 @@ func renderMotionFrame(resource *motionResource, root map[string]assets.Value, f
 	return nil
 }
 
+// psbMotionFrame selects the keyframe whose slot is active at tick, following
+// the reference evaluator: a time before the first keyframe selects the first
+// entry, the last entry is never selected (it only provides the interpolation
+// target), and a frame is drawable whenever it carries content, independently
+// of its type field (0 invisible, 2 static, 3 interpolate).
 func psbMotionFrame(frames []assets.Value, tick float64) (map[string]assets.Value, bool) {
-	var selected map[string]assets.Value
-	for _, value := range frames {
-		frame, ok := value.(map[string]assets.Value)
-		if !ok || psbMotionFloat(frame, "time", 0) > tick {
-			break
-		}
-		selected = frame
-	}
-	if selected == nil {
+	if len(frames) == 0 {
 		return nil, false
 	}
-	return selected, int(psbMotionFloat(selected, "type", 0)) != 0
+	selected := -1
+	for index, value := range frames {
+		frame, ok := value.(map[string]assets.Value)
+		if !ok {
+			continue
+		}
+		if psbMotionFloat(frame, "time", 0) > tick {
+			if index > 0 {
+				selected = index - 1
+			} else {
+				selected = 0
+			}
+			break
+		}
+		selected = index
+	}
+	if selected < 0 {
+		selected = len(frames) - 1
+	}
+	if len(frames) > 1 && selected > len(frames)-2 {
+		selected = len(frames) - 2
+	}
+	frame, ok := frames[selected].(map[string]assets.Value)
+	if !ok {
+		return nil, false
+	}
+	_, hasContent := frame["content"].(map[string]assets.Value)
+	return frame, hasContent
 }
 
 func psbMotionContext(parent motionRenderContext, frame map[string]assets.Value, layer map[string]assets.Value) motionRenderContext {

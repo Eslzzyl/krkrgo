@@ -35,6 +35,7 @@ type motionPlayerState struct {
 	outline         int64
 	onAction        tjs.Value
 	drawMatrix      motionDrawMatrix
+	playerID        tjs.ObjectID
 }
 
 func (s *Services) loadMotionResource(path string) (*motionResource, error) {
@@ -143,7 +144,8 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.Player.draw requires a target layer")
 		}
-		motionTrace("draw id=%d motion=%q frame=%.2f playing=%v", id, state.motion, state.frameTick, state.playing)
+		motionTrace("draw time=%d id=%d motion=%q frame=%.2f playing=%v", s.Timers.Now(), id, state.motion, state.frameTick, state.playing)
+		state.playerID = id
 		return tjs.VoidValue, s.drawMotionTarget(vm, state, args[0])
 	case "setDrawAffineTranslateMatrix":
 		if len(args) < 6 {
@@ -331,6 +333,8 @@ func (s *Services) clearMotionTarget(vm *tjs.VM, value tjs.Value) error {
 	return nil
 }
 
+func motionTraceEnabled() bool { return os.Getenv("KRKRGO_MOTION_TRACE") != "" }
+
 func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value tjs.Value) error {
 	resource := s.playerResource(state)
 	if resource == nil {
@@ -339,6 +343,15 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 	frame, err := renderPSBMotion(resource, state.chara, state.motion, state.frameTick)
 	if err != nil {
 		return err
+	}
+	if motionTraceEnabled() {
+		opaque := 0
+		for i := 3; i < len(frame.RGBA); i += 4 {
+			if frame.RGBA[i] != 0 {
+				opaque++
+			}
+		}
+		motionTrace("canvas time=%d id=%d motion=%q frame=%.2f alpha_px=%d", s.Timers.Now(), state.playerID, state.motion, state.frameTick, opaque)
 	}
 	layer, err := s.motionLayerFromValue(vm, value)
 	if err != nil {
