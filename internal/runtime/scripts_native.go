@@ -827,10 +827,6 @@ func (s *Services) scriptsNative(vm *tjs.VM, operation string, args []tjs.Value,
 			return tjs.VoidValue, err
 		}
 		storageName := nameValue.Text()
-		// PreRenderFontEx is a Windows font helper; system fonts cover this path on other platforms.
-		if operation == "execStorage" && (strings.EqualFold(storageName, "PreRenderFontEx.tjs") || strings.EqualFold(storageName, "embFontLoader.tjs")) {
-			return finish(tjs.VoidValue, nil)
-		}
 		mode := ""
 		if len(args) >= 2 && !args[1].IsVoid() {
 			mode = args[1].Text()
