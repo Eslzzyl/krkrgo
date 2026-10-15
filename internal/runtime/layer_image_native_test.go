@@ -473,3 +473,47 @@ dst.affineCopy(src, 0, 0, 2, 1, false, -0.5, -0.5, 1.5, -0.5, -0.5, 0.5, stNeare
 		t.Fatalf("affineCopy points alpha = %v, want [255 255]", got)
 	}
 }
+
+func TestNativeLayerAffineCopyInterpolationStaysInsideSourceImage(t *testing.T) {
+	// A bilinear sample on the last source row or column reads its neighbour
+	// tap one past the plane; the copy must clamp those taps to the image.
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	if _, err := session.executeSource("<layer-affine-interpolation-test>", `
+src = new Layer(); dst = new Layer();
+src.setImageSize(2, 2); src.face = dfBoth;
+src.fillRect(0, 0, 2, 2, 0xff204060);
+dst.setImageSize(2, 2); dst.face = dfBoth;
+dst.affineCopy(src, 0, 0, 2, 2, false, 0.25, 0.25, 2.25, 0.25, 0.25, 2.25, stRefNoClip, true);
+interpolated = dst.getMainPixel(1, 1);
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate(`interpolated`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := value.Int(); err != nil {
+		t.Fatal(err)
+	} else if got != 0x204060 {
+		t.Fatalf("interpolated edge pixel = %#x, want %#x", got, 0x204060)
+	}
+}
+
+func TestLayerAffineCopyClampsInterpolationTapsToPlane(t *testing.T) {
+	// Sampling near the bottom-right corner with bilinear filtering must clamp
+	// the neighbour taps to the source plane instead of reading past it.
+	source := &Layer{ImageWidth: 2, ImageHeight: 2, RGBA: make([]byte, 16)}
+	for i := range 4 {
+		source.RGBA[i*4], source.RGBA[i*4+1], source.RGBA[i*4+2], source.RGBA[i*4+3] = 0x20, 0x40, 0x60, 0xff
+	}
+	destination := &Layer{ImageWidth: 2, ImageHeight: 2, RGBA: make([]byte, 16)}
+	err := destination.affineCopyPixels(source.RGBA, 2, 2, 0, 0, 2, 2,
+		[6]float64{1, 0, 0, 1, -1.4, -1.4}, 1, false)
+	if err != nil {
+		t.Fatalf("affineCopyPixels: %v", err)
+	}
+	if got := [4]byte{destination.RGBA[0], destination.RGBA[1], destination.RGBA[2], destination.RGBA[3]}; got != [4]byte{0x20, 0x40, 0x60, 0xff} {
+		t.Fatalf("corner pixel = %v, want [32 64 96 255]", got)
+	}
+}

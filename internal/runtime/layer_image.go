@@ -741,6 +741,23 @@ func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft
 	if outRight <= outLeft || outBottom <= outTop {
 		return nil
 	}
+	// The plane bounds the destination scan even when the clip rectangle or the
+	// transform reaches past the allocated image.
+	if outLeft < 0 {
+		outLeft = 0
+	}
+	if outTop < 0 {
+		outTop = 0
+	}
+	if outRight > int64(l.ImageWidth) {
+		outRight = int64(l.ImageWidth)
+	}
+	if outBottom > int64(l.ImageHeight) {
+		outBottom = int64(l.ImageHeight)
+	}
+	if outRight <= outLeft || outBottom <= outTop {
+		return nil
+	}
 
 	if len(source) == len(l.RGBA) && &source[0] == &l.RGBA[0] {
 		// Reading from the plane being written would let the scan sample pixels
@@ -816,10 +833,19 @@ func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft
 			} else if fy > 1 {
 				fy = 1
 			}
+			// The neighbouring taps stay inside the source image so sampling
+			// the last row or column cannot read past the plane.
+			nextColumn, nextRow := minColumn+1, minRow+1
+			if nextColumn > int64(sourceWidth)-1 {
+				nextColumn = int64(sourceWidth) - 1
+			}
+			if nextRow > int64(sourceHeight)-1 {
+				nextRow = int64(sourceHeight) - 1
+			}
 			topLeft := (minRow*sourceStride + minColumn) * 4
-			topRight := topLeft + 4
-			bottomLeft := topLeft + sourceStride*4
-			bottomRight := bottomLeft + 4
+			topRight := (minRow*sourceStride + nextColumn) * 4
+			bottomLeft := (nextRow*sourceStride + minColumn) * 4
+			bottomRight := (nextRow*sourceStride + nextColumn) * 4
 			var pixel [4]byte
 			for channel := range pixel {
 				top := float64(source[topLeft+int64(channel)])*(1-fx) + float64(source[topRight+int64(channel)])*fx
