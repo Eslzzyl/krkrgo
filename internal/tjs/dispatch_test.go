@@ -140,6 +140,24 @@ func TestDispatchArrayCanonicalIndicesAndBounds(t *testing.T) {
 	if err != nil || zeroPush.IntegerValue() != 4 {
 		t.Fatalf("zero-argument push = %v, %v", zeroPush, err)
 	}
+	length, err = d.Get(target, "count")
+	if err != nil || length.IntegerValue() != 4 {
+		t.Fatalf("count after push = %v, %v; want 4", length, err)
+	}
+	manyPush, err := d.CallMember(target, "push", IntegerValue(5), IntegerValue(6))
+	if err != nil || manyPush.IntegerValue() != 6 {
+		t.Fatalf("multi-argument push result = %v, %v; want 6", manyPush, err)
+	}
+	length, err = d.Get(target, "count")
+	if err != nil || length.IntegerValue() != 6 {
+		t.Fatalf("count after multi-argument push = %v, %v; want 6", length, err)
+	}
+	for index, name := range []string{"4", "5"} {
+		got, getErr := d.Get(target, name)
+		if getErr != nil || got.IntegerValue() != int64(index+5) {
+			t.Fatalf("multi-argument push item %s = %v, %v; want %d", name, got, getErr, index+5)
+		}
+	}
 	canonical, err := d.Get(target, "3")
 	if err != nil || canonical.IntegerValue() != 4 {
 		t.Fatalf("push start = %v, %v", canonical, err)
