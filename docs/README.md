@@ -10,6 +10,7 @@ Each domain guide links the relevant Go source and records current implementatio
 - [Graphics, layers, and text](graphics-layer-text.md)
 - [Audio and video](audio-video.md)
 - [Graphics composition: CPU vs GPU](graphics-composition.md)
+- [Modern animation and rendering architecture](modern-animation-rendering.md)
 - [Host, Ebitengine, platforms, and dependencies](host-platform.md)
 - [Verification and cross-cutting gaps](verification-and-gaps.md)
 - [Launcher architecture](launcher.md)
