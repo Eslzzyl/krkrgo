@@ -27,7 +27,7 @@ type motionRenderContext struct {
 	matrix  motionMatrix
 }
 
-func renderPSBMotion(resource *motionResource, chara, motion string, tick int64) (*assets.Image, error) {
+func renderPSBMotion(resource *motionResource, chara, motion string, tick float64) (*assets.Image, error) {
 	if resource == nil || resource.doc == nil {
 		return nil, fmt.Errorf("motion resource is unavailable")
 	}
@@ -50,7 +50,7 @@ func renderPSBMotion(resource *motionResource, chara, motion string, tick int64)
 		return &assets.Image{Width: uint32(width), Height: uint32(height), RGBA: pixels}, nil
 	}
 	ctx := motionRenderContext{opacity: 255, matrix: identityMotionMatrix}
-	if err := renderMotionValue(resource, root, layers, float64(tick), ctx, pixels, width, height, map[string]bool{}); err != nil {
+	if err := renderMotionValue(resource, root, layers, tick, ctx, pixels, width, height, map[string]bool{}); err != nil {
 		return nil, err
 	}
 	return &assets.Image{Width: uint32(width), Height: uint32(height), RGBA: pixels}, nil
@@ -484,4 +484,76 @@ func psbMotionList(value assets.Value) []float64 {
 		result = append(result, psbMotionFloatValue(item, 0))
 	}
 	return result
+}
+
+// motionDrawMatrix is the canvas-to-layer transform a script supplies through
+// Motion.Player.setDrawAffineTranslateMatrix. The translation carries the draw
+// area center, matching the motion source layer whose 1x1 image the script
+// centers inside its owner layer.
+type motionDrawMatrix struct {
+	a, b, c, d float64
+	tx, ty     float64
+}
+
+func identityMotionDrawMatrix() motionDrawMatrix { return motionDrawMatrix{a: 1, d: 1} }
+
+// drawMotionCanvasInto composites the rendered motion canvas into an existing
+// layer bitmap. Destination pixels sample the source, so scaled transforms stay
+// gap-free; rotation and shearing are supported through the inverse transform.
+func drawMotionCanvasInto(layer *Layer, frame *assets.Image, matrix motionDrawMatrix) {
+	width, height := int(layer.ImageWidth), int(layer.ImageHeight)
+	canvasWidth, canvasHeight := int(frame.Width), int(frame.Height)
+	if width <= 0 || height <= 0 || canvasWidth <= 0 || canvasHeight <= 0 {
+		return
+	}
+	if len(layer.RGBA) < width*height*4 || len(frame.RGBA) < canvasWidth*canvasHeight*4 {
+		return
+	}
+	det := matrix.a*matrix.d - matrix.b*matrix.c
+	if det == 0 || math.IsNaN(det) || math.IsInf(det, 0) {
+		return
+	}
+	originX, originY := float64(canvasWidth-1)/2, float64(canvasHeight-1)/2
+	left, top := math.Inf(1), math.Inf(1)
+	right, bottom := math.Inf(-1), math.Inf(-1)
+	for _, cornerX := range [2]float64{-originX, float64(canvasWidth-1) - originX} {
+		for _, cornerY := range [2]float64{-originY, float64(canvasHeight-1) - originY} {
+			x := matrix.a*cornerX + matrix.b*cornerY + matrix.tx
+			y := matrix.c*cornerX + matrix.d*cornerY + matrix.ty
+			left, top = math.Min(left, x), math.Min(top, y)
+			right, bottom = math.Max(right, x), math.Max(bottom, y)
+		}
+	}
+	startX := max(int(math.Floor(left)), 0)
+	startY := max(int(math.Floor(top)), 0)
+	endX := min(int(math.Ceil(right)), width-1)
+	endY := min(int(math.Ceil(bottom)), height-1)
+	for destY := startY; destY <= endY; destY++ {
+		centerY := float64(destY) - matrix.ty
+		for destX := startX; destX <= endX; destX++ {
+			centerX := float64(destX) - matrix.tx
+			sourceX := int(math.Round((matrix.d*centerX-matrix.b*centerY)/det + originX))
+			sourceY := int(math.Round((matrix.a*centerY-matrix.c*centerX)/det + originY))
+			if sourceX < 0 || sourceY < 0 || sourceX >= canvasWidth || sourceY >= canvasHeight {
+				continue
+			}
+			blendMotionPixels(layer.RGBA[(destY*width+destX)*4:], frame.RGBA[(sourceY*canvasWidth+sourceX)*4:])
+		}
+	}
+}
+
+func blendMotionPixels(destination, source []byte) {
+	alpha := uint32(source[3])
+	if alpha == 0 {
+		return
+	}
+	if alpha == 0xff {
+		destination[0], destination[1], destination[2], destination[3] = source[0], source[1], source[2], source[3]
+		return
+	}
+	inverse := 0xff - alpha
+	for channel := range 3 {
+		destination[channel] = byte((uint32(source[channel])*alpha + uint32(destination[channel])*inverse) / 0xff)
+	}
+	destination[3] = byte(alpha + uint32(destination[3])*inverse/0xff)
 }

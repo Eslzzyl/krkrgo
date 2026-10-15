@@ -50,6 +50,8 @@ The native-compatible surface also exposes `clear`, `assign`, and `popMacroArgs`
 
 Line-command tags written as `@tag` are recognized after leading spaces or tabs, as in the tab-indented `@clip`/`@wait` commands in Amairo animation scenarios. Indented ordinary text remains text.
 
+A tag-level `cond` attribute is evaluated in the script context before dispatch, removed from the attribute list, and drops the tag when it evaluates false, matching the reference parser. `if`, `elsif`, `else`, `endif`, `ignore`, and `endignore` still reach the conditional state machine so block nesting stays correct.
+
 A lone `*` line is ignored rather than indexed as an empty first label; named labels such as `*first` are still indexed normally.
 
 An empty label passed to `Jump`/`goToLabel` is a no-op, matching C++ KAG behavior. This permits storage-only transitions to load a scenario without attempting to resolve an empty label.

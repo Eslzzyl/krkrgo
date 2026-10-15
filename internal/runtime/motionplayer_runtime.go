@@ -2,25 +2,43 @@ package runtime
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
+func motionTrace(format string, args ...any) {
+	if os.Getenv("KRKRGO_MOTION_TRACE") == "" {
+		return
+	}
+	fmt.Printf("motion-trace "+format+"\n", args...)
+}
+
+// Motion progress advances a frame clock at 60 fps: the reference converts the
+// caller's millisecond delta with kMotionFramesPerMillisecond before stepping
+// timelines and clips, so PSB frame times and lastTime share that unit.
+const (
+	motionFramesPerMillisecond = 60.0 / 1000.0
+	motionProgressMaxMS        = 60000
+)
+
 type motionPlayerState struct {
 	resourceManager tjs.ObjectID
 	chara           string
 	motion          string
-	tickCount       int64
+	frameTick       float64
 	speed           float64
 	playing         bool
 	completionType  int64
 	outline         int64
 	onAction        tjs.Value
+	drawMatrix      motionDrawMatrix
 }
 
 func (s *Services) loadMotionResource(path string) (*motionResource, error) {
+	motionTrace("load path=%q", path)
 	data, err := s.readStorage(path)
 	if err != nil {
 		return nil, err
@@ -86,8 +104,9 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 			return tjs.VoidValue, nil
 		}
 		state.motion = motion
-		state.tickCount = 0
+		state.frameTick = 0
 		state.playing = true
+		motionTrace("play id=%d chara=%q motion=%q", id, state.chara, state.motion)
 		return tjs.VoidValue, nil
 	case "stop":
 		state.playing = false
@@ -100,15 +119,19 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		if interval < 0 {
+		if interval < 0 || interval > motionProgressMaxMS {
 			interval = 0
 		}
-		state.tickCount += int64(float64(interval) * state.speed)
+		state.frameTick += float64(interval) * motionFramesPerMillisecond * state.speed
 		if resource := s.playerResource(state); resource != nil {
-			if last := motionLastTime(resource, state.chara, state.motion); last >= 0 && state.tickCount >= last {
-				state.tickCount = last
+			if last := motionLastTime(resource, state.chara, state.motion); last >= 0 && state.frameTick >= last {
+				state.frameTick = last
 				state.playing = false
+				motionTrace("progress-stop id=%d motion=%q frame=%.2f last=%.2f", id, state.motion, state.frameTick, last)
 			}
+		}
+		if os.Getenv("KRKRGO_MOTION_TRACE") != "" {
+			motionTrace("progress id=%d interval=%d frame=%.2f playing=%v", id, interval, state.frameTick, state.playing)
 		}
 		return tjs.VoidValue, nil
 	case "clear":
@@ -120,13 +143,28 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.Player.draw requires a target layer")
 		}
+		motionTrace("draw id=%d motion=%q frame=%.2f playing=%v", id, state.motion, state.frameTick, state.playing)
 		return tjs.VoidValue, s.drawMotionTarget(vm, state, args[0])
 	case "setDrawAffineTranslateMatrix":
+		if len(args) < 6 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.setDrawAffineTranslateMatrix requires six values")
+		}
+		values := make([]float64, 0, 6)
+		for i := range 6 {
+			number, err := args[i].Real()
+			if err != nil {
+				return tjs.VoidValue, err
+			}
+			values = append(values, number)
+		}
+		state.drawMatrix = motionDrawMatrix{a: values[0], c: values[1], b: values[2], d: values[3], tx: values[4], ty: values[5]}
+		motionTrace("draw-affine id=%d a=%.4f c=%.4f b=%.4f d=%.4f tx=%.4f ty=%.4f",
+			id, values[0], values[1], values[2], values[3], values[4], values[5])
 		return tjs.VoidValue, nil
 	case "skipToSync":
 		if resource := s.playerResource(state); resource != nil {
 			if last := motionLastTime(resource, state.chara, state.motion); last >= 0 {
-				state.tickCount = last
+				state.frameTick = last
 			}
 		}
 		return tjs.VoidValue, nil
@@ -147,7 +185,7 @@ func (s *Services) motionPlayer(id tjs.ObjectID) *motionPlayerState {
 	defer s.mu.Unlock()
 	state := s.MotionPlayers[id]
 	if state == nil {
-		state = &motionPlayerState{speed: 1}
+		state = &motionPlayerState{speed: 1, drawMatrix: identityMotionDrawMatrix()}
 		s.MotionPlayers[id] = state
 	}
 	return state
@@ -160,7 +198,12 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 	case "motion":
 		return tjs.StringValue(state.motion), nil
 	case "tickCount":
-		return tjs.IntegerValue(state.tickCount), nil
+		// Reference Player.h: the TJS property converts the frame clock back to
+		// milliseconds and clamps non-positive clocks to zero.
+		if state.frameTick > 0 {
+			return tjs.RealValue(state.frameTick * 1000 / 60), nil
+		}
+		return tjs.RealValue(0), nil
 	case "speed":
 		return tjs.RealValue(state.speed), nil
 	case "playing", "allplaying":
@@ -188,11 +231,11 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 	case "motion":
 		state.motion = value.Text()
 	case "tickCount":
-		n, err := value.Int()
+		n, err := value.Real()
 		if err != nil {
 			return err
 		}
-		state.tickCount = n
+		state.frameTick = n * motionFramesPerMillisecond
 	case "speed":
 		n, err := value.Real()
 		if err != nil {
@@ -232,7 +275,7 @@ func (s *Services) playerResource(state *motionPlayerState) *motionResource {
 	return resource
 }
 
-func motionLastTime(resource *motionResource, chara, motion string) int64 {
+func motionLastTime(resource *motionResource, chara, motion string) float64 {
 	if resource == nil || resource.doc == nil {
 		return -1
 	}
@@ -244,7 +287,7 @@ func motionLastTime(resource *motionResource, chara, motion string) int64 {
 	if value == nil {
 		return -1
 	}
-	return int64(psbMotionFloat(value, "lastTime", -1))
+	return psbMotionFloat(value, "lastTime", -1)
 }
 
 func (s *Services) motionLayerFromValue(_ *tjs.VM, value tjs.Value) (*Layer, error) {
@@ -293,7 +336,7 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 	if resource == nil {
 		return fmt.Errorf("Motion.Player.draw has no loaded PSB resource")
 	}
-	frame, err := renderPSBMotion(resource, state.chara, state.motion, state.tickCount)
+	frame, err := renderPSBMotion(resource, state.chara, state.motion, state.frameTick)
 	if err != nil {
 		return err
 	}
@@ -303,15 +346,31 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := layer.SetRGBA(int32(frame.Width), int32(frame.Height), frame.RGBA); err != nil {
-		return err
+	// A motion layer draws into the canvas its owner layer already owns, so the
+	// layer keeps the size its KAG definition assigned. Only a layer without a
+	// bitmap adopts the motion canvas size.
+	if !layerHasCanvas(layer) {
+		if err := layer.SetRGBA(int32(frame.Width), int32(frame.Height), frame.RGBA); err != nil {
+			return err
+		}
+		if err := layer.SetSizeToImageSize(); err != nil {
+			return err
+		}
+		layer.Visible = true
+		layer.imageModified = true
+		return nil
 	}
-	if err := layer.SetSizeToImageSize(); err != nil {
-		return err
-	}
+	drawMotionCanvasInto(layer, frame, state.drawMatrix)
 	layer.Visible = true
 	layer.imageModified = true
 	return nil
+}
+
+func layerHasCanvas(layer *Layer) bool {
+	if layer.ImageWidth <= 0 || layer.ImageHeight <= 0 {
+		return false
+	}
+	return len(layer.RGBA) >= int(layer.ImageWidth)*int(layer.ImageHeight)*4
 }
 func (s *Services) motionSeparateLayerAdaptorNative(context tjs.Value, operation string, args []tjs.Value) (tjs.Value, error) {
 	id := context.ObjectRef().Object

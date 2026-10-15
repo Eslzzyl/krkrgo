@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -52,7 +53,13 @@ func TestMotionPlayerPlayPreservesActiveMotionProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := value.IntegerValue(), int64(17); got != want {
-		t.Fatalf("active motion replay reset tick to %d, want %d", got, want)
+	// tickCount is the millisecond conversion of the 60 fps frame clock, so the
+	// round trip of progress(17) lands within floating point noise of 17.
+	tick, err := value.Real()
+	if err != nil {
+		t.Fatalf("tickCount value: %v", err)
+	}
+	if math.Abs(tick-17) > 1e-9 {
+		t.Fatalf("active motion replay reset tick to %v, want 17", tick)
 	}
 }

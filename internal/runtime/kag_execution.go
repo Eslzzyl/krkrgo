@@ -372,6 +372,42 @@ func (p *KAGParser) handleConditional(tag *kag.Tag, budget *uint64) (bool, error
 	}
 	return false, nil
 }
+
+// kagConditionalTag reports whether the tag drives the conditional state
+// machine instead of a tag handler.
+func kagConditionalTag(name string) bool {
+	switch name {
+	case "if", "elsif", "else", "endif", "ignore", "endignore":
+		return true
+	}
+	return false
+}
+
+// takeTagCondition applies the reference parser's cond attribute handling: the
+// attribute is an expression evaluated in the script context, it never reaches
+// tag handlers, and a false result drops the tag entirely.
+func (p *KAGParser) takeTagCondition(tag *kag.Tag, budget *uint64) (bool, error) {
+	for index, attribute := range tag.Attributes {
+		if !strings.EqualFold(attribute.Name, "cond") {
+			continue
+		}
+		active := true
+		if expression := strings.TrimSpace(attribute.Value); expression != "" {
+			value, err := p.evaluateKAGValue(expression, budget)
+			if err != nil {
+				return false, fmt.Errorf("KAG tag [%s] cond %q: %w", tag.Name, attribute.Value, err)
+			}
+			active, err = value.Truth()
+			if err != nil {
+				return false, fmt.Errorf("KAG tag [%s] cond %q: %w", tag.Name, attribute.Value, err)
+			}
+		}
+		tag.Attributes = append(tag.Attributes[:index], tag.Attributes[index+1:]...)
+		return active, nil
+	}
+	return true, nil
+}
+
 func (p *KAGParser) resolveKAGTag(tag *kag.Tag, budget *uint64) (*kag.Tag, error) {
 	resolved := *tag
 	resolved.Attributes = append([]kag.Attribute(nil), tag.Attributes...)
@@ -554,6 +590,16 @@ func (p *KAGParser) Step(budget *uint64) (KAGEvent, error) {
 		}
 		if token.Kind == kag.KindTag && token.Tag != nil {
 			name := token.Tag.Name
+			condition, err := p.takeTagCondition(token.Tag, budget)
+			if err != nil {
+				return KAGEvent{}, kagLocationError(token.Location, err)
+			}
+			// The reference drops a tag whose cond is false before dispatching
+			// it, yet still feeds if/elsif/else/endif/ignore/endignore into the
+			// conditional state machine.
+			if !condition && !kagConditionalTag(name) {
+				continue
+			}
 			if token.InlineScript != nil {
 				for remaining := token.InlineScript.LineCount; remaining > 0; remaining-- {
 					if err := chargeKAG(budget); err != nil {
