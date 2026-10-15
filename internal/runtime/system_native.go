@@ -24,7 +24,7 @@ const (
 )
 
 func sameContinuousHandler(a, b tjs.Value) bool {
-	return a.Kind() == tjs.KindObject && b.Kind() == tjs.KindObject && a.ObjectRef() == b.ObjectRef()
+	return a.Kind() == tjs.KindObject && b.Kind() == tjs.KindObject && a.ObjectRef().SameDispatch(b.ObjectRef())
 }
 
 var ErrSystemExit = fmt.Errorf("system exit requested")
@@ -561,7 +561,7 @@ func continuousHandlerValid(vm *tjs.VM, callback tjs.Value, ref tjs.ObjectRef) b
 	if vm.IsValid(callback).IntegerValue() == 0 {
 		return false
 	}
-	if ref.Context != 0 && vm.IsValid(tjs.ObjectValue(tjs.NewObjectRef(ref.Context))).IntegerValue() == 0 {
+	if ref.HasBoundContext() && vm.IsValid(tjs.ObjectValue(ref.BoundContextRef())).IntegerValue() == 0 {
 		return false
 	}
 	return true

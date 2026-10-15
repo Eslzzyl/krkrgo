@@ -122,11 +122,7 @@ func (o *Object) Ref(context ...ObjectID) ObjectRef {
 	if o == nil {
 		return ObjectRef{}
 	}
-	var c ObjectID
-	if len(context) > 0 {
-		c = context[0]
-	}
-	return ObjectRef{Object: o.ID, Context: c}
+	return NewObjectRef(o.ID, context...)
 }
 func (o *Object) IsValid() bool { return o != nil && o.validRead() }
 func (o *Object) validRead() bool {

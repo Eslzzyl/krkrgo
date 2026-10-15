@@ -305,7 +305,10 @@ func NewVM() *VM {
 	return vm
 }
 func NewVm() *VM                 { return NewVM() }
-func (v *VM) globalValue() Value { return ObjectValue(NewObjectRef(0, 1)) }
+func (v *VM) globalValue() Value                 { return ObjectValue(NewObjectRef(0, 0)) }
+func (v *VM) boundContextValue(ref ObjectRef) Value {
+	return ObjectValue(boundContextRef(ref.Context))
+}
 func (v *VM) lookup(id ObjectID) (*Object, *vmObject, error) {
 	if v == nil || v.Objects == nil {
 		return nil, nil, errors.New("nil TJS VM")
@@ -562,7 +565,7 @@ func (v *VM) resolveLegacyClassBases(classID ObjectID, host Host, budget *uint64
 }
 
 func (v *VM) bindClassMember(value Value, context ObjectID) Value {
-	if value.Kind() != KindObject || value.ObjectRef().Context != 0 {
+	if value.Kind() != KindObject || value.ObjectRef().HasBoundContext() {
 		return value
 	}
 	if contextMeta := v.meta[context]; contextMeta != nil &&
@@ -890,8 +893,8 @@ func (v *VM) SetPropertyWithRuntime(property, value Value, host Host, budget *ui
 		return errors.New("value is not a property descriptor")
 	}
 	context := VoidValue
-	if property.ObjectRef().Context != 0 {
-		context = ObjectValue(NewObjectRef(property.ObjectRef().Context, property.ObjectRef().Context))
+	if property.ObjectRef().HasBoundContext() {
+		context = v.boundContextValue(property.ObjectRef())
 	}
 	return v.writeProperty(property, context, value, host, budget)
 }
@@ -1323,8 +1326,8 @@ func (v *VM) propertyContext(context Value) Value {
 		if ref.Object == 0 {
 			return context
 		}
-		if ref.Context != 0 {
-			return ObjectValue(NewObjectRef(ref.Context, ref.Context))
+		if ref.HasBoundContext() {
+			return v.boundContextValue(ref)
 		}
 		if meta := v.meta[ref.Object]; meta != nil && meta.superContext != 0 {
 			return ObjectValue(NewObjectRef(meta.superContext, meta.superContext))
@@ -1389,9 +1392,15 @@ func (v *VM) loadName(f *vmFrame, name string, optional, raw bool, h Host, b *ui
 	if x, ok, e := v.getMemberStringWithRuntime(0, name, h, b); e != nil {
 		return VoidValue, e
 	} else if ok {
+		if raw {
+			return x, nil
+		}
 		return v.getValue(v.globalValue(), x, raw, h, b)
 	}
 	if x, ok := v.Globals[name]; ok {
+		if raw {
+			return x, nil
+		}
 		return v.getValue(v.globalValue(), x, raw, h, b)
 	}
 	if name == "filename" {
@@ -1531,9 +1540,9 @@ func (v *VM) getValue(receiver, x Value, raw bool, h Host, b *uint64) (Value, er
 		if !raw {
 			return v.getProperty(id, v.propertyReferenceContext(x, receiver), h, b)
 		}
-		if receiver.Kind() == KindObject && !receiver.IsNull() && x.ObjectRef().Context == 0 {
+		if receiver.Kind() == KindObject && !receiver.IsNull() && !x.ObjectRef().HasBoundContext() {
 			bound := receiver.ObjectRef().Object
-			if receiver.ObjectRef().Context != 0 {
+			if receiver.ObjectRef().HasBoundContext() {
 				bound = receiver.ObjectRef().Context
 			}
 			return ObjectValue(NewObjectRef(id, bound)), nil
@@ -1737,7 +1746,7 @@ func (v *VM) arraySourceObjectID(value Value) (ObjectID, error) {
 		return 0, errors.New("Array.assign requires a non-null Object source")
 	}
 	ref := value.ObjectRef()
-	if ref.Context != 0 {
+	if ref.HasBoundContext() {
 		ref.Object = ref.Context
 	}
 	if _, _, err := v.lookup(ref.Object); err != nil {
@@ -2389,8 +2398,8 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 						if er != nil {
 							e = er
 						} else {
-							if context := right.ObjectRef().Context; context != 0 {
-								c = context
+							if rightRef := right.ObjectRef(); rightRef.HasBoundContext() {
+								c = rightRef.Context
 							}
 							put(op.Out, ObjectValue(NewObjectRef(a, c)))
 						}
@@ -3121,11 +3130,13 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 				if callable.fn.Name == "load" {
 					return v.nativeCall("Array.load", context, args, h, b, needed)
 				}
-				switch callable.fn.Name {
-				case "assign", "split", "push", "unshift", "add", "pop", "shift",
-					"reverse", "clear", "join", "find", "indexOf", "remove",
-					"erase", "insert", "sort":
-					return v.nativeCall("Array."+callable.fn.Name, context, args, h, b, needed)
+				if meta := v.meta[context.ObjectRef().Object]; meta != nil && meta.category == CategoryArray {
+					switch callable.fn.Name {
+					case "assign", "split", "push", "unshift", "add", "pop", "shift",
+						"reverse", "clear", "join", "find", "indexOf", "remove",
+						"erase", "insert", "sort":
+						return v.nativeCall("Array."+callable.fn.Name, context, args, h, b, needed)
+					}
 				}
 			}
 		}
@@ -3142,10 +3153,10 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 	if m.category == CategoryNative && v.linkNativeClassConstructor(callee, context) {
 		return VoidValue, nil
 	}
-	if (m.category == CategoryNative || m.category == CategoryMethod) && callee.ObjectRef().Context != 0 {
-		context = ObjectValue(NewObjectRef(callee.ObjectRef().Context, callee.ObjectRef().Context))
+	if (m.category == CategoryNative || m.category == CategoryMethod) && callee.ObjectRef().HasBoundContext() {
+		context = v.boundContextValue(callee.ObjectRef())
 	}
-	if m.category == CategoryMethod && m.methodContextSet && callee.ObjectRef().Context == 0 {
+	if m.category == CategoryMethod && m.methodContextSet && !callee.ObjectRef().HasBoundContext() {
 		context = m.methodContext
 	}
 	switch m.category {
@@ -3153,8 +3164,8 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 		return v.nativeCall(m.native, context, args, h, b, needed)
 	case CategoryFunction:
 		if m.legacyFunction != nil {
-			if callee.ObjectRef().Context != 0 {
-				context = ObjectValue(NewObjectRef(callee.ObjectRef().Context, callee.ObjectRef().Context))
+			if callee.ObjectRef().HasBoundContext() {
+				context = v.boundContextValue(callee.ObjectRef())
 			}
 			return m.legacyFunction(context, args, h, b, needed)
 		}
@@ -3162,8 +3173,8 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 			return VoidValue, errors.New("invalid TJS function")
 		}
 		c := context
-		if callee.ObjectRef().Context != 0 {
-			c = ObjectValue(NewObjectRef(callee.ObjectRef().Context, callee.ObjectRef().Context))
+		if callee.ObjectRef().HasBoundContext() {
+			c = v.boundContextValue(callee.ObjectRef())
 		}
 		cid, _ := v.handle(c)
 		lexicalContext := m.lexicalContext
@@ -3707,13 +3718,13 @@ func (v *VM) writeProperty(property, context, input Value, h Host, b *uint64) er
 }
 func (v *VM) propertyReferenceContext(property, context Value) Value {
 	if property.Kind() == KindObject && !property.IsNull() {
-		if bound := property.ObjectRef().Context; bound != 0 {
-			return ObjectValue(NewObjectRef(bound, bound))
+		if ref := property.ObjectRef(); ref.HasBoundContext() {
+			return v.boundContextValue(ref)
 		}
 	}
 	if context.Kind() == KindObject && !context.IsNull() {
-		if bound := context.ObjectRef().Context; bound != 0 {
-			return ObjectValue(NewObjectRef(bound, bound))
+		if ref := context.ObjectRef(); ref.HasBoundContext() {
+			return v.boundContextValue(ref)
 		}
 	}
 	return context

@@ -55,6 +55,24 @@ func TestUTF16EqualityAndOrderingBoundaries(t *testing.T) {
 		})
 	}
 }
+func TestBoundGlobalObjectIsDistinctFromNull(t *testing.T) {
+	global := ObjectValue(NewObjectRef(0, 0))
+	if global.IsNull() || !global.ObjectRef().IsValid() {
+		t.Fatal("explicit global reference is null or invalid")
+	}
+	if truth, err := global.Truth(); err != nil || !truth {
+		t.Fatalf("global truth = %v, %v; want true", truth, err)
+	}
+	if global.StrictEqual(NullValue) {
+		t.Fatal("explicit global reference compares equal to null")
+	}
+	if !global.StrictEqual(ObjectValue(NewObjectRef(0, 0))) {
+		t.Fatal("equivalent global references compare unequal")
+	}
+	if !ObjectValue(ObjectRef{}).IsNull() {
+		t.Fatal("empty object reference is not null")
+	}
+}
 
 func TestValueNumericOperators(t *testing.T) {
 	low, high := IntegerValue(9007199254740992), IntegerValue(9007199254740993)

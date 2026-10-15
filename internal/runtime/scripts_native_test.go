@@ -531,7 +531,7 @@ func TestLegacyObjectConstantBindsCallableScriptFunction(t *testing.T) {
 			},
 		},
 	}
-	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
 	if err := bindLegacyScriptFunctions(session.VM, decoded, global, session.Services, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -577,7 +577,7 @@ func TestLegacyClassConstantBindsClassAndMemberMethod(t *testing.T) {
 			},
 		},
 	}
-	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
 	if err := bindLegacyScriptFunctions(session.VM, decoded, global, session.Services, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -601,7 +601,7 @@ func TestLegacyClassConstantBindsClassAndMemberMethod(t *testing.T) {
 func TestLegacyTopLevelClassWithoutObjectConstantIsGlobalAcrossStorages(t *testing.T) {
 	session := NewSession(DefaultServices(), 100_000)
 	defer session.Close()
-	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
 	newDecoded := func() *tjs.DecodedBytecode {
 		return &tjs.DecodedBytecode{
 			Strings: []string{"", "SharedLegacyClass"},
@@ -660,7 +660,7 @@ func TestLegacyObjectConstantCallsStringMethod(t *testing.T) {
 			},
 		},
 	}
-	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
 	if err := bindLegacyScriptFunctions(session.VM, decoded, global, session.Services, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -693,7 +693,7 @@ func TestLegacyClassBindsDeferredSuperclassGetter(t *testing.T) {
 			{Name: 2, ContextType: 6},
 		},
 	}
-	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
 	if err := bindLegacyScriptFunctions(session.VM, decoded, global, session.Services, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -775,7 +775,7 @@ func TestLegacyCompiledPropertyDispatchesLazyGetterAndSetter(t *testing.T) {
 			},
 		},
 	}
-	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
 	if err := bindLegacyScriptFunctions(session.VM, decoded, global, session.Services, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -892,7 +892,7 @@ func TestLegacyDerivedClassResolvesSuperclassAndInheritsCompiledProperty(t *test
 			},
 		},
 	}
-	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
 	if err := bindLegacyScriptFunctions(session.VM, base, global, session.Services, nil); err != nil {
 		t.Fatalf("bind base storage: %v", err)
 	}
@@ -931,7 +931,7 @@ func TestLegacyDerivedClassResolvesSuperclassAndInheritsCompiledProperty(t *test
 // legacyVMOpsTestGlobal returns the object-0 value legacy intercode receives
 // as its global/this proxy.
 func legacyVMOpsTestGlobal() tjs.Value {
-	return tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	return tjs.ObjectValue(tjs.NewObjectRef(0, 0))
 }
 
 // TestLegacyVMOpsReachCompiledFunctionEntry proves a bound compiled function

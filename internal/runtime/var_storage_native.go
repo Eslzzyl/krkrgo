@@ -24,7 +24,7 @@ func (s *Services) varStorageObject(vm *tjs.VM, name string) (tjs.Value, string,
 		parts = nil
 	}
 	dispatch := tjs.NewDispatcher(vm.Objects)
-	base := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	base := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
 	for index, part := range parts[:max(0, len(parts)-1)] {
 		if part == "" {
 			return tjs.VoidValue, "", fmt.Errorf("varfile storage path %q contains an empty directory", name)

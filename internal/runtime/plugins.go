@@ -26,16 +26,61 @@ func pluginLinkKey(name string) string {
 	return clean
 }
 
-// LayerExImage's game-facing TJS helpers compose Layer's built-in pixel
-// operations; unavailable extension operations still fail through Layer's
-// normal ErrUnsupportedNative path instead of being claimed as successful.
+// nativePluginProviders maps the plugin module names the runtime answers to the
+// facility that satisfies them, so a link is accepted only when the capability
+// the reference module supplies exists in this runtime and no module's API is
+// fabricated by a link. Names outside the table fail through
+// ErrUnsupportedNative, matching the reference plugin managers, which register
+// nothing for a module they do not hold (reference/krkrz/base/win32/PluginImpl.cpp:442
+// throws from the plugin constructor; reference/krkr2-main/cpp/core/plugin/ncbind.cpp:12
+// returns false).
+//
+// Windows-only modules are deliberately absent: the runtime holds no
+// cross-platform implementation of what they do, and macOS/Linux cannot load the
+// shipped DLLs, so linking them must report the unavailable module instead of a
+// false success.
+//
+//   - win32ole.dll: COM/OLE automation; neither reference ships it
+//     (reference/krkr2-main/docs/KRKR_PLUGINS.md has no entry).
+//   - krkrsteam.dll, steamdrawdevice.dll: Steamworks integration and its draw
+//     device; the portable reference only compiles them with the Steam SDK
+//     (reference/krkr2-main/cpp/plugins/CMakeLists.txt:23).
+//   - k2compat.dll: KAG's krkrz-only window/console compatibility plugin, absent
+//     from both reference plugin inventories.
+//   - kagexopt.dll: absent from both references and never linked by the shipped
+//     games' scripts.
+//   - wuopus.dll: the runtime's audio path decodes no Opus; the FFmpeg sidecar
+//     only enables the Ogg/Vorbis decoder (scripts/build-ffmpeg.sh:183).
+var nativePluginProviders = map[string]string{
+	"addfont.dll":       "System.addFont registers storage font data (system_native.go; cpp/plugins/addFont.cpp)",
+	"alphamovie.dll":    "AlphaMovie path/rectangle playback (alpha_movie_native.go; assets/amv_decode.go)",
+	"csvparser.dll":     "CSVParser (csv_parser_native.go; cpp/plugins/csvParser.cpp)",
+	"extnagano.dll":     "link-only: the module installs transition providers without TJS globals; Layer.beginTransition keeps its built-in crossfade/universal providers and rejects the others",
+	"extrans.dll":       "link-only: the module installs transition providers without TJS globals; Layer.beginTransition keeps its built-in crossfade/universal providers and rejects the others",
+	"fftgraph.dll":      "drawFFTGraph global; graph rendering reports an unsupported device (lightweight_plugins_native.go; cpp/plugins/fftgraph.cpp)",
+	"getabout.dll":      "System.getAboutString (system_native.go; cpp/plugins/getabout.cpp)",
+	"getsample.dll":     "WaveSoundBuffer sample extensions (sample_native.go; cpp/plugins/getSample.cpp)",
+	"kagparser.dll":     "built-in KAGParser; KAGParserEx.dll resolves here (kag_native.go; cpp/plugins/KAGParser/kagparserex.cpp)",
+	"krmovie.dll":       "link-only: the module backs the core VideoOverlay class and registers no TJS names, so the link installs nothing on top of the runtime's own VideoOverlay and MPEG/ASF/AMV decoders (video.go, assets/mpeg2.go; krkrz/movie/win32/krmovie.cpp, cpp/core/movie/ffmpeg)",
+	"layerexbtoa.dll":   "link-only: callers guard on the missing Layer method, and Layer's built-in pixel operations (layer_image.go) are all the runtime claims; other extension operations report ErrUnsupportedNative",
+	"layerexdraw.dll":   "link-only: the module's GDI+ surface is not implemented, so Layer reports the missing operations instead of fabricating them (layer_native.go, image_function_native.go)",
+	"layereximage.dll":  "link-only: the game's LayerEx.tjs helpers compose Layer's built-in pixel operations (layer_image.go); other extension operations report ErrUnsupportedNative",
+	"layerexraster.dll": "link-only: callers guard on the missing Layer method, and Layer's built-in pixel operations (layer_image.go) are all the runtime claims; other extension operations report ErrUnsupportedNative",
+	"menu.dll":          "shared MenuItem surface (menu_native.go)",
+	"motionplayer.dll":  "Motion resource manager subset with layer/shape/play constants (motionplayer_native.go; cpp/plugins/motionplayer)",
+	"packinone.dll":     "component container for the ScriptsEx/saveStruct/csvParser/LayerExImage exports the runtime already provides (scripts_ex_native.go, tjs/serialization.go, csv_parser_native.go)",
+	"psbfile.dll":       "PSBFile (psbfile_native.go; cpp/plugins/psbfile)",
+	"scriptsex.dll":     "ScriptsEx helpers on the built-in Scripts class (scripts_ex_native.go; cpp/plugins/scriptsEx.cpp)",
+	"textrender.dll":    "TextRenderBase (text_render_native.go; cpp/plugins/TextRender.cpp)",
+	"varfile.dll":       "var:// storage subset (var_storage_native.go; cpp/plugins/varfile.cpp)",
+	"win32dialog.dll":   "portable WIN32Dialog with the host dialog handler (lightweight_plugins_native.go; cpp/plugins/win32dialog.cpp)",
+	"windowex.dll":      "MenuItem surface plus Window extension natives (menu_native.go, window_native.go; cpp/plugins/windowEx.cpp)",
+	"wuvorbis.dll":      "link-only: Ogg Vorbis decoding is already in the core sound path (sound.go with the FFmpeg sidecar; cpp/core/sound/VorbisWaveDecoder.cpp)",
+}
+
 func isImplementedNativePlugin(key string) bool {
-	switch path.Base(key) {
-	case "addfont.dll", "alphamovie.dll", "csvparser.dll", "extnagano.dll", "extrans.dll", "fftgraph.dll", "getabout.dll", "getsample.dll", "kagparser.dll", "k2compat.dll", "kagexopt.dll", "krmovie.dll", "krkrsteam.dll", "layerexbtoa.dll", "layerexdraw.dll", "layereximage.dll", "layerexraster.dll", "menu.dll", "motionplayer.dll", "packinone.dll", "psbfile.dll", "scriptsex.dll", "steamdrawdevice.dll", "textrender.dll", "varfile.dll", "win32dialog.dll", "windowex.dll", "win32ole.dll", "wuopus.dll", "wuvorbis.dll":
-		return true
-	default:
-		return false
-	}
+	_, ok := nativePluginProviders[path.Base(key)]
+	return ok
 }
 
 var ErrPluginName = errors.New("invalid plugin name")

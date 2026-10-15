@@ -42,7 +42,7 @@ func TestStoragesAddArchiveThroughLegacyGlobalProxy(t *testing.T) {
 			{Value: tjs.StringValue("missing.xp3")},
 		},
 	}}}
-	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
 	invoke := func(function, receiver tjs.Value, args []tjs.Value, resultNeeded bool) (tjs.Value, error) {
 		return session.VM.InvokeLegacy(function, receiver, args, session.Services, &session.Budget, resultNeeded)
 	}

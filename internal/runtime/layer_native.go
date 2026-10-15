@@ -39,7 +39,11 @@ func (s *Services) layerForContext(context tjs.Value, operation string) (*Layer,
 	if context.Kind() != tjs.KindObject || context.IsNull() {
 		return nil, 0, fmt.Errorf("Layer.%s requires non-null object context", operation)
 	}
-	id := context.ObjectRef().Object
+	ref := context.ObjectRef()
+	id := ref.Object
+	if ref.HasBoundContext() {
+		id = ref.Context
+	}
 	s.ensureInit()
 	s.mu.RLock()
 	l := s.Layers[id]
@@ -118,16 +122,6 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 	id := context.ObjectRef().Object
 	if operation == "@initialize" || operation == "Layer" {
 		s.mu.Lock()
-		if operation == "Layer" {
-			owner, parent, _ := tjs.ObjectID(0), tjs.ObjectID(0), tjs.ObjectID(0)
-			if len(args) > 0 && args[0].Kind() == tjs.KindObject && !args[0].IsNull() {
-				owner = args[0].ObjectRef().Object
-			}
-			if len(args) > 1 && args[1].Kind() == tjs.KindObject && !args[1].IsNull() {
-				parent = args[1].ObjectRef().Object
-			}
-			fmt.Printf("legacy layer init context=(%d,%d) owner=%d parent=%d main=%d\n", context.ObjectRef().Object, context.ObjectRef().Context, owner, parent, s.MainWindow)
-		}
 		if l := s.Layers[id]; l != nil {
 			// Native base initialization runs before a script-derived Layer's
 			// constructor. Its @initialize call has no arguments; honor the

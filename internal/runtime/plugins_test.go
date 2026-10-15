@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -150,6 +151,55 @@ func TestScriptsExPluginLinkIsNormalizedIdempotentAndExposesImplementedHelpers(t
 		got, err := session.Evaluate("global." + name)
 		if err != nil || got.Text() != want {
 			t.Errorf("%s = %q, err=%v; want %q", name, got.Text(), err, want)
+		}
+	}
+}
+
+func TestWindowsOnlyPluginLinksReportTheUnavailableModule(t *testing.T) {
+	services := DefaultServices()
+	session := NewSession(services, 100_000)
+	defer session.Close()
+
+	for _, link := range []string{
+		`Plugins.link("plugin/win32ole.dll")`,
+		`Plugins.link("PLUGIN\\KRKRSTEAM.TPM")`,
+		`Plugins.link("plugin/SteamDrawDevice.dll")`,
+		`Plugins.link("plugin/k2compat.dll")`,
+		`Plugins.link("plugin/kagexopt.dll")`,
+		`Plugins.link("plugin/wuopus.dll")`,
+	} {
+		if _, err := session.Evaluate(link); !errors.Is(err, ErrUnsupportedNative) {
+			t.Errorf("%s error = %v, want ErrUnsupportedNative", link, err)
+		}
+	}
+	if len(services.Plugins) != 0 {
+		t.Fatalf("unavailable Windows-only links were recorded: %v", services.Plugins)
+	}
+}
+
+func TestKrmovieLinkInstallsNoFabricatedMovieClass(t *testing.T) {
+	services := DefaultServices()
+	session := NewSession(services, 100_000)
+	defer session.Close()
+
+	if _, err := session.Evaluate(`Plugins.link("plugin/krmovie.dll")`); err != nil {
+		t.Fatalf("krmovie.dll link: %v", err)
+	}
+	// The reference module supplies the core VideoOverlay backend and registers no
+	// TJS names, so the link must not invent a movie class or its compatibility
+	// globals.
+	for _, source := range []string{
+		`typeof global.GFX_Movie == "undefined"`,
+		`typeof global.Types == "undefined"`,
+		`typeof global.Entries == "undefined"`,
+	} {
+		value, err := session.Evaluate(source)
+		if err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+		ok, err := value.Truth()
+		if err != nil || !ok {
+			t.Errorf("%s = %v, err=%v; want the global to remain undefined", source, value, err)
 		}
 	}
 }

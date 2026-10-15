@@ -240,7 +240,6 @@ func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string,
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		fmt.Printf("legacy window init op=%s context=(%d,%d) main=%d existing=%t\n", operation, context.ObjectRef().Object, context.ObjectRef().Context, s.MainWindow, s.Window(id) != nil)
 		if s.Window(id) == nil {
 			if err := s.RegisterWindow(id, NewWindow()); err != nil {
 				return tjs.VoidValue, err

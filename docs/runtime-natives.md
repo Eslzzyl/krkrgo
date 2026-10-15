@@ -50,6 +50,17 @@ An empty `ActionName` calls `ActionOwner` itself; a non-empty name calls that ow
 `extrans.dll` and `extNagano.dll` are explicit link-only capabilities: the upstream plugins register transition providers without TJS globals, so Go records the links but does not claim plugin-specific effects are implemented. `Layer.beginTransition` continues to support its built-in `crossfade` and `universal` providers and rejects unsupported provider names.
 `ScriptsEx.dll` is recognized as a built-in compatibility link and is recorded idempotently using the same normalized key. The session already exposes the implemented generic `Scripts` helpers (`getObjectKeys`, `getObjectCount`, `getMD5HashString`, `equalStruct`, `equalStructNumericLoose`, `foreach`, `clone`, `getObjectContext`, and `isNullContext`) and the upstream property-flag constants. Accepting the link does not claim that `propGet`, `propSet`, `safeEvalStorage`, or `rehash` are implemented.
 
+Two further link-only names are accepted because the runtime already provides the capability the module supplies, and the reference modules register no TJS surface of their own:
+
+- `krmovie.dll` backs the core `VideoOverlay` class in krkrz (`krkrz/movie/win32/krmovie.cpp` implements `GetVideoOverlayObject`), and the portable reference keeps that backend in the core (`cpp/core/movie/ffmpeg/krffmpeg.cpp`; `TJS_W("VideoOverlay")` is registered by `cpp/core/base/ScriptMgnIntf.cpp:496`). The Go runtime likewise owns `VideoOverlay` and decodes its MPEG, ASF/WMV, and AMV sources itself, so the link installs nothing and creates no compatibility class.
+- `wuvorbis.dll` adds Ogg Vorbis decoding to the Windows core; here that decoding is already in the core sound path (`WaveSoundBuffer` through the FFmpeg sidecar, whose build enables `--enable-decoder=vorbis`).
+
+Windows-only modules are deliberately not answered, because macOS/Linux cannot load the shipped DLLs and the runtime holds no cross-platform implementation of their behavior. Linking them reports the unavailable module instead of a false success, matching the reference plugin managers, which register nothing for an unknown module (`krkrz/base/win32/PluginImpl.cpp:442` throws; `cpp/core/plugin/ncbind.cpp:12` returns false):
+
+- `win32ole.dll` (COM/OLE automation) and `wuopus.dll` (Opus decoding): neither reference nor the runtime provides the capability; the FFmpeg sidecar decodes no Opus.
+- `krkrsteam.dll` and `steamdrawdevice.dll` (Steamworks integration and draw device): only compiled in the portable reference when the Steam SDK is enabled (`cpp/plugins/CMakeLists.txt:23`).
+- `k2compat.dll` (KAG's krkrz-only window/console compatibility plugin) and `kagexopt.dll`: absent from both reference plugin inventories, and no runtime facility supplies their exports.
+
 
 The small compatibility links `getabout.dll`, `win32dialog.dll`, and `fftgraph.dll` use the same case-insensitive `.dll`/`.tpm` path normalization:
 
@@ -67,9 +78,9 @@ Reference comparison: krkr2's `cpp/core/utils/PadIntf.cpp` defines the baseline 
 
 ## Graphics and media plugin compatibility
 
-The krkr2 C++ plugin sources expose substantially larger APIs than the Go host currently implements. The Go runtime has no PSB/PSD decoder, no GDI+/Anti-Grain `layerExDraw` renderer, and no native video presentation backend for the `layerExMovie` Layer extension. It does already provide general-purpose PNG/JPEG/BMP image loading/saving, Layer image operations, XP3 archive reading, and a headless `VideoOverlay` path; these facilities are not aliases for the plugin-specific formats or presentation behavior.
+The krkr2 C++ plugin sources expose substantially larger APIs than the Go host currently implements. The Go runtime has no PSD decoder, no GDI+/Anti-Grain `layerExDraw` renderer, and no native video presentation backend for the `layerExMovie` Layer extension. It does already provide general-purpose PNG/JPEG/BMP image loading/saving, Layer image operations, XP3 archive reading, a PSB object-tree parser, and a headless `VideoOverlay` path; these facilities are not aliases for the plugin-specific formats or presentation behavior.
 
-- `psbfile.dll` registers `PSBFile` with `load` and `root` (`cpp/plugins/psbfile/main.cpp`). `psdfile.dll` and `psbfile.dll` are not implemented in Go; linking their names does not load a DLL or install a fake parser.
+- `psbfile.dll` registers `PSBFile` with `load` and `root` (`cpp/plugins/psbfile/main.cpp`) and is served by the runtime's own PSB parser (`internal/assets/psb.go`). `psdfile.dll` (the `psd.dll` module) is not implemented in Go; linking it does not load a DLL or install a fake parser.
 - `layerExDraw.dll` is a large GDI+-style geometry, image, brush, pen, path, and graphics surface (`cpp/plugins/layerex_draw/`). `layerExPerspective.cpp` installs the perspective-copy Layer method. Neither plugin surface is represented by the current Go Layer renderer.
 - `layerExMovie.dll` attaches `openMovie`, `startMovie`, `stopMovie`, and `isPlayingMovie` to Layer (`cpp/plugins/layerExMovie.cpp`). Those four methods return `ErrUnsupportedDevice` with a video-backend explanation; they never silently claim to open or play a movie. This remains distinct from the Go `VideoOverlay` native.
 - `motionplayer.dll` / `emoteplayer.dll` register a large PSB/MTN resource-manager, animation-player, adaptor, and rendering API in the native runtime (`cpp/plugins/motionplayer/main.cpp`, `cpp/plugins/EmotePlayer.cpp`). Go links `motionplayer.dll` for `Motion`'s layer/shape/play/transform constants and a storage-backed `Motion.ResourceManager` subset (`load`, `loadSource`, `unload`, `clearCache`, `findSource`); animation players, adaptors, MTN decoding, and rendering are not implemented.

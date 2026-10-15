@@ -136,13 +136,13 @@ func (d *Dispatcher) getPropertyDescriptor(p *propertyMeta, context ObjectRef, t
 }
 
 func (d *Dispatcher) bindMember(value Value, context ObjectRef) Value {
-	if value.Kind() != KindObject || value.ObjectRef().Context != 0 {
+	if value.Kind() != KindObject || value.ObjectRef().HasBoundContext() {
 		return value
 	}
 	registry.mu.RLock()
 	meta := registry.callable[value.ObjectRef().Object]
 	registry.mu.RUnlock()
-	if meta == nil || context.Object == 0 {
+	if meta == nil || context.IsNull() {
 		return value
 	}
 	bound := newFunctionObject(dTable(d), meta.fn, meta.call, meta.valueCall, context, meta.boundValue)
@@ -278,9 +278,9 @@ func (d *Dispatcher) CallWithContext(function Value, context ObjectRef, args ...
 	if meta == nil {
 		return Value{}, ErrType
 	}
-	if boundContext := function.ObjectRef().Context; boundContext != 0 {
-		context = ObjectRef{Object: boundContext, Context: boundContext}
-	} else if context.Object == 0 {
+	if functionRef := function.ObjectRef(); functionRef.HasBoundContext() {
+		context = boundContextRef(functionRef.Context)
+	} else if context.IsNull() {
 		context = meta.bound
 	}
 	if meta.call != nil {
@@ -888,8 +888,8 @@ func arraySourceObject(d *Dispatcher, value Value) (*Object, error) {
 		return nil, ErrType
 	}
 	ref := value.ObjectRef()
-	if ref.Context != 0 {
-		ref.Object = ref.Context
+	if ref.HasBoundContext() {
+		ref = boundContextRef(ref.Context)
 	}
 	return d.object(ref)
 }

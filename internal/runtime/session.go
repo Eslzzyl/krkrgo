@@ -660,7 +660,7 @@ func (s *Session) executeStorage(name string, useConfiguredEncoding bool) (tjs.V
 		return tjs.VoidValue, err
 	}
 	if len(b) >= 4 && string(b[:4]) == "TJS2" {
-		return executeTJS2Bytecode(s.VM, b, tjs.ObjectValue(tjs.NewObjectRef(0, 1)), s.Services, &s.Budget)
+		return executeTJS2Bytecode(s.VM, b, tjs.ObjectValue(tjs.NewObjectRef(0, 0)), s.Services, &s.Budget, name)
 	}
 	var src string
 	if useConfiguredEncoding {
@@ -982,7 +982,7 @@ func (s *Session) queueSoundEventsAfterMix() error {
 // updateScriptWorld refreshes environment-backed script layers before capture.
 // The reference host performs this after dispatching the frame's script events.
 func (s *Session) updateScriptWorld() error {
-	world, err := s.VM.GetMember(tjs.ObjectValue(tjs.NewObjectRef(0, 1)), "world_object", s.Services, &s.Budget)
+	world, err := s.VM.GetMember(tjs.ObjectValue(tjs.NewObjectRef(0, 0)), "world_object", s.Services, &s.Budget)
 	if err != nil {
 		return err
 	}

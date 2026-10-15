@@ -23,34 +23,6 @@ func installGetAboutNative(vm *tjs.VM) error {
 	return nil
 }
 
-// installKrMovieNative registers the static surface consumed by GFX_Movie.tjs.
-func installKrMovieNative(vm *tjs.VM) error {
-	if vm == nil {
-		return fmt.Errorf("krmovie.dll requires a VM")
-	}
-	if _, installed := vm.Globals["GFX_Movie"]; installed {
-		return nil
-	}
-	class, err := vm.NewNativeClass("GFX_Movie", "")
-	if err != nil {
-		return err
-	}
-	types, err := vm.NewArray(nil)
-	if err != nil {
-		return err
-	}
-	entries, err := vm.NewArray(nil)
-	if err != nil {
-		return err
-	}
-	if err := vm.SetMemberWithRuntime(types, "Entries", entries, 0, nil, nil); err != nil {
-		return err
-	}
-	vm.Globals["Entries"] = entries
-	vm.Globals["Types"] = types
-	return vm.RegisterNativeStaticValue(class, "Types", types)
-}
-
 // installWin32DialogNative evaluates the C++ plugin's WIN32Dialog script class
 // using the existing host dialog service. System.inform returns void in TJS,
 // hence !System.inform(...) evaluates to true after a successful dialog.

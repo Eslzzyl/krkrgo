@@ -1807,9 +1807,6 @@ func (s *Services) preloadWin32Dialog(vm *tjs.VM, budget *uint64) error {
 	if err := installWin32DialogNative(vm); err != nil {
 		return err
 	}
-	if err := installKrMovieNative(vm); err != nil {
-		return err
-	}
 	if _, ok := vm.Globals["WIN32GenericDialogEX"]; ok {
 		return nil
 	}

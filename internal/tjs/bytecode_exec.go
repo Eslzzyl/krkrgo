@@ -134,9 +134,6 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		return VoidValue, fmt.Errorf("legacy intercode object %d: index out of range", object)
 	}
 	o := &d.Objects[object]
-	if object == 27 || object == 136 || object == 90 {
-		fmt.Printf("legacy enter object=%d this=%v args=%d offset=%d\n", object, thisContext.ObjectRef(), len(args), startOffset)
-	}
 	instructions, err := d.DecodeLegacyInstructions(object)
 	if err != nil {
 		return VoidValue, err
@@ -209,19 +206,6 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		}
 		regs[collapseRegister] = ObjectValue(collapsed.Ref())
 	}
-	if object == 0 || object == 214 {
-		ref := ObjectRef{}
-		category := ObjectCategory(0)
-		if thisContext.Kind() == KindObject && !thisContext.IsNull() {
-			ref = thisContext.ObjectRef()
-			if table != nil {
-				if current, ok := table.Lookup(ref.Object); ok {
-					category = current.Category
-				}
-			}
-		}
-		fmt.Printf("legacy context object=%d value=%s id=%d contextID=%d category=%d global=%s globalID=%d globalContext=%d\n", object, thisContext.TypeName(), ref.Object, ref.Context, category, global.TypeName(), global.ObjectRef().Object, global.ObjectRef().Context)
-	}
 	regs[registerBase-1] = thisContext
 	regs[registerBase-2] = global
 	if roots != nil {
@@ -243,18 +227,11 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			return nil
 		}
 		if value.Kind() != KindObject || value.IsNull() {
-			if object == 29 || object == 3 {
-				ref := ObjectRef{}
-				if value.Kind() == KindObject {
-					ref = value.ObjectRef()
-				}
-				objectName := ""
-				if o.Name >= 0 && int(o.Name) < len(d.Strings) {
-					objectName = d.Strings[o.Name]
-				}
-				fmt.Printf("legacy property target object=%d name=%q target type=%s ref=(%d,%d) pc=%d this=%s thisRef=(%d,%d)\n", object, objectName, value.TypeName(), ref.Object, ref.Context, pc, thisContext.TypeName(), thisContext.ObjectRef().Object, thisContext.ObjectRef().Context)
+			instruction := LegacyInstruction{}
+			if ip, ok := offsetToIP[pc]; ok {
+				instruction = instructions[ip]
 			}
-			return fmt.Errorf("legacy intercode object %d code offset %d: property target is %s", object, pc, value.TypeName())
+			return fmt.Errorf("legacy intercode object %d code offset %d: %s operands %v property target is %s", object, pc, instruction.Name, instruction.Operands, value.TypeName())
 		}
 		if table == nil {
 			return fmt.Errorf("legacy intercode object %d code offset %d: property access requires an object table", object, pc)
@@ -322,44 +299,12 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			if errors.Is(err, ErrMemberNotFound) || (err == nil && name == "kag" && (value.IsVoid() || value.IsNull())) {
 				value, err = read(global, name, flags)
 			}
-			if object == 27 && (name == "LanguageTags" || name == "SystemConfig" || name == "kag") {
-				fmt.Printf("legacy object27 read name=%q this=%v value=%s valueRef=%v err=%v\n", name, thisContext.ObjectRef(), value.TypeName(), value.ObjectRef(), err)
-			}
-			if object == 29 && name == "kag" {
-				contextRef := ObjectRef{}
-				globalRef := ObjectRef{}
-				if thisContext.Kind() == KindObject && !thisContext.IsNull() {
-					contextRef = thisContext.ObjectRef()
-				}
-				if global.Kind() == KindObject && !global.IsNull() {
-					globalRef = global.ObjectRef()
-				}
-				direct, directErr := dispatcher.Get(global, name, flags)
-				fmt.Printf("legacy object29 kag this=%v global=%v value=%s direct=%s directErr=%v\n", contextRef, globalRef, value.TypeName(), direct.TypeName(), directErr)
-			}
-			if object == 232 && name == "kag" {
-				ref := ObjectRef{}
-				if value.Kind() == KindObject && !value.IsNull() {
-					ref = value.ObjectRef()
-				}
-				fmt.Printf("kag resolve context=%s contextID=%d value=%s valueID=%d valueContext=%d err=%v\n", thisContext.TypeName(), thisContext.ObjectRef().Object, value.TypeName(), ref.Object, ref.Context, err)
-			}
 		} else {
 			receiver := memberReceiver(regs[target])
 			if err := propertyTarget(receiver, pc); err != nil {
 				return VoidValue, err
 			}
 			value, err = read(receiver, name, flags)
-			if object == 29 {
-				fmt.Printf("legacy object29 read name=%q target=%s targetRef=%v value=%s valueRef=%v err=%v\n", name, receiver.TypeName(), receiver.ObjectRef(), value.TypeName(), value.ObjectRef(), err)
-			}
-		}
-		if object == 3 && (name == "window" || name == "exWidth" || name == "exHeight" || name == "isD3D") {
-			ref := ObjectRef{}
-			if value.Kind() == KindObject {
-				ref = value.ObjectRef()
-			}
-			fmt.Printf("legacy object3 read name=%s value=%s ref=(%d,%d) err=%v\n", name, value.TypeName(), ref.Object, ref.Context, err)
 		}
 		if err != nil {
 			return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: get property %q: %w", object, pc, name, err)
@@ -376,30 +321,6 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 	}
 	writeProperty := func(target int, name string, value Value, flags uint32, pc int) error {
 		receiver := regs[target]
-		if object == 3 {
-			ref := ObjectRef{}
-			if receiver.Kind() == KindObject {
-				ref = receiver.ObjectRef()
-			}
-			fmt.Printf("legacy object3 write target=%d proxy=%d ref=(%d,%d) thisRef=(%d,%d) name=%s pc=%d\n", target, registerBase-2, ref.Object, ref.Context, thisContext.ObjectRef().Object, thisContext.ObjectRef().Context, name, pc)
-		}
-		if name == "left" {
-			ref := ObjectRef{}
-			category := ObjectCategory(0)
-			classID := ObjectID(0)
-			if receiver.Kind() == KindObject && !receiver.IsNull() && table != nil {
-				ref = receiver.ObjectRef()
-				if targetObject, ok := table.Lookup(ref.Object); ok {
-					category = targetObject.Category
-				}
-				classID, _ = table.ClassForInstance(ref.Object)
-			}
-			objectName := ""
-			if o.Name >= 0 && int(o.Name) < len(d.Strings) {
-				objectName = d.Strings[o.Name]
-			}
-			fmt.Printf("legacy left write object=%d name=%q target=%d ref=(%d,%d) category=%d class=%d thisRef=%v\n", object, objectName, target, ref.Object, ref.Context, category, classID, thisContext.ObjectRef())
-		}
 		if target == registerBase-2 {
 			receiver = thisContext
 		} else {
@@ -451,9 +372,8 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 	// context otherwise, exactly like the reference VM's
 	// `clo.ObjThis ? clo.ObjThis : ra[-1]`.
 	propertyReceiver := func(property Value) Value {
-		if property.Kind() == KindObject && !property.IsNull() && property.ObjectRef().Context != 0 {
-			context := property.ObjectRef().Context
-			return ObjectValue(NewObjectRef(context, context))
+		if property.Kind() == KindObject && !property.IsNull() && property.ObjectRef().HasBoundContext() {
+			return ObjectValue(boundContextRef(property.ObjectRef().Context))
 		}
 		return regs[registerBase-1]
 	}
@@ -524,7 +444,7 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		// closure may be an older descriptor that was replaced on its target
 		// object, so resolving a member name would select the wrong property.
 		boundProperty := property
-		if property.ObjectRef().Context == 0 {
+		if !property.ObjectRef().HasBoundContext() {
 			boundProperty = ObjectValue(NewObjectRef(property.ObjectRef().Object, receiver.ObjectRef().Object))
 		}
 		if err := set(boundProperty, "", input, LegacyPropertySetFlag); err != nil {
@@ -830,9 +750,29 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		exceptionReg int
 	}
 	var exceptionHandlers []legacyExceptionHandler
-	// ENTRY/THROW/EXTRY model the legacy VM's explicit script-exception path.
-	// Operation errors still propagate normally; only THROW transfers to a
-	// registered catch target.
+	catchOperationError := func(err error, nextIP *int) bool {
+		if len(exceptionHandlers) == 0 {
+			return false
+		}
+		handler := exceptionHandlers[len(exceptionHandlers)-1]
+		exceptionHandlers = exceptionHandlers[:len(exceptionHandlers)-1]
+		message := rootErrorMessage(err)
+		if message == "" {
+			message = err.Error()
+		}
+		exception := StringValue(message)
+		if construct != nil {
+			if class, classErr := read(global, "Exception", MemberMustExist); classErr == nil {
+				if value, constructErr := construct(class, []Value{StringValue(message)}); constructErr == nil {
+					exception = value
+				}
+			}
+		}
+		regs[handler.exceptionReg] = exception
+		*nextIP = handler.catchIP
+		return true
+	}
+	// ENTRY/THROW/EXTRY mirror the reference VM's protected execution flow.
 	for ip := startIP; ip < len(instructions); {
 		in := instructions[ip]
 		nextIP := ip + 1
@@ -1331,8 +1271,11 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			}
 			if regs[dst].Kind() == KindObject {
 				ref := regs[dst].ObjectRef()
-				context := regs[ctx].ObjectRef()
-				regs[dst] = ObjectValue(NewObjectRef(ref.Object, context.Object))
+				if context := regs[ctx]; context.Kind() == KindObject && !context.IsNull() {
+					regs[dst] = ObjectValue(NewObjectRef(ref.Object, context.ObjectRef().Object))
+				} else {
+					regs[dst] = ObjectValue(NewObjectRef(ref.Object))
+				}
 			}
 		case 83: // TYPEOF replaces the register with the TJS type-name string.
 			index, e := reg(in.Operands[0], in.Offset)
@@ -1619,7 +1562,7 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			if e != nil && !errors.Is(e, ErrMemberNotFound) && !errors.Is(e, ErrCannotDelete) {
 				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: delete property %q: %w", object, in.Offset, name, e)
 			}
-			if result != 0 {
+			if in.Operands[0] != 0 {
 				regs[result] = boolValue(deleted)
 			}
 		case 117: // DELI ra[result] = delete ra[target][ra[key]].
@@ -1648,7 +1591,7 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			if e != nil && !errors.Is(e, ErrMemberNotFound) && !errors.Is(e, ErrCannotDelete) {
 				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: delete property %q: %w", object, in.Offset, name, e)
 			}
-			if result != 0 {
+			if in.Operands[0] != 0 {
 				regs[result] = boolValue(deleted)
 			}
 		case 115: // GETP ra[dst] = *ra[property] -- read the value a property closure stands for.
@@ -1691,14 +1634,20 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 				return VoidValue, e
 			}
 			if construct == nil {
-				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: NEW requires VM construction support", object, in.Offset)
-			}
-			value, e := construct(regs[callee], constructed)
-			if e != nil {
-				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: NEW: %w", object, in.Offset, e)
-			}
-			if result != 0 {
-				regs[result] = value
+				newErr := fmt.Errorf("legacy intercode object %d code offset %d: NEW requires VM construction support", object, in.Offset)
+				if !catchOperationError(newErr, &nextIP) {
+					return VoidValue, newErr
+				}
+			} else {
+				value, constructErr := construct(regs[callee], constructed)
+				if constructErr != nil {
+					newErr := fmt.Errorf("legacy intercode object %d code offset %d: NEW: %w", object, in.Offset, constructErr)
+					if !catchOperationError(newErr, &nextIP) {
+						return VoidValue, newErr
+					}
+				} else if in.Operands[0] != 0 {
+					regs[result] = value
+				}
 			}
 		case 99: // CALL ra, callable, count, args -- invoke with the current this context.
 			result, e := reg(in.Operands[0], in.Offset)
@@ -1715,8 +1664,9 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			}
 			receiver := regs[registerBase-1]
 			var value Value
+			hasResult := in.Operands[0] != 0
 			if invoke != nil {
-				value, e = invoke(regs[callee], receiver, callArgs, result != 0)
+				value, e = invoke(regs[callee], receiver, callArgs, hasResult)
 			} else {
 				context := ObjectRef{}
 				if receiver.Kind() == KindObject && !receiver.IsNull() {
@@ -1725,14 +1675,17 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 				value, e = dispatcher.CallWithContext(regs[callee], context, callArgs...)
 			}
 			if e != nil {
-				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: CALL %s: %w", object, in.Offset, regs[callee].TypeName(), e)
-			}
-			if result != 0 {
+				callErr := fmt.Errorf("legacy intercode object %d code offset %d: CALL %s: %w", object, in.Offset, regs[callee].TypeName(), e)
+				if !catchOperationError(callErr, &nextIP) {
+					return VoidValue, callErr
+				}
+			} else if hasResult {
 				regs[result] = value
 			}
 		case 100, 101: // CALLD/CALLI -- invoke the named member of an object. CALLD
 			// reads the member name from the constant area, CALLI from a register;
 			// the argument layout is identical, so both share the loader.
+			hasResult := in.Operands[0] != 0
 			result, e := reg(in.Operands[0], in.Offset)
 			if e != nil {
 				return VoidValue, e
@@ -1762,71 +1715,28 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			if callee == registerBase-2 {
 				receiver = thisContext
 			}
-			if name == "callHook" && receiver.Kind() == KindObject && receiver.ObjectRef().Context == receiver.ObjectRef().Object && receiver.ObjectRef().Object == 12895 {
-				hookName := ""
-				if len(callArgs) != 0 {
-					hookName = callArgs[0].Text()
-				}
-				fmt.Printf("legacy callHook object=%d receiver=%v hook=%q args=%d\n", object, receiver.ObjectRef(), hookName, len(callArgs))
-			}
 			var value Value
 			// The global eval function is a VM hook rather than a real member,
 			// so only the direct-call form binds it here.
 			if in.Opcode == 100 && name == "eval" && evaluate != nil {
 				if len(callArgs) != 0 {
-					value, e = evaluate(callArgs[0].Text(), thisContext, result != 0)
+					value, e = evaluate(callArgs[0].Text(), thisContext, hasResult)
 				}
 				if e != nil {
-					return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: CALLD %q: %w", object, in.Offset, name, e)
-				}
-				if result != 0 {
+					callErr := fmt.Errorf("legacy intercode object %d code offset %d: CALLD %q: %w", object, in.Offset, name, e)
+					if !catchOperationError(callErr, &nextIP) {
+						return VoidValue, callErr
+					}
+				} else if hasResult {
 					regs[result] = value
 				}
 			} else {
 				function, e := read(receiver, name, MemberMustExist)
-				if object == 3 && name == "Layer" {
-					ref := ObjectRef{}
-					category := ObjectCategory(0)
-					if function.Kind() == KindObject {
-						ref = function.ObjectRef()
-						if table != nil {
-							if functionObject, ok := table.Lookup(ref.Object); ok {
-								category = functionObject.Category
-							}
-						}
-					}
-					instanceCategory := ObjectCategory(0)
-					var instanceClass ObjectID
-					if thisContext.Kind() == KindObject && !thisContext.IsNull() && table != nil {
-						if instanceObject, ok := table.Lookup(thisContext.ObjectRef().Object); ok {
-							instanceCategory = instanceObject.Category
-						}
-						instanceClass, _ = table.ClassForInstance(thisContext.ObjectRef().Object)
-					}
-					fmt.Printf("legacy object3 Layer call function=%s ref=(%d,%d) category=%d receiver=%s receiverRef=%v this=%s thisRef=%v thisCategory=%d thisClass=%d args=%d err=%v\n", function.TypeName(), ref.Object, ref.Context, category, receiver.TypeName(), receiver.ObjectRef(), thisContext.TypeName(), thisContext.ObjectRef(), instanceCategory, instanceClass, len(callArgs), e)
-				}
 				if e != nil && callee == registerBase-2 && errors.Is(e, ErrMemberNotFound) {
 					function, e = read(global, name, MemberMustExist)
 				}
 				if e == nil && function.IsVoid() && callee == registerBase-2 {
 					function, e = read(global, name, MemberMustExist)
-				}
-				if object == 232 && name == "getBookMarkFileNameAtNum" {
-					var receiverID, receiverContext, classID ObjectID
-					var category ObjectCategory
-					var classMembers []string
-					if receiver.Kind() == KindObject && !receiver.IsNull() {
-						ref := receiver.ObjectRef()
-						receiverID, receiverContext = ref.Object, ref.Context
-						if table != nil {
-							if receiverObject, ok := table.Lookup(receiverID); ok {
-								category = receiverObject.Category
-							}
-							classID, _ = table.ClassForInstance(receiverID)
-							classMembers, _ = table.ClassInstanceMembers(classID)
-						}
-					}
-					fmt.Printf("bookmark resolve receiver=%s id=%d context=%d category=%d class=%d members=%v err=%v function=%s functionNull=%t\n", receiver.TypeName(), receiverID, receiverContext, category, classID, classMembers, e, function.TypeName(), function.IsNull())
 				}
 				callReceiver := receiver
 				if function.Kind() == KindObject && table != nil &&
@@ -1841,7 +1751,7 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 					}
 				}
 				if invoke != nil {
-					value, e = invoke(function, callReceiver, callArgs, result != 0)
+					value, e = invoke(function, callReceiver, callArgs, hasResult)
 				} else {
 					context := ObjectRef{}
 					if callReceiver.Kind() == KindObject && !callReceiver.IsNull() {
@@ -1850,9 +1760,11 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 					value, e = dispatcher.CallWithContext(function, context, callArgs...)
 				}
 				if e != nil {
-					return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: %s %q: %w", object, in.Offset, in.Name, name, e)
-				}
-				if result != 0 {
+					callErr := fmt.Errorf("legacy intercode object %d code offset %d: %s %q: %w", object, in.Offset, in.Name, name, e)
+					if !catchOperationError(callErr, &nextIP) {
+						return VoidValue, callErr
+					}
+				} else if hasResult {
 					regs[result] = value
 				}
 			}

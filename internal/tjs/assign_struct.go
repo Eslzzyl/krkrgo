@@ -46,11 +46,8 @@ func (v *VM) assignStructSourceID(value Value, category ObjectCategory) (ObjectI
 	}
 	ref := value.ObjectRef()
 	id := ref.Object
-	if ref.Context != 0 {
+	if ref.HasBoundContext() {
 		id = ref.Context
-	}
-	if id == 0 {
-		return 0, errors.New("null assignStruct source")
 	}
 	if err := v.validID(id); err != nil {
 		return 0, err
@@ -197,11 +194,8 @@ func (v *VM) dictionaryAssign(receiver Value, args []Value, budget *uint64) (Val
 	}
 	ref := source.ObjectRef()
 	sourceID := ref.Object
-	if ref.Context != 0 {
+	if ref.HasBoundContext() {
 		sourceID = ref.Context
-	}
-	if sourceID == 0 {
-		return VoidValue, errors.New("null Dictionary.assign source")
 	}
 	if err := v.validID(sourceID); err != nil {
 		return VoidValue, err

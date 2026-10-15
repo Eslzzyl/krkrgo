@@ -56,8 +56,8 @@ func TestExecuteLegacyDELDResultAndDeletion(t *testing.T) {
 				ArgumentCount: 1,
 				Constants:     []BytecodeConstant{{Value: StringValue("x")}},
 				Code: []int16{
-					116, 0, -3, 0, // DELD r0, argument object, constant "x"
-					118, 0, 119, // Return the delete result.
+					116, 1, -3, 0, // DELD r1, argument object, constant "x"
+					118, 1, 119, // Return the delete result.
 				},
 			}}}
 			got, err := bytecode.ExecuteLegacyWithContextAndConstructionAndArguments(
@@ -449,7 +449,7 @@ func TestLegacyClassInstanceMembersRegisterAndMaterialize(t *testing.T) {
 			119, // RET
 		},
 	}}}
-	global := ObjectValue(NewObjectRef(0, 1))
+	global := ObjectValue(NewObjectRef(0, 0))
 	if _, err := bytecode.ExecuteLegacyWithContextAndConstructionAndPropertyResolver(
 		0, global, class, nil, nil, nil, nil, vm.Objects,
 	); err != nil {
@@ -508,7 +508,7 @@ func TestExecuteLegacyResolvesNativeStaticPropertyOnConstructorMethod(t *testing
 		return vm.GetMemberIfPresent(receiver, name, vmTestHost{}, nil)
 	}
 	if _, err := bytecode.ExecuteLegacyWithContextAndConstructionAndPropertyResolver(
-		0, ObjectValue(NewObjectRef(0, 1)), ObjectValue(NewObjectRef(0, 1)), nil, nil, nil, resolve, vm.Objects,
+		0, ObjectValue(NewObjectRef(0, 0)), ObjectValue(NewObjectRef(0, 0)), nil, nil, nil, resolve, vm.Objects,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -909,6 +909,120 @@ func TestExecuteLegacyCALLInvokesCallableWithCurrentContext(t *testing.T) {
 		t.Fatalf("CALL result = %v (present %v), want called", got, ok)
 	}
 }
+func TestExecuteLegacyCHGTHISBindsGlobalContext(t *testing.T) {
+	vm := NewVM()
+	receiver, err := vm.NewDictionary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotContext Value
+	function, err := vm.RegisterLegacyFunction("global-bound", func(context Value, _ []Value, _ Host, _ *uint64, _ bool) (Value, error) {
+		gotContext = context
+		return IntegerValue(1), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bytecode := &DecodedBytecode{Objects: []BytecodeObject{{
+		MaxVariables: 3,
+		Code: []int16{
+			1, 0, 0, // CONST r0, function
+			124, 1, // GLOBAL r1
+			123, 0, 1, // CHGTHIS r0, r1
+			99, 2, 0, 0, // CALL r2, r0, 0
+			119,
+		},
+		Constants: []BytecodeConstant{{Value: function}},
+	}}}
+	var budget uint64 = 4096
+	invoke := func(callee, context Value, args []Value, resultNeeded bool) (Value, error) {
+		return vm.invoke(callee, context, args, nopHost{}, &budget, resultNeeded)
+	}
+	_, err = bytecode.ExecuteLegacyWithContextAndConstructionAndArguments(
+		0, vm.globalValue(), receiver, nil, nil, invoke, nil, vm.Objects,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gotContext.ObjectRef().HasBoundContext() ||
+		gotContext.ObjectRef().Object != 0 || gotContext.ObjectRef().Context != 0 {
+		t.Fatalf("CHGTHIS callback context = %#v; want explicitly bound global object", gotContext.ObjectRef())
+	}
+}
+func TestExecuteLegacyCHGTHISNullContextUsesCurrentReceiver(t *testing.T) {
+	vm := NewVM()
+	receiver, err := vm.NewDictionary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotContext Value
+	function, err := vm.RegisterLegacyFunction("unbound-after-null", func(context Value, _ []Value, _ Host, _ *uint64, _ bool) (Value, error) {
+		gotContext = context
+		return IntegerValue(1), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bytecode := &DecodedBytecode{Objects: []BytecodeObject{{
+		MaxVariables: 3,
+		Code: []int16{
+			1, 0, 0, // CONST r0, function
+			1, 1, 1, // CONST r1, null context
+			123, 0, 1, // CHGTHIS r0, r1
+			99, 2, 0, 0, // CALL r2, r0, 0
+			119,
+		},
+		Constants: []BytecodeConstant{{Value: function}, {Value: NullValue}},
+	}}}
+	var budget uint64 = 4096
+	invoke := func(callee, context Value, args []Value, resultNeeded bool) (Value, error) {
+		return vm.invoke(callee, context, args, nopHost{}, &budget, resultNeeded)
+	}
+	_, err = bytecode.ExecuteLegacyWithContextAndConstructionAndArguments(
+		0, vm.globalValue(), receiver, nil, nil, invoke, nil, vm.Objects,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gotContext.StrictEqual(receiver) {
+		t.Fatalf("CHGTHIS with null callback context = %v; want current receiver %v", gotContext, receiver)
+	}
+}
+func TestExecuteLegacyCALLDZeroResultRegisterDiscardsReturn(t *testing.T) {
+	table := NewObjectTable()
+	global := table.New(CategoryDictionary)
+	receiver := table.New(CategoryDictionary)
+	if err := receiver.Set("run", StringValue("callable")); err != nil {
+		t.Fatal(err)
+	}
+	bytecode := &DecodedBytecode{Objects: []BytecodeObject{{
+		MaxVariables: 2,
+		Code: []int16{
+			1, 0, 0, // CONST r0, value to preserve
+			1, 1, 1, // CONST r1, receiver
+			100, 0, 1, 2, 0, // CALLD with a discarded result
+			118, 0, 119, // Return r0.
+		},
+		Constants: []BytecodeConstant{
+			{Value: StringValue("preserved")},
+			{Value: ObjectValue(receiver.Ref())},
+			{Value: StringValue("run")},
+		},
+	}}}
+	invoke := func(_ Value, _ Value, _ []Value, resultNeeded bool) (Value, error) {
+		if resultNeeded {
+			t.Fatal("CALLD resultNeeded = true, want false")
+		}
+		return IntegerValue(0), nil
+	}
+	got, err := bytecode.ExecuteLegacyWithRuntime(0, ObjectValue(global.Ref()), nil, invoke, table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.StrictEqual(StringValue("preserved")) {
+		t.Fatalf("discarded CALLD overwrote r0: got %v, want preserved string", got)
+	}
+}
 func TestDecodeLegacyCALLArgumentWidths(t *testing.T) {
 	bytecode := &DecodedBytecode{Objects: []BytecodeObject{{
 		Code: []int16{
@@ -982,21 +1096,43 @@ func TestExecuteLegacyCLTCGTSemantics(t *testing.T) {
 		})
 	}
 }
-func TestExecuteLegacyEXTRYDoesNotSwallowProtectedBodyError(t *testing.T) {
+func TestExecuteLegacyCALLDOperationErrorTransfersToEntryHandler(t *testing.T) {
+	table := NewObjectTable()
+	global := table.New(CategoryDictionary)
+	receiver := table.New(CategoryDictionary)
+	method := NewNativeFunction(table, "callHook", func(ObjectRef, []Value) (Value, error) {
+		return VoidValue, errors.New("operation failed")
+	})
+	if err := receiver.Set("callHook", method); err != nil {
+		t.Fatal(err)
+	}
 	bytecode := &DecodedBytecode{Objects: []BytecodeObject{{
-		ArgumentCount: 1,
+		MaxVariables: 2,
+		Constants: []BytecodeConstant{
+			{Value: ObjectValue(receiver.Ref())},
+			{Value: StringValue("callHook")},
+		},
 		Code: []int16{
-			120, 0, 0, // ENTRY catch target, exception register
-			91, -3, // NUM argument register (an object cannot be converted).
-			121, // EXTRY is not reached when the protected body fails.
+			1, 0, 0, // CONST r0, call receiver
+			120, 9, 0, // ENTRY catches at offset 12 into r0.
+			100, 1, 0, 1, 0, // CALLD r1, r0.callHook()
+			121,    // EXTRY is skipped when the protected call fails.
+			118, 0, // Return the caught exception value.
+			119,
 		},
 	}}}
+	invoke := func(Value, Value, []Value, bool) (Value, error) {
+		return VoidValue, errors.New("operation failed")
+	}
 
-	_, err := bytecode.ExecuteLegacyWithContextAndConstructionAndArguments(
-		0, VoidValue, VoidValue, []Value{ObjectValue(NewObjectTable().New(CategoryDictionary).Ref())}, nil, nil, nil,
+	got, err := bytecode.ExecuteLegacyWithContextAndConstruction(
+		0, ObjectValue(global.Ref()), ObjectValue(global.Ref()), nil, invoke, nil, table,
 	)
-	if err == nil || !strings.Contains(err.Error(), "legacy intercode object 0 code offset 3: NUM: cannot convert TJS Object to number") {
-		t.Fatalf("protected-body error = %v, want the original NUM conversion error", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind() != KindString || got.Text() != "operation failed" {
+		t.Fatalf("caught operation error = %v (kind %v), want %q", got, got.Kind(), "operation failed")
 	}
 }
 

@@ -254,7 +254,7 @@ func (s *Services) motionLayerFromValue(_ *tjs.VM, value tjs.Value) (*Layer, err
 		return layer, nil
 	}
 	s.mu.RLock()
-	if ref.Context != 0 {
+	if ref.HasBoundContext() {
 		layer = s.Layers[ref.Context]
 	}
 	ownerID := s.MotionAdaptors[ref.Object]

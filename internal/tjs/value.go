@@ -36,20 +36,46 @@ type ObjectID uint64
 
 // ObjectRef is a dispatch object and its optional bound this context.
 type ObjectRef struct {
-	Object  ObjectID
-	Context ObjectID
+	Object       ObjectID
+	Context      ObjectID
+	contextBound bool
 }
 
 func NewObjectRef(object ObjectID, context ...ObjectID) ObjectRef {
-	var c ObjectID
+	ref := ObjectRef{Object: object}
 	if len(context) != 0 {
-		c = context[0]
+		ref.Context = context[0]
+		ref.contextBound = true
 	}
-	return ObjectRef{Object: object, Context: c}
+	return ref
 }
 
-func (r ObjectRef) IsNull() bool  { return r.Object == 0 && r.Context == 0 }
-func (r ObjectRef) IsValid() bool { return r.Object != 0 }
+// HasBoundContext reports whether the reference carries an explicit this-context.
+func (r ObjectRef) HasBoundContext() bool { return r.contextBound || r.Context != 0 }
+
+// SameDispatch compares object identity and distinguishes null from a valid global dispatch.
+func (r ObjectRef) SameDispatch(other ObjectRef) bool {
+	return r.Object == other.Object && r.IsNull() == other.IsNull() &&
+		r.Context == other.Context && r.HasBoundContext() == other.HasBoundContext()
+}
+
+// BoundContextRef returns the dispatch object carried as this-context.
+func (r ObjectRef) BoundContextRef() ObjectRef {
+	if !r.HasBoundContext() {
+		return ObjectRef{}
+	}
+	return boundContextRef(r.Context)
+}
+
+func (r ObjectRef) IsNull() bool  { return r.Object == 0 && r.Context == 0 && !r.contextBound }
+func (r ObjectRef) IsValid() bool { return r.Object != 0 || r.HasBoundContext() }
+
+func boundContextRef(context ObjectID) ObjectRef {
+	if context == 0 {
+		return NewObjectRef(0, 0)
+	}
+	return NewObjectRef(context, context)
+}
 
 // Value is a TJS variant. Strings contain UTF-16 code units, not Go runes.
 // Values are immutable from the script engine's point of view; constructors and
@@ -217,7 +243,7 @@ func (v Value) Truth() (bool, error) {
 	case KindReal:
 		return v.real != 0, nil // NaN is true, as in C++'s != 0 test.
 	case KindObject:
-		return v.object.Object != 0, nil
+		return !v.object.IsNull(), nil
 	case KindOctet:
 		return len(v.octet) != 0, nil
 	default:
@@ -242,7 +268,7 @@ func (v Value) StrictEqual(other Value) bool {
 	case KindOctet:
 		return bytesEqual(v.octet, other.octet)
 	case KindObject:
-		return v.object.Object == other.object.Object
+		return v.object.Object == other.object.Object && v.object.IsNull() == other.object.IsNull()
 	default:
 		return false
 	}
@@ -259,7 +285,7 @@ func (v Value) Equal(other Value) bool {
 	case v.kind == KindOctet || other.kind == KindOctet:
 		return false
 	case v.kind == KindObject && other.kind == KindObject:
-		return v.object.Object == other.object.Object
+		return v.object.Object == other.object.Object && v.object.IsNull() == other.object.IsNull()
 	case v.kind == KindObject || other.kind == KindObject:
 		return false
 	}

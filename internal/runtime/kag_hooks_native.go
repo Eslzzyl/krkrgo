@@ -55,7 +55,7 @@ func (s *Services) registerLegacyKAGHook(vm *tjs.VM, args []tjs.Value, budget *u
 		registration.context = args[2]
 	}
 
-	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
 	entries, found, err := vm.GetMemberIfPresent(global, "kagHookEntries", s, budget)
 	if err != nil {
 		return err
@@ -101,7 +101,7 @@ func (s *Services) registerLegacyKAGHook(vm *tjs.VM, args []tjs.Value, budget *u
 }
 
 func (s *Services) flushLegacyKAGHooks(vm *tjs.VM, budget *uint64) error {
-	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
 	kag, found, err := vm.GetMemberIfPresent(global, "kag", s, budget)
 	if err != nil {
 		return err
@@ -126,7 +126,7 @@ func (s *Services) flushLegacyKAGHooks(vm *tjs.VM, budget *uint64) error {
 }
 
 func (s *Services) installLegacyKAGHookOnWindow(vm *tjs.VM, kag tjs.Value, registration kagHookRegistration, budget *uint64) error {
-	global := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
 	factory, found, err := vm.GetMemberIfPresent(global, "getInitCallbackFunction", s, budget)
 	if err != nil {
 		return err

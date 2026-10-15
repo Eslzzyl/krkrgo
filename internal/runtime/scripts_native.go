@@ -28,9 +28,9 @@ func (s *Services) decodeScriptStorage(data []byte) (string, error) {
 func decodeScriptStorageDefault(data []byte) (string, error) {
 	return assets.Decode(data)
 }
-func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Host, budget *uint64) (tjs.Value, error) {
+func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Host, budget *uint64, sourceName string) (tjs.Value, error) {
 	if context.Kind() != tjs.KindObject || context.IsNull() {
-		context = tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+		context = tjs.ObjectValue(tjs.NewObjectRef(0, 0))
 	}
 	decoded, err := tjs.DecodeBytecode(data)
 	if err != nil {
@@ -72,8 +72,8 @@ func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Ho
 	construct := func(class tjs.Value, args []tjs.Value) (tjs.Value, error) {
 		return vm.Construct(class, args, host, budget)
 	}
-	legacyGlobal := tjs.ObjectValue(tjs.NewObjectRef(0, 1))
-	_, err = bindLegacyScriptFunctionsDeferred(vm, decoded, legacyGlobal, host, budget)
+	legacyGlobal := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
+	_, err = bindLegacyScriptFunctionsDeferred(vm, decoded, legacyGlobal, host, budget, sourceName)
 	if err != nil {
 		return tjs.VoidValue, err
 	}
@@ -113,7 +113,7 @@ func (s *Services) executePluginScript(vm *tjs.VM, name string, budget *uint64) 
 		return err
 	}
 	if len(data) >= 4 && string(data[:4]) == "TJS2" {
-		_, err = executeTJS2Bytecode(vm, data, tjs.ObjectValue(tjs.NewObjectRef(0, 1)), s, budget)
+		_, err = executeTJS2Bytecode(vm, data, tjs.ObjectValue(tjs.NewObjectRef(0, 0)), s, budget, name)
 		return err
 	}
 	source, err := s.decodeScriptStorage(data)
@@ -144,19 +144,19 @@ func legacyVMOps(vm *tjs.VM, host tjs.Host, budget *uint64) (func(tjs.Value, tjs
 
 func bindLegacyScriptFunctions(vm *tjs.VM, decoded *tjs.DecodedBytecode, global tjs.Value, host tjs.Host, budget *uint64) error {
 	var initializeClasses func() error
-	if err := bindLegacyScriptFunctionsWithOptions(vm, decoded, global, host, budget, false, &initializeClasses); err != nil {
+	if err := bindLegacyScriptFunctionsWithOptions(vm, decoded, global, host, budget, false, "", &initializeClasses); err != nil {
 		return err
 	}
 	return initializeClasses()
 }
 
-func bindLegacyScriptFunctionsDeferred(vm *tjs.VM, decoded *tjs.DecodedBytecode, global tjs.Value, host tjs.Host, budget *uint64) (func() error, error) {
+func bindLegacyScriptFunctionsDeferred(vm *tjs.VM, decoded *tjs.DecodedBytecode, global tjs.Value, host tjs.Host, budget *uint64, sourceName string) (func() error, error) {
 	var initializeClasses func() error
-	err := bindLegacyScriptFunctionsWithOptions(vm, decoded, global, host, budget, true, &initializeClasses)
+	err := bindLegacyScriptFunctionsWithOptions(vm, decoded, global, host, budget, true, sourceName, &initializeClasses)
 	return initializeClasses, err
 }
 
-func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedBytecode, global tjs.Value, host tjs.Host, budget *uint64, deferClassInitialization bool, initializer *func() error) error {
+func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedBytecode, global tjs.Value, host tjs.Host, budget *uint64, deferClassInitialization bool, sourceName string, initializer *func() error) error {
 	functions := make(map[int]tjs.Value)
 	registerClassInstanceMember := func(owner tjs.Value, name string) error {
 		if owner.Kind() != tjs.KindObject || owner.IsNull() {
@@ -316,8 +316,8 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 			}
 			instanceOf, invalidate, isValid := legacyVMOps(vm, callHost, callBudget)
 			value, execErr := decoded.ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolversAndVMOpsWithRoots(index, global, receiver, args, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects)
-			if execErr != nil && (index == 416 || index == 428) {
-				fmt.Printf("legacy bookmark object %d receiver=%s error=%v\n", index, receiver.TypeName(), execErr)
+			if execErr != nil && sourceName != "" {
+				execErr = fmt.Errorf("TJS storage %q intercode object %d (%s): %w", sourceName, index, objectName(index), execErr)
 			}
 			return value, execErr
 		})
@@ -855,7 +855,7 @@ func (s *Services) scriptsNative(vm *tjs.VM, operation string, args []tjs.Value,
 		}
 		data = data[offset:]
 		if len(data) >= 4 && string(data[:4]) == "TJS2" {
-			value, err := executeTJS2Bytecode(vm, data, context, s, budget)
+			value, err := executeTJS2Bytecode(vm, data, context, s, budget, storageName)
 			if err != nil {
 				return tjs.VoidValue, fmt.Errorf("Scripts.%s storage %q: %w", operation, storageName, err)
 			}
@@ -908,17 +908,18 @@ func (s *Services) scriptsNative(vm *tjs.VM, operation string, args []tjs.Value,
 		if value.Kind() != tjs.KindObject || value.IsNull() {
 			return tjs.VoidValue, fmt.Errorf("Scripts.%s: expected object closure", operation)
 		}
-		context := value.ObjectRef().Context
+		ref := value.ObjectRef()
 		if operation == "isNullContext" {
-			return finish(tjs.IntegerValue(boolInt(context == 0)), nil)
+			return finish(tjs.IntegerValue(boolInt(!ref.HasBoundContext())), nil)
 		}
-		if context == 0 {
+		if !ref.HasBoundContext() {
 			return tjs.NullValue, nil
 		}
+		context := ref.Context
 		if _, ok := vm.Objects.Lookup(context); !ok {
 			return tjs.VoidValue, fmt.Errorf("Scripts.getObjectContext: invalid context")
 		}
-		return finish(tjs.ObjectValue(tjs.NewObjectRef(context, context)), nil)
+		return finish(tjs.ObjectValue(ref.BoundContextRef()), nil)
 	case "getClassNames":
 		value, err := arg(0)
 		if err != nil {
