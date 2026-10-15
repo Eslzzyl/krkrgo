@@ -58,7 +58,7 @@ func (v *VM) Invalidate(value Value, host Host, budget *uint64) (Value, error) {
 	if m != nil && m.finalizing {
 		return IntegerValue(1), nil
 	}
-	if m != nil && m.category == CategoryInstance && m.scriptFinalizer != 0 {
+	if id == 0 {
 		return IntegerValue(0), nil
 	}
 	if m != nil && (m.scriptFinalizer != 0 || m.finalizer != "") {

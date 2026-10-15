@@ -28,6 +28,13 @@ func (s *Services) decodeScriptStorage(data []byte) (string, error) {
 func decodeScriptStorageDefault(data []byte) (string, error) {
 	return assets.Decode(data)
 }
+func setLegacyMemberWithRuntime(vm *tjs.VM, receiver tjs.Value, name string, value tjs.Value, flags uint32, host tjs.Host, budget *uint64) error {
+	if flags&tjs.LegacyPropertySetFlag != 0 {
+		return vm.SetPropertyWithRuntime(receiver, value, host, budget)
+	}
+	return vm.SetMemberWithRuntime(receiver, name, value, flags, host, budget)
+}
+
 func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Host, budget *uint64, sourceName string) (tjs.Value, error) {
 	if context.Kind() != tjs.KindObject || context.IsNull() {
 		context = tjs.ObjectValue(tjs.NewObjectRef(0, 0))
@@ -84,7 +91,7 @@ func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Ho
 		return vm.GetMemberIfPresent(receiver, name, host, budget)
 	}
 	set := func(receiver tjs.Value, name string, value tjs.Value, flags uint32) error {
-		return vm.SetMemberWithRuntime(receiver, name, value, flags, host, budget)
+		return setLegacyMemberWithRuntime(vm, receiver, name, value, flags, host, budget)
 	}
 	instanceOf, invalidate, isValid := legacyVMOps(vm, host, budget)
 	value, err := decoded.ExecuteLegacyWithContextAndConstructionAndMemberResolversAndVMOpsWithRoots(top, legacyGlobal, context, evaluate, invoke, construct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects)
@@ -198,10 +205,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				return vm.GetMemberIfPresent(value, member, callHost, callBudget)
 			}
 			set := func(value tjs.Value, member string, assigned tjs.Value, flags uint32) error {
-				if flags&tjs.LegacyPropertySetFlag != 0 {
-					return vm.SetPropertyWithRuntime(value, assigned, callHost, callBudget)
-				}
-				return vm.SetMemberWithRuntime(value, member, assigned, flags, callHost, callBudget)
+				return setLegacyMemberWithRuntime(vm, value, member, assigned, flags, callHost, callBudget)
 			}
 			instanceOf, invalidate, isValid := legacyVMOps(vm, callHost, callBudget)
 			return decoded.ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolversAndVMOpsWithRoots(classIndex, global, receiver, args, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects)
@@ -261,7 +265,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				return vm.GetMemberIfPresent(value, member, callHost, callBudget)
 			}
 			set := func(value tjs.Value, member string, assigned tjs.Value, flags uint32) error {
-				return vm.SetMemberWithRuntime(value, member, assigned, flags, callHost, callBudget)
+				return setLegacyMemberWithRuntime(vm, value, member, assigned, flags, callHost, callBudget)
 			}
 			instanceOf, invalidate, isValid := legacyVMOps(vm, callHost, callBudget)
 			return decoded.ExecuteLegacyAtOffsetAndVMOpsWithRoots(int(getterIndex), offset, global, global, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects)
@@ -312,7 +316,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				return vm.GetMemberIfPresent(value, member, callHost, callBudget)
 			}
 			set := func(value tjs.Value, member string, assigned tjs.Value, flags uint32) error {
-				return vm.SetMemberWithRuntime(value, member, assigned, flags, callHost, callBudget)
+				return setLegacyMemberWithRuntime(vm, value, member, assigned, flags, callHost, callBudget)
 			}
 			instanceOf, invalidate, isValid := legacyVMOps(vm, callHost, callBudget)
 			value, execErr := decoded.ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolversAndVMOpsWithRoots(index, global, receiver, args, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects)
@@ -679,7 +683,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 			return vm.GetMemberIfPresent(receiver, name, callHost, callBudget)
 		}
 		set := func(receiver tjs.Value, name string, value tjs.Value, flags uint32) error {
-			return vm.SetMemberWithRuntime(receiver, name, value, flags, callHost, callBudget)
+			return setLegacyMemberWithRuntime(vm, receiver, name, value, flags, callHost, callBudget)
 		}
 		instanceOf, invalidate, isValid := legacyVMOps(vm, callHost, callBudget)
 		if _, err := decoded.ExecuteLegacyWithContextAndConstructionAndMemberResolversAndVMOpsWithRoots(

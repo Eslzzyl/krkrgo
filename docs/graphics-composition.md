@@ -17,6 +17,8 @@ binder target information, image offsets, and transition inputs. It does not clo
 frame RGBA data: node and transition slices are borrowed until the synchronous host
 consumes the plan.
 
+`RenderPlan.StateHash` summarizes the captured layer tree and its visible image content.
+
 The GPU compositor uploads direct (non-premultiplied) runtime RGBA into cached
 premultiplied textures. Uploads are selected by layer identity, dimensions, and the
 runtime content hash, so callers may mutate an image directly and the next plan

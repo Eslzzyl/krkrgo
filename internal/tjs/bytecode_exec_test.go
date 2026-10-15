@@ -3162,6 +3162,9 @@ func TestExecuteLegacySETPWritesPropertyClosure(t *testing.T) {
 		t.Fatalf("decoded SETP = %#v; want property r0 and source r1", instructions[2])
 	}
 	set := func(target Value, name string, value Value, flags uint32) error {
+		if flags&LegacyPropertySetFlag != 0 {
+			return vm.SetPropertyWithRuntime(target, value, vmTestHost{}, nil)
+		}
 		return vm.SetMemberWithRuntime(target, name, value, flags, vmTestHost{}, nil)
 	}
 	if _, err := bytecode.ExecuteLegacyWithContextAndConstructionAndMemberResolvers(

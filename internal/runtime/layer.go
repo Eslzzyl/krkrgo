@@ -535,7 +535,7 @@ func (l *Layer) SetImageHeight(height int32) error {
 }
 
 func (l *Layer) SetSizeToImageSize() error {
-	if l == nil {
+	if l == nil || len(l.RGBA) == 0 {
 		return fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
 	}
 	if l.ImageWidth <= 0 || l.ImageHeight <= 0 {

@@ -420,3 +420,47 @@ setNativeProperties = !parser.processSpecialTags && parser.multiLineTagEnabled &
 		t.Fatal("KAGParser property defaults or writable native bindings differ")
 	}
 }
+
+func TestDerivedLayerWithSuperConstructorMutatesNativeLayer(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	if _, err := session.executeSource("<layer-with-super-test>", `
+class TestBaseLayer extends Layer {
+	function TestBaseLayer(win, parent, width, height) {
+		super.Layer(win, parent);
+		with(super) {
+			.setSize(width, height);
+			.setPos(0, 0);
+			.visible = 1;
+			.opacity = 255;
+			.fillRect(0, 0, width, height, 0);
+		}
+	}
+}
+window = new Window();
+root = new TestBaseLayer(window, null, 4, 4);
+child = new TestBaseLayer(window, root, 1, 1);
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	rootValue, err := session.Evaluate("root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	childValue, err := session.Evaluate("child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootState := session.Services.Layer(tjs.ObjectID(rootValue.ObjectRef().Object))
+	childState := session.Services.Layer(tjs.ObjectID(childValue.ObjectRef().Object))
+	if rootState == nil || rootState.Bounds.Width != 4 || rootState.Bounds.Height != 4 || !rootState.Visible {
+		t.Fatalf("root layer state = %+v", rootState)
+	}
+	if childState == nil || childState.Parent != rootState || childState.Bounds.Width != 1 ||
+		childState.Bounds.Height != 1 || !childState.Visible {
+		t.Fatalf("child layer state = %+v", childState)
+	}
+	if got := rootState.RGBA[:4]; got[0] != 0 || got[1] != 0 || got[2] != 0 {
+		t.Fatalf("root fill pixel = %v, want black", got)
+	}
+}
