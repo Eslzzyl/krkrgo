@@ -911,6 +911,11 @@ func (v *VM) NewArray(items []Value) (Value, error) {
 	if e != nil {
 		return VoidValue, e
 	}
+	for index, item := range items {
+		if e := v.setMember(id, IntegerValue(int64(index)), item); e != nil {
+			return VoidValue, e
+		}
+	}
 	x = ObjectValue(NewObjectRef(id, id))
 	v.meta[id].array = append([]Value(nil), items...)
 	v.meta[id].arrayLength = int64(len(items))
@@ -965,13 +970,20 @@ func (v *VM) ArrayItems(value Value) ([]Value, error) {
 	return append([]Value(nil), m.array...), nil
 }
 func (v *VM) ClearArray(value Value) error {
-	id, e := v.handle(value)
-	if e != nil {
-		return e
+	id, err := v.handle(value)
+	if err != nil {
+		return err
 	}
 	m := v.meta[id]
 	if m == nil || m.category != CategoryArray {
 		return errors.New("Array native instance required")
+	}
+	object, err := v.obj(id)
+	if err != nil {
+		return err
+	}
+	if err := resizeArrayLength(object, 0); err != nil {
+		return err
 	}
 	m.array = nil
 	m.arrayLength = 0
@@ -988,6 +1000,9 @@ func (v *VM) AppendArray(value Value, item Value) error {
 	}
 	if m.arrayLength >= maxVMArrayLength {
 		return errors.New("TJS array length limit exceeded")
+	}
+	if e := v.setMember(id, IntegerValue(m.arrayLength), item); e != nil {
+		return e
 	}
 	m.array = append(m.array, item)
 	m.arrayLength++

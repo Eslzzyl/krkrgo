@@ -900,6 +900,50 @@ func TestVMArrayPropertiesAndSparseAssignmentLimit(t *testing.T) {
 	}
 }
 
+func TestVMArrayAPIsMirrorLegacyDispatcher(t *testing.T) {
+	vm := NewVM()
+	dispatcher := NewDispatcher(vm.Objects)
+	assertInteger := func(array Value, name string, want int64) {
+		t.Helper()
+		got, err := dispatcher.Get(array, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value, err := got.Int()
+		if err != nil || value != want {
+			t.Fatalf("legacy array %s = %v, want %d (err %v)", name, got, want, err)
+		}
+	}
+
+	array, err := vm.NewArray(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.AppendArray(array, IntegerValue(7)); err != nil {
+		t.Fatal(err)
+	}
+	assertInteger(array, "count", 1)
+	assertInteger(array, "0", 7)
+	if length, err := vm.GetArrayLength(array); err != nil || length != 1 {
+		t.Fatalf("VM array length = %d, want 1 (err %v)", length, err)
+	}
+
+	if err := vm.ClearArray(array); err != nil {
+		t.Fatal(err)
+	}
+	assertInteger(array, "count", 0)
+	if length, err := vm.GetArrayLength(array); err != nil || length != 0 {
+		t.Fatalf("cleared VM array length = %d, want 0 (err %v)", length, err)
+	}
+
+	array, err = vm.NewArray([]Value{IntegerValue(3), IntegerValue(5)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertInteger(array, "count", 2)
+	assertInteger(array, "1", 5)
+}
+
 func TestVMArrayStrictIndexAndMemberDispatch(t *testing.T) {
 	const setup = `var a=[7]; a["foo"]=9; a["01"]=10; a["1.0"]=11; a[-1]=12; a[1.5]=13; a["2"]=14; `
 	assertions := []struct {
