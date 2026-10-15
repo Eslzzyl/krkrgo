@@ -1350,14 +1350,17 @@ func (v *VM) loadName(f *vmFrame, name string, optional, raw bool, h Host, b *ui
 		return ObjectValue(NewObjectRef(f.context, f.context)), nil
 	}
 	// Parameters and lexical locals are statically bound; a with-object member
-	// must not replace them.
-	if x, ok := f.parameters[name]; ok {
-		return x, nil
-	}
+	// must not replace them. A var declaration inside a block introduces a
+	// binding in that block scope, which shadows a parameter of the same name
+	// just as the reference compiler's innermost namespace level does, so the
+	// block scopes are consulted before the parameter table.
 	for i := len(f.scopes) - 1; i >= 0; i-- {
 		if x, ok := f.scopes[i][name]; ok {
 			return x, nil
 		}
+	}
+	if x, ok := f.parameters[name]; ok {
+		return x, nil
 	}
 	if f.lexicalContext != 0 && f.lexicalContext != f.context {
 		x, ok, e := v.getMemberStringWithRuntime(f.lexicalContext, name, h, b)
