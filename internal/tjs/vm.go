@@ -305,7 +305,7 @@ func NewVM() *VM {
 	return vm
 }
 func NewVm() *VM                 { return NewVM() }
-func (v *VM) globalValue() Value                 { return ObjectValue(NewObjectRef(0, 0)) }
+func (v *VM) globalValue() Value { return ObjectValue(NewObjectRef(0, 0)) }
 func (v *VM) boundContextValue(ref ObjectRef) Value {
 	return ObjectValue(boundContextRef(ref.Context))
 }
@@ -1791,7 +1791,7 @@ func (v *VM) assignVMArrayItems(target *vmObject, source Value) error {
 	}
 	return nil
 }
-func (v *VM) syncVMArrayObject(id ObjectID) error {
+func (v *VM) syncVMArrayObjectFrom(id ObjectID, start int) error {
 	meta := v.meta[id]
 	if meta == nil || meta.category != CategoryArray {
 		return errors.New("TJS array required")
@@ -1799,12 +1799,16 @@ func (v *VM) syncVMArrayObject(id ObjectID) error {
 	if len(meta.array) > maxVMArrayLength {
 		return errors.New("TJS array length limit exceeded")
 	}
+	if start < 0 || start > len(meta.array) {
+		return errors.New("invalid VM array synchronization range")
+	}
 	object, err := v.obj(id)
 	if err != nil {
 		return err
 	}
-	for index, value := range meta.array {
+	for index := start; index < len(meta.array); index++ {
 		key := strconv.Itoa(index)
+		value := meta.array[index]
 		if value.IsVoid() {
 			object.Delete(key)
 			continue
@@ -1855,11 +1859,12 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 		return VoidValue, errors.New("TJS array method requires an array")
 	}
 	mutated := false
+	syncFrom := 0
 	defer func() {
 		if !mutated {
 			return
 		}
-		if err := v.syncVMArrayObject(id); resultErr == nil && err != nil {
+		if err := v.syncVMArrayObjectFrom(id, syncFrom); resultErr == nil && err != nil {
 			resultErr = err
 		}
 	}()
@@ -1941,6 +1946,9 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 			return VoidValue, errors.New("TJS array length limit exceeded")
 		}
 		mutated = len(args) > 0
+		if mutated {
+			syncFrom = len(m.array)
+		}
 		m.array = append(m.array, args...)
 		return IntegerValue(int64(len(m.array))), nil
 	case "unshift":
@@ -1964,6 +1972,7 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 		}
 		oldLen := len(m.array)
 		mutated = true
+		syncFrom = oldLen
 		m.array = append(m.array, args[0])
 		return IntegerValue(int64(oldLen)), nil
 	case "remove":
@@ -1981,18 +1990,26 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 		removed := 0
 		if all {
 			kept := m.array[:0]
-			for _, item := range m.array {
+			firstRemoved := -1
+			for index, item := range m.array {
 				if item.StrictEqual(args[0]) {
+					if firstRemoved < 0 {
+						firstRemoved = index
+					}
 					removed++
 					continue
 				}
 				kept = append(kept, item)
+			}
+			if firstRemoved >= 0 {
+				syncFrom = firstRemoved
 			}
 			clear(m.array[len(kept):])
 			m.array = kept
 		} else {
 			for i, item := range m.array {
 				if item.StrictEqual(args[0]) {
+					syncFrom = i
 					copy(m.array[i:], m.array[i+1:])
 					last := len(m.array) - 1
 					clear(m.array[last:])
@@ -2019,6 +2036,7 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 		}
 		i := int(index)
 		mutated = true
+		syncFrom = i
 		copy(m.array[i:], m.array[i+1:])
 		last := len(m.array) - 1
 		clear(m.array[last:])
@@ -2040,6 +2058,7 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 		}
 		i := int(index)
 		mutated = true
+		syncFrom = i
 		m.array = append(m.array, VoidValue)
 		copy(m.array[i+1:], m.array[i:len(m.array)-1])
 		m.array[i] = args[1]
@@ -2050,6 +2069,7 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 		}
 		mutated = true
 		last := len(m.array) - 1
+		syncFrom = last
 		out := m.array[last]
 		m.array = m.array[:last]
 		return out, nil

@@ -3,6 +3,7 @@ package tjs
 import (
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -1007,6 +1008,90 @@ func TestLegacyArrayPushKeepsVMArrayInSync(t *testing.T) {
 	}
 	if ok, err := result.Truth(); err != nil || !ok {
 		t.Fatalf("mixed legacy and VM array mutations = %v (err %v), want true", result, err)
+	}
+}
+
+func TestVMArrayMutationsMirrorLegacyDispatcher(t *testing.T) {
+	vm := NewVM()
+	dispatcher := NewDispatcher(vm.Objects)
+	array, err := vm.NewArray([]Value{IntegerValue(1), IntegerValue(2), IntegerValue(3), IntegerValue(4)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := vm.NewArray([]Value{IntegerValue(8), IntegerValue(9), IntegerValue(8)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.setMember(0, StringValue("items"), array); err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.setMember(0, StringValue("source"), source); err != nil {
+		t.Fatal(err)
+	}
+	mutations := []struct {
+		name   string
+		source string
+		want   []Value
+	}{
+		{"add", `items.add(5);`, []Value{IntegerValue(1), IntegerValue(2), IntegerValue(3), IntegerValue(4), IntegerValue(5)}},
+		{"push", `items.push(6, 7);`, []Value{IntegerValue(1), IntegerValue(2), IntegerValue(3), IntegerValue(4), IntegerValue(5), IntegerValue(6), IntegerValue(7)}},
+		{"unshift", `items.unshift(0);`, []Value{IntegerValue(0), IntegerValue(1), IntegerValue(2), IntegerValue(3), IntegerValue(4), IntegerValue(5), IntegerValue(6), IntegerValue(7)}},
+		{"insert", `items.insert(2, 9);`, []Value{IntegerValue(0), IntegerValue(1), IntegerValue(9), IntegerValue(2), IntegerValue(3), IntegerValue(4), IntegerValue(5), IntegerValue(6), IntegerValue(7)}},
+		{"erase", `items.erase(3);`, []Value{IntegerValue(0), IntegerValue(1), IntegerValue(9), IntegerValue(3), IntegerValue(4), IntegerValue(5), IntegerValue(6), IntegerValue(7)}},
+		{"remove", `items.remove(6);`, []Value{IntegerValue(0), IntegerValue(1), IntegerValue(9), IntegerValue(3), IntegerValue(4), IntegerValue(5), IntegerValue(7)}},
+		{"sort", `items.sort("0");`, []Value{IntegerValue(0), IntegerValue(1), IntegerValue(3), IntegerValue(4), IntegerValue(5), IntegerValue(7), IntegerValue(9)}},
+		{"reverse", `items.reverse();`, []Value{IntegerValue(9), IntegerValue(7), IntegerValue(5), IntegerValue(4), IntegerValue(3), IntegerValue(1), IntegerValue(0)}},
+		{"pop", `items.pop();`, []Value{IntegerValue(9), IntegerValue(7), IntegerValue(5), IntegerValue(4), IntegerValue(3), IntegerValue(1)}},
+		{"shift", `items.shift();`, []Value{IntegerValue(7), IntegerValue(5), IntegerValue(4), IntegerValue(3), IntegerValue(1)}},
+		{"assign", `items.assign(source);`, []Value{IntegerValue(8), IntegerValue(9), IntegerValue(8)}},
+		{"remove all", `items.remove(8);`, []Value{IntegerValue(9)}},
+		{"split", `items.split(",", "a,b,c");`, []Value{StringValue("a"), StringValue("b"), StringValue("c")}},
+		{"clear", `items.clear();`, nil},
+		{"append after clear", `items.push(42);`, []Value{IntegerValue(42)}},
+	}
+	for index, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			program, err := compile("vm-array-mirror-"+strconv.Itoa(index)+".tjs", mutation.source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			budget := uint64(10000)
+			if _, err := vm.Execute(&program, vmTestHost{}, &budget); err != nil {
+				t.Fatal(err)
+			}
+			items, err := vm.ArrayItems(array)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(items, mutation.want) {
+				t.Fatalf("VM array items = %v, want %v", items, mutation.want)
+			}
+			length, err := vm.GetArrayLength(array)
+			if err != nil || length != int64(len(mutation.want)) {
+				t.Fatalf("VM array length = %d, want %d (err %v)", length, len(mutation.want), err)
+			}
+			count, err := dispatcher.Get(array, "count")
+			if err != nil {
+				t.Fatal(err)
+			}
+			countValue, err := count.Int()
+			if err != nil || countValue != int64(len(mutation.want)) {
+				t.Fatalf("legacy array count = %d, want %d (err %v)", countValue, len(mutation.want), err)
+			}
+			for elementIndex, want := range mutation.want {
+				key := strconv.Itoa(elementIndex)
+				got, err := dispatcher.Get(array, key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("legacy array element %s = %v, want %v", key, got, want)
+				}
+			}
+			if dispatcher.Has(array, strconv.Itoa(len(mutation.want))) {
+				t.Fatalf("legacy array has stale element at index %d", len(mutation.want))
+			}
+		})
 	}
 }
 

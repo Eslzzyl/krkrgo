@@ -107,6 +107,9 @@ signals.
 - Full RGBA content hashing is opt-in through
   `KRKRGO_RENDER_CONTENT_HASH=1`; normal render diagnostics count frames
   without hashing every pixel.
+- `internal/tjs/vm.go` mirrors VM-array mutations from the first changed index.
+  `add` and `push` copy only appended values; shifts, removals, and reordering
+  synchronize the affected suffix.
 
 ## Reference implementation comparison
 
