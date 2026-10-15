@@ -943,6 +943,72 @@ func TestVMArrayAPIsMirrorLegacyDispatcher(t *testing.T) {
 	assertInteger(array, "count", 2)
 	assertInteger(array, "1", 5)
 }
+func TestVMArrayAddMirrorsLegacyDispatcher(t *testing.T) {
+	vm := NewVM()
+	array, err := vm.NewArray(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.setMember(0, StringValue("hooks"), array); err != nil {
+		t.Fatal(err)
+	}
+	program, err := compile("vm-array-add.tjs", `hooks.add(7); return hooks.count == 1 && hooks[0] == 7;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := uint64(10000)
+	result, err := vm.Execute(&program, vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := result.Truth(); err != nil || !ok {
+		t.Fatalf("TJS array add result = %v (err %v), want true", result, err)
+	}
+	if length, err := vm.GetArrayLength(array); err != nil || length != 1 {
+		t.Fatalf("VM array length = %d (err %v), want 1", length, err)
+	}
+	dispatcher := NewDispatcher(vm.Objects)
+	for name, want := range map[string]int64{"count": 1, "0": 7} {
+		value, err := dispatcher.Get(array, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := value.Int()
+		if err != nil || got != want {
+			t.Fatalf("legacy array %s = %v (err %v), want %d", name, value, err, want)
+		}
+	}
+}
+func TestLegacyArrayPushKeepsVMArrayInSync(t *testing.T) {
+	vm := NewVM()
+	dispatcher := NewDispatcher(vm.Objects)
+	array, err := vm.NewArray([]Value{IntegerValue(1), IntegerValue(2), IntegerValue(3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	push, err := dispatcher.Get(array, "push")
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := uint64(10000)
+	if _, err := vm.InvokeLegacy(push, array, []Value{StringValue("x"), StringValue("y")}, vmTestHost{}, &budget, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.setMember(0, StringValue("hooks"), array); err != nil {
+		t.Fatal(err)
+	}
+	program, err := compile("legacy-array-push.tjs", `hooks.add("-"); return hooks.count == 6 && hooks[3] == "x" && hooks[4] == "y" && hooks[5] == "-";`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := vm.Execute(&program, vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := result.Truth(); err != nil || !ok {
+		t.Fatalf("mixed legacy and VM array mutations = %v (err %v), want true", result, err)
+	}
+}
 
 func TestVMArrayStrictIndexAndMemberDispatch(t *testing.T) {
 	const setup = `var a=[7]; a["foo"]=9; a["01"]=10; a["1.0"]=11; a[-1]=12; a[1.5]=13; a["2"]=14; `

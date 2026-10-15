@@ -958,9 +958,6 @@ func arrayMethod(d *Dispatcher, o *Object, name string) (Value, bool) {
 					return Value{}, e
 				}
 			}
-			if e := resizeArrayLength(o, n+int64(len(args))); e != nil {
-				return Value{}, e
-			}
 			return IntegerValue(n + int64(len(args))), nil
 		}
 	case "unshift":

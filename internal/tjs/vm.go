@@ -836,9 +836,6 @@ func (v *VM) SetMemberWithRuntime(receiver Value, name string, value Value, flag
 	if err != nil {
 		return err
 	}
-	if name == "left" {
-		fmt.Printf("legacy VM left set receiver=%s ref=%v id=%d category=%d value=%s\n", receiver.TypeName(), receiver.ObjectRef(), id, v.meta[id].category, value.TypeName())
-	}
 	if direct, memberFlags, ok := hasDirect(object, UTF16FromString(name)); ok {
 		if memberReadOnly(memberFlags) {
 			return ErrReadOnly
@@ -873,6 +870,7 @@ func (v *VM) SetMemberWithRuntime(receiver Value, name string, value Value, flag
 	}
 	return v.setMemberString(id, name, value)
 }
+
 // SetPropertyWithRuntime writes through a property descriptor value itself.
 // Legacy VM_SETP supplies the descriptor closure, including its bound context,
 // even when the target object now stores a replacement descriptor.
@@ -897,7 +895,6 @@ func (v *VM) SetPropertyWithRuntime(property, value Value, host Host, budget *ui
 	}
 	return v.writeProperty(property, context, value, host, budget)
 }
-
 
 // Construct creates a script class instance through the VM's normal lifecycle.
 func (v *VM) Construct(callee Value, args []Value, host Host, budget *uint64) (Value, error) {
@@ -1785,6 +1782,34 @@ func (v *VM) assignVMArrayItems(target *vmObject, source Value) error {
 	}
 	return nil
 }
+func (v *VM) syncVMArrayObject(id ObjectID) error {
+	meta := v.meta[id]
+	if meta == nil || meta.category != CategoryArray {
+		return errors.New("TJS array required")
+	}
+	if len(meta.array) > maxVMArrayLength {
+		return errors.New("TJS array length limit exceeded")
+	}
+	object, err := v.obj(id)
+	if err != nil {
+		return err
+	}
+	for index, value := range meta.array {
+		key := strconv.Itoa(index)
+		if value.IsVoid() {
+			object.Delete(key)
+			continue
+		}
+		if err := object.Set(key, value); err != nil {
+			return err
+		}
+	}
+	if err := resizeArrayLength(object, int64(len(meta.array))); err != nil {
+		return err
+	}
+	meta.arrayLength = int64(len(meta.array))
+	return nil
+}
 
 func (v *VM) vmRegexpMethod(id ObjectID, name string) (Value, bool, error) {
 	if !regexesHas(id) || (name != "test" && name != "exec" && name != "match" && name != "_compile") {
@@ -1798,7 +1823,7 @@ func (v *VM) vmRegexpMethod(id ObjectID, name string) (Value, bool, error) {
 	return method, true, nil
 }
 
-func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b *uint64) (Value, error) {
+func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b *uint64) (result Value, resultErr error) {
 	id := context.ObjectRef().Object
 	m := v.meta[id]
 	if name == "add" && (m == nil || m.category != CategoryArray) {
@@ -1820,6 +1845,15 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 	if m == nil || m.category != CategoryArray {
 		return VoidValue, errors.New("TJS array method requires an array")
 	}
+	mutated := false
+	defer func() {
+		if !mutated {
+			return
+		}
+		if err := v.syncVMArrayObject(id); resultErr == nil && err != nil {
+			resultErr = err
+		}
+	}()
 	switch name {
 	case "sort":
 		var mode string
@@ -1856,6 +1890,9 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 				return VoidValue, err
 			}
 		}
+		if len(m.array) > 1 {
+			mutated = true
+		}
 		if err := SortValues(m.array, mode, stable, compare); err != nil {
 			return VoidValue, err
 		}
@@ -1864,6 +1901,7 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 		if len(args) == 0 {
 			return VoidValue, ErrBadParamCount
 		}
+		mutated = true
 		m.array = nil
 		if err := v.assignVMArrayItems(m, args[0]); err != nil {
 			return VoidValue, err
@@ -1873,6 +1911,7 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 		if len(args) < 2 {
 			return VoidValue, ErrBadParamCount
 		}
+		mutated = true
 		m.array = nil
 		purgeEmpty := false
 		if len(args) > 3 && !args[3].IsVoid() {
@@ -1892,6 +1931,7 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 		if len(args) > maxVMArrayLength-len(m.array) {
 			return VoidValue, errors.New("TJS array length limit exceeded")
 		}
+		mutated = len(args) > 0
 		m.array = append(m.array, args...)
 		return IntegerValue(int64(len(m.array))), nil
 	case "unshift":
@@ -1899,6 +1939,7 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 			return VoidValue, errors.New("TJS array length limit exceeded")
 		}
 		if len(args) > 0 {
+			mutated = true
 			oldLen := len(m.array)
 			m.array = append(m.array, make([]Value, len(args))...)
 			copy(m.array[len(args):], m.array[:oldLen])
@@ -1913,6 +1954,7 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 			return VoidValue, errors.New("TJS array length limit exceeded")
 		}
 		oldLen := len(m.array)
+		mutated = true
 		m.array = append(m.array, args[0])
 		return IntegerValue(int64(oldLen)), nil
 	case "remove":
@@ -1951,6 +1993,9 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 				}
 			}
 		}
+		if removed > 0 {
+			mutated = true
+		}
 		return IntegerValue(int64(removed)), nil
 	case "erase":
 		if len(args) != 1 {
@@ -1964,6 +2009,7 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 			return VoidValue, errors.New("TJS array index out of range")
 		}
 		i := int(index)
+		mutated = true
 		copy(m.array[i:], m.array[i+1:])
 		last := len(m.array) - 1
 		clear(m.array[last:])
@@ -1984,6 +2030,7 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 			return VoidValue, errors.New("TJS array length limit exceeded")
 		}
 		i := int(index)
+		mutated = true
 		m.array = append(m.array, VoidValue)
 		copy(m.array[i+1:], m.array[i:len(m.array)-1])
 		m.array[i] = args[1]
@@ -1992,6 +2039,7 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 		if len(m.array) == 0 {
 			return VoidValue, nil
 		}
+		mutated = true
 		last := len(m.array) - 1
 		out := m.array[last]
 		m.array = m.array[:last]
@@ -2000,6 +2048,7 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 		if len(m.array) == 0 {
 			return VoidValue, nil
 		}
+		mutated = true
 		out := m.array[0]
 		last := len(m.array) - 1
 		copy(m.array, m.array[1:])
@@ -2048,11 +2097,15 @@ func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b
 		}
 		return IntegerValue(-1), nil
 	case "reverse":
+		if len(m.array) > 1 {
+			mutated = true
+		}
 		for i, j := 0, len(m.array)-1; i < j; i, j = i+1, j-1 {
 			m.array[i], m.array[j] = m.array[j], m.array[i]
 		}
 		return context, nil
 	case "clear":
+		mutated = len(m.array) > 0
 		m.array = nil
 		return VoidValue, nil
 	}
@@ -3057,15 +3110,23 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 	}
 	m := v.meta[id]
 	if m == nil {
-		// Dispatcher-created array methods normally run through the object
-		// dispatcher. Array.load is VM-host-backed, so route that exact native
-		// member through the same host path as source-compiled Array.load.
+		// Dispatcher-created array methods otherwise mutate only the Object
+		// backing, leaving a VM-owned array's metadata stale. Route those calls
+		// through the VM implementation so both representations stay aligned.
 		registry.mu.RLock()
 		callable := registry.callable[id]
 		registry.mu.RUnlock()
-		if callable != nil && callable.fn.Name == "load" && context.Kind() == KindObject && !context.IsNull() {
+		if callable != nil && callable.call != nil && context.Kind() == KindObject && !context.IsNull() {
 			if receiver, ok := v.Objects.Lookup(context.ObjectRef().Object); ok && receiver.Category == CategoryArray {
-				return v.nativeCall("Array.load", context, args, h, b, needed)
+				if callable.fn.Name == "load" {
+					return v.nativeCall("Array.load", context, args, h, b, needed)
+				}
+				switch callable.fn.Name {
+				case "assign", "split", "push", "unshift", "add", "pop", "shift",
+					"reverse", "clear", "join", "find", "indexOf", "remove",
+					"erase", "insert", "sort":
+					return v.nativeCall("Array."+callable.fn.Name, context, args, h, b, needed)
+				}
 			}
 		}
 		dispatcher := NewDispatcher(v.Objects)
