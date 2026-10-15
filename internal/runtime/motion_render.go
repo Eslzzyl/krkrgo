@@ -68,10 +68,10 @@ func renderMotionValue(resource *motionResource, root map[string]assets.Value, v
 	case map[string]assets.Value:
 		ctx := parent
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
-			frame, active := psbMotionFrame(frameList, tick)
-			if active {
-				ctx = psbMotionContext(parent, frame, node)
-				if err := renderMotionFrame(resource, root, frame, node, ctx, pixels, width, height, stack); err != nil {
+			content, visible := psbMotionResolvedContent(frameList, tick)
+			if visible {
+				ctx = psbMotionContext(parent, content, node)
+				if err := renderMotionFrame(resource, root, content, node, ctx, pixels, width, height, stack); err != nil {
 					return err
 				}
 			}
@@ -90,11 +90,7 @@ func renderMotionValue(resource *motionResource, root map[string]assets.Value, v
 	return nil
 }
 
-func renderMotionFrame(resource *motionResource, root map[string]assets.Value, frame map[string]assets.Value, layer map[string]assets.Value, ctx motionRenderContext, pixels []byte, width, height int, stack map[string]bool) error {
-	content, _ := frame["content"].(map[string]assets.Value)
-	if content == nil {
-		return nil
-	}
+func renderMotionFrame(resource *motionResource, root map[string]assets.Value, content map[string]assets.Value, layer map[string]assets.Value, ctx motionRenderContext, pixels []byte, width, height int, stack map[string]bool) error {
 	source, _ := content["src"].(string)
 	if source == "" {
 		return nil
@@ -136,16 +132,15 @@ func renderMotionFrame(resource *motionResource, root map[string]assets.Value, f
 	return nil
 }
 
-// psbMotionFrame selects the keyframe whose slot is active at tick, following
-// the reference evaluator: a time before the first keyframe selects the first
-// entry, the last entry is never selected (it only provides the interpolation
-// target), and a frame is drawable whenever it carries content, independently
-// of its type field (0 invisible, 2 static, 3 interpolate).
-func psbMotionFrame(frames []assets.Value, tick float64) (map[string]assets.Value, bool) {
+// psbMotionKeyframeIndex returns the slot active at tick following the
+// reference evaluator: a time before the first entry selects the first entry and
+// the final entry is never selected because it only supplies an interpolation
+// target.
+func psbMotionKeyframeIndex(frames []assets.Value, tick float64) (int, bool) {
 	if len(frames) == 0 {
-		return nil, false
+		return 0, false
 	}
-	selected := -1
+	selected := 0
 	for index, value := range frames {
 		frame, ok := value.(map[string]assets.Value)
 		if !ok {
@@ -154,32 +149,162 @@ func psbMotionFrame(frames []assets.Value, tick float64) (map[string]assets.Valu
 		if psbMotionFloat(frame, "time", 0) > tick {
 			if index > 0 {
 				selected = index - 1
-			} else {
-				selected = 0
 			}
 			break
 		}
 		selected = index
 	}
-	if selected < 0 {
-		selected = len(frames) - 1
-	}
 	if len(frames) > 1 && selected > len(frames)-2 {
 		selected = len(frames) - 2
 	}
-	frame, ok := frames[selected].(map[string]assets.Value)
+	return selected, true
+}
+
+// psbMotionResolvedContent returns the content a frame list draws at tick. The
+// active entry's own content is the state (absent properties fall back to the
+// format defaults), and an entry whose type is 3 blends toward the next entry
+// that carries content. Coordinates ease through the entry's ccc curve, zoom
+// through zcc, angle through acc, and slant through scc, while opacity
+// interpolates linearly, matching the reference's dual-slot evaluation.
+func psbMotionResolvedContent(frames []assets.Value, tick float64) (map[string]assets.Value, bool) {
+	index, ok := psbMotionKeyframeIndex(frames, tick)
 	if !ok {
 		return nil, false
 	}
-	_, hasContent := frame["content"].(map[string]assets.Value)
-	return frame, hasContent
+	active, ok := frames[index].(map[string]assets.Value)
+	if !ok {
+		return nil, false
+	}
+	content, _ := active["content"].(map[string]assets.Value)
+	if content == nil {
+		return nil, false
+	}
+	if index+1 >= len(frames) || int(psbMotionFloat(active, "type", 0)) != 3 {
+		return content, true
+	}
+	next, ok := frames[index+1].(map[string]assets.Value)
+	if !ok {
+		return content, true
+	}
+	nextContent, _ := next["content"].(map[string]assets.Value)
+	if nextContent == nil {
+		return content, true
+	}
+	ratio := psbMotionBlendRatio(active, next, tick)
+	interpolated := make(map[string]assets.Value, len(content)+len(nextContent))
+	for key, value := range content {
+		interpolated[key] = value
+	}
+	if _, ok := interpolated["src"]; !ok {
+		for _, key := range []string{"src", "ox", "oy"} {
+			if value, ok := nextContent[key]; ok {
+				interpolated[key] = value
+			}
+		}
+	}
+	coordRatio := psbMotionCurveRatio(content["ccc"], ratio)
+	zoomRatio := psbMotionCurveRatio(content["zcc"], ratio)
+	angleRatio := psbMotionCurveRatio(content["acc"], ratio)
+	slantRatio := psbMotionCurveRatio(content["scc"], ratio)
+	if values := psbMotionList(content["coord"]); len(values) > 0 {
+		interpolated["coord"] = psbMotionBlendList(values, psbMotionList(nextContent["coord"]), coordRatio)
+	} else if values := psbMotionList(nextContent["coord"]); len(values) > 0 {
+		interpolated["coord"] = psbMotionBlendList([]float64{0, 0, 0}, values, coordRatio)
+	}
+	if _, ok := content["opa"]; ok || nextContent["opa"] != nil {
+		interpolated["opa"] = psbMotionBlendFloat(content["opa"], nextContent["opa"], 255, ratio)
+	}
+	for _, key := range []string{"zx", "zy", "angle", "sx", "sy", "ox", "oy", "fx", "fy"} {
+		if content[key] == nil && nextContent[key] == nil {
+			continue
+		}
+		defaultValue := 0.0
+		switch key {
+		case "zx", "zy":
+			defaultValue = 1
+		}
+		iratio := ratio
+		switch key {
+		case "zx", "zy":
+			iratio = zoomRatio
+		case "angle":
+			iratio = angleRatio
+		case "sx", "sy":
+			iratio = slantRatio
+		}
+		interpolated[key] = psbMotionBlendFloat(content[key], nextContent[key], defaultValue, iratio)
+	}
+	return interpolated, true
 }
 
-func psbMotionContext(parent motionRenderContext, frame map[string]assets.Value, layer map[string]assets.Value) motionRenderContext {
-	content, _ := frame["content"].(map[string]assets.Value)
-	if content == nil {
-		return parent
+func psbMotionBlendRatio(active, next map[string]assets.Value, tick float64) float64 {
+	start := psbMotionFloat(active, "time", 0)
+	end := psbMotionFloat(next, "time", 0)
+	if end <= start {
+		return 1
 	}
+	ratio := (tick - start) / (end - start)
+	return math.Min(math.Max(ratio, 0), 1)
+}
+
+// psbMotionCurveRatio evaluates a frame content curve at ratio, returning ratio
+// unchanged when the entry carries no usable curve.
+func psbMotionCurveRatio(value assets.Value, ratio float64) float64 {
+	curve, ok := value.(map[string]assets.Value)
+	if !ok {
+		return ratio
+	}
+	xs := psbMotionList(curve["x"])
+	ys := psbMotionList(curve["y"])
+	if len(xs) < 2 || len(xs) != len(ys) {
+		return ratio
+	}
+	if xs[0] >= ratio {
+		return ys[0]
+	}
+	if xs[len(xs)-1] <= ratio {
+		return ys[len(ys)-1]
+	}
+	index := 0
+	for index < len(xs) && xs[index] < ratio {
+		index += 3
+	}
+	if index < 3 || index >= len(xs) {
+		return ratio
+	}
+	p0, p1, p2, p3 := ys[index-3], ys[index-2], ys[index-1], ys[index]
+	u := 1 - ratio
+	return u*u*u*p0 + 3*u*u*ratio*p1 + 3*u*ratio*ratio*p2 + ratio*ratio*ratio*p3
+}
+
+func psbMotionBlendFloat(value, next assets.Value, fallback, ratio float64) float64 {
+	from, to := fallback, fallback
+	if value != nil {
+		from = psbMotionFloatValue(value, fallback)
+	}
+	if next != nil {
+		to = psbMotionFloatValue(next, fallback)
+	}
+	return from*(1-ratio) + to*ratio
+}
+
+func psbMotionBlendList(value, next []float64, ratio float64) []assets.Value {
+	length := max(len(value), len(next))
+	blended := make([]assets.Value, length)
+	for index := range length {
+		from, to := 0.0, 0.0
+		if index < len(value) {
+			from = value[index]
+		}
+		if index < len(next) {
+			to = next[index]
+		}
+		blended[index] = from*(1-ratio) + to*ratio
+	}
+	return blended
+}
+
+func psbMotionContext(parent motionRenderContext, content map[string]assets.Value, layer map[string]assets.Value) motionRenderContext {
 	coord := psbMotionList(content["coord"])
 	x, y := 0.0, 0.0
 	if len(coord) > 0 {
