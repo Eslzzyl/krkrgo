@@ -367,6 +367,23 @@ func (s *Services) kagNativeCall(vm *tjs.VM, name string, context tjs.Value, arg
 			return tjs.NullValue, nil
 		}
 		return kagMacroParametersValue(vm, p.macroFrames[len(p.macroFrames)-1].arguments, budget)
+	case "get:macros":
+		id := context.ObjectRef().Object
+		if value, ok := s.KAGMacroObjects[id]; ok {
+			return value, nil
+		}
+		value, err := vm.NewDictionary()
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		s.KAGMacroObjects[id] = value
+		return value, nil
+	case "set:macros":
+		if len(args) != 1 {
+			return tjs.VoidValue, fmt.Errorf("KAGParser.macros requires one value")
+		}
+		s.KAGMacroObjects[context.ObjectRef().Object] = args[0]
+		return tjs.VoidValue, nil
 	default:
 		return tjs.VoidValue, fmt.Errorf("unsupported KAGParser operation: %s", op)
 	}

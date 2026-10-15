@@ -87,10 +87,10 @@ func TestTimerNativeConstructorPropertiesAndEvent(t *testing.T) {
 	}
 }
 
-func TestTimerNativeRequiresActionOwner(t *testing.T) {
+func TestTimerNativeOptionalActionOwner(t *testing.T) {
 	session := NewSession(DefaultServices(), 1000)
-	if _, err := session.Evaluate("new Timer()"); err == nil {
-		t.Fatal("Timer without ActionOwner unexpectedly succeeded")
+	if _, err := session.Evaluate("new Timer()"); err != nil {
+		t.Fatalf("Timer without ActionOwner: %v", err)
 	}
 	if _, err := session.Evaluate("new Timer(1)"); err == nil {
 		t.Fatal("Timer with non-object ActionOwner unexpectedly succeeded")
@@ -120,8 +120,8 @@ timer = new ScriptTimer(timerOwner);
 	if servicesTimer := session.Services.Timers.Timer(uint64(timerValue.ObjectRef().Object)); servicesTimer == nil {
 		t.Fatal("Timer subclass was not registered")
 	}
-	if _, err := session.Evaluate("new Timer()"); err == nil {
-		t.Fatal("Timer without ActionOwner unexpectedly succeeded")
+	if _, err := session.Evaluate("new Timer()"); err != nil {
+		t.Fatalf("Timer without ActionOwner: %v", err)
 	}
 }
 

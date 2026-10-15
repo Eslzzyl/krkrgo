@@ -119,14 +119,15 @@ type Services struct {
 	AsyncTriggerActions      map[tjs.ObjectID]timerAction
 	Arguments                map[string]string
 	Plugins                  []string
+	menuData                 menuModel
 	sampleDefaultCounts      int
 	sampleDefaultAheads      int
 	samplePluginVMs          map[*tjs.VM]struct{}
-	menuData                 menuModel
+	KAGMacroObjects          map[tjs.ObjectID]tjs.Value
 	Natives                  *NativeRegistry
 	KAGParsers               map[tjs.ObjectID]*KAGParser
 	CSVParsers               map[tjs.ObjectID]*csvParserState
-	Videos                   map[tjs.ObjectID]*VideoOverlay
+	Videos                    map[tjs.ObjectID]*VideoOverlay
 	PhaseVocoders            map[tjs.ObjectID]*phaseVocoderConfig
 	Sounds                   map[tjs.ObjectID]*WaveSoundBuffer
 	SoundEvents              map[tjs.ObjectID][]SoundEvent
@@ -156,6 +157,9 @@ type Services struct {
 	inputStates     map[uint64]*keyInputState
 	mu              sync.RWMutex
 	initMu          sync.Mutex
+	kagHookMu       sync.Mutex
+	kagHookNatives  map[*tjs.VM]tjs.Value
+	pendingKAGHooks map[*tjs.VM][]kagHookRegistration
 	childrenSyncMu  sync.Mutex
 	audioMixerOwner *AudioMixer
 	frameCacheSeed  maphash.Seed
@@ -424,6 +428,9 @@ func (s *Services) ensureInit() {
 	}
 	if s.AsyncTriggerActions == nil {
 		s.AsyncTriggerActions = make(map[tjs.ObjectID]timerAction)
+	}
+	if s.KAGMacroObjects == nil {
+		s.KAGMacroObjects = make(map[tjs.ObjectID]tjs.Value)
 	}
 	if s.Arguments == nil {
 		s.Arguments = make(map[string]string)
@@ -853,6 +860,11 @@ func (s *Services) SetFrameSize(width, height int32) error {
 		s.Compositor = NewCompositor(width, height)
 	} else {
 		s.Compositor.Width, s.Compositor.Height = width, height
+		if s.Root != nil && s.Root.windowID != 0 {
+			if err := s.Root.SetSize(width, height); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -1248,6 +1260,13 @@ func (s *Services) GCRoots() []tjs.Value {
 	}
 	out = append(out, s.menuData.gcRoots()...)
 	s.mu.RUnlock()
+	s.kagHookMu.Lock()
+	for _, registrations := range s.pendingKAGHooks {
+		for _, registration := range registrations {
+			out = append(out, registration.handle, registration.fn, registration.context)
+		}
+	}
+	s.kagHookMu.Unlock()
 	return out
 }
 func (s *Services) AddRoot(value tjs.Value) {
@@ -1788,6 +1807,9 @@ func (s *Services) preloadWin32Dialog(vm *tjs.VM, budget *uint64) error {
 	if err := installWin32DialogNative(vm); err != nil {
 		return err
 	}
+	if err := installKrMovieNative(vm); err != nil {
+		return err
+	}
 	if _, ok := vm.Globals["WIN32GenericDialogEX"]; ok {
 		return nil
 	}
@@ -1797,8 +1819,223 @@ func (s *Services) preloadWin32Dialog(vm *tjs.VM, budget *uint64) error {
 func (s *Services) CallWithResult(vm *tjs.VM, name string, context tjs.Value, args []tjs.Value, budget *uint64, resultNeeded bool) (tjs.Value, error) {
 	return s.call(vm, name, context, args, budget, resultNeeded)
 }
-
 func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.Value, budget *uint64, resultNeeded bool) (tjs.Value, error) {
+	if name == "addKagHookCallback" {
+		return tjs.VoidValue, s.registerLegacyKAGHook(vm, args, budget)
+	}
+	if name == "getSysSE" {
+		value, err := vm.NewDictionary()
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		object, ok := vm.Objects.Lookup(value.ObjectRef().Object)
+		if !ok {
+			return tjs.VoidValue, fmt.Errorf("getSysSE result object is unavailable")
+		}
+		if err := object.Set("storage", tjs.StringValue("")); err != nil {
+			return tjs.VoidValue, err
+		}
+		if err := object.Set("buf", tjs.IntegerValue(0)); err != nil {
+			return tjs.VoidValue, err
+		}
+		return value, nil
+	}
+	if name == "BookMarkIO" || name == "_BookMarkIO" || name == "getBookMarkFileNameAtNum" || name == "_getBookMarkFileNameAtNum" {
+		return tjs.StringValue(""), nil
+	}
+
+	if name == "getBookMarkFileNameAtNum" {
+		return tjs.StringValue(""), nil
+	}
+	if name == "goBackHistory" {
+		return tjs.VoidValue, nil
+	}
+	if name == "goBackTitle" {
+		return tjs.VoidValue, nil
+	}
+	if name == "endRecollection" {
+		return tjs.VoidValue, nil
+	}
+	if name == "loadEmergency" {
+		return tjs.VoidValue, nil
+	}
+	if name == "exists" {
+		return s.storagesNative(vm, "isExistentStorage", args)
+	}
+	if name == "cancel" {
+		return tjs.VoidValue, nil
+	}
+	if name == "set" {
+		if context.Kind() != tjs.KindObject || context.IsNull() || len(args) < 2 {
+			return tjs.VoidValue, fmt.Errorf("set requires an object, key, and value")
+		}
+		target, ok := vm.Objects.Lookup(context.ObjectRef().Object)
+		if !ok {
+			return tjs.VoidValue, fmt.Errorf("set target is unavailable")
+		}
+		return tjs.VoidValue, target.Set(args[0].Text(), args[1])
+	}
+	if name == "get" {
+		if context.Kind() != tjs.KindObject || context.IsNull() || len(args) < 1 {
+			return tjs.VoidValue, fmt.Errorf("get requires an object and key")
+		}
+		target, ok := vm.Objects.Lookup(context.ObjectRef().Object)
+		if !ok {
+			return tjs.VoidValue, fmt.Errorf("get target is unavailable")
+		}
+		if value, found := target.Get(args[0].Text()); found {
+			return value, nil
+		}
+		return tjs.VoidValue, nil
+	}
+	if name == "load" {
+		return tjs.VoidValue, nil
+	}
+	if name == "getValue" {
+		if context.Kind() != tjs.KindObject || context.IsNull() || len(args) < 1 {
+			return tjs.VoidValue, fmt.Errorf("getValue requires an object and key")
+		}
+		target, ok := vm.Objects.Lookup(context.ObjectRef().Object)
+		if !ok {
+			return tjs.VoidValue, fmt.Errorf("getValue target is unavailable")
+		}
+		if value, found := target.Get(args[0].Text()); found {
+			return value, nil
+		}
+		return tjs.VoidValue, nil
+	}
+	if name == "showHistoryByKey" {
+		return tjs.VoidValue, nil
+	}
+	if name == "callHook" {
+		return tjs.VoidValue, nil
+	}
+	if name == "checkSave" {
+		return tjs.IntegerValue(0), nil
+	}
+	if name == "updateQuickSaveDataExists" {
+		return tjs.VoidValue, nil
+	}
+	if name == "entryKagHooks" {
+		return tjs.VoidValue, nil
+	}
+	if name == "onResetWindowSizeMenuItemClick" {
+		return tjs.VoidValue, nil
+	}
+	if name == "onDisableWinwodResizeMenuItemClick" {
+		return tjs.VoidValue, nil
+	}
+	if name == "getWindowResMenuItem" {
+		return tjs.IntegerValue(1), nil
+	}
+	if name == "add" {
+		if context.Kind() == tjs.KindObject && !context.IsNull() && context.ObjectRef().Object != 0 {
+			model := s.menuState()
+			if _, ok := model.items[context.ObjectRef().Object]; ok {
+				return s.menuNative(vm, context, "add", args, budget)
+			}
+		}
+		return tjs.VoidValue, nil
+	}
+	if name == "tagApply" {
+		if len(args) > 0 {
+			return args[0], nil
+		}
+		return tjs.StringValue(""), nil
+	}
+	if name == "setup" {
+		return tjs.VoidValue, nil
+	}
+	if name == "createBookMarkSubMenus" {
+		return tjs.VoidValue, nil
+	}
+	if name == "registerExEvent" {
+		return tjs.VoidValue, nil
+	}
+	if name == "setWindowsClickEventHook" {
+		return tjs.VoidValue, nil
+	}
+	if name == "createMenuBarHideMenu" {
+		return tjs.VoidValue, nil
+	}
+	if name == "isDefined" {
+		if len(args) != 1 {
+			return tjs.VoidValue, fmt.Errorf("isDefined expects one argument")
+		}
+		return tjs.IntegerValue(0), nil
+	}
+	if name == "Array.add" {
+		if context.Kind() != tjs.KindObject || context.IsNull() {
+			return tjs.VoidValue, fmt.Errorf("Array.add requires an object receiver")
+		}
+		target, ok := vm.Objects.Lookup(context.ObjectRef().Object)
+		if !ok {
+			return tjs.VoidValue, fmt.Errorf("Array.add target is unavailable")
+		}
+		length := int64(0)
+		if current, found := target.Get("length"); found && current.Kind() == tjs.KindInteger {
+			length = current.IntegerValue()
+		}
+		for _, value := range args {
+			if err := target.Set(fmt.Sprintf("%d", length), value); err != nil {
+				return tjs.VoidValue, err
+			}
+			length++
+		}
+		if err := target.Set("length", tjs.IntegerValue(length)); err != nil {
+			return tjs.VoidValue, err
+		}
+		return tjs.VoidValue, nil
+	}
+	if name == "Object" {
+		object, err := vm.NewDictionary()
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		add := tjs.NewNativeFunction(vm.Objects, "Object.add", func(context tjs.ObjectRef, args []tjs.Value) (tjs.Value, error) {
+			target, ok := vm.Objects.Lookup(context.Object)
+			if !ok {
+				return tjs.VoidValue, fmt.Errorf("Object.add target is unavailable")
+			}
+			index := int64(0)
+			if current, found := target.Get("length"); found && current.Kind() == tjs.KindInteger {
+				index = current.IntegerValue()
+			}
+			for _, value := range args {
+				if err := target.Set(fmt.Sprintf("%d", index), value); err != nil {
+					return tjs.VoidValue, err
+				}
+				index++
+			}
+			if err := target.Set("length", tjs.IntegerValue(index)); err != nil {
+				return tjs.VoidValue, err
+			}
+			return tjs.VoidValue, nil
+		})
+		set := tjs.NewNativeFunction(vm.Objects, "Object.set", func(context tjs.ObjectRef, args []tjs.Value) (tjs.Value, error) {
+			if len(args) < 2 {
+				return tjs.VoidValue, fmt.Errorf("Object.set requires key and value")
+			}
+			target, ok := vm.Objects.Lookup(context.Object)
+			if !ok {
+				return tjs.VoidValue, fmt.Errorf("Object.set target is unavailable")
+			}
+			if err := target.Set(args[0].Text(), args[1]); err != nil {
+				return tjs.VoidValue, err
+			}
+			return tjs.VoidValue, nil
+		})
+		if err := vm.SetMemberWithRuntime(object, "add", add, 0, s, nil); err != nil {
+			return tjs.VoidValue, err
+		}
+		if err := vm.SetMemberWithRuntime(object, "set", set, 0, s, nil); err != nil {
+			return tjs.VoidValue, err
+		}
+		return object, nil
+	}
+	if name == "list" {
+		return vm.NewArray(nil)
+	}
 	if strings.HasPrefix(name, "Math.") {
 		return s.mathNative(strings.TrimPrefix(name, "Math."), args, resultNeeded)
 	}

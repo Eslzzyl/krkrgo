@@ -474,11 +474,25 @@ func (l *Layer) SetSize(width, height int32) error {
 // SetImageSize resizes the image while preserving the overlapping pixels and
 // keeping the layer bounds covered, as Layer.SetImageSize does in Kirikiri.
 func (l *Layer) SetImageSize(width, height int32) error {
-	if l == nil || len(l.RGBA) == 0 {
+	if l == nil {
 		return fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
 	}
-	if width <= 0 || height <= 0 || uint64(width)*uint64(height) > maxLayerPixels {
+	if width < 0 || height < 0 || uint64(width)*uint64(height) > maxLayerPixels {
 		return fmt.Errorf("%w: image dimensions exceed limit", ErrInvalidLayer)
+	}
+	if width == 0 || height == 0 {
+		l.ClearImage()
+		return nil
+	}
+	if len(l.RGBA) == 0 {
+		l.ImageWidth, l.ImageHeight = width, height
+		if l.Bounds.Width < width {
+			l.Bounds.Width = width
+		}
+		if l.Bounds.Height < height {
+			l.Bounds.Height = height
+		}
+		return nil
 	}
 	if width == l.ImageWidth && height == l.ImageHeight {
 		return nil
@@ -521,8 +535,11 @@ func (l *Layer) SetImageHeight(height int32) error {
 }
 
 func (l *Layer) SetSizeToImageSize() error {
-	if l == nil || len(l.RGBA) == 0 {
+	if l == nil {
 		return fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
+	}
+	if l.ImageWidth <= 0 || l.ImageHeight <= 0 {
+		return nil
 	}
 	return l.SetSize(l.ImageWidth, l.ImageHeight)
 }
@@ -706,6 +723,7 @@ func (l *Layer) SetType(t LayerType) error {
 	}
 	if len(l.RGBA) == 0 {
 		if err := resizeLayerImage(l, l.Bounds.Width, l.Bounds.Height); err != nil {
+			fmt.Printf("legacy layer SetType resize width=%d height=%d image=%dx%d type=%d error=%v\n", l.Bounds.Width, l.Bounds.Height, l.ImageWidth, l.ImageHeight, l.Type, err)
 			return err
 		}
 		l.ImageLeft, l.ImageTop = 0, 0

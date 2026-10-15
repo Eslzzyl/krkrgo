@@ -1000,6 +1000,9 @@ func arrayMethod(d *Dispatcher, o *Object, name string) (Value, bool) {
 			if e := o.Set(strconv.FormatInt(n, 10), args[0]); e != nil {
 				return Value{}, e
 			}
+			if e := resizeArrayLength(o, n+1); e != nil {
+				return Value{}, e
+			}
 			return IntegerValue(n), nil
 		}
 	case "pop":

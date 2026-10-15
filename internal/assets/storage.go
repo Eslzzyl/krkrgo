@@ -164,7 +164,23 @@ func NewStorage(project string, limits core.Limits) (*Storage, error) {
 }
 
 func (s *Storage) Mount(path string, limits core.Limits) error {
-	a, err := OpenArchive(path, limits)
+	if s == nil {
+		return fmt.Errorf("nil storage")
+	}
+	canonical, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(canonical); resolveErr == nil {
+		canonical = resolved
+	}
+	canonical = filepath.Clean(canonical)
+	for _, mounted := range s.Archives {
+		if mounted != nil && filepath.Clean(mounted.Path) == canonical {
+			return nil
+		}
+	}
+	a, err := OpenArchive(canonical, limits)
 	if err != nil {
 		return err
 	}

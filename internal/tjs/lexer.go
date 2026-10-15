@@ -645,7 +645,7 @@ func (l *Lexer) scanNumber(start uint64, loc core.SourceLocation) (Token, error)
 			}
 			l.advance()
 		}
-		if l.peek(0) == '.' {
+		if l.peek(0) == '.' && l.peek(1) >= '0' && l.peek(1) <= '9' {
 			realNum = true
 			l.advance()
 			for isDigitForBase(l.peek(0), base) || l.peek(0) == '_' {
@@ -686,7 +686,7 @@ func (l *Lexer) scanNumber(start uint64, loc core.SourceLocation) (Token, error)
 				l.advance()
 			}
 		}
-		if l.peek(0) == '.' {
+		if l.peek(0) == '.' && l.peek(1) >= '0' && l.peek(1) <= '9' {
 			realNum = true
 			l.advance()
 			for (l.peek(0) >= '0' && l.peek(0) <= '9') || l.peek(0) == '_' {

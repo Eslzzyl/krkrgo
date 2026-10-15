@@ -93,6 +93,9 @@ func serviceProjectPath(s *Services) string {
 
 func saveStorageName(project, root, name string) (string, error) {
 	name = strings.ReplaceAll(name, `\`, "/")
+	if strings.HasPrefix(name, "/") && !strings.HasPrefix(name, "//") {
+		name = strings.TrimPrefix(name, "/")
+	}
 	candidate := core.LocalStorageNativePath(name)
 	candidatePath := filepath.FromSlash(candidate)
 	if filepath.IsAbs(candidatePath) {
@@ -113,7 +116,7 @@ func saveStorageName(project, root, name string) (string, error) {
 			}
 			return n, nil
 		}
-		return "", fmt.Errorf("%w: absolute storage is outside project and save directories", ErrInvalidSaveName)
+		return "", fmt.Errorf("%w: %q: absolute storage is outside project and save directories", ErrInvalidSaveName, name)
 	}
 	n, err := core.StorageName(candidate)
 	if err != nil {

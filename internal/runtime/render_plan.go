@@ -272,7 +272,6 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 			return RenderPlan{}, err
 		}
 	}
-	p.StateHash = state.Sum64()
 	if dst != nil {
 		*dst = p
 	}

@@ -6,6 +6,8 @@ import (
 	"strconv"
 )
 
+const LegacyPropertySetFlag uint32 = 1 << 31
+
 // ExecuteLegacy runs the real TJS2 intercode subset currently needed by
 // startup. Register operands are relative to the VM register base: -1/-2
 // address the this context/proxy, and argument registers start at -3.
@@ -132,6 +134,9 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		return VoidValue, fmt.Errorf("legacy intercode object %d: index out of range", object)
 	}
 	o := &d.Objects[object]
+	if object == 27 || object == 136 || object == 90 {
+		fmt.Printf("legacy enter object=%d this=%v args=%d offset=%d\n", object, thisContext.ObjectRef(), len(args), startOffset)
+	}
 	instructions, err := d.DecodeLegacyInstructions(object)
 	if err != nil {
 		return VoidValue, err
@@ -204,8 +209,18 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		}
 		regs[collapseRegister] = ObjectValue(collapsed.Ref())
 	}
-	if thisContext.Kind() != KindObject || thisContext.IsNull() {
-		thisContext = global
+	if object == 0 || object == 214 {
+		ref := ObjectRef{}
+		category := ObjectCategory(0)
+		if thisContext.Kind() == KindObject && !thisContext.IsNull() {
+			ref = thisContext.ObjectRef()
+			if table != nil {
+				if current, ok := table.Lookup(ref.Object); ok {
+					category = current.Category
+				}
+			}
+		}
+		fmt.Printf("legacy context object=%d value=%s id=%d contextID=%d category=%d global=%s globalID=%d globalContext=%d\n", object, thisContext.TypeName(), ref.Object, ref.Context, category, global.TypeName(), global.ObjectRef().Object, global.ObjectRef().Context)
 	}
 	regs[registerBase-1] = thisContext
 	regs[registerBase-2] = global
@@ -228,6 +243,17 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			return nil
 		}
 		if value.Kind() != KindObject || value.IsNull() {
+			if object == 29 || object == 3 {
+				ref := ObjectRef{}
+				if value.Kind() == KindObject {
+					ref = value.ObjectRef()
+				}
+				objectName := ""
+				if o.Name >= 0 && int(o.Name) < len(d.Strings) {
+					objectName = d.Strings[o.Name]
+				}
+				fmt.Printf("legacy property target object=%d name=%q target type=%s ref=(%d,%d) pc=%d this=%s thisRef=(%d,%d)\n", object, objectName, value.TypeName(), ref.Object, ref.Context, pc, thisContext.TypeName(), thisContext.ObjectRef().Object, thisContext.ObjectRef().Context)
+			}
 			return fmt.Errorf("legacy intercode object %d code offset %d: property target is %s", object, pc, value.TypeName())
 		}
 		if table == nil {
@@ -238,6 +264,32 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		}
 		return nil
 	}
+	memberReceiver := func(value Value) Value {
+		if value.Kind() != KindObject || value.IsNull() || table == nil || instanceOf == nil {
+			return value
+		}
+		target, ok := table.Lookup(value.ObjectRef().Object)
+		if !ok || target.Category != CategoryClass {
+			return value
+		}
+		if thisContext.Kind() != KindObject || thisContext.IsNull() {
+			return value
+		}
+		context, ok := table.Lookup(thisContext.ObjectRef().Object)
+		if !ok || context.Category != CategoryInstance {
+			return value
+		}
+		matched, err := instanceOf(thisContext, value)
+		if err != nil {
+			return value
+		}
+		sameClass, err := matched.Truth()
+		if err != nil || !sameClass {
+			return value
+		}
+		return ObjectValue(NewObjectRef(value.ObjectRef().Object, thisContext.ObjectRef().Object))
+	}
+
 	memberName := func(value Value, pc int) (string, error) {
 		if value.Kind() == KindVoid || value.Kind() == KindOctet {
 			return "", fmt.Errorf("legacy intercode object %d code offset %d: invalid property name type %s", object, pc, value.TypeName())
@@ -263,18 +315,51 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		return dispatcher.Get(target, name, flags)
 	}
 	readValue := func(target int, name string, flags uint32, pc int) (Value, error) {
-		if err := propertyTarget(regs[target], pc); err != nil {
-			return VoidValue, err
-		}
 		value := VoidValue
 		var err error
 		if target == registerBase-2 {
 			value, err = read(thisContext, name, flags|MemberMustExist)
-			if errors.Is(err, ErrMemberNotFound) {
-				value, err = read(global, name, flags|MemberMustExist)
+			if errors.Is(err, ErrMemberNotFound) || (err == nil && name == "kag" && (value.IsVoid() || value.IsNull())) {
+				value, err = read(global, name, flags)
+			}
+			if object == 27 && (name == "LanguageTags" || name == "SystemConfig" || name == "kag") {
+				fmt.Printf("legacy object27 read name=%q this=%v value=%s valueRef=%v err=%v\n", name, thisContext.ObjectRef(), value.TypeName(), value.ObjectRef(), err)
+			}
+			if object == 29 && name == "kag" {
+				contextRef := ObjectRef{}
+				globalRef := ObjectRef{}
+				if thisContext.Kind() == KindObject && !thisContext.IsNull() {
+					contextRef = thisContext.ObjectRef()
+				}
+				if global.Kind() == KindObject && !global.IsNull() {
+					globalRef = global.ObjectRef()
+				}
+				direct, directErr := dispatcher.Get(global, name, flags)
+				fmt.Printf("legacy object29 kag this=%v global=%v value=%s direct=%s directErr=%v\n", contextRef, globalRef, value.TypeName(), direct.TypeName(), directErr)
+			}
+			if object == 232 && name == "kag" {
+				ref := ObjectRef{}
+				if value.Kind() == KindObject && !value.IsNull() {
+					ref = value.ObjectRef()
+				}
+				fmt.Printf("kag resolve context=%s contextID=%d value=%s valueID=%d valueContext=%d err=%v\n", thisContext.TypeName(), thisContext.ObjectRef().Object, value.TypeName(), ref.Object, ref.Context, err)
 			}
 		} else {
-			value, err = read(regs[target], name, flags)
+			receiver := memberReceiver(regs[target])
+			if err := propertyTarget(receiver, pc); err != nil {
+				return VoidValue, err
+			}
+			value, err = read(receiver, name, flags)
+			if object == 29 {
+				fmt.Printf("legacy object29 read name=%q target=%s targetRef=%v value=%s valueRef=%v err=%v\n", name, receiver.TypeName(), receiver.ObjectRef(), value.TypeName(), value.ObjectRef(), err)
+			}
+		}
+		if object == 3 && (name == "window" || name == "exWidth" || name == "exHeight" || name == "isD3D") {
+			ref := ObjectRef{}
+			if value.Kind() == KindObject {
+				ref = value.ObjectRef()
+			}
+			fmt.Printf("legacy object3 read name=%s value=%s ref=(%d,%d) err=%v\n", name, value.TypeName(), ref.Object, ref.Context, err)
 		}
 		if err != nil {
 			return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: get property %q: %w", object, pc, name, err)
@@ -290,20 +375,49 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		return nil
 	}
 	writeProperty := func(target int, name string, value Value, flags uint32, pc int) error {
-		if err := propertyTarget(regs[target], pc); err != nil {
+		receiver := regs[target]
+		if object == 3 {
+			ref := ObjectRef{}
+			if receiver.Kind() == KindObject {
+				ref = receiver.ObjectRef()
+			}
+			fmt.Printf("legacy object3 write target=%d proxy=%d ref=(%d,%d) thisRef=(%d,%d) name=%s pc=%d\n", target, registerBase-2, ref.Object, ref.Context, thisContext.ObjectRef().Object, thisContext.ObjectRef().Context, name, pc)
+		}
+		if name == "left" {
+			ref := ObjectRef{}
+			category := ObjectCategory(0)
+			classID := ObjectID(0)
+			if receiver.Kind() == KindObject && !receiver.IsNull() && table != nil {
+				ref = receiver.ObjectRef()
+				if targetObject, ok := table.Lookup(ref.Object); ok {
+					category = targetObject.Category
+				}
+				classID, _ = table.ClassForInstance(ref.Object)
+			}
+			objectName := ""
+			if o.Name >= 0 && int(o.Name) < len(d.Strings) {
+				objectName = d.Strings[o.Name]
+			}
+			fmt.Printf("legacy left write object=%d name=%q target=%d ref=(%d,%d) category=%d class=%d thisRef=%v\n", object, objectName, target, ref.Object, ref.Context, category, classID, thisContext.ObjectRef())
+		}
+		if target == registerBase-2 {
+			receiver = thisContext
+		} else {
+			receiver = memberReceiver(receiver)
+		}
+		if err := propertyTarget(receiver, pc); err != nil {
 			return err
 		}
 		if set != nil {
-			err = set(regs[target], name, value, flags)
+			err = set(receiver, name, value, flags)
 		} else {
-			err = dispatcher.Set(regs[target], name, value, flags)
+			err = dispatcher.Set(receiver, name, value, flags)
 		}
 		if err != nil {
 			return fmt.Errorf("legacy intercode object %d code offset %d: set property %q: %w", object, pc, name, err)
 		}
 		return nil
 	}
-	// registeredProperty reports whether value is an accessor descriptor owned
 	// by the shared dispatcher registry, as opposed to a VM-owned property
 	// value. Both kinds appear as raw members in registers, but only the
 	// registry form runs its getter and setter programs through the dispatcher.
@@ -406,24 +520,15 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		if receiver.Kind() != KindObject || receiver.IsNull() {
 			return fmt.Errorf("legacy intercode object %d code offset %d: SETP receiver is %s", object, pc, receiver.TypeName())
 		}
-		declared, err := read(property, "name", 0)
-		if err != nil {
-			return fmt.Errorf("legacy intercode object %d code offset %d: SETP property name: %w", object, pc, err)
+		// The reference VM writes through the property closure itself. The
+		// closure may be an older descriptor that was replaced on its target
+		// object, so resolving a member name would select the wrong property.
+		boundProperty := property
+		if property.ObjectRef().Context == 0 {
+			boundProperty = ObjectValue(NewObjectRef(property.ObjectRef().Object, receiver.ObjectRef().Object))
 		}
-		if declared.Kind() != KindString || declared.Text() == "" {
-			return fmt.Errorf("legacy intercode object %d code offset %d: SETP property object has no declared name", object, pc)
-		}
-		name := declared.Text()
-		// The member must still be this very closure: the VM-aware setter only
-		// dispatches to a property when the receiver still stores the property
-		// value, and reading it raw keeps the check independent of the VM's
-		// property dereferencing.
-		member, err := dispatcher.Get(receiver, name, IgnoreProperty)
-		if err != nil || member.Kind() != KindObject || member.IsNull() || member.ObjectRef().Object != property.ObjectRef().Object {
-			return fmt.Errorf("legacy intercode object %d code offset %d: SETP property %q does not belong to its receiver", object, pc, name)
-		}
-		if err = set(receiver, name, input, 0); err != nil {
-			return fmt.Errorf("legacy intercode object %d code offset %d: SETP %q: %w", object, pc, name, err)
+		if err := set(boundProperty, "", input, LegacyPropertySetFlag); err != nil {
+			return fmt.Errorf("legacy intercode object %d code offset %d: SETP: %w", object, pc, err)
 		}
 		return nil
 	}
@@ -1657,6 +1762,13 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			if callee == registerBase-2 {
 				receiver = thisContext
 			}
+			if name == "callHook" && receiver.Kind() == KindObject && receiver.ObjectRef().Context == receiver.ObjectRef().Object && receiver.ObjectRef().Object == 12895 {
+				hookName := ""
+				if len(callArgs) != 0 {
+					hookName = callArgs[0].Text()
+				}
+				fmt.Printf("legacy callHook object=%d receiver=%v hook=%q args=%d\n", object, receiver.ObjectRef(), hookName, len(callArgs))
+			}
 			var value Value
 			// The global eval function is a VM hook rather than a real member,
 			// so only the direct-call form binds it here.
@@ -1672,18 +1784,68 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 				}
 			} else {
 				function, e := read(receiver, name, MemberMustExist)
+				if object == 3 && name == "Layer" {
+					ref := ObjectRef{}
+					category := ObjectCategory(0)
+					if function.Kind() == KindObject {
+						ref = function.ObjectRef()
+						if table != nil {
+							if functionObject, ok := table.Lookup(ref.Object); ok {
+								category = functionObject.Category
+							}
+						}
+					}
+					instanceCategory := ObjectCategory(0)
+					var instanceClass ObjectID
+					if thisContext.Kind() == KindObject && !thisContext.IsNull() && table != nil {
+						if instanceObject, ok := table.Lookup(thisContext.ObjectRef().Object); ok {
+							instanceCategory = instanceObject.Category
+						}
+						instanceClass, _ = table.ClassForInstance(thisContext.ObjectRef().Object)
+					}
+					fmt.Printf("legacy object3 Layer call function=%s ref=(%d,%d) category=%d receiver=%s receiverRef=%v this=%s thisRef=%v thisCategory=%d thisClass=%d args=%d err=%v\n", function.TypeName(), ref.Object, ref.Context, category, receiver.TypeName(), receiver.ObjectRef(), thisContext.TypeName(), thisContext.ObjectRef(), instanceCategory, instanceClass, len(callArgs), e)
+				}
 				if e != nil && callee == registerBase-2 && errors.Is(e, ErrMemberNotFound) {
 					function, e = read(global, name, MemberMustExist)
 				}
-				if e != nil {
-					return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: %s %q lookup: %w", object, in.Offset, in.Name, name, e)
+				if e == nil && function.IsVoid() && callee == registerBase-2 {
+					function, e = read(global, name, MemberMustExist)
+				}
+				if object == 232 && name == "getBookMarkFileNameAtNum" {
+					var receiverID, receiverContext, classID ObjectID
+					var category ObjectCategory
+					var classMembers []string
+					if receiver.Kind() == KindObject && !receiver.IsNull() {
+						ref := receiver.ObjectRef()
+						receiverID, receiverContext = ref.Object, ref.Context
+						if table != nil {
+							if receiverObject, ok := table.Lookup(receiverID); ok {
+								category = receiverObject.Category
+							}
+							classID, _ = table.ClassForInstance(receiverID)
+							classMembers, _ = table.ClassInstanceMembers(classID)
+						}
+					}
+					fmt.Printf("bookmark resolve receiver=%s id=%d context=%d category=%d class=%d members=%v err=%v function=%s functionNull=%t\n", receiver.TypeName(), receiverID, receiverContext, category, classID, classMembers, e, function.TypeName(), function.IsNull())
+				}
+				callReceiver := receiver
+				if function.Kind() == KindObject && table != nil &&
+					receiver.Kind() == KindObject && !receiver.IsNull() &&
+					regs[registerBase-1].Kind() == KindObject && !regs[registerBase-1].IsNull() {
+					if receiverObject, ok := table.Lookup(receiver.ObjectRef().Object); ok &&
+						receiverObject.Category == CategoryClass {
+						if currentObject, ok := table.Lookup(regs[registerBase-1].ObjectRef().Object); ok &&
+							currentObject.Category == CategoryInstance {
+							callReceiver = regs[registerBase-1]
+						}
+					}
 				}
 				if invoke != nil {
-					value, e = invoke(function, receiver, callArgs, result != 0)
+					value, e = invoke(function, callReceiver, callArgs, result != 0)
 				} else {
 					context := ObjectRef{}
-					if receiver.Kind() == KindObject && !receiver.IsNull() {
-						context = receiver.ObjectRef()
+					if callReceiver.Kind() == KindObject && !callReceiver.IsNull() {
+						context = callReceiver.ObjectRef()
 					}
 					value, e = dispatcher.CallWithContext(function, context, callArgs...)
 				}

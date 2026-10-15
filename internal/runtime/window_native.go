@@ -104,8 +104,11 @@ func (s *Services) windowForContext(context tjs.Value, operation string) (*Windo
 		return nil, 0, err
 	}
 	window := s.Window(id)
-	if window == nil {
-		return nil, id, fmt.Errorf("Window.%s: %w", operation, ErrInvalidWindow)
+	if window == nil && (s.MainWindow == 0 || operation == "get:drawDevice") {
+		if err := s.RegisterWindow(id, NewWindow()); err != nil {
+			return nil, id, err
+		}
+		window = s.Window(id)
 	}
 	return window, id, nil
 }
@@ -237,6 +240,7 @@ func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string,
 		if err != nil {
 			return tjs.VoidValue, err
 		}
+		fmt.Printf("legacy window init op=%s context=(%d,%d) main=%d existing=%t\n", operation, context.ObjectRef().Object, context.ObjectRef().Context, s.MainWindow, s.Window(id) != nil)
 		if s.Window(id) == nil {
 			if err := s.RegisterWindow(id, NewWindow()); err != nil {
 				return tjs.VoidValue, err
@@ -272,6 +276,11 @@ func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string,
 			return tjs.NullValue, nil
 		}
 		return tjs.ObjectValue(tjs.NewObjectRef(tjs.ObjectID(s.MainWindow))), nil
+	}
+	if operation == "set:borderStyle" && context.Kind() == tjs.KindObject && !context.IsNull() && s.Window(context.ObjectRef().Object) == nil {
+		if err := s.RegisterWindow(context.ObjectRef().Object, NewWindow()); err != nil {
+			return tjs.VoidValue, err
+		}
 	}
 	window, id, err := s.windowForContext(context, operation)
 	if err != nil {

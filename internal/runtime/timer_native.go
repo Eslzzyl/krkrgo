@@ -55,7 +55,13 @@ func (s *Services) timerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		return tjs.VoidValue, nil
 	}
 	if operation == "Timer" {
-		if len(args) < 1 || args[0].Kind() != tjs.KindObject || args[0].IsNull() || args[0].ObjectRef().Object == 0 {
+		if s.Timers.Timer(uint64(id)) == nil {
+			return tjs.VoidValue, fmt.Errorf("Timer.%s: native instance was not initialized", operation)
+		}
+		if len(args) == 0 || args[0].IsVoid() {
+			return tjs.VoidValue, nil
+		}
+		if args[0].Kind() != tjs.KindObject || args[0].IsNull() || args[0].ObjectRef().Object == 0 {
 			return tjs.VoidValue, fmt.Errorf("Timer.%s requires an ActionOwner object", operation)
 		}
 		if vm == nil || vm.Objects == nil {
@@ -68,9 +74,6 @@ func (s *Services) timerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		actionName := defaultTimerActionName
 		if len(args) >= 2 && args[1].Kind() != tjs.KindVoid {
 			actionName = args[1].Text()
-		}
-		if s.Timers.Timer(uint64(id)) == nil {
-			return tjs.VoidValue, fmt.Errorf("Timer.%s: native instance was not initialized", operation)
 		}
 		s.mu.Lock()
 		s.TimerActions[id] = timerAction{owner: owner, name: actionName}

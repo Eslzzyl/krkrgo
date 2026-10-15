@@ -29,6 +29,9 @@ func decodeScriptStorageDefault(data []byte) (string, error) {
 	return assets.Decode(data)
 }
 func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Host, budget *uint64) (tjs.Value, error) {
+	if context.Kind() != tjs.KindObject || context.IsNull() {
+		context = tjs.ObjectValue(tjs.NewObjectRef(0, 1))
+	}
 	decoded, err := tjs.DecodeBytecode(data)
 	if err != nil {
 		return tjs.VoidValue, fmt.Errorf("%w: %v", ErrUnsupportedNative, err)
@@ -55,7 +58,7 @@ func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Ho
 		}
 		program, err := tjs.CompileEval("<eval>", source)
 		if err != nil {
-			return tjs.VoidValue, err
+			return tjs.VoidValue, fmt.Errorf("eval source %q: %w", source, err)
 		}
 		value, err := vm.ExecuteInContext(&program, context, host, budget)
 		if err != nil || resultNeeded {
@@ -91,6 +94,11 @@ func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Ho
 		}
 		return tjs.VoidValue, err
 	}
+	if services, ok := host.(*Services); ok {
+		if err := services.installLegacyKAGHookNative(vm, budget); err != nil {
+			return tjs.VoidValue, fmt.Errorf("install KAG hook native after legacy script execution: %w", err)
+		}
+	}
 	return value, nil
 }
 func (s *Services) executePluginScript(vm *tjs.VM, name string, budget *uint64) error {
@@ -115,7 +123,6 @@ func (s *Services) executePluginScript(vm *tjs.VM, name string, budget *uint64) 
 	_, err = executeScriptSource(vm, s, budget, s.preprocessorFor(vm), name, source, false, 0, tjs.VoidValue)
 	return err
 }
-
 
 // legacyVMOps adapts the owning VM's class-membership and lifetime hooks to
 // the legacy intercode executor. CHKINS delegates to the VM's instanceof
@@ -151,6 +158,16 @@ func bindLegacyScriptFunctionsDeferred(vm *tjs.VM, decoded *tjs.DecodedBytecode,
 
 func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedBytecode, global tjs.Value, host tjs.Host, budget *uint64, deferClassInitialization bool, initializer *func() error) error {
 	functions := make(map[int]tjs.Value)
+	registerClassInstanceMember := func(owner tjs.Value, name string) error {
+		if owner.Kind() != tjs.KindObject || owner.IsNull() {
+			return nil
+		}
+		id := owner.ObjectRef().Object
+		if err := vm.Objects.RegisterClassInstanceMembers(id); err != nil {
+			return err
+		}
+		return vm.Objects.AddClassInstanceMember(id, name)
+	}
 	bindClassBody := func(index int, class tjs.Value) error {
 		classIndex := index
 		return vm.SetLegacyClassBody(class, func(receiver tjs.Value, args []tjs.Value, callHost tjs.Host, callBudget *uint64, _ bool) (tjs.Value, error) {
@@ -160,7 +177,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				}
 				program, compileErr := tjs.CompileEval("<eval>", source)
 				if compileErr != nil {
-					return tjs.VoidValue, compileErr
+					return tjs.VoidValue, fmt.Errorf("eval source %q: %w", source, compileErr)
 				}
 				value, evalErr := vm.ExecuteInContext(&program, evalContext, callHost, callBudget)
 				if evalErr != nil || resultNeeded {
@@ -181,6 +198,9 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				return vm.GetMemberIfPresent(value, member, callHost, callBudget)
 			}
 			set := func(value tjs.Value, member string, assigned tjs.Value, flags uint32) error {
+				if flags&tjs.LegacyPropertySetFlag != 0 {
+					return vm.SetPropertyWithRuntime(value, assigned, callHost, callBudget)
+				}
 				return vm.SetMemberWithRuntime(value, member, assigned, flags, callHost, callBudget)
 			}
 			instanceOf, invalidate, isValid := legacyVMOps(vm, callHost, callBudget)
@@ -220,7 +240,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				}
 				program, compileErr := tjs.CompileEval("<eval>", source)
 				if compileErr != nil {
-					return tjs.VoidValue, compileErr
+					return tjs.VoidValue, fmt.Errorf("eval source %q: %w", source, compileErr)
 				}
 				value, evalErr := vm.ExecuteInContext(&program, evalContext, callHost, callBudget)
 				if evalErr != nil || resultNeeded {
@@ -271,7 +291,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				}
 				program, compileErr := tjs.CompileEval("<eval>", source)
 				if compileErr != nil {
-					return tjs.VoidValue, compileErr
+					return tjs.VoidValue, fmt.Errorf("eval source %q: %w", source, compileErr)
 				}
 				value, evalErr := vm.ExecuteInContext(&program, evalContext, callHost, callBudget)
 				if evalErr != nil || needed {
@@ -295,7 +315,11 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				return vm.SetMemberWithRuntime(value, member, assigned, flags, callHost, callBudget)
 			}
 			instanceOf, invalidate, isValid := legacyVMOps(vm, callHost, callBudget)
-			return decoded.ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolversAndVMOpsWithRoots(index, global, receiver, args, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects)
+			value, execErr := decoded.ExecuteLegacyWithContextAndConstructionAndArgumentsAndMemberResolversAndVMOpsWithRoots(index, global, receiver, args, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects)
+			if execErr != nil && (index == 416 || index == 428) {
+				fmt.Printf("legacy bookmark object %d receiver=%s error=%v\n", index, receiver.TypeName(), execErr)
+			}
+			return value, execErr
 		})
 		if err != nil {
 			return tjs.VoidValue, false, err
@@ -544,6 +568,9 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 			if err := vm.RegisterNativeStaticValue(owner, memberName, member); err != nil {
 				return fmt.Errorf("bind compiled function member %q: %w", memberName, err)
 			}
+			if err := registerClassInstanceMember(owner, memberName); err != nil {
+				return fmt.Errorf("register compiled instance member %q: %w", memberName, err)
+			}
 		}
 	}
 	// A compiled property context contributes one named member to its parent,
@@ -588,6 +615,9 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				if err := vm.RegisterNativeStaticValue(class, memberName, member); err != nil {
 					return fmt.Errorf("bind compiled TJS class property %q: %w", memberName, err)
 				}
+				if err := registerClassInstanceMember(class, memberName); err != nil {
+					return fmt.Errorf("register compiled TJS instance property %q: %w", memberName, err)
+				}
 			case 0:
 				globalObject, found := vm.Objects.Lookup(global.ObjectRef().Object)
 				if !found {
@@ -628,7 +658,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 			}
 			program, err := tjs.CompileEval("<eval>", source)
 			if err != nil {
-				return tjs.VoidValue, err
+				return tjs.VoidValue, fmt.Errorf("eval source %q: %w", source, err)
 			}
 			value, err := vm.ExecuteInContext(&program, evalContext, callHost, callBudget)
 			if err != nil || needed {
@@ -797,6 +827,10 @@ func (s *Services) scriptsNative(vm *tjs.VM, operation string, args []tjs.Value,
 			return tjs.VoidValue, err
 		}
 		storageName := nameValue.Text()
+		// PreRenderFontEx is a Windows font helper; system fonts cover this path on other platforms.
+		if operation == "execStorage" && (strings.EqualFold(storageName, "PreRenderFontEx.tjs") || strings.EqualFold(storageName, "embFontLoader.tjs")) {
+			return finish(tjs.VoidValue, nil)
+		}
 		mode := ""
 		if len(args) >= 2 && !args[1].IsVoid() {
 			mode = args[1].Text()

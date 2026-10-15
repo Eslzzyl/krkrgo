@@ -547,6 +547,10 @@ func (s *Services) menuNative(vm *tjs.VM, context tjs.Value, operation string, a
 		return tjs.VoidValue, fmt.Errorf("MenuItem.%s requires an object context", operation)
 	}
 	id := context.ObjectRef().Object
+	if operation == "construct" || operation == "MenuItem" {
+		model.items[id] = &menuItemState{actionOwner: tjs.NullValue, window: tjs.NullValue, caption: tjs.StringValue(""), enabled: true, visible: true, group: -1, arrayDirty: true}
+		return tjs.VoidValue, s.constructMenuItem(id, args)
+	}
 	if operation == "@initialize" {
 		model.items[id] = &menuItemState{actionOwner: tjs.NullValue, window: tjs.NullValue, caption: tjs.StringValue(""), enabled: true, visible: true, group: -1, arrayDirty: true}
 		return tjs.VoidValue, nil
@@ -554,8 +558,27 @@ func (s *Services) menuNative(vm *tjs.VM, context tjs.Value, operation string, a
 	if operation == "@invalidate" {
 		return tjs.VoidValue, s.invalidateMenuItem(vm, id, budget)
 	}
-	if operation == "MenuItem" {
-		return tjs.VoidValue, s.constructMenuItem(id, args)
+	if _, exists := model.items[id]; !exists {
+		model.items[id] = &menuItemState{actionOwner: tjs.NullValue, window: tjs.NullValue, caption: tjs.StringValue(""), enabled: true, visible: true, group: -1, arrayDirty: true, constructed: true}
+	} else if item := model.items[id]; !item.constructed {
+		item.constructed = true
+	}
+	if operation == "add" || operation == "insert" {
+		item, exists := model.items[id]
+		if !exists {
+			item = &menuItemState{actionOwner: tjs.NullValue, window: tjs.NullValue, caption: tjs.StringValue(""), enabled: true, visible: true, group: -1, arrayDirty: true}
+			model.items[id] = item
+		}
+		item.constructed = true
+		if len(args) > 0 && args[0].Kind() == tjs.KindObject && !args[0].IsNull() {
+			childID := args[0].ObjectRef().Object
+			child, childExists := model.items[childID]
+			if !childExists {
+				child = &menuItemState{actionOwner: tjs.NullValue, window: tjs.NullValue, caption: tjs.StringValue(""), enabled: true, visible: true, group: -1, arrayDirty: true}
+				model.items[childID] = child
+			}
+			child.constructed = true
+		}
 	}
 	_, item, err := s.menuItem(context, operation)
 	if err != nil {

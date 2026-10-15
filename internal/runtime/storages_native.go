@@ -3,6 +3,8 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/eslzzyl/krkrgo/internal/core"
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
+
 
 // storagesNative implements the static Storages API against the session's
 // existing project storage. Storage-independent path helpers remain available
@@ -98,6 +101,9 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 		if err != nil {
 			return tjs.VoidValue, err
 		}
+		if os.Getenv("KRKRGO_TRACE_ARCHIVE") != "" {
+			log.Printf("archive-add name=%q full=%q mounted=%d", name, fullPath, len(storage.Archives))
+		}
 		if strings.ContainsRune(fullPath, '>') {
 			return tjs.VoidValue, fmt.Errorf("Storages.addArchive requires an archive path, not an archive member")
 		}
@@ -124,7 +130,7 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 	if operation == "dirlist" || operation == "dirlistEx" {
 		return s.storagesDirList(vm, operation, args)
 	}
-	if operation != "addAutoPath" && operation != "removeAutoPath" && operation != "getFullPath" && operation != "getPlacedPath" && operation != "isExistentStorage" {
+	if operation != "addAutoPath" && operation != "removeAutoPath" && operation != "getFullPath" && operation != "getPlacedPath" && operation != "isExistentStorage" && operation != "isExistentDirectory" {
 		return tjs.VoidValue, fmt.Errorf("unknown Storages operation: %s", operation)
 	}
 	name, err := storagesPathArg(args, operation)
@@ -156,6 +162,14 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 			return tjs.VoidValue, err
 		}
 		return tjs.StringValue(placedPath), nil
+	case "isExistentDirectory":
+		if storage == nil {
+			return tjs.IntegerValue(0), nil
+		}
+		if _, err := storage.ReadDirNames(name); err != nil {
+			return tjs.IntegerValue(0), nil
+		}
+		return tjs.IntegerValue(1), nil
 	case "isExistentStorage":
 		if isVarStorage(name) {
 			if s == nil || s.varStorageVM == nil {

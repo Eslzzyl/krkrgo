@@ -728,7 +728,7 @@ func (v *VideoOverlay) SetFrame(frame uint64) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.source == nil {
-		return ErrVideoNoSource
+		return nil
 	}
 	if frame >= v.source.Frames {
 		frame = v.source.Frames - 1
@@ -824,6 +824,9 @@ func (v *VideoOverlay) SetMode(mode int32) {
 func (v *VideoOverlay) SetSegmentLoop(start, end int64) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if v.source == nil {
+		return nil
+	}
 	if start < 0 || end <= start {
 		return fmt.Errorf("invalid video segment %d..%d", start, end)
 	}

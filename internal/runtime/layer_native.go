@@ -44,6 +44,17 @@ func (s *Services) layerForContext(context tjs.Value, operation string) (*Layer,
 	s.mu.RLock()
 	l := s.Layers[id]
 	s.mu.RUnlock()
+	if l == nil && operation == "get:window" {
+		l = NewLayer(LayerID(id))
+		l.windowID = s.MainWindow
+		s.mu.Lock()
+		if current := s.Layers[id]; current != nil {
+			l = current
+		} else {
+			s.Layers[id] = l
+		}
+		s.mu.Unlock()
+	}
 	if l == nil {
 		return nil, id, fmt.Errorf("Layer.%s: context has no Layer native instance (object %d, bound context %d)", operation, id, context.ObjectRef().Context)
 	}
@@ -107,6 +118,16 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 	id := context.ObjectRef().Object
 	if operation == "@initialize" || operation == "Layer" {
 		s.mu.Lock()
+		if operation == "Layer" {
+			owner, parent, _ := tjs.ObjectID(0), tjs.ObjectID(0), tjs.ObjectID(0)
+			if len(args) > 0 && args[0].Kind() == tjs.KindObject && !args[0].IsNull() {
+				owner = args[0].ObjectRef().Object
+			}
+			if len(args) > 1 && args[1].Kind() == tjs.KindObject && !args[1].IsNull() {
+				parent = args[1].ObjectRef().Object
+			}
+			fmt.Printf("legacy layer init context=(%d,%d) owner=%d parent=%d main=%d\n", context.ObjectRef().Object, context.ObjectRef().Context, owner, parent, s.MainWindow)
+		}
 		if l := s.Layers[id]; l != nil {
 			// Native base initialization runs before a script-derived Layer's
 			// constructor. Its @initialize call has no arguments; honor the
@@ -173,9 +194,17 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 				return tjs.VoidValue, err
 			}
 		}
-		if parent == nil && ownerID != 0 {
+		if ownerID != 0 {
 			if window := s.WindowObjects[ownerID]; window != nil && window.primaryLayer == 0 {
 				window.primaryLayer = LayerID(id)
+				if s.Root == nil || s.Root.windowID == 0 || s.Root == parent {
+					l.Visible = true
+					l.Type = LayerOpaque
+					if err := s.attachRoot(l); err != nil {
+						s.mu.Unlock()
+						return tjs.VoidValue, err
+					}
+				}
 			}
 		}
 		s.mu.Unlock()
@@ -194,6 +223,28 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		return tjs.VoidValue, s.invalidateLayer(vm, id)
 	}
 	l, _, err := s.layerForContext(context, operation)
+	if err != nil && operation == "get:font" {
+		s.mu.Lock()
+		l = s.Layers[id]
+		if l == nil {
+			l = nativeLayerDefaults(id)
+			s.Layers[id] = l
+		}
+		s.mu.Unlock()
+		err = nil
+	}
+	if err != nil && vm != nil {
+		if object, ok := vm.Objects.Lookup(id); ok && object.Category == tjs.CategoryInstance {
+			s.mu.Lock()
+			l = s.Layers[id]
+			if l == nil {
+				l = nativeLayerDefaults(id)
+				s.Layers[id] = l
+			}
+			s.mu.Unlock()
+			err = nil
+		}
+	}
 	if err != nil {
 		if vm != nil {
 			if object, ok := vm.Objects.Lookup(id); ok {
@@ -804,11 +855,6 @@ func (s *Services) layerGet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, b
 		window := layerWindowState(s, l)
 		return tjs.IntegerValue(boolInt(window != nil && window.focusedLayer == l.ID)), nil
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if (key == "imageLeft" || key == "imageTop" || key == "imageWidth" || key == "imageHeight") && len(l.RGBA) == 0 {
-		return tjs.VoidValue, fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
-	}
 	switch key {
 	case "neutralColor":
 		switch l.Type {
@@ -1383,6 +1429,14 @@ func (s *Services) layerFillRect(l *Layer, operation string, args []tjs.Value, i
 	if operation == "fillRect" && face != layerFaceAlpha && face != layerFaceOpaque &&
 		face != layerFaceMask && face != layerFaceProvince && face != layerFaceAddAlpha {
 		return fmt.Errorf("%w: invalid fillRect draw face %d", ErrInvalidLayer, face)
+	}
+	if len(l.RGBA) == 0 {
+		if l.ImageWidth <= 0 || l.ImageHeight <= 0 {
+			return nil
+		}
+		if err := resizeLayerImage(l, l.ImageWidth, l.ImageHeight); err != nil {
+			return err
+		}
 	}
 	r, e := layerRect(l, x, y, w, h)
 	if e != nil {

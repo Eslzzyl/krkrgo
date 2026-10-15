@@ -650,7 +650,7 @@ func (s *cscan) scanNumber(loc core.SourceLocation) (string, Value, error) {
 				s.advance()
 			}
 		}
-		if s.i < len(s.src) && s.src[s.i] == '.' {
+		if s.i+1 < len(s.src) && s.src[s.i] == '.' && s.src[s.i+1] >= '0' && s.src[s.i+1] <= '9' {
 			realNum = true
 			s.advance()
 			for s.i < len(s.src) && (s.src[s.i] >= '0' && s.src[s.i] <= '9' || s.src[s.i] == '_') {

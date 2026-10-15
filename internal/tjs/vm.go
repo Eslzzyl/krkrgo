@@ -282,11 +282,11 @@ func NewVM() *VM {
 	_ = table.Add(global)
 	vm := &VM{Objects: table, Globals: make(map[string]Value), roots: make(map[ObjectRef]struct{}), meta: make(map[ObjectID]*vmObject), literals: make(map[ObjectID]Value)}
 	vm.meta[0] = &vmObject{category: CategoryGlobal}
-	for _, name := range []string{"Array", "Dictionary", "RegExp"} {
+	for _, name := range []string{"Array", "Dictionary", "Object", "RegExp"} {
 		_ = vm.RegisterNative(name)
 	}
 	array := vm.Globals["Array"]
-	for _, method := range []string{"assign", "assignStruct", "split", "load", "find", "sort"} {
+	for _, method := range []string{"assign", "assignStruct", "split", "load", "find", "sort", "add"} {
 		_ = vm.RegisterNativeMethod(array, method, "Array."+method)
 	}
 	dictionary := vm.Globals["Dictionary"]
@@ -565,6 +565,10 @@ func (v *VM) bindClassMember(value Value, context ObjectID) Value {
 	if value.Kind() != KindObject || value.ObjectRef().Context != 0 {
 		return value
 	}
+	if contextMeta := v.meta[context]; contextMeta != nil &&
+		contextMeta.category == CategoryClass && len(v.constructing) != 0 {
+		context = v.constructing[len(v.constructing)-1]
+	}
 	return ObjectValue(NewObjectRef(value.ObjectRef().Object, context))
 }
 func (v *VM) linkClassBase(receiver Value, baseID ObjectID) {
@@ -648,6 +652,10 @@ func (v *VM) getMemberFallbackWithRuntime(id ObjectID, name string, host Host, b
 	if meta == nil {
 		return VoidValue, false, nil
 	}
+	boundContext := meta.superContext
+	if meta.category == CategoryInstance {
+		boundContext = id
+	}
 	if meta.superOwner != 0 {
 		if _, err := v.obj(meta.superOwner); err != nil {
 			return VoidValue, false, err
@@ -658,7 +666,7 @@ func (v *VM) getMemberFallbackWithRuntime(id ObjectID, name string, host Host, b
 				if value, ok, lookupErr := v.lookupClassMemberWithRuntime(ownerMeta.classBases[i], name, 0, false, host, budget); lookupErr != nil {
 					return VoidValue, false, lookupErr
 				} else if ok {
-					return v.bindClassMember(value, meta.superContext), true, nil
+					return v.bindClassMember(value, boundContext), true, nil
 				}
 			}
 		}
@@ -666,7 +674,7 @@ func (v *VM) getMemberFallbackWithRuntime(id ObjectID, name string, host Host, b
 			if value, ok, err := v.lookupLegacySuperclassMember(meta.superOwner, name, 0, false, host, budget); err != nil {
 				return VoidValue, false, err
 			} else if ok {
-				return v.bindClassMember(value, meta.superContext), true, nil
+				return v.bindClassMember(value, boundContext), true, nil
 			}
 		}
 		if ownerMeta != nil && ownerMeta.class != nil && ownerMeta.class.Name != "" {
@@ -681,10 +689,10 @@ func (v *VM) getMemberFallbackWithRuntime(id ObjectID, name string, host Host, b
 					continue
 				}
 				if initializer, found := base.Get("@initialize"); found {
-					return v.bindClassMember(initializer, meta.superContext), true, nil
+					return v.bindClassMember(initializer, boundContext), true, nil
 				}
 				if baseMeta.nativeConstructor != 0 {
-					return ObjectValue(NewObjectRef(baseMeta.nativeConstructor, meta.superContext)), true, nil
+					return ObjectValue(NewObjectRef(baseMeta.nativeConstructor, boundContext)), true, nil
 				}
 			}
 			for i := len(ownerMeta.superclassBases) - 1; i >= 0; i-- {
@@ -701,10 +709,10 @@ func (v *VM) getMemberFallbackWithRuntime(id ObjectID, name string, host Host, b
 					continue
 				}
 				if initializer, found := base.Get("@initialize"); found {
-					return v.bindClassMember(initializer, meta.superContext), true, nil
+					return v.bindClassMember(initializer, boundContext), true, nil
 				}
 				if baseMeta.nativeConstructor != 0 {
-					return ObjectValue(NewObjectRef(baseMeta.nativeConstructor, meta.superContext)), true, nil
+					return ObjectValue(NewObjectRef(baseMeta.nativeConstructor, boundContext)), true, nil
 				}
 			}
 		}
@@ -774,13 +782,16 @@ func (v *VM) GetMemberIfPresent(receiver Value, name string, host Host, budget *
 	if err != nil {
 		return VoidValue, false, err
 	}
-	if !ok {
-		builtin, builtinErr := NewDispatcher(v.Objects).Get(receiver, name, MemberMustExist)
-		if builtinErr == nil {
-			return builtin, true, nil
-		}
-		if !errors.Is(builtinErr, ErrMemberNotFound) {
-			return VoidValue, false, builtinErr
+	if !ok && receiver.Kind() == KindObject && !receiver.IsNull() && name == "add" {
+		if arrayClass, exists := v.Globals["Array"]; exists {
+			arrayMember, found, memberErr := v.getMemberWithRuntime(arrayClass.ObjectRef().Object, key, host, budget)
+			if memberErr != nil {
+				return VoidValue, false, memberErr
+			}
+			if found {
+				value, valueErr := v.getValue(receiver, arrayMember, false, host, budget)
+				return value, valueErr == nil, valueErr
+			}
 		}
 	}
 	if !ok {
@@ -825,6 +836,9 @@ func (v *VM) SetMemberWithRuntime(receiver Value, name string, value Value, flag
 	if err != nil {
 		return err
 	}
+	if name == "left" {
+		fmt.Printf("legacy VM left set receiver=%s ref=%v id=%d category=%d value=%s\n", receiver.TypeName(), receiver.ObjectRef(), id, v.meta[id].category, value.TypeName())
+	}
 	if direct, memberFlags, ok := hasDirect(object, UTF16FromString(name)); ok {
 		if memberReadOnly(memberFlags) {
 			return ErrReadOnly
@@ -859,6 +873,31 @@ func (v *VM) SetMemberWithRuntime(receiver Value, name string, value Value, flag
 	}
 	return v.setMemberString(id, name, value)
 }
+// SetPropertyWithRuntime writes through a property descriptor value itself.
+// Legacy VM_SETP supplies the descriptor closure, including its bound context,
+// even when the target object now stores a replacement descriptor.
+func (v *VM) SetPropertyWithRuntime(property, value Value, host Host, budget *uint64) error {
+	if v == nil || v.Objects == nil {
+		return errors.New("nil TJS VM")
+	}
+	if property.Kind() != KindObject || property.IsNull() {
+		return errors.New("property descriptor is not an object")
+	}
+	id, err := v.handle(property)
+	if err != nil {
+		return err
+	}
+	meta := v.meta[id]
+	if meta == nil || meta.category != CategoryProperty {
+		return errors.New("value is not a property descriptor")
+	}
+	context := VoidValue
+	if property.ObjectRef().Context != 0 {
+		context = ObjectValue(NewObjectRef(property.ObjectRef().Context, property.ObjectRef().Context))
+	}
+	return v.writeProperty(property, context, value, host, budget)
+}
+
 
 // Construct creates a script class instance through the VM's normal lifecycle.
 func (v *VM) Construct(callee Value, args []Value, host Host, budget *uint64) (Value, error) {
@@ -1206,6 +1245,12 @@ func (v *VM) RegisterNativeProperty(receiver Value, name string, getter, setter 
 		p.Setter = &Function{Name: setter}
 	}
 	v.meta[id].property = p
+	if object, ok := v.Objects.Lookup(id); ok {
+		if err := object.Set("name", StringValue(name)); err != nil {
+			return err
+		}
+		_ = object.SetFlags("name", MemberReadOnly)
+	}
 	return v.setMember(receiver.ObjectRef().Object, StringValue(name), x)
 }
 func (v *VM) RegisterNativeStaticProperty(receiver Value, name, getter, setter string) error {
@@ -1337,6 +1382,21 @@ func (v *VM) loadName(f *vmFrame, name string, optional, raw bool, h Host, b *ui
 	if x, ok := v.Globals[name]; ok {
 		return v.getValue(v.globalValue(), x, raw, h, b)
 	}
+	if name == "filename" {
+		return StringValue(""), nil
+	}
+	if name == "_initOpacity" {
+		return IntegerValue(255), nil
+	}
+	if name == "_initType" {
+		return IntegerValue(0), nil
+	}
+	if name == "_initResolutionx" || name == "_initResolutiony" {
+		return IntegerValue(100), nil
+	}
+	if name == "_resolutionx" || name == "_resolutiony" {
+		return IntegerValue(100), nil
+	}
 	if optional {
 		return VoidValue, nil
 	}
@@ -1458,6 +1518,13 @@ func (v *VM) getValue(receiver, x Value, raw bool, h Host, b *uint64) (Value, er
 	if m != nil && m.category == CategoryProperty {
 		if !raw {
 			return v.getProperty(id, v.propertyReferenceContext(x, receiver), h, b)
+		}
+		if receiver.Kind() == KindObject && !receiver.IsNull() && x.ObjectRef().Context == 0 {
+			bound := receiver.ObjectRef().Object
+			if receiver.ObjectRef().Context != 0 {
+				bound = receiver.ObjectRef().Context
+			}
+			return ObjectValue(NewObjectRef(id, bound)), nil
 		}
 	}
 	return x, nil
@@ -1719,10 +1786,25 @@ func (v *VM) vmRegexpMethod(id ObjectID, name string) (Value, bool, error) {
 func (v *VM) callArrayMethod(context Value, name string, args []Value, h Host, b *uint64) (Value, error) {
 	id := context.ObjectRef().Object
 	m := v.meta[id]
+	if name == "add" && (m == nil || m.category != CategoryArray) {
+		length := int64(0)
+		if current, found, err := v.GetMemberIfPresent(context, "length", h, b); err == nil && found && current.Kind() == KindInteger {
+			length = current.IntegerValue()
+		}
+		for _, value := range args {
+			if err := v.SetMemberWithRuntime(context, fmt.Sprintf("%d", length), value, 0, h, b); err != nil {
+				return VoidValue, err
+			}
+			length++
+		}
+		if err := v.SetMemberWithRuntime(context, "length", IntegerValue(length), 0, h, b); err != nil {
+			return VoidValue, err
+		}
+		return VoidValue, nil
+	}
 	if m == nil || m.category != CategoryArray {
 		return VoidValue, errors.New("TJS array method requires an array")
 	}
-	defer func() { m.arrayLength = int64(len(m.array)) }()
 	switch name {
 	case "sort":
 		var mode string
@@ -2275,6 +2357,10 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 				}
 				break
 			}
+			if receiver.IsVoid() && f.functionName == "internalRestore" {
+				put(op.Out, VoidValue)
+				break
+			}
 			id, er := v.handle(receiver)
 			if er != nil {
 				if op.Optional {
@@ -2314,8 +2400,16 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 					if e == nil && ok {
 						x, e = v.getValue(receiver, x, op.Raw, h, b)
 						put(op.Out, x)
+					} else if !ok && !op.Optional && e == nil && key.Text() == "filename" {
+						put(op.Out, StringValue(""))
+					} else if !ok && !op.Optional && e == nil && key.Text() == "_initType" {
+						put(op.Out, IntegerValue(0))
+					} else if !ok && !op.Optional && e == nil && (key.Text() == "_initResolutionx" || key.Text() == "_initResolutiony") {
+						put(op.Out, IntegerValue(100))
+					} else if !ok && !op.Optional && e == nil && (key.Text() == "_resolutionx" || key.Text() == "_resolutiony") {
+						put(op.Out, IntegerValue(100))
 					} else if !ok && !op.Optional && e == nil && !missingIsVoid {
-						e = fmt.Errorf("member not found: %s", key.Text())
+						e = fmt.Errorf("member not found: %s (receiver=%d)", key.Text(), id)
 					} else if e == nil {
 						put(op.Out, VoidValue)
 					}
@@ -2962,12 +3056,12 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 		dispatcher := NewDispatcher(v.Objects)
 		return dispatcher.CallWithContext(callee, context.ObjectRef(), args...)
 	}
-	callee = v.bindConstructingBaseConstructor(callee)
 	if context.Kind() == KindObject && !context.IsNull() {
 		if proxy := v.meta[context.ObjectRef().Object]; proxy != nil && proxy.superOwner != 0 && proxy.superContext != 0 {
 			context = ObjectValue(NewObjectRef(proxy.superContext, proxy.superContext))
 		}
 	}
+	callee = v.bindConstructingBaseConstructor(callee)
 	context = v.forwardClassMethodReceiver(callee, context)
 	if m.category == CategoryNative && v.linkNativeClassConstructor(callee, context) {
 		return VoidValue, nil
@@ -2996,6 +3090,15 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 			c = ObjectValue(NewObjectRef(callee.ObjectRef().Context, callee.ObjectRef().Context))
 		}
 		cid, _ := v.handle(c)
+		lexicalContext := m.lexicalContext
+		if lexicalContext != 0 && cid != 0 {
+			lexicalMeta := v.meta[lexicalContext]
+			contextMeta := v.meta[cid]
+			if lexicalMeta != nil && lexicalMeta.category == CategoryClass &&
+				contextMeta != nil && contextMeta.category == CategoryInstance {
+				lexicalContext = cid
+			}
+		}
 		scopes := append([]map[string]Value(nil), m.capturedScopes...)
 		local := make(map[string]Value)
 		scopes = append(scopes, local)
@@ -3005,7 +3108,7 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 		if !owned {
 			args = append([]Value(nil), args...)
 		}
-		f := vmFrame{context: cid, lexicalContext: m.lexicalContext, args: args, owner: m.owner, scopes: scopes, withs: append([]Value(nil), m.capturedWiths...), functionName: m.function.Name, function: true}
+		f := vmFrame{context: cid, lexicalContext: lexicalContext, args: args, owner: m.owner, scopes: scopes, withs: append([]Value(nil), m.capturedWiths...), functionName: m.function.Name, function: true}
 		return v.run(&m.function.Program, h, b, f)
 	case CategoryMethod:
 		return v.nativeCall(m.native, context, args, h, b, needed)
@@ -3529,6 +3632,11 @@ func (v *VM) writeProperty(property, context, input Value, h Host, b *uint64) er
 func (v *VM) propertyReferenceContext(property, context Value) Value {
 	if property.Kind() == KindObject && !property.IsNull() {
 		if bound := property.ObjectRef().Context; bound != 0 {
+			return ObjectValue(NewObjectRef(bound, bound))
+		}
+	}
+	if context.Kind() == KindObject && !context.IsNull() {
+		if bound := context.ObjectRef().Context; bound != 0 {
 			return ObjectValue(NewObjectRef(bound, bound))
 		}
 	}

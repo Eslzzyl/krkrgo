@@ -82,6 +82,7 @@ func NewSession(project, saveDir string, budget uint64) (*runtime.Session, error
 		return nil, err
 	}
 
+
 	if project == "" {
 		// Without a project there is no script-created Window to host the
 		// empty scene. Keep a minimal host Window for that mode; project
@@ -101,10 +102,12 @@ func NewSession(project, saveDir string, budget uint64) (*runtime.Session, error
 	}
 
 	if project != "" {
+		log.Printf("krkrgo: starting project startup: %s", project)
 		if _, err := session.Startup(); err != nil {
 			_ = session.Close()
 			return nil, fmt.Errorf("startup: %w", err)
 		}
+		log.Printf("krkrgo: project startup completed")
 	}
 	return session, nil
 }
@@ -195,10 +198,12 @@ func RunGame(args []string) {
 	if err != nil {
 		log.Fatal(formatErrorChain(err))
 	}
+	log.Printf("krkrgo: opening project %q", opts.Project)
 	session, err := NewSession(opts.Project, opts.SaveDir, opts.Budget)
 	if err != nil {
 		log.Fatal(formatErrorChain(err))
 	}
+	log.Printf("krkrgo: creating presentation window")
 	defer func() { _ = session.Close() }()
 
 	ebiten.SetWindowSize(defaultWidth, defaultHeight)
@@ -231,6 +236,7 @@ func RunGame(args []string) {
 	if audioDiagnostics {
 		log.Printf("audio output attached: sample_rate=%d ready=%t", audioContext.SampleRate(), audioContext.IsReady())
 	}
+	log.Printf("krkrgo: entering Ebitengine event loop")
 	if err := ebiten.RunGame(game); err != nil {
 		_ = audioOutput.Close()
 		if stopCPUProfile != nil {

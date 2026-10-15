@@ -2,8 +2,8 @@ package runtime
 
 import (
 	"fmt"
-
 	"github.com/eslzzyl/krkrgo/internal/tjs"
+	"strings"
 )
 
 // installGetAboutNative confirms the session-registered getabout.dll export.
@@ -23,6 +23,34 @@ func installGetAboutNative(vm *tjs.VM) error {
 	return nil
 }
 
+// installKrMovieNative registers the static surface consumed by GFX_Movie.tjs.
+func installKrMovieNative(vm *tjs.VM) error {
+	if vm == nil {
+		return fmt.Errorf("krmovie.dll requires a VM")
+	}
+	if _, installed := vm.Globals["GFX_Movie"]; installed {
+		return nil
+	}
+	class, err := vm.NewNativeClass("GFX_Movie", "")
+	if err != nil {
+		return err
+	}
+	types, err := vm.NewArray(nil)
+	if err != nil {
+		return err
+	}
+	entries, err := vm.NewArray(nil)
+	if err != nil {
+		return err
+	}
+	if err := vm.SetMemberWithRuntime(types, "Entries", entries, 0, nil, nil); err != nil {
+		return err
+	}
+	vm.Globals["Entries"] = entries
+	vm.Globals["Types"] = types
+	return vm.RegisterNativeStaticValue(class, "Types", types)
+}
+
 // installWin32DialogNative evaluates the C++ plugin's WIN32Dialog script class
 // using the existing host dialog service. System.inform returns void in TJS,
 // hence !System.inform(...) evaluates to true after a successful dialog.
@@ -33,7 +61,7 @@ func installWin32DialogNative(vm *tjs.VM) error {
 	if _, installed := vm.Globals["WIN32Dialog"]; installed {
 		return nil
 	}
-	class, err := vm.RegisterNativeClass("WIN32Dialog")
+	class, err := vm.NewNativeClass("WIN32Dialog", "WIN32Dialog.WIN32Dialog.@initialize")
 	if err != nil {
 		return err
 	}
@@ -63,33 +91,75 @@ func installWin32DialogNative(vm *tjs.VM) error {
 			return err
 		}
 	}
-	for _, name := range []string{"Header", "Items", "Bitmap", "SolidBrush", "DrawItem", "Notify", "Blob"} {
-		nested, err := vm.RegisterNativeClass(name)
+	rootMethods := []string{
+		"WIN32Dialog", "add", "bringToFront", "chooseColor", "close", "closeProgress",
+		"deleteAllTab", "deleteTab", "finalize", "getBaseUnits", "getClientRect",
+		"getCurSel", "getItem", "getItemClassName", "getItemEnabled", "getItemHeight",
+		"getItemID", "getItemInt", "getItemLeft", "getItemLong", "getItemText",
+		"getStringAddress", "getWindowRect", "initCommonControls", "initCommonControlsEx",
+		"insertTab", "invalidateAll", "invalidateRect", "isExistentItem", "loadResource",
+		"lockItemUpdate", "makeTemplate", "mapRect", "messageBox", "onCommand",
+		"onHScroll", "onInit", "onNotify", "onSize", "onVScroll", "open",
+		"openProgress", "openPropertySheet", "propSheetMessage", "selectTab",
+		"sendItemMessage", "setCurSel", "setItemBitmap", "setItemEnabled",
+		"setItemFocus", "setItemInt", "setItemLong", "setItemPos", "setItemSize",
+		"setItemText", "setMessageResult", "setPos", "setScrollInfo", "setSize",
+		"show", "unlockItemUpdate",
+	}
+	for _, name := range rootMethods {
+		if name == "messageBox" {
+			continue
+		}
+		if err := vm.RegisterNativeMethod(class, name, "WIN32Dialog."+name); err != nil {
+			return err
+		}
+	}
+	for _, spec := range []struct {
+		name    string
+		methods []string
+	}{
+		{"Header", []string{"Header", "finalize", "store"}},
+		{"Items", []string{"Items", "finalize", "store"}},
+		{"Bitmap", []string{"Bitmap", "finalize"}},
+		{"SolidBrush", []string{"SolidBrush", "finalize"}},
+		{"DrawItem", []string{"DrawItem", "draw", "finalize"}},
+		{"Notify", []string{"Notify", "finalize", "getByte", "getDWord", "getWord"}},
+		{"Blob", []string{"Blob", "ReferPointer", "finalize", "getByte", "getDWord", "getText", "getWord", "setByte", "setDWord", "setText", "setWord"}},
+	} {
+		nested, err := vm.NewNativeClass(spec.name, "WIN32Dialog."+spec.name+".@initialize")
 		if err != nil {
 			return err
 		}
-		if err := vm.RegisterNativeStaticValue(class, name, nested); err != nil {
+		for _, method := range spec.methods {
+			if method == spec.name {
+				continue
+			}
+			if err := vm.RegisterNativeMethod(nested, method, "WIN32Dialog."+spec.name+"."+method); err != nil {
+				return err
+			}
+		}
+		if err := vm.RegisterNativeStaticValue(class, spec.name, nested); err != nil {
 			return err
 		}
 	}
-	return vm.RegisterNativeMethod(class, "messageBox", "WIN32Dialog.messageBox")
+	if err := vm.RegisterNativeMethod(class, "messageBox", "WIN32Dialog.messageBox"); err != nil {
+		return err
+	}
+	return vm.RegisterNative("getBookMarkFileNameAtNum")
 }
 
 func (s *Services) win32DialogNative(operation string, args []tjs.Value) (tjs.Value, error) {
-	if operation == "construct" {
+	if operation == "construct" || operation == "WIN32Dialog" || strings.HasSuffix(operation, ".@initialize") {
 		return tjs.VoidValue, nil
 	}
-	if operation != "messageBox" {
-		switch operation {
-		case "WIN32Dialog.add", "WIN32Dialog.open", "WIN32Dialog.close",
-			"WIN32Dialog.show", "WIN32Dialog.hide", "WIN32Dialog.setItemText",
-			"add", "open", "close", "show", "hide", "setItemText":
-			return tjs.VoidValue, nil
-		case "WIN32Dialog.getItemText", "getItemText":
-			return tjs.StringValue(""), nil
-		default:
-			return tjs.VoidValue, fmt.Errorf("unknown WIN32Dialog operation %q", operation)
+	if operation == "add" {
+		if len(args) != 1 {
+			return tjs.VoidValue, fmt.Errorf("WIN32Dialog.add accepts one item")
 		}
+		return tjs.IntegerValue(0), nil
+	}
+	if operation != "messageBox" {
+		return tjs.VoidValue, fmt.Errorf("unsupported WIN32Dialog operation %q with %d arguments", operation, len(args))
 	}
 	if len(args) > 3 {
 		return tjs.VoidValue, fmt.Errorf("WIN32Dialog.messageBox accepts message, caption, and type")

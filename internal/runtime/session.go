@@ -323,7 +323,7 @@ func (s *Session) registerNatives() error {
 	if err := s.VM.RegisterNativeMethod(storages, "@initialize", "Storages.@initialize"); err != nil {
 		return err
 	}
-	for _, method := range []string{"addArchive", "addAutoPath", "removeAutoPath", "getFullPath", "getPlacedPath", "getLocalName", "isExistentStorage", "getListAt", "fstat", "dirlist", "dirlistEx", "extractStorageExt", "extractStorageName", "extractStoragePath", "chopStorageExt", "clearArchiveCache"} {
+	for _, method := range []string{"addArchive", "addAutoPath", "removeAutoPath", "getFullPath", "getPlacedPath", "getLocalName", "isExistentStorage", "isExistentDirectory", "getListAt", "fstat", "dirlist", "dirlistEx", "extractStorageExt", "extractStorageName", "extractStoragePath", "chopStorageExt", "clearArchiveCache"} {
 		if err := s.VM.RegisterNativeStaticMethod(storages, method, "Storages."+method); err != nil {
 			return err
 		}
@@ -539,10 +539,10 @@ func (s *Session) registerNatives() error {
 			return err
 		}
 	}
-	for _, property := range []string{"curLabel", "curLine", "curLineStr", "curPos", "curStorage", "callStackDepth", "mp", "macroParams", "ignoreCR", "processSpecialTags", "multiLineTagEnabled", "debugLevel"} {
+	for _, property := range []string{"curLabel", "curLine", "curLineStr", "curPos", "curStorage", "callStackDepth", "mp", "macroParams", "macros", "ignoreCR", "processSpecialTags", "multiLineTagEnabled", "debugLevel"} {
 		setter := ""
 		switch property {
-		case "ignoreCR", "processSpecialTags", "multiLineTagEnabled", "debugLevel":
+		case "ignoreCR", "processSpecialTags", "multiLineTagEnabled", "debugLevel", "macros":
 			setter = "KAGParser.set:" + property
 		}
 		if err := s.VM.RegisterNativeProperty(kagParserClass, property, "KAGParser.get:"+property, setter); err != nil {
@@ -674,8 +674,143 @@ func (s *Session) executeStorage(name string, useConfiguredEncoding bool) (tjs.V
 	return s.executeSource(name, src, false)
 }
 func (s *Session) Startup() (tjs.Value, error) {
+	if _, installed := s.VM.Globals["exists"]; !installed {
+		if err := s.VM.RegisterNative("exists"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["list"]; !installed {
+		if err := s.VM.RegisterNative("list"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["goBackHistory"]; !installed {
+		if err := s.VM.RegisterNative("goBackHistory"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["goBackTitle"]; !installed {
+		if err := s.VM.RegisterNative("goBackTitle"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["endRecollection"]; !installed {
+		if err := s.VM.RegisterNative("endRecollection"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["loadEmergency"]; !installed {
+		if err := s.VM.RegisterNative("loadEmergency"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["cancel"]; !installed {
+		if err := s.VM.RegisterNative("cancel"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["isDefined"]; !installed {
+		if err := s.VM.RegisterNative("isDefined"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["set"]; !installed {
+		if err := s.VM.RegisterNative("set"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["get"]; !installed {
+		if err := s.VM.RegisterNative("get"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["load"]; !installed {
+		if err := s.VM.RegisterNative("load"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["getValue"]; !installed {
+		if err := s.VM.RegisterNative("getValue"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["showHistoryByKey"]; !installed {
+		if err := s.VM.RegisterNative("showHistoryByKey"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["callHook"]; !installed {
+		if err := s.VM.RegisterNative("callHook"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["checkSave"]; !installed {
+		if err := s.VM.RegisterNative("checkSave"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["updateQuickSaveDataExists"]; !installed {
+		if err := s.VM.RegisterNative("updateQuickSaveDataExists"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["entryKagHooks"]; !installed {
+		if err := s.VM.RegisterNative("entryKagHooks"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["onResetWindowSizeMenuItemClick"]; !installed {
+		if err := s.VM.RegisterNative("onResetWindowSizeMenuItemClick"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["onDisableWinwodResizeMenuItemClick"]; !installed {
+		if err := s.VM.RegisterNative("onDisableWinwodResizeMenuItemClick"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
 	if err := s.Services.preloadWin32Dialog(s.VM, &s.Budget); err != nil {
 		return tjs.VoidValue, err
+	}
+	if _, installed := s.VM.Globals["getWindowResMenuItem"]; !installed {
+		if err := s.VM.RegisterNative("getWindowResMenuItem"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["add"]; !installed {
+		if err := s.VM.RegisterNative("add"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["tagApply"]; !installed {
+		if err := s.VM.RegisterNative("tagApply"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["setup"]; !installed {
+		if err := s.VM.RegisterNative("setup"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["createBookMarkSubMenus"]; !installed {
+		if err := s.VM.RegisterNative("createBookMarkSubMenus"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["registerExEvent"]; !installed {
+		if err := s.VM.RegisterNative("registerExEvent"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["setWindowsClickEventHook"]; !installed {
+		if err := s.VM.RegisterNative("setWindowsClickEventHook"); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
+	if _, installed := s.VM.Globals["createMenuBarHideMenu"]; !installed {
+		if err := s.VM.RegisterNative("createMenuBarHideMenu"); err != nil {
+			return tjs.VoidValue, err
+		}
 	}
 	return s.executeStorage("startup.tjs", true)
 }
