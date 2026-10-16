@@ -93,6 +93,10 @@ printf '[{"at_ms":1000,"action":"checkpoint","name":"end","inspect":[]}]' | temp
   --step-ms 16 --budget 100000000
 ```
 
+### Legacy 紧凑指令候选（跳过）
+
+将运行时缓存指令从公开 `LegacyInstruction` 转为不保存名称字段的紧凑结构，并在错误路径按 opcode 查询名称。`amairo` 10 s 回放从缓存版本的 61.061 s 变为 63.111 s，输出 SHA-256 保持一致。该候选产生约 3.4% 倒退，代码已撤回，没有进入生产提交。
+
 
 ### 进程内存采样
 

@@ -48,7 +48,7 @@ These checks establish the reported test/build status, not overall VM or applica
 
 These are open research directions, not pending production optimizations:
 
-- **Private execution form:** Go's string opcodes and tagged instruction are in `internal/tjs/compiler.go:18-124`; benchmark a private execution form without changing the public/serializable program contract or losing validation, source maps, budgets, tracing, and GC visibility.
+- **Private execution form (skipped candidate):** a compact Legacy instruction representation without the public `Name` field was measured against the cached `Legacy` path. The `testdata/amairo` 10 s replay changed from 61.061 s to 63.111 s with identical output SHA-256, so the candidate was withdrawn.
 - **Peephole and jump-chain pass:** C++ jump-chain handling is in `tjs2/tjsInterCodeGen.cpp:855-900`; Go branch patching is in `internal/tjs/compiler.go:1402`. Any pass needs correct target remapping and preservation of observable instruction accounting, source locations, and unwind behavior.
 - **Guarded property fast path:** profile repeated access before considering guards around `OpGet`/`OpSet` (`internal/tjs/vm.go:1582-1754`) and object storage (`internal/tjs/object.go:101-120`). Mutation, prototypes, accessors, and dynamic receiver/key patterns constrain safe caching.
 - **Frame arena or lazy scope representation:** the Go/C++ allocation comparison above motivates research only; correctness constraints include GC roots, closure capture, reentrancy, and exceptions.
