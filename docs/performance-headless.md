@@ -150,6 +150,25 @@ go test ./internal/host -run '^$' -bench '^BenchmarkGPUComposeNativeLayers$' -be
 
 缓存改动前结果来自同一 benchmark、同一机器和同一参数；基线运行时暂时移除 GPU target cache，测量完成后恢复当前实现。
 
+### GPU 原生图层临时分配
+
+`drawNode` 原生图层路径不使用 shader `uniforms` map。map 创建动作移动到 transition 和通用 shader 分支，原生 opaque/alpha 图层保持直接绘制。
+
+| 场景 | 优化前 | 当前 | 时间中位数变化 | B/op | allocs/op |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| opaque/dynamic | 5.360 µs/op | 5.211 µs/op | -2.8% | 6157 → 5830 | 40 → 32 |
+| alpha/dynamic | 5.417 µs/op | 5.496 µs/op | +1.5% | 6326 → 5954 | 40 → 32 |
+
+同一 benchmark 中，原生图层每次操作减少 8 次分配，分配字节数下降约 5%。时间结果受 GPU 命令提交和本机调度影响，当前优化的稳定收益集中在分配数量。
+
+可重复命令：
+
+```sh
+go test ./internal/host -run '^$' -bench '^BenchmarkGPUComposeNativeLayers/(opaque|alpha)/dynamic$' -benchmem -benchtime=1s -count=5
+```
+
+优化前后均使用 1280×720 binder、8 个全画面原生图层、复用纹理和同一 Windows amd64 环境。
+
 
 ### host 上传准备
 

@@ -110,6 +110,12 @@ signals.
   5.435 µs/op to 2.987 ns/op for opaque plans and 5.303 µs/op to
   3.327 ns/op for alpha plans. Dynamic plans continue through the original
   `Compose` path.
+- `internal/host/gpu_compositor.go` creates shader `uniforms` maps only for
+  transition and generic shader layers. Native opaque/alpha layers now skip
+  that temporary map; the Windows amd64 dynamic native-layer benchmark reduced
+  allocations from 40 to 32 per operation and bytes from 6157 to 5830 for
+  opaque layers. Alpha layers also reduced allocations from 40 to 32 and bytes
+  from 6326 to 5954; timing stayed within benchmark noise.
 - `internal/krkrgocli` passes the already configured initial window dimensions
   to `host.NewGameWithInitialWindowSize`. The host skips one redundant
   same-size resize and continues to resize on the first mismatch or later

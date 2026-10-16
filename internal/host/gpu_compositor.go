@@ -253,8 +253,8 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 			var source *ebiten.Image
 			var shader *ebiten.Shader
 			var err error
-			uniforms := map[string]any{}
 			if n.Transition != nil {
+				uniforms := make(map[string]any, 4)
 				tr := n.Transition
 				dest, err := c.texture(gpuTextureKey{n.ID, gpuTextureDestination}, tr.ImageWidth, tr.ImageHeight, tr.DestinationRGBA, tr.DestinationHash, tr.Opaque)
 				if err != nil {
