@@ -182,6 +182,12 @@ CPU fallback 与 GPU 路径应当共享 Layer visual state 和资源版本。这
 
 官方 C++ 实现已经证明异步图片加载和多线程像素任务具有兼容可行性；现代设计可以继续向数据导向布局、GPU 优先合成、持久纹理、批量动画采样和 AOT 预处理推进。性能目标应当从“让串行 CPU 路径更快”提升为“让主线程只处理语义和提交，让资源与图形工作进入并行流水线”。
 
+## 当前十项优化状态
+
+### 异步资源读取、解码与预取（跳过）
+
+当前 `Session`、`Storage`、TJS VM 和 layer API 使用同步资源结果与确定性 tick 顺序。异步管线需要新增任务生命周期、取消、优先级、CPU/GPU 配额和主线程提交协议；`amairo` 当前回放没有独立的资源切换耗时场景可用于测量收益。本项保留为架构方向，跳过运行时代码。
+
 ## 参考源码
 
 - Go runtime：`internal/runtime/session.go`、`internal/runtime/layer.go`、`internal/runtime/layer_load_images_native.go`、`internal/runtime/layer_draw.go`、`internal/runtime/compositor.go`、`internal/assets/image_cache.go`。
