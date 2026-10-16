@@ -1148,7 +1148,7 @@ func (s *Session) TickForPresentation(timeMS uint64) (FrameSnapshot, error) {
 	if profile {
 		stageStarted = time.Now()
 	}
-	frame, err := s.captureFrameFor(true)
+	frame, err := s.captureFrameFor(true, false)
 	if profile {
 		captureTime = time.Since(stageStarted)
 	}
@@ -1582,16 +1582,14 @@ func (s *Session) TakeAudio() []float32 {
 	return out
 }
 func (s *Session) captureFrame() (FrameSnapshot, error) {
-	return s.captureFrameFor(false)
+	return s.captureFrameFor(false, false)
 }
 
-func (s *Session) captureFrameFor(forPresentation bool) (FrameSnapshot, error) {
-	s.Services.mu.RLock()
-	ids := make([]tjs.ObjectID, 0, len(s.Services.Layers))
-	for id := range s.Services.Layers {
-		ids = append(ids, id)
-	}
-	s.Services.mu.RUnlock()
+func (s *Session) captureFrameFor(forPresentation, borrowed bool) (FrameSnapshot, error) {
+	s.Services.mu.Lock()
+	ids := append([]tjs.ObjectID(nil), s.Services.pendingPaintIDs...)
+	s.Services.pendingPaintIDs = nil
+	s.Services.mu.Unlock()
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	for _, id := range ids {
 		layer := s.Services.Layer(id)
@@ -1601,6 +1599,9 @@ func (s *Session) captureFrameFor(forPresentation bool) (FrameSnapshot, error) {
 		layer.callOnPaint = false
 		if err := s.Services.layerEvent(s.VM, layer, "onPaint", nil, &s.Budget); err != nil {
 			layer.callOnPaint = true
+			s.Services.mu.Lock()
+			s.Services.pendingPaintIDs = append(s.Services.pendingPaintIDs, id)
+			s.Services.mu.Unlock()
 			return FrameSnapshot{}, err
 		}
 	}
@@ -1615,6 +1616,9 @@ func (s *Session) captureFrameFor(forPresentation bool) (FrameSnapshot, error) {
 	if forPresentation {
 		return s.Services.CaptureFrameForPresentation()
 	}
+	if borrowed {
+		return s.Services.CaptureFrameBorrowed()
+	}
 	return s.Services.CaptureFrame()
 }
 
@@ -1628,15 +1632,20 @@ func (s *Session) Frame() (FrameSnapshot, error) {
 func (s *Session) CaptureFrameForPresentation() (FrameSnapshot, error) {
 	return s.frame(true)
 }
-
+func (s *Session) CaptureFrameBorrowed() (FrameSnapshot, error) {
+	return s.frameWithCapture(false, true)
+}
 func (s *Session) frame(forPresentation bool) (FrameSnapshot, error) {
+	return s.frameWithCapture(forPresentation, false)
+}
+func (s *Session) frameWithCapture(forPresentation, borrowed bool) (FrameSnapshot, error) {
 	if err := s.checkOpen(); err != nil {
 		return FrameSnapshot{}, err
 	}
 	if err := s.Services.advanceLayerTransitions(s.VM, s.Services.TimeMS, true, &s.Budget); err != nil {
 		return FrameSnapshot{}, err
 	}
-	return s.captureFrameFor(forPresentation)
+	return s.captureFrameFor(forPresentation, borrowed)
 }
 
 func (s *Session) CaptureFrame() (FrameSnapshot, error) { return s.Frame() }

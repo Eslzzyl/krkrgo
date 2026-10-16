@@ -103,6 +103,14 @@ func (s *Services) layerOwnerAndParentLocked(args []tjs.Value) (*Layer, tjs.Obje
 	return parent, ownerID, nil
 }
 
+func (s *Services) queueLayerPaint(layer *Layer) {
+	if layer == nil || layer.callOnPaint {
+		return
+	}
+	layer.callOnPaint = true
+	s.pendingPaintIDs = append(s.pendingPaintIDs, tjs.ObjectID(layer.ID))
+}
+
 func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value, budget *uint64) (tjs.Value, error) {
 	s.ensureInit()
 	if context.Kind() != tjs.KindObject || context.IsNull() {
@@ -272,7 +280,7 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		}
 		// UpdateByScript queues onPaint until the next paint pass. A headless
 		// Session dispatches that callback when it captures the next frame.
-		l.callOnPaint = true
+		s.queueLayerPaint(l)
 		return tjs.VoidValue, nil
 	case "onHitTest":
 		if len(args) < 3 {
@@ -1081,7 +1089,11 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 	case "callOnPaint":
 		b, e := boolArg(0)
 		if e == nil {
-			l.callOnPaint = b
+			if b {
+				s.queueLayerPaint(l)
+			} else {
+				l.callOnPaint = false
+			}
 		}
 		return tjs.VoidValue, e
 	case "left":

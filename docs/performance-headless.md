@@ -306,6 +306,34 @@ printf '[{"at_ms":10000,"action":"checkpoint","name":"end","inspect":[]}]' | tem
 运行时代码提交条件：同场景测量结果必须显示正向收益。其余项目均保留测量结论或能力限制记录。
 
 
+## 新增高收益优化
+
+### Replay 借用帧摘要
+
+`internal/host/replay.go` 原先通过 `Session.Frame()` 获取拥有副本，再立即计算 RGBA SHA-256。回放摘要不会保存或修改帧内容，因此改用新的 `Session.CaptureFrameBorrowed()`；公共 `CaptureFrame()` 仍保留拥有副本的接口合同。
+
+同机、同输入、`amairo` 1 s 无头回放：
+
+- 优化前：`19.33 s`
+- 优化后：`15.75 s`
+- 墙钟耗时降低：`18.5%`
+- 优化后重复运行：`17.30 s`
+- 两次输出 JSON SHA-256：`6cf00eea902de349bf781b2e442cde87e5d6f394956d5b4afec58607ca131969`
+
+该改动直接减少每帧 RGBA 拷贝，摘要读取完成后借用帧即可继续由 Services 复用。`TestSessionBorrowedFrameMatchesOwnedFrame` 覆盖了借用帧与拥有帧的像素结果一致性。
+
+### onPaint 待处理队列
+
+帧捕获原先每次遍历全部 `Services.Layers`，再筛选 `callOnPaint`。Layer.update 和 `callOnPaint` setter 现在维护待处理 ID 队列，捕获阶段按 ID 排序后直接分发，未触发 onPaint 的帧不再遍历整个 layer map。
+
+同一优化组合的 `amairo` 1 s 无头回放：
+
+- 借用帧后：`15.75 s`
+- 加入 onPaint 队列后：`13.06 s`
+- 相对原始基线 `19.33 s`：总耗时降低 **32.5%**
+- 输出 JSON SHA-256 保持 `6cf00eea902de349bf781b2e442cde87e5d6f394956d5b4afec58607ca131969`
+
+
 ## 当前判断
 
 1. `amairo` 无头启动和 10 s 回放的墙钟成本很高，启动资源初始化与 CPU frame 处理需要继续细分。

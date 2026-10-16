@@ -518,7 +518,7 @@ func (r *Replay) Run(session *runtime.Session, stepMS uint64, roots ...[]tjs.Val
 		gcRoots = roots[0]
 	}
 	record := func(at uint64) error {
-		frame, err := session.Frame()
+		frame, err := session.CaptureFrameBorrowed()
 		if err != nil {
 			return fmt.Errorf("capture frame at %d ms: %w", at, err)
 		}
@@ -594,7 +594,7 @@ func applyReplayAction(session *runtime.Session, entry ReplayEntry, result *Repl
 			cp.Inspect = append(cp.Inspect, ReplayInspect{Expression: expression, Value: valueJSON(session, value)})
 		}
 		if a.HasFrame {
-			frame, err := session.Frame()
+			frame, err := session.CaptureFrameForPresentation()
 			if err != nil {
 				return fmt.Errorf("capture checkpoint frame: %w", err)
 			}

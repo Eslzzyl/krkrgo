@@ -72,6 +72,27 @@ func TestSessionFrameAndAudioOwnership(t *testing.T) {
 	}
 }
 
+func TestSessionBorrowedFrameMatchesOwnedFrame(t *testing.T) {
+	s := NewSession(DefaultServices(), 16)
+	root := NewRootLayer(1, 2, 1)
+	if err := root.SetRGBA(2, 1, []byte{255, 0, 0, 255, 0, 255, 0, 255}); err != nil {
+		t.Fatal(err)
+	}
+	s.Services.SetRoot(root)
+	borrowed, err := s.CaptureFrameBorrowed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned, err := s.CaptureFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if borrowed.Width != owned.Width || borrowed.Height != owned.Height ||
+		!bytes.Equal(borrowed.RGBA, owned.RGBA) || !bytes.Equal(borrowed.Province, owned.Province) {
+		t.Fatalf("borrowed frame=%#v, owned frame=%#v", borrowed, owned)
+	}
+}
+
 func TestServicesSetRootNilClearsCapturedScene(t *testing.T) {
 	services := DefaultServices()
 	root := NewRootLayer(1, 1, 1)

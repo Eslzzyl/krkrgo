@@ -134,6 +134,7 @@ type Services struct {
 	AudioMixer               *AudioMixer
 	Dialogs                  *DialogService
 	Layers                   map[tjs.ObjectID]*Layer
+	pendingPaintIDs          []tjs.ObjectID
 	MotionResources          map[tjs.ObjectID]*motionResource
 	MotionPlayers            map[tjs.ObjectID]*motionPlayerState
 	MotionAdaptors           map[tjs.ObjectID]tjs.ObjectID
@@ -888,6 +889,12 @@ func (s *Services) CaptureFrame() (FrameSnapshot, error) {
 // this Services; callers must not retain or mutate them.
 func (s *Services) CaptureFrameForPresentation() (FrameSnapshot, error) {
 	return s.captureFrameWithPresentation(true)
+}
+
+// CaptureFrameBorrowed returns a CPU frame without cloning its pixel buffers.
+// The slices remain valid until the next capture call on this Services.
+func (s *Services) CaptureFrameBorrowed() (FrameSnapshot, error) {
+	return s.captureFrameWithPresentation(false)
 }
 
 func (s *Services) captureFrame() (FrameSnapshot, error) {
