@@ -34,14 +34,16 @@ type gpuTexture struct {
 // plan's pixel slices are never retained; gpuTexture.upload owns only the
 // premultiplied copy required by Ebitengine.
 type GPUCompositor struct {
-	width, height int
-	front, back   *ebiten.Image
-	textures      map[gpuTextureKey]*gpuTexture
-	shaders       map[gpuMethodKey]*ebiten.Shader
-	vertices      []ebiten.Vertex
-	indices       []uint16
-	crossfade     *ebiten.Shader
-	universal     *ebiten.Shader
+	width, height  int
+	front, back    *ebiten.Image
+	textures       map[gpuTextureKey]*gpuTexture
+	shaders        map[gpuMethodKey]*ebiten.Shader
+	vertices       []ebiten.Vertex
+	indices        []uint16
+	crossfade      *ebiten.Shader
+	universal      *ebiten.Shader
+	stateHash      uint64
+	stateHashValid bool
 }
 
 var gpuReplaceBlend = ebiten.Blend{
@@ -110,6 +112,7 @@ func (c *GPUCompositor) Deallocate() {
 	c.shaders = nil
 	c.crossfade, c.universal = nil, nil
 	c.vertices, c.indices = nil, nil
+	c.stateHash, c.stateHashValid = 0, false
 }
 
 func (c *GPUCompositor) ensureTargets(width, height int, background [4]uint8) error {
@@ -401,4 +404,33 @@ func (c *GPUCompositor) Compose(plan runtime.RenderPlan) (*ebiten.Image, error) 
 		}
 	}
 	return c.front, nil
+}
+
+func (c *GPUCompositor) composeStable(plan runtime.RenderPlan) (*ebiten.Image, error) {
+	if c == nil {
+		return nil, fmt.Errorf("nil GPU compositor")
+	}
+	if plan.Width <= 0 || plan.Height <= 0 {
+		return nil, fmt.Errorf("invalid render-plan dimensions %dx%d", plan.Width, plan.Height)
+	}
+	if plan.StateHashValid && c.stateHashValid && c.stateHash == plan.StateHash {
+		return c.front, nil
+	}
+	image, err := c.Compose(plan)
+	if err != nil {
+		return nil, err
+	}
+	if plan.StateHashValid {
+		c.stateHash = plan.StateHash
+		c.stateHashValid = true
+	} else {
+		c.stateHashValid = false
+	}
+	return image, nil
+}
+
+func (c *GPUCompositor) invalidateStateCache() {
+	if c != nil {
+		c.stateHashValid = false
+	}
 }

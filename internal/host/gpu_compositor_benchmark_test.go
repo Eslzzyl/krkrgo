@@ -15,32 +15,54 @@ func BenchmarkGPUComposeNativeLayers(b *testing.B) {
 		{name: "opaque", typ: runtime.LayerOpaque},
 		{name: "alpha", typ: runtime.LayerAlpha},
 	} {
-		b.Run(layerType.name, func(b *testing.B) {
-			plan := benchmarkGPUPlan(width, height, layers, layerType.typ)
-			compositor, err := NewGPUCompositor()
-			if err != nil {
-				b.Fatal(err)
-			}
-			defer compositor.Deallocate()
+		b.Run(layerType.name+"/stable", func(b *testing.B) {
+			benchmarkGPUCompose(b, benchmarkGPUPlan(width, height, layers, layerType.typ), false)
+		})
+		b.Run(layerType.name+"/dynamic", func(b *testing.B) {
+			benchmarkGPUCompose(b, benchmarkGPUPlan(width, height, layers, layerType.typ), true)
+		})
+	}
+}
+
+func benchmarkGPUCompose(b *testing.B, plan runtime.RenderPlan, dynamic bool) {
+	plan.StateHashStable = !dynamic
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	if dynamic {
+		if _, err := compositor.Compose(plan); err != nil {
+			b.Fatal(err)
+		}
+		b.ResetTimer()
+		for i := range b.N {
+			plan.StateHash = uint64(i + 2)
 			if _, err := compositor.Compose(plan); err != nil {
 				b.Fatal(err)
 			}
-			b.ResetTimer()
-			for range b.N {
-				if _, err := compositor.Compose(plan); err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
+		}
+		return
+	}
+	if _, err := compositor.composeStable(plan); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for range b.N {
+		if _, err := compositor.composeStable(plan); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
 func benchmarkGPUPlan(width, height, layers int, layerType runtime.LayerType) runtime.RenderPlan {
 	plan := runtime.RenderPlan{
-		Width:        int32(width),
-		Height:       int32(height),
-		Nodes:        make([]runtime.RenderNode, layers+1),
-		ChildIndices: make([]int, layers),
+		Width:          int32(width),
+		Height:         int32(height),
+		Nodes:          make([]runtime.RenderNode, layers+1),
+		StateHash:      1,
+		StateHashValid: true,
+		ChildIndices:   make([]int, layers),
 	}
 	plan.Nodes[0] = runtime.RenderNode{
 		ID:         1,

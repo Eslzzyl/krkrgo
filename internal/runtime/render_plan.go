@@ -10,7 +10,10 @@ type RenderPlan struct {
 	Background    [4]uint8
 	Nodes         []RenderNode
 	ChildIndices  []int
-	StateHash     uint64
+	// StateHashValid marks a hash produced by CaptureRenderPlan.
+	StateHash       uint64
+	StateHashValid  bool
+	StateHashStable bool
 }
 type RenderNode struct {
 	ID                                           LayerID
@@ -55,11 +58,17 @@ func (s *Services) CaptureRenderPlan() (RenderPlan, error) {
 // destination slices until the next capture into the same destination.
 func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 	var p RenderPlan
+	var previousHash uint64
+	var previousHashValid bool
 	if dst != nil {
+		previousHash = dst.StateHash
+		previousHashValid = dst.StateHashValid
 		p = *dst
 		p.Nodes = p.Nodes[:0]
 		p.ChildIndices = p.ChildIndices[:0]
 		p.StateHash = 0
+		p.StateHashValid = false
+		p.StateHashStable = false
 	}
 	if s.Compositor == nil && s.Root == nil {
 		if dst != nil {
@@ -273,6 +282,8 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		}
 	}
 	p.StateHash = state.Sum64()
+	p.StateHashValid = true
+	p.StateHashStable = previousHashValid && previousHash == p.StateHash
 	if dst != nil {
 		*dst = p
 	}

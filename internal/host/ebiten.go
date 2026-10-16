@@ -385,7 +385,7 @@ func (g *Game) Update() error {
 	if statsEnabled {
 		stageStarted := time.Now()
 		if g.rendererMode == rendererGPU {
-			g.gpuImage, err = g.gpu.Compose(plan)
+			g.gpuImage, err = g.composeGPUPlan(plan)
 			if err != nil {
 				err = fmt.Errorf("GPU composition: %w", err)
 			} else {
@@ -396,7 +396,7 @@ func (g *Game) Update() error {
 		}
 		presentationTime = time.Since(stageStarted)
 	} else if g.rendererMode == rendererGPU {
-		g.gpuImage, err = g.gpu.Compose(plan)
+		g.gpuImage, err = g.composeGPUPlan(plan)
 		if err != nil {
 			err = fmt.Errorf("GPU composition: %w", err)
 		} else {
@@ -414,6 +414,14 @@ func (g *Game) Update() error {
 		g.renderStats.recordUpdate(g.frameSerial, g.presentationChanges, totalPixels, time.Since(updateStarted), tickTime, audioTime, captureTime, presentationTime)
 	}
 	return nil
+}
+
+func (g *Game) composeGPUPlan(plan runtime.RenderPlan) (*ebiten.Image, error) {
+	if plan.StateHashStable && plan.StateHashValid {
+		return g.gpu.composeStable(plan)
+	}
+	g.gpu.invalidateStateCache()
+	return g.gpu.Compose(plan)
 }
 
 func (g *Game) updateGPUPresentation(plan runtime.RenderPlan) error {

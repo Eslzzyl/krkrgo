@@ -18,6 +18,12 @@ frame RGBA data: node and transition slices are borrowed until the synchronous h
 consumes the plan.
 
 `RenderPlan.StateHash` summarizes the captured layer tree and its visible image content.
+`RenderPlan.StateHashValid` marks a hash produced by the runtime capture path.
+`RenderPlan.StateHashStable` marks a repeated capture with the same hash when
+the caller reuses its plan storage.
+The GPU compositor reuses its current target for stable hashes; changing hashes
+and dynamic plans retain the full composition path.
+
 
 The GPU compositor uploads direct (non-premultiplied) runtime RGBA into cached
 premultiplied textures. Uploads are selected by layer identity, dimensions, and the

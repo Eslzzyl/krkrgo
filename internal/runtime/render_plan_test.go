@@ -46,6 +46,9 @@ func TestCaptureRenderPlanTreeAndHashes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !p.StateHashValid {
+		t.Fatal("captured RenderPlan did not mark StateHashValid")
+	}
 	if len(p.Nodes) != 4 || len(p.ChildIndices) != 3 {
 		t.Fatalf("topology = %d nodes, %v", len(p.Nodes), p.ChildIndices)
 	}
@@ -96,6 +99,12 @@ func TestCaptureRenderPlanReusesBackingStorage(t *testing.T) {
 	second, err := services.captureRenderPlanInto(&scratch)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if first.StateHashStable {
+		t.Fatal("first RenderPlan capture was marked stable")
+	}
+	if !second.StateHashStable {
+		t.Fatal("repeated RenderPlan capture was not marked stable")
 	}
 	if &second.Nodes[0] != firstNode {
 		t.Fatal("render-plan node storage was not reused")

@@ -129,26 +129,26 @@ CPU profile 使用 `BenchmarkComposeFullFrame`，5 s profile 的主要样本为�
 
 当前 CPU 合成主要成本集中在 `drawLayerTo` 内层像素路径，符合完整 1280×720 合成的 benchmark 结果。
 
-### GPU 原生图层合成
+### GPU 原生图层与稳定 RenderPlan
 
-`BenchmarkGPUComposeNativeLayers` 使用 1280×720 binder、8 个全画面原生图层，warm-up 后复用纹理，并以三次运行的中位数比较优化前后的 `GPUCompositor.Compose`。
+`BenchmarkGPUComposeNativeLayers` 使用 1280×720 binder、8 个全画面原生图层和复用纹理。稳定行重复同一个 `StateHash`，动态行将 `StateHashStable` 设为 false。
 
-| 图层类型 | 优化前 | 当前实现 | 时间变化 | B/op 变化 | allocs/op 变化 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| opaque | 8.755 µs/op | 5.473 µs/op | -37.5% | -41.8% | 64 → 40 |
-| alpha | 10.420 µs/op | 5.809 µs/op | -44.3% | -43.7% | 64 → 40 |
+| 场景 | 缓存改动前 | 当前实现 | 时间变化 | allocs/op |
+| --- | ---: | ---: | ---: | ---: |
+| opaque/stable | 5.435 µs/op | 2.987 ns/op | -99.95% | 40 → 0 |
+| alpha/stable | 5.303 µs/op | 3.327 ns/op | -99.94% | 40 → 0 |
 
-改动移除了普通 opaque/alpha 图层每层一次全帧 ping-pong copy，当前测量显示 `Compose` 时间和分配均有明显下降。transition 与通用 shader 分支仍保持双 target 路径。
+稳定行显示重复 RenderPlan 时，GPU compositor 可以复用当前 target，跳过纹理访问、target clear 和图层绘制。动态计划继续使用原 `Compose` 路径，稳定缓存结果没有覆盖动态帧。
 
-该 benchmark 测量无窗口 Ebitengine GPU 合成的 `Compose` 命令提交时间。窗口 Present、VSync 和显示刷新另行处理，未计入上述数值。
+该 benchmark 测量无窗口 Ebitengine GPU `Compose` 稳定短路调用。窗口 Present、VSync、GPU queue 和显示刷新另行处理，稳定行的百分比不能当作完整 Update 或整帧显示加速。
 
 可重复命令：
 
 ```sh
-go test ./internal/host -run '^$' -bench '^BenchmarkGPUComposeNativeLayers$' -benchmem -benchtime=500ms -count=3
+go test ./internal/host -run '^$' -bench '^BenchmarkGPUComposeNativeLayers$' -benchmem -benchtime=1s -count=3
 ```
 
-本节的优化前结果来自同一 benchmark、同一机器和同一参数；优化前代码临时恢复，测量完成后恢复当前实现。
+缓存改动前结果来自同一 benchmark、同一机器和同一参数；基线运行时暂时移除 GPU target cache，测量完成后恢复当前实现。
 
 
 ### host 上传准备

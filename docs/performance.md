@@ -104,6 +104,12 @@ signals.
   ping-pong copy per layer. The Windows amd64 benchmark measured median
   `Compose` time reductions of 37.5% for opaque layers and 44.3% for alpha
   layers, with allocations reduced from 64 to 40 per operation.
+- `internal/runtime/render_plan.go` marks repeated stable `RenderPlan`
+  captures. `internal/host/gpu_compositor.go` reuses the current target for
+  matching stable hashes. The Windows amd64 stable-plan benchmark measured
+  5.435 µs/op to 2.987 ns/op for opaque plans and 5.303 µs/op to
+  3.327 ns/op for alpha plans. Dynamic plans continue through the original
+  `Compose` path.
 - `internal/krkrgocli` passes the already configured initial window dimensions
   to `host.NewGameWithInitialWindowSize`. The host skips one redundant
   same-size resize and continues to resize on the first mismatch or later
