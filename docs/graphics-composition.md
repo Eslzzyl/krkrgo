@@ -83,3 +83,9 @@ GPU output is compared with the CPU reference using per-channel tolerances. Exac
 bytes can differ across graphics drivers, shader precision, and premultiplied
 intermediate rounding; such differences are expected and must not alter layer order,
 visibility, alpha semantics, transition phase, or hit testing.
+
+## Ten-item optimization status
+
+### GPU RenderItem 与批量绘制（跳过）
+
+当前 GPU path 已使用稳定 `RenderPlan`、纹理缓存和原生图层直接绘制；对应收益已在 `2bc4309` 和 `10fc6aa` 的 GPU benchmark 中测量。独立 RenderItem 批量绘制需要跨多个异构纹理组织 Ebitengine draw call，当前 backend 没有可复用的统一纹理槽，新增方案无法取得稳定的完整回放收益。本项跳过。
