@@ -89,3 +89,7 @@ visibility, alpha semantics, transition phase, or hit testing.
 ### GPU RenderItem 与批量绘制（跳过）
 
 当前 GPU path 已使用稳定 `RenderPlan`、纹理缓存和原生图层直接绘制；对应收益已在 `2bc4309` 和 `10fc6aa` 的 GPU benchmark 中测量。独立 RenderItem 批量绘制需要跨多个异构纹理组织 Ebitengine draw call，当前 backend 没有可复用的统一纹理槽，新增方案无法取得稳定的完整回放收益。本项跳过。
+
+### CPU dirty-region / tile cache（跳过）
+
+CPU compositor 的 layer mutation 当前没有统一的 dirty-rect 传播，父子 transform、clip、province、transition 和 `onPaint` 都会影响可见范围。新增区域缓存需要改变 layer 状态接口与失效流程，当前 `ComposeFullFrame` 基准没有可安全复用的区域信息。本项跳过。
