@@ -42,6 +42,8 @@ type GPUCompositor struct {
 	indices        []uint16
 	uniforms       map[string]any
 	sourceOrigin   [2]float32
+	sourceScale    [2]float32
+	sourceSize     [2]float32
 	ruleOrigin     [2]float32
 	crossfade      *ebiten.Shader
 	universal      *ebiten.Shader
@@ -303,7 +305,11 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 				}
 				c.front, c.back = c.back, c.front
 			} else {
-				source, err = c.texture(gpuTextureKey{n.ID, gpuTextureLayer}, n.ImageWidth, n.ImageHeight, n.RGBA, n.ImageHash, n.Type == runtime.LayerOpaque)
+				sourceWidth, sourceHeight := n.ImageWidth, n.ImageHeight
+				if n.GPUStretch {
+					sourceWidth, sourceHeight = n.GPUStretchSourceWidth, n.GPUStretchSourceHeight
+				}
+				source, err = c.texture(gpuTextureKey{n.ID, gpuTextureLayer}, sourceWidth, sourceHeight, n.RGBA, n.ImageHash, n.Type == runtime.LayerOpaque)
 				if err != nil {
 					return err
 				}
@@ -322,6 +328,23 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 					uniforms["TargetType"] = float32(targetType)
 					uniforms["Opacity"] = float32(n.Opacity) / 255
 					uniforms["HoldAlpha"] = boolToFloat(n.HoldAlpha)
+					destinationWidth, destinationHeight := n.ImageWidth, n.ImageHeight
+					if n.GPUStretch {
+						destinationWidth, destinationHeight = n.GPUStretchDestinationWidth, n.GPUStretchDestinationHeight
+					}
+					c.sourceScale[0], c.sourceScale[1] = 1, 1
+					if n.GPUStretch {
+						c.sourceScale[0] = float32(n.GPUStretchSourceWidth) / float32(destinationWidth)
+						c.sourceScale[1] = float32(n.GPUStretchSourceHeight) / float32(destinationHeight)
+					}
+					c.sourceSize[0], c.sourceSize[1] = float32(sourceWidth), float32(sourceHeight)
+					uniforms["SourceScale"] = c.sourceScale[:]
+					uniforms["SourceSize"] = c.sourceSize[:]
+					if n.GPUStretch {
+						uniforms["SourceLinear"] = float32(1)
+					} else {
+						uniforms["SourceLinear"] = float32(0)
+					}
 					c.drawQuad(c.back, shader, [4]*ebiten.Image{c.front, source, nil, nil}, float32(ax+n.ImageLeft+int32(x0)), float32(ay+n.ImageTop+int32(y0)), float32(ax+n.ImageLeft+int32(x1)), float32(ay+n.ImageTop+int32(y1)), float32(ax+n.ImageLeft), float32(ay+n.ImageTop), uniforms)
 					c.front, c.back = c.back, c.front
 				}
@@ -344,28 +367,71 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 	return nil
 }
 
-// drawOpaqueLayer draws directly into the current front target. The source
-// texture is independent from that target, so a full-frame ping-pong copy is
-// unnecessary for the native replace/source-over blend paths.
+func gpuSourceRect(n runtime.RenderNode, x0, y0, x1, y1 int64) (image.Rectangle, float64, float64) {
+	if !n.GPUStretch {
+		return image.Rect(int(x0), int(y0), int(x1), int(y1)), 1, 1
+	}
+	sourceWidth, sourceHeight := int64(n.GPUStretchSourceWidth), int64(n.GPUStretchSourceHeight)
+	destinationWidth, destinationHeight := int64(n.GPUStretchDestinationWidth), int64(n.GPUStretchDestinationHeight)
+	sourceX0 := x0 * sourceWidth / destinationWidth
+	sourceY0 := y0 * sourceHeight / destinationHeight
+	sourceX1 := x1 * sourceWidth / destinationWidth
+	sourceY1 := y1 * sourceHeight / destinationHeight
+	if sourceX1 <= sourceX0 {
+		sourceX1 = sourceX0 + 1
+	}
+	if sourceY1 <= sourceY0 {
+		sourceY1 = sourceY0 + 1
+	}
+	if sourceX1 > sourceWidth {
+		sourceX1 = sourceWidth
+	}
+	if sourceY1 > sourceHeight {
+		sourceY1 = sourceHeight
+	}
+	return image.Rect(int(sourceX0), int(sourceY0), int(sourceX1), int(sourceY1)),
+		float64(destinationWidth) / float64(sourceWidth),
+		float64(destinationHeight) / float64(sourceHeight)
+}
+
 func (c *GPUCompositor) drawOpaqueLayer(source *ebiten.Image, x0, y0, x1, y1 int64, ax, ay int32, n runtime.RenderNode) {
-	visible := source.SubImage(image.Rect(int(x0), int(y0), int(x1), int(y1))).(*ebiten.Image)
+	sourceRect, scaleX, scaleY := gpuSourceRect(n, x0, y0, x1, y1)
+	visible := source.SubImage(sourceRect).(*ebiten.Image)
 	blend := ebiten.BlendSourceOver
 	if n.Opacity == 255 {
 		blend = gpuReplaceBlend
 	}
-	options := &ebiten.DrawImageOptions{Blend: blend}
-	options.GeoM.Translate(float64(ax+n.ImageLeft+int32(x0)), float64(ay+n.ImageTop+int32(y0)))
+	filter := ebiten.FilterNearest
+	if n.GPUStretch {
+		filter = ebiten.FilterLinear
+	}
+	options := &ebiten.DrawImageOptions{Blend: blend, Filter: filter, DisableMipmaps: n.GPUStretch}
+	if n.GPUStretch {
+		options.GeoM.Scale(scaleX, scaleY)
+		options.GeoM.Translate(float64(ax+n.ImageLeft+int32(x0))-float64(sourceRect.Min.X)*scaleX,
+			float64(ay+n.ImageTop+int32(y0))-float64(sourceRect.Min.Y)*scaleY)
+	} else {
+		options.GeoM.Translate(float64(ax+n.ImageLeft+int32(x0)), float64(ay+n.ImageTop+int32(y0)))
+	}
 	options.ColorScale.ScaleAlpha(float32(n.Opacity) / 255)
 	c.front.DrawImage(visible, options)
 }
 
-// drawAlphaLayer draws directly into the current front target. The source
-// texture is independent from that target, and source-over blending preserves
-// the existing destination in place.
 func (c *GPUCompositor) drawAlphaLayer(source *ebiten.Image, x0, y0, x1, y1 int64, ax, ay int32, n runtime.RenderNode) {
-	visible := source.SubImage(image.Rect(int(x0), int(y0), int(x1), int(y1))).(*ebiten.Image)
-	options := &ebiten.DrawImageOptions{Blend: ebiten.BlendSourceOver}
-	options.GeoM.Translate(float64(ax+n.ImageLeft+int32(x0)), float64(ay+n.ImageTop+int32(y0)))
+	sourceRect, scaleX, scaleY := gpuSourceRect(n, x0, y0, x1, y1)
+	visible := source.SubImage(sourceRect).(*ebiten.Image)
+	filter := ebiten.FilterNearest
+	if n.GPUStretch {
+		filter = ebiten.FilterLinear
+	}
+	options := &ebiten.DrawImageOptions{Blend: ebiten.BlendSourceOver, Filter: filter, DisableMipmaps: n.GPUStretch}
+	if n.GPUStretch {
+		options.GeoM.Scale(scaleX, scaleY)
+		options.GeoM.Translate(float64(ax+n.ImageLeft+int32(x0))-float64(sourceRect.Min.X)*scaleX,
+			float64(ay+n.ImageTop+int32(y0))-float64(sourceRect.Min.Y)*scaleY)
+	} else {
+		options.GeoM.Translate(float64(ax+n.ImageLeft+int32(x0)), float64(ay+n.ImageTop+int32(y0)))
+	}
 	options.ColorScale.ScaleAlpha(float32(n.Opacity) / 255)
 	c.front.DrawImage(visible, options)
 }

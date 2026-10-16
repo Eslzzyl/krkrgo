@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"testing"
+	"time"
 )
 
 func TestAudioOutputQueueFormatBackpressureAndClose(t *testing.T) {
@@ -55,6 +56,30 @@ func TestAudioOutputQueueFormatBackpressureAndClose(t *testing.T) {
 		t.Fatalf("closed read = (%d, %v), want (0, EOF)", n, err)
 	}
 }
+func TestAudioQueueDiagnosticsCountPostWriteWait(t *testing.T) {
+	queue := newAudioQueue(1)
+	if err := queue.write([]float32{1, -1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.Read(make([]byte, 8)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		_, _ = queue.Read(make([]byte, 8))
+		close(done)
+	}()
+	time.Sleep(time.Millisecond)
+	if err := queue.write([]float32{2, -2}); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	waits, waitNanos, maxWaitNanos := queue.waitStats()
+	if waits != 1 || waitNanos == 0 || maxWaitNanos == 0 {
+		t.Fatalf("queue wait stats = (%d, %d, %d), want one positive wait", waits, waitNanos, maxWaitNanos)
+	}
+}
+
 func TestAudioOutputDiagnosticsCountAcceptedPCM(t *testing.T) {
 	output := &AudioOutput{queue: newAudioQueue(2), diagnostics: true}
 	if err := output.Write([]float32{0, 0.5, -0.25, 0}); err != nil {
@@ -75,5 +100,17 @@ func TestAudioOutputDiagnosticsDisabled(t *testing.T) {
 	}
 	if got := output.Diagnostics(); got != (AudioOutputStats{}) {
 		t.Fatalf("disabled diagnostics = %+v, want zero stats", got)
+	}
+}
+func TestGameLimitAudioDeltaToQueueHeadroom(t *testing.T) {
+	game := &Game{audioOutput: &AudioOutput{queue: newAudioQueue(480)}}
+	if got, want := game.limitAudioDeltaMilliseconds(16), uint64(10); got != want {
+		t.Fatalf("empty queue audio delta = %d, want %d", got, want)
+	}
+	if err := game.audioOutput.queue.write(make([]float32, 240*2)); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := game.limitAudioDeltaMilliseconds(16), uint64(5); got != want {
+		t.Fatalf("half-full queue audio delta = %d, want %d", got, want)
 	}
 }

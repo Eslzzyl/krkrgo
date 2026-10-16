@@ -157,6 +157,146 @@ paintLayer.update();
 		t.Fatalf("GPU onPaint count after second tick = %s, want 2", got)
 	}
 }
+func TestTickForGPUPresentationReusesStaticPlanAndInvalidatesOnLayerChange(t *testing.T) {
+	services := DefaultServices()
+	root := NewRootLayer(1, 4, 4)
+	if err := root.SetRGBA(4, 4, make([]byte, 4*4*4)); err != nil {
+		t.Fatal(err)
+	}
+	child := NewLayer(2)
+	if err := child.SetRGBA(2, 2, make([]byte, 2*2*4)); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.AddChild(child); err != nil {
+		t.Fatal(err)
+	}
+	services.SetRoot(root)
+	session := NewSession(services, 10_000)
+	defer session.Close()
+	first, err := session.TickForGPUPresentation(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := session.TickForGPUPresentation(16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.StateHashStable || len(first.Nodes) != len(second.Nodes) ||
+		&first.Nodes[0] != &second.Nodes[0] {
+		t.Fatalf("static GPU plan was not reused: first=%+v second=%+v", first, second)
+	}
+	child.SetPosition(1, 0)
+	third, err := session.TickForGPUPresentation(32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.StateHashStable || third.Nodes[1].Bounds.X != 1 {
+		t.Fatalf("GPU plan cache did not invalidate after layer change: %+v", third.Nodes[1])
+	}
+}
+func TestGPUPlanImageRevisionTracksLayerMutation(t *testing.T) {
+	root := NewRootLayer(1, 2, 1)
+	if err := root.SetRGBA(2, 1, []byte{1, 2, 3, 255, 4, 5, 6, 255}); err != nil {
+		t.Fatal(err)
+	}
+	child := NewLayer(2)
+	if err := child.SetRGBA(2, 1, []byte{10, 20, 30, 255, 40, 50, 60, 255}); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.AddChild(child); err != nil {
+		t.Fatal(err)
+	}
+	services := DefaultServices()
+	services.Root = root
+	services.gpuCapture = true
+	first, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.SetRGBA(2, 1, []byte{99, 20, 30, 255, 40, 50, 60, 255}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Nodes[1].ImageHash == second.Nodes[1].ImageHash {
+		t.Fatal("GPU image revision did not change after layer mutation")
+	}
+}
+func TestGPUPlanCacheTracksBitmapStretchSource(t *testing.T) {
+	services := DefaultServices()
+	root := NewRootLayer(1, 4, 1)
+	if err := root.SetRGBA(4, 1, make([]byte, 4*4)); err != nil {
+		t.Fatal(err)
+	}
+	source, err := newBitmap(2, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !root.deferGPUStretchCopy(nativeLayerImage{
+		bitmap: source, width: 2, height: 1, pixels: source.RGBA,
+	}, 4, 1, 2, 1, 1) {
+		t.Fatal("bitmap GPU stretch was not deferred")
+	}
+	services.Root = root
+	session := NewSession(services, 10_000)
+	defer session.Close()
+	first, err := session.TickForGPUPresentation(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstHash := first.Nodes[0].ImageHash
+	if _, err := session.TickForGPUPresentation(16); err != nil {
+		t.Fatal(err)
+	}
+	if !session.gpuPlan.StateHashStable {
+		t.Fatal("unchanged bitmap stretch plan was not reused")
+	}
+	source.markDirty()
+	third, err := session.TickForGPUPresentation(32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.StateHashStable || firstHash == third.Nodes[0].ImageHash {
+		t.Fatal("bitmap stretch source mutation did not invalidate the GPU plan")
+	}
+}
+
+func TestGPUStretchRenderPlanDefersAndCPUCaptureMaterializes(t *testing.T) {
+	root := NewRootLayer(1, 4, 2)
+	if err := root.SetRGBA(4, 2, make([]byte, 4*2*4)); err != nil {
+		t.Fatal(err)
+	}
+	source := NewLayer(2)
+	if err := source.SetRGBA(2, 1, []byte{
+		10, 20, 30, 255, 40, 50, 60, 255,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !root.deferGPUStretchCopy(nativeLayerImage{
+		layer: source, width: source.ImageWidth, height: source.ImageHeight, pixels: source.RGBA,
+	}, 4, 2, 2, 1, 1) {
+		t.Fatal("full-image GPU stretch was not deferred")
+	}
+	services := DefaultServices()
+	services.Root = root
+	plan, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Nodes) != 1 || !plan.Nodes[0].GPUStretch ||
+		plan.Nodes[0].GPUStretchSourceWidth != 2 || plan.Nodes[0].GPUStretchSourceHeight != 1 ||
+		!bytes.Equal(plan.Nodes[0].RGBA, source.RGBA) {
+		t.Fatalf("GPU stretch render node = %+v", plan.Nodes[0])
+	}
+	if _, err := services.CaptureFrame(); err != nil {
+		t.Fatal(err)
+	}
+	if root.gpuStretch != nil {
+		t.Fatal("CPU capture did not materialize pending GPU stretch")
+	}
+}
 
 func TestCaptureRenderPlanTransitionMetadata(t *testing.T) {
 	root := NewRootLayer(1, 2, 2)

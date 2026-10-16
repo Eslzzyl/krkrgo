@@ -77,6 +77,34 @@ The host uses a fixed 16 ms runtime tick. `ActualFPS` and `ActualTPS` come
 from Ebitengine and are included as the closest available real-window timing
 signals.
 
+## Single-stall trace
+
+`KRKRGO_STALL_TRACE=1` enables thresholded frame, Draw, `Layer.loadImages`,
+and `Bitmap.loadAsync` records. The default threshold is 20 ms; override it
+with `KRKRGO_STALL_THRESHOLD_MS`. Records use structured key-value fields and
+are written through the normal Go logger, so redirect stderr to preserve the
+trace:
+
+```sh
+go build -trimpath -o temp/krkrgo-stall ./cmd/krkrgo
+KRKRGO_RENDER_STATS=1 \
+KRKRGO_STALL_TRACE=1 \
+KRKRGO_STALL_THRESHOLD_MS=20 \
+temp/krkrgo-stall run -project /path/to/project 2>temp/stall-trace.log
+```
+
+Frame records contain logical time, frame interval, Update, runtime tick,
+audio, and presentation durations. With `KRKRGO_RENDER_STATS=1`, long runtime
+ticks also report `advance_clock`, event dispatch, layer transitions,
+`capture_frame`, and transition completion. Resource records split image work
+into storage read, decode, color-key, mask, province, metadata, and Layer
+commit stages. The trace is opt-in and emits records only after a stage or
+frame interval crosses the threshold.
+
+`KRKRGO_AUDIO_DIAGNOSTICS=1` extends the exit audio summary with output-queue
+wait counts and durations. A wait after the first accepted block identifies
+device-side queue starvation during a long runtime or presentation stage.
+
 ## Implemented optimizations
 
 - `internal/runtime/layer_draw.go` clips drawing to the effective destination
@@ -96,9 +124,20 @@ signals.
   synchronous host path. Public `CaptureFrame` keeps clone ownership
   semantics. Render-state caching skips composition for unchanged static
   scenes, while transitions and videos remain dynamic.
+- `internal/runtime/services.go` caches validated layer-tree checks by root
+  revision, removing repeated full-tree map construction during capture while
+  retaining validation after structural or render-affecting mutations.
 - `internal/host/ebiten.go` reuses the upload buffer, avoids repeated
   premultiplication for opaque data, computes changed bounds during the
   upload scan, and selects subimage or full-image writes by changed area.
+- The final Ebitengine canvas draw uses linear filtering, preserving smooth
+  image edges when the logical canvas is presented at a fractional window scale.
+- When an Ebitengine audio output is attached, the host mixer follows elapsed
+  wall time between updates while the script clock remains on the fixed replay
+  timeline, keeping PCM production aligned with a presentation stall.
+- The live audio adapter caps each wall-time mix block to current queue
+  headroom, preventing transient startup backpressure from terminating the
+  host update loop.
 - `internal/host/ebiten.go` compares changed rows with `bytes.Equal` when the
   previous presentation surface is opaque. Opaque dynamic frames now find
   changed bounds without a per-pixel scan of unchanged rows; a transition to
@@ -129,9 +168,43 @@ signals.
 - `internal/assets/image_cache.go` and `internal/assets/xp3.go` use indexed
   intrusive LRU caches for decoded images and archive segments. Hit lookup and
   LRU movement no longer scan the full cache.
-- `internal/runtime/bitmap_native.go` decodes `Bitmap.loadAsync` on a
-  background goroutine and posts a bounded main-session completion event;
-  generation checks discard completions after object finalization.
+- `internal/assets/storage.go` and `internal/runtime/layer_load_images_native.go` resolve image sidecar candidates from one cached directory index and skip archive reads when the catalog has no candidate. The focused missing-candidate benchmark measured 13.174 µs/op versus 44.460 µs/op for repeated individual probes, with allocations reduced from 187 to 49 per operation.
+- `internal/assets/storage.go` batches missing sidecar candidates across the
+  configured loose and archive-qualified search paths. Search-path directory
+  indexes are reused for the candidate set, and mounted archive identity is
+  resolved once per search path before member probes.
+- `internal/assets/media.go` returns an aligned straight-alpha `image.NRGBA`
+  decode directly after transparent-pixel normalization, removing the second
+  full-image copy for the common PNG decode shape.
+- `internal/runtime/layer_image.go` unrolls the four RGBA channels in the
+  bilinear `stretchCopy` inner loop while preserving the existing byte-parity
+  behavior.
+- `internal/runtime/layer_image.go` performs premultiplied-alpha interpolation
+  for linear `affineCopy` samples, preserving transparent edge colors when
+  animated source images are uploaded to Ebitengine's premultiplied textures.
+- `internal/runtime/motion_render.go` applies each Motion.Player completion filter
+  through the PSB motion compositor. Linear motion frames and the final motion
+  canvas use premultiplied-alpha bilinear sampling, preserving transparent
+  image edges while animated artwork is transformed.
+- Motion PSB canvases, recursion workspaces, and the last rendered pose now
+  reuse per-resource storage. Identity translations use direct pixel
+  composition; opaque identity regions use row copies; transformed frames use
+  an integer-weighted premultiplied-alpha sampler with independent destination
+  rows processed across available Go workers. These paths reduce CPU work and
+  per-frame allocation pressure.
+- `internal/runtime/layer_image.go` uses a row-copy path when `stretchCopy`
+  keeps source and destination dimensions identical, skipping interpolation
+  setup for identity-size transfers.
+- `internal/runtime/layer_load_images_native.go` overlaps large main-image
+  decode with mask and province sidecar lookup. Small images retain the
+  synchronous path, keeping goroutine overhead out of the common small-image
+  case.
+- `internal/runtime/bitmap_native.go` now decodes `Bitmap.loadAsync` through
+  the per-Storage decoded-image cache. A completed background preload supplies
+  the cached decode to a later `Layer.loadImages` call instead of repeating
+  the image decoder on the session thread. Completion transfers the decoded
+  RGBA ownership into the Bitmap, so the main-session handoff does not copy
+  the full image.
 - `internal/runtime/services.go` carries a stable render-state hash on static
   presentation frames. `internal/host/ebiten.go` uses it to skip repeated
   opaque-frame scans; the Windows amd64 benchmark reduced the stable
@@ -147,6 +220,13 @@ signals.
   5.435 µs/op to 2.987 ns/op for opaque plans and 5.303 µs/op to
   3.327 ns/op for alpha plans. Dynamic plans continue through the original
   `Compose` path.
+- `internal/runtime/layer.go`, `internal/runtime/bitmap_native.go`,
+  `internal/runtime/session.go`, and `internal/runtime/render_plan.go` track
+  render-affecting Layer and Bitmap revisions. GPU RenderPlan capture reuses
+  an unchanged static plan and uses revision tokens for layer image, Province,
+  and deferred Bitmap stretch sources, so repeated frames skip full
+  source-buffer hashing. CPU frame capture retains content hashing for
+  caller-mutable pixel slices.
 - `internal/runtime/layer_transition_native.go` uses a channel-specialized
   universal-transition kernel with row-free pixel indexing and direct RGBA
   arithmetic. The 1280×720 fixture measured about 3.03 ms/op versus
@@ -193,10 +273,13 @@ signals.
 
 ## Reference implementation comparison
 
+- **C++ (`/Users/eslzzyl/WorkSpace/Go/krkrgo/reference/krkr2-main`):**
+  `visual/GraphicsLoadThread.cpp:128-177` inserts a completed
+  `Bitmap.loadAsync` decode into the graphic cache before dispatching
+  `onLoaded`. `visual/GraphicsLoaderIntf.cpp:1878-1970` checks that cache
+  before synchronous layer-facing graphic loads and can retain GPU textures.
+  `visual/LayerIntf.cpp:2822-2915` still keeps `Layer.loadImages` synchronous.
 - **C++ (`/Users/eslzzyl/WorkSpace/krkrz`):**
-  `environ/win32/Application.cpp:347-366,536-582` creates an asynchronous
-  image-loader thread for `Bitmap.loadAsync`, runs startup scripts, and uses
-  an event-driven message loop. `Layer.loadImages` remains synchronous.
   `visual/LayerManager.cpp:1043-1086` and
   `visual/win32/DrawDevice.cpp:580-613` manage dirty regions and draw-device
   updates.

@@ -418,18 +418,30 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		if err == nil {
 			s.mu.Lock()
 			l.imageModified = true
+			l.markImageDirty()
 			s.mu.Unlock()
 		}
 		return tjs.VoidValue, err
 	case "affineCopy":
-		return tjs.VoidValue, s.layerAffineCopy(l, args)
+		err := s.layerAffineCopy(l, args)
+		if err == nil {
+			l.markImageDirty()
+		}
+		return tjs.VoidValue, err
 	case "fillRect", "colorRect":
 		s.mu.Lock()
 		err := s.layerFillRect(l, operation, args, intArg)
+		if err == nil {
+			l.markImageDirty()
+		}
 		s.mu.Unlock()
 		return tjs.VoidValue, err
 	case "piledCopy", "pileRect":
-		return tjs.VoidValue, s.layerPiledCopy(l, id, args, budget, operation)
+		err := s.layerPiledCopy(l, id, args, budget, operation)
+		if err == nil {
+			l.markImageDirty()
+		}
+		return tjs.VoidValue, err
 	case "bringToFront":
 		s.mu.Lock()
 		err := l.SetOrderIndex(math.MaxInt32)
@@ -439,7 +451,11 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		}
 		return tjs.VoidValue, s.syncLayerChildren(vm)
 	case "drawText":
-		return tjs.VoidValue, s.layerDrawText(l, args, budget)
+		err := s.layerDrawText(l, args, budget)
+		if err == nil {
+			l.markImageDirty()
+		}
+		return tjs.VoidValue, err
 	case "move":
 		if len(args) == 1 {
 			index, err := intArg(0)
@@ -569,6 +585,7 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 				p[0], p[1], p[2] = uint8(uint64(value)>>16), uint8(uint64(value)>>8), uint8(value)
 			}
 			l.imageModified = true
+			l.markImageDirty()
 		}
 		s.mu.Unlock()
 		return tjs.VoidValue, err
@@ -624,6 +641,7 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 			(!clipSet || clip.Contains(x, y)) {
 			l.Province[int(y)*int(l.ProvinceWidth)+int(x)] = uint8(value)
 			l.imageModified = true
+			l.markImageDirty()
 		}
 		s.mu.Unlock()
 		return tjs.VoidValue, nil
@@ -1102,6 +1120,7 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 			return tjs.VoidValue, e
 		}
 		l.Bounds.X = n
+		l.markRenderDirty()
 		return tjs.VoidValue, nil
 	case "top":
 		n, e := intArg(0)
@@ -1109,6 +1128,7 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 			return tjs.VoidValue, e
 		}
 		l.Bounds.Y = n
+		l.markRenderDirty()
 		return tjs.VoidValue, nil
 	case "width":
 		n, e := intArg(0)
@@ -1152,6 +1172,7 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 			return tjs.VoidValue, e
 		}
 		l.Visible = b
+		l.markRenderDirty()
 		return tjs.VoidValue, nil
 	case "opacity":
 		n, e := intArg(0)
@@ -1193,6 +1214,7 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 			return tjs.VoidValue, e
 		}
 		l.Face = n
+		l.markRenderDirty()
 		return tjs.VoidValue, nil
 	case "holdAlpha":
 		b, e := boolArg(0)
@@ -1200,6 +1222,7 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 			return tjs.VoidValue, e
 		}
 		l.HoldAlpha = b
+		l.markRenderDirty()
 		return tjs.VoidValue, nil
 	case "hitType":
 		n, e := intArg(0)

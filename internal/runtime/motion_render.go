@@ -2,17 +2,27 @@ package runtime
 
 import (
 	"fmt"
-	"math"
-	"strings"
-
 	"github.com/eslzzyl/krkrgo/internal/assets"
+	"math"
+	goruntime "runtime"
+	"strings"
+	"sync"
 )
 
 type motionResource struct {
-	path   string
-	doc    *assets.Document
-	data   []byte
-	images map[string]*assets.Image
+	path          string
+	doc           *assets.Document
+	data          []byte
+	images        map[string]*assets.Image
+	premultiplied map[string][]byte
+	opaque        map[string]bool
+	stack         map[string]bool
+	canvas        *assets.Image
+	canvasChara   string
+	canvasMotion  string
+	canvasTick    float64
+	canvasFilter  int64
+	canvasValid   bool
 }
 
 type motionMatrix struct {
@@ -27,7 +37,7 @@ type motionRenderContext struct {
 	matrix  motionMatrix
 }
 
-func renderPSBMotion(resource *motionResource, chara, motion string, tick float64) (*assets.Image, error) {
+func renderPSBMotion(resource *motionResource, chara, motion string, tick float64, filter int64) (*assets.Image, error) {
 	if resource == nil || resource.doc == nil {
 		return nil, fmt.Errorf("motion resource is unavailable")
 	}
@@ -40,27 +50,53 @@ func renderPSBMotion(resource *motionResource, chara, motion string, tick float6
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("motion PSB has invalid canvas size %dx%d", width, height)
 	}
-	pixels := make([]byte, width*height*4)
+	if resource.canvasValid && resource.canvas != nil &&
+		resource.canvas.Width == uint32(width) && resource.canvas.Height == uint32(height) &&
+		resource.canvasChara == chara && resource.canvasMotion == motion &&
+		resource.canvasTick == tick && resource.canvasFilter == filter {
+		return resource.canvas, nil
+	}
+	var canvas *assets.Image
+	if resource.canvas == nil || resource.canvas.Width != uint32(width) || resource.canvas.Height != uint32(height) {
+		canvas = &assets.Image{Width: uint32(width), Height: uint32(height), RGBA: make([]byte, width*height*4)}
+		resource.canvas = canvas
+		resource.canvasValid = false
+	} else {
+		canvas = resource.canvas
+		clear(canvas.RGBA)
+	}
+	pixels := canvas.RGBA
 	objects, _ := root["object"].(map[string]assets.Value)
 	character, _ := objects[chara].(map[string]assets.Value)
 	motions, _ := character["motion"].(map[string]assets.Value)
 	motionValue, _ := motions[motion].(map[string]assets.Value)
 	layers, _ := motionValue["layer"].([]assets.Value)
 	if len(layers) == 0 {
-		return &assets.Image{Width: uint32(width), Height: uint32(height), RGBA: pixels}, nil
+		resource.canvasChara, resource.canvasMotion = chara, motion
+		resource.canvasTick, resource.canvasFilter = tick, filter
+		resource.canvasValid = true
+		return canvas, nil
+	}
+	if resource.stack == nil {
+		resource.stack = make(map[string]bool)
+	} else {
+		clear(resource.stack)
 	}
 	ctx := motionRenderContext{opacity: 255, matrix: identityMotionMatrix}
-	if err := renderMotionValue(resource, root, layers, tick, ctx, pixels, width, height, map[string]bool{}); err != nil {
+	if err := renderMotionValue(resource, root, layers, tick, filter, ctx, pixels, width, height, resource.stack); err != nil {
 		return nil, err
 	}
-	return &assets.Image{Width: uint32(width), Height: uint32(height), RGBA: pixels}, nil
+	resource.canvasChara, resource.canvasMotion = chara, motion
+	resource.canvasTick, resource.canvasFilter = tick, filter
+	resource.canvasValid = true
+	return canvas, nil
 }
 
-func renderMotionValue(resource *motionResource, root map[string]assets.Value, value assets.Value, tick float64, parent motionRenderContext, pixels []byte, width, height int, stack map[string]bool) error {
+func renderMotionValue(resource *motionResource, root map[string]assets.Value, value assets.Value, tick float64, filter int64, parent motionRenderContext, pixels []byte, width, height int, stack map[string]bool) error {
 	switch node := value.(type) {
 	case []assets.Value:
 		for _, child := range node {
-			if err := renderMotionValue(resource, root, child, tick, parent, pixels, width, height, stack); err != nil {
+			if err := renderMotionValue(resource, root, child, tick, filter, parent, pixels, width, height, stack); err != nil {
 				return err
 			}
 		}
@@ -71,18 +107,18 @@ func renderMotionValue(resource *motionResource, root map[string]assets.Value, v
 			content, visible := psbMotionResolvedContent(frameList, tick)
 			if visible {
 				ctx = psbMotionContext(parent, content, node)
-				if err := renderMotionFrame(resource, root, content, node, ctx, pixels, width, height, stack); err != nil {
+				if err := renderMotionFrame(resource, root, content, node, filter, ctx, pixels, width, height, stack); err != nil {
 					return err
 				}
 			}
 		}
 		if children, ok := node["children"]; ok {
-			if err := renderMotionValue(resource, root, children, tick, ctx, pixels, width, height, stack); err != nil {
+			if err := renderMotionValue(resource, root, children, tick, filter, ctx, pixels, width, height, stack); err != nil {
 				return err
 			}
 		}
 		if layers, ok := node["layer"]; ok {
-			if err := renderMotionValue(resource, root, layers, tick, ctx, pixels, width, height, stack); err != nil {
+			if err := renderMotionValue(resource, root, layers, tick, filter, ctx, pixels, width, height, stack); err != nil {
 				return err
 			}
 		}
@@ -90,7 +126,7 @@ func renderMotionValue(resource *motionResource, root map[string]assets.Value, v
 	return nil
 }
 
-func renderMotionFrame(resource *motionResource, root map[string]assets.Value, content map[string]assets.Value, layer map[string]assets.Value, ctx motionRenderContext, pixels []byte, width, height int, stack map[string]bool) error {
+func renderMotionFrame(resource *motionResource, root map[string]assets.Value, content map[string]assets.Value, layer map[string]assets.Value, filter int64, ctx motionRenderContext, pixels []byte, width, height int, stack map[string]bool) error {
 	source, _ := content["src"].(string)
 	if source == "" {
 		return nil
@@ -100,7 +136,12 @@ func renderMotionFrame(resource *motionResource, root map[string]assets.Value, c
 		if err != nil {
 			return err
 		}
-		return blendMotionImage(pixels, width, height, image, originX+psbMotionFloat(content, "ox", 0), originY+psbMotionFloat(content, "oy", 0), ctx)
+		opaque := motionSourceOpaque(resource, source, image)
+		var premultiplied []byte
+		if filter != 0 {
+			premultiplied = motionPremultipliedImage(resource, source, image)
+		}
+		return blendMotionImage(pixels, width, height, image, originX+psbMotionFloat(content, "ox", 0), originY+psbMotionFloat(content, "oy", 0), filter, premultiplied, opaque, ctx)
 	}
 	if strings.HasPrefix(source, "motion/") {
 		parts := strings.Split(strings.TrimPrefix(source, "motion/"), "/")
@@ -113,7 +154,7 @@ func renderMotionFrame(resource *motionResource, root map[string]assets.Value, c
 				motions, _ := character["motion"].(map[string]assets.Value)
 				nested, _ := motions[parts[1]].(map[string]assets.Value)
 				if nestedLayers, ok := nested["layer"]; ok {
-					if err := renderMotionValue(resource, root, nestedLayers, 0, ctx, pixels, width, height, stack); err != nil {
+					if err := renderMotionValue(resource, root, nestedLayers, 0, filter, ctx, pixels, width, height, stack); err != nil {
 						return err
 					}
 				}
@@ -455,6 +496,42 @@ func motionSourceImage(resource *motionResource, root map[string]assets.Value, s
 	resource.images[key] = image
 	return image, psbMotionFloat(metadata, "originX", 0), psbMotionFloat(metadata, "originY", 0), nil
 }
+func motionSourceOpaque(resource *motionResource, source string, image *assets.Image) bool {
+	if resource.opaque == nil {
+		resource.opaque = make(map[string]bool)
+	}
+	if opaque, ok := resource.opaque[source]; ok {
+		return opaque
+	}
+	opaque := true
+	for offset := 3; offset < len(image.RGBA); offset += 4 {
+		if image.RGBA[offset] != 255 {
+			opaque = false
+			break
+		}
+	}
+	resource.opaque[source] = opaque
+	return opaque
+}
+
+func motionPremultipliedImage(resource *motionResource, source string, image *assets.Image) []byte {
+	if resource.premultiplied == nil {
+		resource.premultiplied = make(map[string][]byte)
+	}
+	if pixels := resource.premultiplied[source]; len(pixels) == len(image.RGBA) {
+		return pixels
+	}
+	pixels := make([]byte, len(image.RGBA))
+	for offset := 0; offset+3 < len(image.RGBA); offset += 4 {
+		alpha := uint16(image.RGBA[offset+3])
+		pixels[offset+3] = byte(alpha)
+		pixels[offset] = byte((uint16(image.RGBA[offset])*alpha + 127) / 255)
+		pixels[offset+1] = byte((uint16(image.RGBA[offset+1])*alpha + 127) / 255)
+		pixels[offset+2] = byte((uint16(image.RGBA[offset+2])*alpha + 127) / 255)
+	}
+	resource.premultiplied[source] = pixels
+	return pixels
+}
 
 func motionPalette(data []byte, metadata map[string]assets.Value) ([]byte, bool, error) {
 	paletteValue, ok := metadata["pal"].(assets.Resource)
@@ -512,7 +589,124 @@ func decodePSBRaw(data []byte, width, height int) (*assets.Image, error) {
 	return &assets.Image{Width: uint32(width), Height: uint32(height), RGBA: pixels}, nil
 }
 
-func blendMotionImage(dst []byte, width, height int, src *assets.Image, originX, originY float64, ctx motionRenderContext) error {
+type motionPremultSample struct {
+	red, green, blue, alpha uint32
+}
+
+func motionBilinearRGBA(source, premultiplied []byte, width, height int, x, y float64) [4]byte {
+	var pixel [4]byte
+	sample := motionBilinearPremult(source, premultiplied, width, height, x, y)
+	if sample.alpha == 0 {
+		return pixel
+	}
+	pixel[3] = byte(sample.alpha)
+	pixel[0] = byte(min((sample.red*255+sample.alpha/2)/sample.alpha, uint32(255)))
+	pixel[1] = byte(min((sample.green*255+sample.alpha/2)/sample.alpha, uint32(255)))
+	pixel[2] = byte(min((sample.blue*255+sample.alpha/2)/sample.alpha, uint32(255)))
+	return pixel
+}
+
+func motionBilinearPremult(source, premultiplied []byte, width, height int, x, y float64) motionPremultSample {
+	var sample motionPremultSample
+	if width <= 0 || height <= 0 {
+		return sample
+	}
+	x0, y0 := int(x), int(y)
+	fx, fy := x-float64(x0), y-float64(y0)
+	if x < 0 {
+		x0--
+		fx++
+	}
+	if y < 0 {
+		y0--
+		fy++
+	}
+	if x0 < 0 {
+		x0 = 0
+	} else if x0 >= width {
+		x0 = width - 1
+	}
+	if y0 < 0 {
+		y0 = 0
+	} else if y0 >= height {
+		y0 = height - 1
+	}
+	x1, y1 := x0+1, y0+1
+	if x1 >= width {
+		x1 = width - 1
+		fx = 0
+	}
+	if y1 >= height {
+		y1 = height - 1
+		fy = 0
+	}
+	if fx < 0 {
+		fx = 0
+	} else if fx > 1 {
+		fx = 1
+	}
+	if fy < 0 {
+		fy = 0
+	} else if fy > 1 {
+		fy = 1
+	}
+	wx := uint64(fx*256 + 0.5)
+	wy := uint64(fy*256 + 0.5)
+	if wx > 256 {
+		wx = 256
+	}
+	if wy > 256 {
+		wy = 256
+	}
+	ix, iy := uint64(256)-wx, uint64(256)-wy
+	w00, w10 := ix*iy, wx*iy
+	w01, w11 := ix*wy, wx*wy
+	i00 := (y0*width + x0) * 4
+	i10 := (y0*width + x1) * 4
+	i01 := (y1*width + x0) * 4
+	i11 := (y1*width + x1) * 4
+	a00, a10 := uint64(source[i00+3]), uint64(source[i10+3])
+	a01, a11 := uint64(source[i01+3]), uint64(source[i11+3])
+	alpha := a00*w00 + a10*w10 + a01*w01 + a11*w11
+	sample.alpha = uint32((alpha + 32768) / 65536)
+	if alpha == 0 {
+		return sample
+	}
+	var red, green, blue uint64
+	if len(premultiplied) == len(source) {
+		red = uint64(premultiplied[i00])*w00 +
+			uint64(premultiplied[i10])*w10 +
+			uint64(premultiplied[i01])*w01 +
+			uint64(premultiplied[i11])*w11
+		green = uint64(premultiplied[i00+1])*w00 +
+			uint64(premultiplied[i10+1])*w10 +
+			uint64(premultiplied[i01+1])*w01 +
+			uint64(premultiplied[i11+1])*w11
+		blue = uint64(premultiplied[i00+2])*w00 +
+			uint64(premultiplied[i10+2])*w10 +
+			uint64(premultiplied[i01+2])*w01 +
+			uint64(premultiplied[i11+2])*w11
+	} else {
+		red = uint64(source[i00])*a00/255*w00 +
+			uint64(source[i10])*a10/255*w10 +
+			uint64(source[i01])*a01/255*w01 +
+			uint64(source[i11])*a11/255*w11
+		green = uint64(source[i00+1])*a00/255*w00 +
+			uint64(source[i10+1])*a10/255*w10 +
+			uint64(source[i01+1])*a01/255*w01 +
+			uint64(source[i11+1])*a11/255*w11
+		blue = uint64(source[i00+2])*a00/255*w00 +
+			uint64(source[i10+2])*a10/255*w10 +
+			uint64(source[i01+2])*a01/255*w01 +
+			uint64(source[i11+2])*a11/255*w11
+	}
+	sample.red = uint32((red + 32768) / 65536)
+	sample.green = uint32((green + 32768) / 65536)
+	sample.blue = uint32((blue + 32768) / 65536)
+	return sample
+}
+
+func blendMotionImage(dst []byte, width, height int, src *assets.Image, originX, originY float64, filter int64, premultiplied []byte, opaque bool, ctx motionRenderContext) error {
 	matrix := ctx.matrix
 	determinant := matrix.a*matrix.d - matrix.b*matrix.c
 	if math.Abs(determinant) < 1e-9 {
@@ -520,11 +714,46 @@ func blendMotionImage(dst []byte, width, height int, src *assets.Image, originX,
 	}
 	centerX := float64(width)/2 + ctx.x
 	centerY := float64(height)/2 + ctx.y
+	if matrix.a == 1 && matrix.b == 0 && matrix.c == 0 && matrix.d == 1 {
+		offsetXFloat := centerX - originX
+		offsetYFloat := centerY - originY
+		offsetX, offsetY := int(math.Round(offsetXFloat)), int(math.Round(offsetYFloat))
+		if offsetXFloat == float64(offsetX) && offsetYFloat == float64(offsetY) {
+			sourceLeft := maxInt(0, -offsetX)
+			sourceTop := maxInt(0, -offsetY)
+			sourceRight := minInt(int(src.Width), width-offsetX)
+			sourceBottom := minInt(int(src.Height), height-offsetY)
+			if sourceLeft < sourceRight && sourceTop < sourceBottom {
+				if opaque && ctx.opacity == 255 {
+					rowPixels := sourceRight - sourceLeft
+					for sourceY := sourceTop; sourceY < sourceBottom; sourceY++ {
+						sourceRow := src.RGBA[(sourceY*int(src.Width)+sourceLeft)*4:]
+						destinationRow := dst[((sourceY+offsetY)*width+sourceLeft+offsetX)*4:]
+						copy(destinationRow[:rowPixels*4], sourceRow[:rowPixels*4])
+					}
+					return nil
+				}
+				for sourceY := sourceTop; sourceY < sourceBottom; sourceY++ {
+					sourceRow := src.RGBA[(sourceY*int(src.Width)+sourceLeft)*4:]
+					destinationRow := dst[((sourceY+offsetY)*width+sourceLeft+offsetX)*4:]
+					for sourceX := range sourceRight - sourceLeft {
+						sourcePixel := sourceRow[sourceX*4:]
+						if sourcePixel[3] == 0 || ctx.opacity == 0 {
+							continue
+						}
+						alpha := uint16(sourcePixel[3]) * uint16(ctx.opacity) / 255
+						blendMotionPixel(destinationRow[sourceX*4:], sourcePixel, uint8(alpha))
+					}
+				}
+				return nil
+			}
+		}
+	}
 	corners := [][2]float64{
-		{-originX, -originY},
-		{float64(src.Width) - originX, -originY},
-		{float64(src.Width) - originX, float64(src.Height) - originY},
-		{-originX, float64(src.Height) - originY},
+		{-0.5 - originX, -0.5 - originY},
+		{float64(src.Width) - 0.5 - originX, -0.5 - originY},
+		{float64(src.Width) - 0.5 - originX, float64(src.Height) - 0.5 - originY},
+		{-0.5 - originX, float64(src.Height) - 0.5 - originY},
 	}
 	minX, minY := math.Inf(1), math.Inf(1)
 	maxX, maxY := math.Inf(-1), math.Inf(-1)
@@ -546,27 +775,71 @@ func blendMotionImage(dst []byte, width, height int, src *assets.Image, originX,
 		c: -matrix.c / determinant,
 		d: matrix.a / determinant,
 	}
+	rows := bottom - top
+	workers := 1
+	if rows >= 96 {
+		workers = min(goruntime.GOMAXPROCS(0), rows/48)
+	}
+	if workers <= 1 {
+		blendMotionImageRows(dst, width, src, left, top, right, bottom, filter, premultiplied, ctx, inverse, centerX, centerY, originX, originY)
+		return nil
+	}
+	var wait sync.WaitGroup
+	wait.Add(workers)
+	for worker := 0; worker < workers; worker++ {
+		rowStart := top + rows*worker/workers
+		rowEnd := top + rows*(worker+1)/workers
+		go func() {
+			defer wait.Done()
+			blendMotionImageRows(dst, width, src, left, rowStart, right, rowEnd, filter, premultiplied, ctx, inverse, centerX, centerY, originX, originY)
+		}()
+	}
+	wait.Wait()
+	return nil
+}
+
+func blendMotionImageRows(dst []byte, width int, src *assets.Image, left, top, right, bottom int, filter int64, premultiplied []byte, ctx motionRenderContext, inverse motionMatrix, centerX, centerY, originX, originY float64) {
+	xStart := float64(left) - centerX
+	baseSourceX := inverse.a*xStart + originX
+	baseSourceY := inverse.c*xStart + originY
 	for destY := top; destY < bottom; destY++ {
+		deltaY := float64(destY) - centerY
+		sourceX := baseSourceX + inverse.b*deltaY
+		sourceY := baseSourceY + inverse.d*deltaY
 		for destX := left; destX < right; destX++ {
-			deltaX := float64(destX) - centerX
-			deltaY := float64(destY) - centerY
-			sourceX := inverse.a*deltaX + inverse.b*deltaY + originX
-			sourceY := inverse.c*deltaX + inverse.d*deltaY + originY
-			sourceIX := int(math.Floor(sourceX))
-			sourceIY := int(math.Floor(sourceY))
-			if sourceIX < 0 || sourceIX >= int(src.Width) || sourceIY < 0 || sourceIY >= int(src.Height) {
-				continue
+			if sourceX >= -0.5 && sourceX < float64(src.Width)-0.5 &&
+				sourceY >= -0.5 && sourceY < float64(src.Height)-0.5 {
+				dstPixel := dst[(destY*width+destX)*4:]
+				if filter == 0 {
+					var pixel [4]byte
+					sourceIX := int(math.Floor(sourceX + 0.5))
+					sourceIY := int(math.Floor(sourceY + 0.5))
+					if sourceIX < 0 {
+						sourceIX = 0
+					} else if sourceIX >= int(src.Width) {
+						sourceIX = int(src.Width) - 1
+					}
+					if sourceIY < 0 {
+						sourceIY = 0
+					} else if sourceIY >= int(src.Height) {
+						sourceIY = int(src.Height) - 1
+					}
+					copy(pixel[:], src.RGBA[(sourceIY*int(src.Width)+sourceIX)*4:])
+					if pixel[3] != 0 && ctx.opacity != 0 {
+						alpha := uint16(pixel[3]) * uint16(ctx.opacity) / 255
+						blendMotionPixel(dstPixel, pixel[:], uint8(alpha))
+					}
+				} else {
+					sample := motionBilinearPremult(src.RGBA, premultiplied, int(src.Width), int(src.Height), sourceX, sourceY)
+					if sample.alpha != 0 && ctx.opacity != 0 {
+						blendMotionPremultPixel(dstPixel, sample, ctx.opacity)
+					}
+				}
 			}
-			pixel := src.RGBA[(sourceIY*int(src.Width)+sourceIX)*4:]
-			if pixel[3] == 0 || ctx.opacity == 0 {
-				continue
-			}
-			alpha := uint16(pixel[3]) * uint16(ctx.opacity) / 255
-			dstPixel := dst[(destY*width+destX)*4:]
-			blendMotionPixel(dstPixel, pixel, uint8(alpha))
+			sourceX += inverse.a
+			sourceY += inverse.c
 		}
 	}
-	return nil
 }
 
 func maxInt(a, b int) int {
@@ -592,6 +865,29 @@ func blendMotionPixel(dst, src []byte, alpha uint8) {
 		dst[i] = uint8(value / outA)
 	}
 	dst[3] = uint8(outA)
+}
+func blendMotionPremultPixel(dst []byte, sample motionPremultSample, opacity uint8) {
+	srcA := sample.alpha * uint32(opacity) / 255
+	if srcA == 0 {
+		return
+	}
+	srcR := sample.red * uint32(opacity) / 255
+	srcG := sample.green * uint32(opacity) / 255
+	srcB := sample.blue * uint32(opacity) / 255
+	if srcA == 255 {
+		dst[0], dst[1], dst[2], dst[3] = byte(srcR), byte(srcG), byte(srcB), 255
+		return
+	}
+	dstA := uint32(dst[3])
+	inverse := 255 - srcA
+	outA := srcA + dstA*inverse/255
+	if outA == 0 {
+		return
+	}
+	dst[0] = byte((srcR*255 + uint32(dst[0])*dstA*inverse/255) / outA)
+	dst[1] = byte((srcG*255 + uint32(dst[1])*dstA*inverse/255) / outA)
+	dst[2] = byte((srcB*255 + uint32(dst[2])*dstA*inverse/255) / outA)
+	dst[3] = byte(outA)
 }
 
 func psbMotionString(value assets.Value, key string) string {
@@ -649,7 +945,7 @@ func identityMotionDrawMatrix() motionDrawMatrix { return motionDrawMatrix{a: 1,
 // drawMotionCanvasInto composites the rendered motion canvas into an existing
 // layer bitmap. Destination pixels sample the source, so scaled transforms stay
 // gap-free; rotation and shearing are supported through the inverse transform.
-func drawMotionCanvasInto(layer *Layer, frame *assets.Image, matrix motionDrawMatrix) {
+func drawMotionCanvasInto(layer *Layer, frame *assets.Image, matrix motionDrawMatrix, filter int64) {
 	width, height := int(layer.ImageWidth), int(layer.ImageHeight)
 	canvasWidth, canvasHeight := int(frame.Width), int(frame.Height)
 	if width <= 0 || height <= 0 || canvasWidth <= 0 || canvasHeight <= 0 {
@@ -662,11 +958,45 @@ func drawMotionCanvasInto(layer *Layer, frame *assets.Image, matrix motionDrawMa
 	if det == 0 || math.IsNaN(det) || math.IsInf(det, 0) {
 		return
 	}
-	originX, originY := float64(canvasWidth-1)/2, float64(canvasHeight-1)/2
+	originX, originY := float64(canvasWidth)/2, float64(canvasHeight)/2
+	if matrix.a == 1 && matrix.b == 0 && matrix.c == 0 && matrix.d == 1 {
+		offsetXFloat, offsetYFloat := matrix.tx-originX, matrix.ty-originY
+		offsetX, offsetY := int(math.Round(offsetXFloat)), int(math.Round(offsetYFloat))
+		if offsetXFloat == float64(offsetX) && offsetYFloat == float64(offsetY) {
+			sourceLeft := max(0, -offsetX)
+			sourceTop := max(0, -offsetY)
+			sourceRight := min(canvasWidth, width-offsetX)
+			sourceBottom := min(canvasHeight, height-offsetY)
+			if sourceLeft < sourceRight && sourceTop < sourceBottom {
+				opaque := true
+				for sourceY := sourceTop; sourceY < sourceBottom && opaque; sourceY++ {
+					for sourceX := sourceLeft; sourceX < sourceRight; sourceX++ {
+						if frame.RGBA[(sourceY*canvasWidth+sourceX)*4+3] != 255 {
+							opaque = false
+							break
+						}
+					}
+				}
+				for sourceY := sourceTop; sourceY < sourceBottom; sourceY++ {
+					sourceRow := frame.RGBA[(sourceY*canvasWidth+sourceLeft)*4:]
+					destinationRow := layer.RGBA[((sourceY+offsetY)*width+sourceLeft+offsetX)*4:]
+					rowPixels := sourceRight - sourceLeft
+					if opaque {
+						copy(destinationRow[:rowPixels*4], sourceRow[:rowPixels*4])
+						continue
+					}
+					for sourceX := range rowPixels {
+						blendMotionPixels(destinationRow[sourceX*4:], sourceRow[sourceX*4:])
+					}
+				}
+				return
+			}
+		}
+	}
 	left, top := math.Inf(1), math.Inf(1)
 	right, bottom := math.Inf(-1), math.Inf(-1)
-	for _, cornerX := range [2]float64{-originX, float64(canvasWidth-1) - originX} {
-		for _, cornerY := range [2]float64{-originY, float64(canvasHeight-1) - originY} {
+	for _, cornerX := range [2]float64{-originX - 0.5, float64(canvasWidth) - 0.5 - originX} {
+		for _, cornerY := range [2]float64{-originY - 0.5, float64(canvasHeight) - 0.5 - originY} {
 			x := matrix.a*cornerX + matrix.b*cornerY + matrix.tx
 			y := matrix.c*cornerX + matrix.d*cornerY + matrix.ty
 			left, top = math.Min(left, x), math.Min(top, y)
@@ -677,16 +1007,67 @@ func drawMotionCanvasInto(layer *Layer, frame *assets.Image, matrix motionDrawMa
 	startY := max(int(math.Floor(top)), 0)
 	endX := min(int(math.Ceil(right)), width-1)
 	endY := min(int(math.Ceil(bottom)), height-1)
+	inverse := motionMatrix{
+		a: matrix.d / det,
+		b: -matrix.b / det,
+		c: -matrix.c / det,
+		d: matrix.a / det,
+	}
+	rows := endY - startY + 1
+	workers := 1
+	if rows >= 96 {
+		workers = min(goruntime.GOMAXPROCS(0), rows/48)
+	}
+	if workers <= 1 {
+		drawMotionCanvasRows(layer.RGBA, width, frame.RGBA, canvasWidth, startX, startY, endX, endY, filter, inverse, matrix, originX, originY)
+		return
+	}
+	var wait sync.WaitGroup
+	wait.Add(workers)
+	for worker := 0; worker < workers; worker++ {
+		rowStart := startY + rows*worker/workers
+		rowEnd := startY + rows*(worker+1)/workers - 1
+		go func() {
+			defer wait.Done()
+			drawMotionCanvasRows(layer.RGBA, width, frame.RGBA, canvasWidth, startX, rowStart, endX, rowEnd, filter, inverse, matrix, originX, originY)
+		}()
+	}
+	wait.Wait()
+}
+
+func drawMotionCanvasRows(destination []byte, destinationWidth int, source []byte, sourceWidth, startX, startY, endX, endY int, filter int64, inverse motionMatrix, matrix motionDrawMatrix, originX, originY float64) {
+	sourceHeight := len(source) / (sourceWidth * 4)
+	stepX, stepY := inverse.a, inverse.c
 	for destY := startY; destY <= endY; destY++ {
 		centerY := float64(destY) - matrix.ty
+		centerX := float64(startX) - matrix.tx
+		sourceX := inverse.a*centerX + inverse.b*centerY + originX
+		sourceY := inverse.c*centerX + inverse.d*centerY + originY
 		for destX := startX; destX <= endX; destX++ {
-			centerX := float64(destX) - matrix.tx
-			sourceX := int(math.Round((matrix.d*centerX-matrix.b*centerY)/det + originX))
-			sourceY := int(math.Round((matrix.a*centerY-matrix.c*centerX)/det + originY))
-			if sourceX < 0 || sourceY < 0 || sourceX >= canvasWidth || sourceY >= canvasHeight {
-				continue
+			if sourceX >= -0.5 && sourceX < float64(sourceWidth)-0.5 &&
+				sourceY >= -0.5 && sourceY < float64(sourceHeight)-0.5 {
+				var pixel [4]byte
+				if filter == 0 {
+					sourceIX := int(math.Floor(sourceX + 0.5))
+					sourceIY := int(math.Floor(sourceY + 0.5))
+					if sourceIX < 0 {
+						sourceIX = 0
+					} else if sourceIX >= sourceWidth {
+						sourceIX = sourceWidth - 1
+					}
+					if sourceIY < 0 {
+						sourceIY = 0
+					} else if sourceIY >= sourceHeight {
+						sourceIY = sourceHeight - 1
+					}
+					copy(pixel[:], source[(sourceIY*sourceWidth+sourceIX)*4:])
+				} else {
+					pixel = motionBilinearRGBA(source, nil, sourceWidth, sourceHeight, sourceX, sourceY)
+				}
+				blendMotionPixels(destination[(destY*destinationWidth+destX)*4:], pixel[:])
 			}
-			blendMotionPixels(layer.RGBA[(destY*width+destX)*4:], frame.RGBA[(sourceY*canvasWidth+sourceX)*4:])
+			sourceX += stepX
+			sourceY += stepY
 		}
 	}
 }

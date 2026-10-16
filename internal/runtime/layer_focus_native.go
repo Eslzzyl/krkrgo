@@ -186,6 +186,7 @@ func (s *Services) layerSetMode(vm *tjs.VM, layer *Layer, budget *uint64) error 
 	root := layerTreeRoot(layer)
 	before := layerEnabledSnapshot(s, window, root)
 	layer.Visible = true
+	layer.markRenderDirty()
 	var result error
 	if len(window.modalLayers) != 0 {
 		current := s.Layer(tjs.ObjectID(window.modalLayers[len(window.modalLayers)-1]))

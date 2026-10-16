@@ -16,21 +16,25 @@ type RenderPlan struct {
 	StateHashStable bool
 }
 type RenderNode struct {
-	ID                                           LayerID
-	Bounds                                       Rect
-	Opacity                                      uint8
-	Visible                                      bool
-	TransitionHidden                             bool
-	Type                                         LayerType
-	Hit                                          HitType
-	HoldAlpha                                    bool
-	ImageWidth, ImageHeight, ImageLeft, ImageTop int32
-	RGBA                                         []byte
-	ImageHash                                    uint64
-	Clip                                         Rect
-	ClipSet                                      bool
-	ChildStart, ChildCount                       int
-	Transition                                   *RenderTransition
+	ID                                                      LayerID
+	Bounds                                                  Rect
+	Opacity                                                 uint8
+	Visible                                                 bool
+	TransitionHidden                                        bool
+	Type                                                    LayerType
+	Hit                                                     HitType
+	HoldAlpha                                               bool
+	ImageWidth, ImageHeight, ImageLeft, ImageTop            int32
+	RGBA                                                    []byte
+	ImageHash                                               uint64
+	GPUStretch                                              bool
+	GPUStretchSourceWidth, GPUStretchSourceHeight           int32
+	GPUStretchDestinationWidth, GPUStretchDestinationHeight int32
+	gpuStretchSourceBitmap                                  *Bitmap
+	Clip                                                    Rect
+	ClipSet                                                 bool
+	ChildStart, ChildCount                                  int
+	Transition                                              *RenderTransition
 }
 type RenderTransition struct {
 	Method                                RenderTransitionMethod
@@ -48,6 +52,21 @@ const (
 	RenderTransitionCrossfade RenderTransitionMethod = iota
 	RenderTransitionUniversal
 )
+
+func renderPlanImageRevision(layer *Layer) uint64 {
+	if layer == nil {
+		return 1
+	}
+	if pending := layer.gpuStretch; pending != nil {
+		if pending.sourceLayer != nil {
+			return pending.sourceLayer.renderImageRevision()
+		}
+		if pending.sourceBitmap != nil {
+			return pending.sourceBitmap.imageRevision()
+		}
+	}
+	return layer.renderImageRevision()
+}
 
 // CaptureRenderPlan returns a borrowed, backend-neutral view of the current tree.
 func (s *Services) CaptureRenderPlan() (RenderPlan, error) {
@@ -82,7 +101,7 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 	}
 	c := s.Compositor
 	if c.Root != nil {
-		if err := validateTree(c.Root, nil); err != nil {
+		if err := s.validateRootTree(c.Root); err != nil {
 			return p, err
 		}
 	}
@@ -115,7 +134,7 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		rgba, province, transition uint64
 	}
 	writeLayerState := func(layer *Layer, visible bool, hashes renderHashes) {
-		var values [25]uint64
+		var values [34]uint64
 		values[0] = 1
 		values[1] = uint64(uint32(layer.Bounds.X))
 		values[2] = uint64(uint32(layer.Bounds.Y))
@@ -141,6 +160,17 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		values[22] = uint64(len(layer.RGBA))
 		values[23] = uint64(len(layer.Province))
 		values[24] = uint64(len(layer.transitionPixels))
+		if layer.gpuStretch != nil {
+			values[25] = 1
+			values[26] = uint64(uint32(layer.gpuStretch.sourceWidth))
+			values[27] = uint64(uint32(layer.gpuStretch.sourceHeight))
+			values[28] = uint64(uint32(layer.gpuStretch.destinationWidth))
+			values[29] = uint64(uint32(layer.gpuStretch.destinationHeight))
+			values[30] = uint64(uint32(layer.gpuStretch.stretchType))
+		}
+		values[31] = layer.renderImageRevision()
+		values[32] = uint64(uint32(layer.Face))
+		values[33] = boolUint64(layer.HoldAlpha)
 		var encoded [len(values) * 8]byte
 		for i, value := range values {
 			binary.LittleEndian.PutUint64(encoded[i*8:], value)
@@ -199,10 +229,33 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		n.ImageTop = l.ImageTop
 		n.RGBA = l.RGBA
 		hashes := renderHashes{}
+		if l.gpuStretch != nil && len(l.transitionPixels) == 0 {
+			pending := l.gpuStretch
+			if len(pending.sourcePixels) != 0 &&
+				l.Bounds.Width == pending.destinationWidth &&
+				l.Bounds.Height == pending.destinationHeight {
+				n.GPUStretch = true
+				n.GPUStretchSourceWidth = pending.sourceWidth
+				n.GPUStretchSourceHeight = pending.sourceHeight
+				n.GPUStretchDestinationWidth = pending.destinationWidth
+				n.GPUStretchDestinationHeight = pending.destinationHeight
+				n.RGBA = pending.sourcePixels
+			} else {
+				if err := l.materializeGPUStretch(); err != nil {
+					return -1, err
+				}
+				n.RGBA = l.RGBA
+			}
+			n.gpuStretchSourceBitmap = pending.sourceBitmap
+		}
 		transitionHashCached := l.transitionHashesValid && l.inTransition &&
 			(l.transitionMethod == "crossfade" || l.transitionMethod == "universal")
 		if len(l.transitionPixels) == 0 {
-			hashes.rgba = hashBytes(l.RGBA)
+			if s.gpuCapture {
+				hashes.rgba = renderPlanImageRevision(l)
+			} else {
+				hashes.rgba = hashBytes(n.RGBA)
+			}
 			n.ImageHash = hashes.rgba
 		} else {
 			if !transitionHashCached {
@@ -261,7 +314,11 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		}
 		visible := ancestorsVisible && !l.transitionHidden && l.Visible && l.Opacity != 0
 		if visible {
-			hashes.province = hashBytes(l.Province)
+			if s.gpuCapture {
+				hashes.province = renderPlanImageRevision(l)
+			} else {
+				hashes.province = hashBytes(l.Province)
+			}
 		}
 		childTarget := l.Type
 		if childTarget == LayerBinder {

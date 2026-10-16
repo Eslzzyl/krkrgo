@@ -57,6 +57,11 @@ func KeyUp(key, shift int32) InputEvent { return InputEvent{Kind: InputKeyUp, Ke
 func TextInput(text string) InputEvent  { return InputEvent{Kind: InputText, Text: text} }
 
 // Session owns one VM, its host services, and the shared execution budget.
+type gpuPlanBitmapDependency struct {
+	bitmap   *Bitmap
+	revision uint64
+}
+
 type Session struct {
 	VM                           *tjs.VM
 	Services                     *Services
@@ -74,6 +79,13 @@ type Session struct {
 	soundScratch                 map[tjs.ObjectID]*WaveSoundBuffer
 	gpuCapture                   bool
 	gpuPlan                      RenderPlan
+	gpuPlanCacheValid            bool
+	gpuPlanCacheRoot             *Layer
+	gpuPlanCacheRevision         uint64
+	gpuPlanCacheWidth            int32
+	gpuPlanCacheHeight           int32
+	gpuPlanCacheBackground       [4]uint8
+	gpuPlanCacheBitmaps          []gpuPlanBitmapDependency
 }
 
 func NewSession(services *Services, budget uint64) *Session {
@@ -1075,6 +1087,17 @@ func (s *Session) TickWithFrameSink(timeMS uint64, sink func(uint64, FrameSnapsh
 // frame before exchanging completed transition trees or invoking callbacks.
 // The returned frame uses the borrowed presentation buffer contract.
 func (s *Session) TickForPresentation(timeMS uint64) (FrameSnapshot, error) {
+	return s.tickForPresentation(timeMS, nil)
+}
+
+// TickForPresentationWithAudioDelta keeps logical script time deterministic
+// while allowing a real-time host to request the audio duration elapsed since
+// its previous update.
+func (s *Session) TickForPresentationWithAudioDelta(timeMS, audioMilliseconds uint64) (FrameSnapshot, error) {
+	return s.tickForPresentation(timeMS, &audioMilliseconds)
+}
+
+func (s *Session) tickForPresentation(timeMS uint64, audioMilliseconds *uint64) (FrameSnapshot, error) {
 	if err := s.checkOpen(); err != nil {
 		return FrameSnapshot{}, err
 	}
@@ -1083,10 +1106,14 @@ func (s *Session) TickForPresentation(timeMS uint64) (FrameSnapshot, error) {
 		return FrameSnapshot{}, ErrClockBackwards
 	}
 	delta := timeMS - s.Services.TimeMS
-	if delta > uint64(MaxAudioBlockFrames/48) {
+	mixDelta := delta
+	if audioMilliseconds != nil {
+		mixDelta = *audioMilliseconds
+	}
+	if delta > uint64(MaxAudioBlockFrames/48) || mixDelta > uint64(MaxAudioBlockFrames/48) {
 		return FrameSnapshot{}, fmt.Errorf("audio tick exceeds frame limit")
 	}
-	profile := os.Getenv("KRKRGO_RENDER_STATS") != ""
+	profile := os.Getenv("KRKRGO_RENDER_STATS") != "" || StallTraceEnabled()
 	tickStarted := time.Time{}
 	var mixerTime, advanceTime, dispatchTime, transitionTime, captureTime, completionTime time.Duration
 	if profile {
@@ -1119,7 +1146,7 @@ func (s *Session) TickForPresentation(timeMS uint64) (FrameSnapshot, error) {
 		advanceTime = time.Since(stageStarted)
 		stageStarted = time.Now()
 	}
-	out, err := s.Services.AudioMixer.MixMilliseconds(delta)
+	out, err := s.Services.AudioMixer.MixMilliseconds(mixDelta)
 	if profile {
 		mixerTime = time.Since(stageStarted)
 	}
@@ -1183,7 +1210,11 @@ func (s *Session) TickForPresentation(timeMS uint64) (FrameSnapshot, error) {
 	if profile {
 		completionTime = time.Since(stageStarted)
 		elapsed := time.Since(tickStarted)
-		if elapsed >= 20*time.Millisecond {
+		threshold := 20 * time.Millisecond
+		if StallTraceEnabled() {
+			threshold = StallTraceThreshold()
+		}
+		if elapsed >= threshold {
 			log.Printf("krkrgo runtime tick stages: elapsed=%s audio_mix=%s advance_clock=%s dispatch_events=%s layer_transitions=%s capture_frame=%s transition_completion=%s",
 				elapsed, mixerTime, advanceTime, dispatchTime, transitionTime, captureTime, completionTime)
 		}
@@ -1196,13 +1227,23 @@ func (s *Session) TickForPresentation(timeMS uint64) (FrameSnapshot, error) {
 // TickForGPUPresentation advances the session using the same deterministic
 // tick ordering as CPU presentation and returns a borrowed render plan.
 func (s *Session) TickForGPUPresentation(timeMS uint64) (RenderPlan, error) {
-	s.gpuPlan = RenderPlan{
-		Nodes:        s.gpuPlan.Nodes[:0],
-		ChildIndices: s.gpuPlan.ChildIndices[:0],
-	}
+	return s.tickForGPUPresentation(timeMS, nil)
+}
+
+// TickForGPUPresentationWithAudioDelta keeps logical script time deterministic
+// while allowing a real-time host to request the elapsed audio duration.
+func (s *Session) TickForGPUPresentationWithAudioDelta(timeMS, audioMilliseconds uint64) (RenderPlan, error) {
+	return s.tickForGPUPresentation(timeMS, &audioMilliseconds)
+}
+
+func (s *Session) tickForGPUPresentation(timeMS uint64, audioMilliseconds *uint64) (RenderPlan, error) {
 	s.gpuCapture = true
-	defer func() { s.gpuCapture = false }()
-	if _, err := s.TickForPresentation(timeMS); err != nil {
+	s.Services.gpuCapture = true
+	defer func() {
+		s.gpuCapture = false
+		s.Services.gpuCapture = false
+	}()
+	if _, err := s.tickForPresentation(timeMS, audioMilliseconds); err != nil {
 		return RenderPlan{}, err
 	}
 	return s.gpuPlan, nil
@@ -1641,6 +1682,58 @@ func (s *Session) captureFrame() (FrameSnapshot, error) {
 	return s.captureFrameFor(false, false)
 }
 
+func (s *Session) gpuPlanReusable() bool {
+	if s == nil || s.Services == nil || s.Services.Compositor == nil {
+		return false
+	}
+	root := s.Services.Compositor.Root
+	if root == nil || !s.gpuPlanCacheValid || s.gpuPlanCacheRoot != root ||
+		s.gpuPlanCacheRevision != root.subtreeRevision ||
+		s.gpuPlanCacheWidth != s.Services.Compositor.Width ||
+		s.gpuPlanCacheHeight != s.Services.Compositor.Height ||
+		s.gpuPlanCacheBackground != s.Services.Compositor.Background {
+		return false
+	}
+	for _, dependency := range s.gpuPlanCacheBitmaps {
+		if dependency.bitmap == nil || dependency.bitmap.imageRevision() != dependency.revision {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Session) rememberGPUPlanCache() {
+	root := s.Services.Compositor.Root
+	s.gpuPlanCacheValid = root != nil
+	s.gpuPlanCacheRoot = root
+	s.gpuPlanCacheBitmaps = s.gpuPlanCacheBitmaps[:0]
+	if root == nil {
+		return
+	}
+	s.gpuPlanCacheRevision = root.subtreeRevision
+	s.gpuPlanCacheWidth = s.Services.Compositor.Width
+	s.gpuPlanCacheHeight = s.Services.Compositor.Height
+	s.gpuPlanCacheBackground = s.Services.Compositor.Background
+	for _, node := range s.gpuPlan.Nodes {
+		bitmap := node.gpuStretchSourceBitmap
+		if bitmap == nil {
+			continue
+		}
+		known := false
+		for _, dependency := range s.gpuPlanCacheBitmaps {
+			if dependency.bitmap == bitmap {
+				known = true
+				break
+			}
+		}
+		if !known {
+			s.gpuPlanCacheBitmaps = append(s.gpuPlanCacheBitmaps, gpuPlanBitmapDependency{
+				bitmap: bitmap, revision: bitmap.imageRevision(),
+			})
+		}
+	}
+}
+
 func (s *Session) captureFrameFor(forPresentation, borrowed bool) (FrameSnapshot, error) {
 	s.Services.mu.Lock()
 	ids := s.Services.pendingPaintIDs
@@ -1669,11 +1762,20 @@ func (s *Session) captureFrameFor(forPresentation, borrowed bool) (FrameSnapshot
 		}
 	}
 	if s.gpuCapture {
+		if s.gpuPlanReusable() {
+			s.gpuPlan.StateHashStable = true
+			return FrameSnapshot{}, nil
+		}
+		s.gpuPlan = RenderPlan{
+			Nodes:        s.gpuPlan.Nodes[:0],
+			ChildIndices: s.gpuPlan.ChildIndices[:0],
+		}
 		plan, err := s.Services.captureRenderPlanInto(&s.gpuPlan)
 		if err != nil {
 			return FrameSnapshot{}, err
 		}
 		s.gpuPlan = plan
+		s.rememberGPUPlanCache()
 		return FrameSnapshot{}, nil
 	}
 	if forPresentation {

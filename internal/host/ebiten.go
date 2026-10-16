@@ -36,6 +36,8 @@ type Game struct {
 	poller               InputPoller
 	runtimeEvents        []runtime.InputEvent
 	audioOutput          *AudioOutput
+	audioClock           time.Time
+	audioClockRemainder  time.Duration
 	timeMS               uint64
 	windowID             uint64
 	resizeWindow         func(int, int)
@@ -64,7 +66,9 @@ type Game struct {
 // renderStats is opt-in to keep clock reads and logging out of normal runs.
 type renderStats struct {
 	enabled          bool
+	stallTrace       bool
 	started          time.Time
+	lastUpdateStart  time.Time
 	updates          int
 	changedFrames    int
 	draws            int
@@ -126,7 +130,15 @@ func (s *renderStats) recordSubImage(duration time.Duration) {
 	s.subImageCalls++
 }
 
-func (s *renderStats) recordUpdate(serial uint64, changedPixels, totalPixels int, update, tick, audio, capture, upload time.Duration) {
+func (s *renderStats) recordUpdate(serial, logicalMS uint64, changedPixels, totalPixels int, updateStarted time.Time, update, tick, audio, capture, upload time.Duration) {
+	if s.stallTrace {
+		frameInterval := time.Duration(0)
+		if !s.lastUpdateStart.IsZero() {
+			frameInterval = updateStarted.Sub(s.lastUpdateStart)
+		}
+		runtime.TraceStallFrame(serial, logicalMS, frameInterval, update, tick, audio, upload)
+		s.lastUpdateStart = updateStarted
+	}
 	s.updates++
 	s.serial = serial
 	if changedPixels > 0 {
@@ -169,11 +181,21 @@ func (s *renderStats) subImage(target *ebiten.Image, bounds image.Rectangle) *eb
 
 func (s *renderStats) recordDraw(serial uint64, draw time.Duration) {
 	now := time.Now()
+	var interval time.Duration
+	if !s.lastDrawAt.IsZero() {
+		interval = now.Sub(s.lastDrawAt)
+	}
+	if s.stallTrace {
+		runtime.TraceStallDraw(serial, interval, draw)
+	}
+	s.lastDrawAt = now
+	if !s.enabled {
+		return
+	}
 	if s.started.IsZero() {
 		s.started = now
 	}
-	if !s.lastDrawAt.IsZero() {
-		interval := now.Sub(s.lastDrawAt)
+	if interval != 0 {
 		s.drawInterval += interval
 		s.drawIntervals++
 		if s.minDrawInterval == 0 || interval < s.minDrawInterval {
@@ -183,7 +205,6 @@ func (s *renderStats) recordDraw(serial uint64, draw time.Duration) {
 			s.maxDrawInterval = interval
 		}
 	}
-	s.lastDrawAt = now
 	s.draws++
 	s.draw += draw
 	if serial == 0 {
@@ -285,6 +306,7 @@ func newGameWithRenderer(session *runtime.Session, mode rendererMode) *Game {
 		rendererMode:  mode,
 	}
 	game.renderStats.enabled = os.Getenv("KRKRGO_RENDER_STATS") == "1"
+	game.renderStats.stallTrace = runtime.StallTraceEnabled()
 	if session != nil && session.Services != nil {
 		game.windowID = session.Services.MainWindow
 	}
@@ -320,10 +342,14 @@ func (g *Game) Update() error {
 	}
 
 	statsEnabled := g.renderStats.enabled
+	traceEnabled := g.renderStats.stallTrace
+	timingEnabled := statsEnabled || traceEnabled
 	var updateStarted time.Time
-	if statsEnabled {
+	if timingEnabled {
 		updateStarted = time.Now()
-		g.renderStats.recordFirstUpdate(updateStarted)
+		if statsEnabled {
+			g.renderStats.recordFirstUpdate(updateStarted)
+		}
 	}
 	g.runtimeEvents = g.poller.PollRuntime(g.runtimeEvents[:0])
 	if g.windowID == 0 {
@@ -344,27 +370,49 @@ func (g *Game) Update() error {
 			g.gpu = nil
 		}
 	}
+	realtimeAudio := g.audioOutput != nil
+	audioDeltaMS := fixedTickMS
+	if realtimeAudio {
+		audioDeltaMS = g.audioDeltaMilliseconds(time.Now())
+		audioDeltaMS = g.limitAudioDeltaMilliseconds(audioDeltaMS)
+	}
 	var tickTime time.Duration
 	var captureTime time.Duration
 	var frame runtime.FrameSnapshot
 	var plan runtime.RenderPlan
 	var totalPixels int
 	if g.rendererMode == rendererGPU {
-		if statsEnabled {
+		if timingEnabled {
 			stageStarted := time.Now()
-			plan, err = g.session.TickForGPUPresentation(g.timeMS)
+			if realtimeAudio {
+				plan, err = g.session.TickForGPUPresentationWithAudioDelta(g.timeMS, audioDeltaMS)
+			} else {
+				plan, err = g.session.TickForGPUPresentation(g.timeMS)
+			}
 			tickTime = time.Since(stageStarted)
 		} else {
-			plan, err = g.session.TickForGPUPresentation(g.timeMS)
+			if realtimeAudio {
+				plan, err = g.session.TickForGPUPresentationWithAudioDelta(g.timeMS, audioDeltaMS)
+			} else {
+				plan, err = g.session.TickForGPUPresentation(g.timeMS)
+			}
 		}
 		totalPixels = int(plan.Width) * int(plan.Height)
 	} else {
-		if statsEnabled {
+		if timingEnabled {
 			stageStarted := time.Now()
-			frame, err = g.session.TickForPresentation(g.timeMS)
+			if realtimeAudio {
+				frame, err = g.session.TickForPresentationWithAudioDelta(g.timeMS, audioDeltaMS)
+			} else {
+				frame, err = g.session.TickForPresentation(g.timeMS)
+			}
 			tickTime = time.Since(stageStarted)
 		} else {
-			frame, err = g.session.TickForPresentation(g.timeMS)
+			if realtimeAudio {
+				frame, err = g.session.TickForPresentationWithAudioDelta(g.timeMS, audioDeltaMS)
+			} else {
+				frame, err = g.session.TickForPresentation(g.timeMS)
+			}
 		}
 		totalPixels = int(frame.Width) * int(frame.Height)
 	}
@@ -372,7 +420,7 @@ func (g *Game) Update() error {
 		return fmt.Errorf("runtime tick and capture: %w", err)
 	}
 	var audioTime time.Duration
-	if statsEnabled {
+	if timingEnabled {
 		stageStarted := time.Now()
 		err := g.deliverAudio()
 		audioTime = time.Since(stageStarted)
@@ -383,7 +431,7 @@ func (g *Game) Update() error {
 		return fmt.Errorf("audio output: %w", err)
 	}
 	var presentationTime time.Duration
-	if statsEnabled {
+	if timingEnabled {
 		stageStarted := time.Now()
 		if g.rendererMode == rendererGPU {
 			g.gpuImage, err = g.composeGPUPlan(plan)
@@ -409,10 +457,11 @@ func (g *Game) Update() error {
 	if err != nil {
 		return err
 	}
+	logicalMS := g.timeMS
 	g.timeMS += fixedTickMS
-	if statsEnabled {
+	if timingEnabled {
 		g.frameSerial++
-		g.renderStats.recordUpdate(g.frameSerial, g.presentationChanges, totalPixels, time.Since(updateStarted), tickTime, audioTime, captureTime, presentationTime)
+		g.renderStats.recordUpdate(g.frameSerial, logicalMS, g.presentationChanges, totalPixels, updateStarted, time.Since(updateStarted), tickTime, audioTime, captureTime, presentationTime)
 	}
 	return nil
 }
@@ -778,7 +827,7 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 }
 
 // Draw presents the latest runtime frame. Ebitengine applies Layout's logical
-// canvas scaling; no host-side stretching or second frame buffer is needed.
+// canvas scaling with linear sampling to keep fractional window scales smooth.
 func (g *Game) Draw(screen *ebiten.Image) {
 	if g == nil {
 		return
@@ -793,13 +842,16 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	if screen == nil || surface == nil {
 		return
 	}
-	if g.renderStats.enabled {
+	// The logical canvas is commonly presented at a fractional window scale.
+	// Linear sampling removes nearest-neighbor stair steps at that final scale.
+	options := &ebiten.DrawImageOptions{Filter: ebiten.FilterLinear}
+	if g.renderStats.enabled || g.renderStats.stallTrace {
 		started := time.Now()
-		screen.DrawImage(surface, nil)
+		screen.DrawImage(surface, options)
 		g.renderStats.recordDraw(g.frameSerial, time.Since(started))
 		return
 	}
-	screen.DrawImage(surface, nil)
+	screen.DrawImage(surface, options)
 }
 
 // Layout supplies the stable logical canvas dimensions. Runtime frame sizes

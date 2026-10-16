@@ -222,14 +222,50 @@ type Layer struct {
 	clipSet               bool
 	hitTestWork           bool
 	callOnPaint           bool
+	gpuStretch            *gpuStretchCopy
 	imageModified         bool
+	imageRevision         uint64
+	subtreeRevision       uint64
 	windowID              uint64
+}
+
+func (l *Layer) markRenderDirty() {
+	for current := l; current != nil; current = current.Parent {
+		current.subtreeRevision++
+	}
+}
+
+func (l *Layer) markImageDirty() {
+	if l == nil {
+		return
+	}
+	l.imageRevision++
+	l.markRenderDirty()
+}
+
+func (l *Layer) renderImageRevision() uint64 {
+	if l == nil || l.imageRevision == 0 {
+		return 1
+	}
+	return l.imageRevision
+}
+
+type gpuStretchCopy struct {
+	sourceLayer       *Layer
+	sourceBitmap      *Bitmap
+	sourcePixels      []byte
+	sourceWidth       int32
+	sourceHeight      int32
+	destinationWidth  int32
+	destinationHeight int32
+	stretchType       int32
 }
 
 // NewLayer constructs a layer with an immutable-by-convention stable ID.
 func NewLayer(id LayerID) *Layer {
 	return &Layer{ID: id, Opacity: 255, Visible: true, Enabled: true,
-		Type: LayerAlpha, Hit: HitMask, HitThreshold: 1, Face: 128}
+		Type: LayerAlpha, Hit: HitMask, HitThreshold: 1, Face: 128,
+		imageRevision: 1, subtreeRevision: 1}
 }
 
 func NewRootLayer(id LayerID, width, height int32) *Layer {
@@ -273,6 +309,7 @@ func (l *Layer) AddChild(child *Layer) error {
 	}
 	l.children = append(l.children, child)
 	child.Parent = l
+	l.markRenderDirty()
 	return nil
 }
 
@@ -286,6 +323,7 @@ func (l *Layer) RemoveChild(child *Layer) error {
 			l.children[len(l.children)-1] = nil
 			l.children = l.children[:len(l.children)-1]
 			child.Parent = nil
+			l.markRenderDirty()
 			return nil
 		}
 	}
@@ -316,6 +354,7 @@ func (l *Layer) MoveChild(child *Layer, index int) error {
 		copy(l.children[index+1:], l.children[index:from])
 	}
 	l.children[index] = child
+	l.markRenderDirty()
 	return nil
 }
 func (l *Layer) orderIndex() int32 {
@@ -361,6 +400,7 @@ func (l *Layer) SetOrderIndex(index int32) error {
 		index = int32(len(parent.children) - 1)
 	}
 	parent.absoluteOrderMode = false
+	parent.markRenderDirty()
 	return parent.MoveChild(l, int(index))
 }
 
@@ -391,6 +431,7 @@ func (l *Layer) SetAbsoluteOrderIndex(index int32) error {
 		return err
 	}
 	l.absoluteOrderIndex = index
+	l.markRenderDirty()
 	return nil
 }
 
@@ -406,6 +447,7 @@ func (l *Layer) SetAbsoluteOrderMode(enabled bool) {
 			child.absoluteOrderIndex = int32(i)
 		}
 	}
+	l.markRenderDirty()
 }
 
 func (l *Layer) SetBounds(r Rect) error {
@@ -413,6 +455,7 @@ func (l *Layer) SetBounds(r Rect) error {
 		return fmt.Errorf("%w: negative bounds", ErrInvalidLayer)
 	}
 	l.Bounds = r
+	l.markRenderDirty()
 	return nil
 }
 func (l *Layer) SetClip(r Rect) error {
@@ -420,9 +463,13 @@ func (l *Layer) SetClip(r Rect) error {
 		return fmt.Errorf("%w: negative clip", ErrInvalidLayer)
 	}
 	l.clip, l.clipSet = r, true
+	l.markRenderDirty()
 	return nil
 }
-func (l *Layer) ResetClip()         { l.clip, l.clipSet = Rect{}, false }
+func (l *Layer) ResetClip() {
+	l.clip, l.clipSet = Rect{}, false
+	l.markRenderDirty()
+}
 func (l *Layer) Clip() (Rect, bool) { return l.clip, l.clipSet }
 
 const (
@@ -441,6 +488,7 @@ func (l *Layer) SetRGBA(width, height int32, rgba []byte) error {
 	if len(l.Province) != 0 && (l.ProvinceWidth != width || l.ProvinceHeight != height) {
 		return ErrProvinceSizeMismatch
 	}
+	l.gpuStretch = nil
 	l.RGBA = append(l.RGBA[:0], rgba...)
 	l.ImageWidth, l.ImageHeight = width, height
 	if l.Bounds.Width == 0 {
@@ -449,10 +497,14 @@ func (l *Layer) SetRGBA(width, height int32, rgba []byte) error {
 	if l.Bounds.Height == 0 {
 		l.Bounds.Height = height
 	}
+	l.markImageDirty()
 	return nil
 }
 
-func (l *Layer) SetPosition(x, y int32) { l.Bounds.X, l.Bounds.Y = x, y }
+func (l *Layer) SetPosition(x, y int32) {
+	l.Bounds.X, l.Bounds.Y = x, y
+	l.markRenderDirty()
+}
 func (l *Layer) SetSize(width, height int32) error {
 	if l == nil {
 		return ErrInvalidLayer
@@ -475,6 +527,7 @@ func (l *Layer) SetSize(width, height int32) error {
 	if len(l.RGBA) != 0 {
 		l.ImageLeft, l.ImageTop = imageLeft, imageTop
 	}
+	l.markRenderDirty()
 	return nil
 }
 
@@ -483,6 +536,9 @@ func (l *Layer) SetSize(width, height int32) error {
 func (l *Layer) SetImageSize(width, height int32) error {
 	if l == nil {
 		return fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
+	}
+	if err := l.materializeGPUStretch(); err != nil {
+		return err
 	}
 	if width < 0 || height < 0 || uint64(width)*uint64(height) > maxLayerPixels {
 		return fmt.Errorf("%w: image dimensions exceed limit", ErrInvalidLayer)
@@ -499,6 +555,7 @@ func (l *Layer) SetImageSize(width, height int32) error {
 		if l.Bounds.Height < height {
 			l.Bounds.Height = height
 		}
+		l.markImageDirty()
 		return nil
 	}
 	if width == l.ImageWidth && height == l.ImageHeight {
@@ -596,16 +653,21 @@ func resizeLayerImage(l *Layer, width, height int32) error {
 	if len(l.Province) != 0 {
 		l.Province, l.ProvinceWidth, l.ProvinceHeight = province, width, height
 	}
+	l.markImageDirty()
 	l.ResetClip()
 	return l.SetClip(Rect{Width: width, Height: height})
 }
-func (l *Layer) SetVisible(visible bool) { l.Visible = visible }
+func (l *Layer) SetVisible(visible bool) {
+	l.Visible = visible
+	l.markRenderDirty()
+}
 func (l *Layer) SetEnabled(enabled bool) { l.Enabled = enabled }
 func (l *Layer) SetOpacity(opacity int) error {
 	if opacity < 0 || opacity > 255 {
 		return fmt.Errorf("%w: opacity %d", ErrInvalidLayer, opacity)
 	}
 	l.Opacity = uint8(opacity)
+	l.markRenderDirty()
 	return nil
 }
 func (l *Layer) SetHitType(hit HitType) { l.Hit = hit }
@@ -650,8 +712,10 @@ func (l *Layer) SetImage(im assets.Image) error {
 	return l.SetRGBA(int32(im.Width), int32(im.Height), im.RGBA)
 }
 func (l *Layer) ClearImage() {
+	l.gpuStretch = nil
 	l.RGBA = nil
 	l.ImageWidth, l.ImageHeight = 0, 0
+	l.markImageDirty()
 	l.ClearProvince()
 }
 
@@ -659,6 +723,7 @@ func (l *Layer) SetProvince(width, height int32, province []byte) error {
 	if province == nil {
 		l.Province = nil
 		l.ProvinceWidth, l.ProvinceHeight = 0, 0
+		l.markImageDirty()
 		return nil
 	}
 	if !validLayerImageSize(width, height, len(province), 1) {
@@ -669,9 +734,14 @@ func (l *Layer) SetProvince(width, height int32, province []byte) error {
 	}
 	l.Province = append(l.Province[:0], province...)
 	l.ProvinceWidth, l.ProvinceHeight = width, height
+	l.markImageDirty()
 	return nil
 }
-func (l *Layer) ClearProvince() { l.Province = nil; l.ProvinceWidth, l.ProvinceHeight = 0, 0 }
+func (l *Layer) ClearProvince() {
+	l.Province = nil
+	l.ProvinceWidth, l.ProvinceHeight = 0, 0
+	l.markImageDirty()
+}
 
 func (l *Layer) SetImagePosition(x, y int32) error {
 	if l == nil || len(l.RGBA) == 0 {
@@ -682,6 +752,7 @@ func (l *Layer) SetImagePosition(x, y int32) error {
 		return fmt.Errorf("%w: image position leaves layer bounds uncovered", ErrInvalidLayer)
 	}
 	l.ImageLeft, l.ImageTop = x, y
+	l.markRenderDirty()
 	return nil
 }
 func (l *Layer) IsSeen() bool { return l != nil && l.Visible && l.Opacity != 0 }
@@ -736,5 +807,6 @@ func (l *Layer) SetType(t LayerType) error {
 		l.ImageLeft, l.ImageTop = 0, 0
 	}
 	l.Type = t
+	l.markRenderDirty()
 	return nil
 }

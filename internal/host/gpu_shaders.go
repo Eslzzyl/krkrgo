@@ -23,7 +23,9 @@ var TargetType float
 var Opacity float
 var HoldAlpha float
 var SourceOrigin vec2
-
+var SourceScale vec2
+var SourceSize vec2
+var SourceLinear float
 func clamp01(v float) float {
 	if v < 0 { return 0 }
 	if v > 1 { return 1 }
@@ -62,9 +64,25 @@ func blendChannel(base, source float, mode float) float {
 	return source
 }
 
+func sourceSample(pos vec2) vec4 {
+	if SourceLinear <= 0 {
+		return imageSrc1AtFromSrc0Pos(pos)
+	}
+	p := pos - vec2(0.5)
+	f := fract(p)
+	base := floor(p) + vec2(0.5)
+	minPos := vec2(0.5)
+	maxPos := SourceSize - vec2(0.5)
+	tl := imageSrc1AtFromSrc0Pos(clamp(base, minPos, maxPos))
+	tr := imageSrc1AtFromSrc0Pos(clamp(base+vec2(1, 0), minPos, maxPos))
+	bl := imageSrc1AtFromSrc0Pos(clamp(base+vec2(0, 1), minPos, maxPos))
+	br := imageSrc1AtFromSrc0Pos(clamp(base+vec2(1, 1), minPos, maxPos))
+	return mix(mix(tl, tr, f.x), mix(bl, br, f.x), f.y)
+}
+
 func Fragment(dstPos vec4, src0Pos vec2, color vec4) vec4 {
 	d := imageSrc0At(src0Pos)
-	s := imageSrc1AtFromSrc0Pos(src0Pos-SourceOrigin)
+	s := sourceSample((src0Pos-SourceOrigin)*SourceScale)
 	// Ebitengine textures are premultiplied. Blend in straight color space and
 	// premultiply exactly once on return.
 	da := clamp01(d.a)

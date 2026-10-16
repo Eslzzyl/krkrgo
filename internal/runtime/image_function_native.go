@@ -287,6 +287,7 @@ func (s *Services) imageOperateRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, er
 			}
 		}
 	}
+	dst.markDirty()
 	return tjs.VoidValue, nil
 }
 
@@ -346,6 +347,7 @@ func (s *Services) imageStretch(dst, src *Bitmap, dstID, srcID tjs.ObjectID, dr,
 			}
 		}
 	}
+	dst.markDirty()
 	return nil
 }
 
@@ -448,6 +450,7 @@ func (s *Services) imageAffine(dst, src *Bitmap, dstID, srcID tjs.ObjectID, matr
 			blendPixelForTarget(dst.RGBA[di:di+4], source[si:si+4], uint8(opa), blendType, target)
 		}
 	}
+	dst.markDirty()
 	return nil
 }
 
@@ -631,6 +634,7 @@ func (s *Services) imageFlip(vm *tjs.VM, args []tjs.Value, horizontal bool) (tjs
 			}
 		}
 	}
+	b.markDirty()
 	return tjs.VoidValue, nil
 }
 
@@ -710,6 +714,7 @@ func (s *Services) imageAdjustGamma(vm *tjs.VM, args []tjs.Value) (tjs.Value, er
 			b.RGBA[i], b.RGBA[i+1], b.RGBA[i+2] = transform(b.RGBA[i], rg, rf, rc), transform(b.RGBA[i+1], gg, gf, gc), transform(b.RGBA[i+2], bg, bf, bc)
 		}
 	}
+	b.markDirty()
 	return tjs.VoidValue, nil
 }
 
@@ -738,6 +743,7 @@ func (s *Services) imageGrayScale(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 			b.RGBA[i], b.RGBA[i+1], b.RGBA[i+2] = gray, gray, gray
 		}
 	}
+	b.markDirty()
 	return tjs.VoidValue, nil
 }
 
@@ -785,6 +791,7 @@ func (s *Services) imageFillRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, error
 			}
 		}
 	}
+	b.markDirty()
 	return tjs.VoidValue, nil
 }
 
@@ -868,6 +875,7 @@ func (s *Services) imageColorRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 			}
 		}
 	}
+	b.markDirty()
 	return tjs.VoidValue, nil
 }
 
@@ -941,6 +949,7 @@ func (s *Services) imageBoxBlur(vm *tjs.VM, args []tjs.Value) (tjs.Value, error)
 			}
 		}
 	}
+	b.markDirty()
 	return tjs.VoidValue, nil
 }
 
@@ -1121,6 +1130,7 @@ func (s *Services) imageDrawText(vm *tjs.VM, args []tjs.Value) (tjs.Value, error
 	defer s.mu.Unlock()
 	if rasterized != nil {
 		imageDrawMaskLocked(b, rasterized.Pix, rasterized.Rect.Dx(), rasterized.Rect.Dy(), rasterized.Stride, 4, 3, config.x, config.y, config.clip, config)
+		b.markDirty()
 	}
 	return tjs.VoidValue, nil
 }
@@ -1256,6 +1266,7 @@ func (s *Services) imageDrawGlyph(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	imageDrawMaskLocked(b, glyph.mask, glyph.width, glyph.height, glyph.width, 1, 0, x, y, config.clip, config)
+	b.markDirty()
 	return tjs.VoidValue, nil
 }
 

@@ -82,7 +82,6 @@ func NewSession(project, saveDir string, budget uint64) (*runtime.Session, error
 		return nil, err
 	}
 
-
 	if project == "" {
 		// Without a project there is no script-created Window to host the
 		// empty scene. Keep a minimal host Window for that mode; project
@@ -230,8 +229,9 @@ func RunGame(args []string) {
 	}
 	logAudioOutput := func() {
 		stats := audioOutput.Diagnostics()
-		log.Printf("audio output state: ready=%t pending_frames=%d accepted_blocks=%d accepted_frames=%d nonzero_samples=%d peak=%g",
-			audioContext.IsReady(), audioOutput.PendingFrames(), stats.Blocks, stats.Frames, stats.NonZeroSamples, stats.Peak)
+		log.Printf("audio output state: ready=%t pending_frames=%d accepted_blocks=%d accepted_frames=%d nonzero_samples=%d peak=%g queue_waits=%d queue_wait_ms=%g queue_max_wait_ms=%g",
+			audioContext.IsReady(), audioOutput.PendingFrames(), stats.Blocks, stats.Frames, stats.NonZeroSamples, stats.Peak,
+			stats.QueueWaits, float64(stats.QueueWaitNanos)/1e6, float64(stats.MaxQueueWaitNanos)/1e6)
 	}
 	if audioDiagnostics {
 		log.Printf("audio output attached: sample_rate=%d ready=%t", audioContext.SampleRate(), audioContext.IsReady())

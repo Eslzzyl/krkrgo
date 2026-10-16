@@ -11,7 +11,6 @@ import (
 	"image/png"
 	"math"
 	"os"
-
 )
 
 const (
@@ -79,8 +78,20 @@ func DecodeImage(data []byte) (Image, error) {
 // representation used by Image, explicitly unpremultiplying premultiplied
 // formats with rounded integer math and normalizing transparent pixels.
 func imageToStraightRGBA(decoded image.Image, bounds image.Rectangle) *image.NRGBA {
+	if src, ok := decoded.(*image.NRGBA); ok &&
+		bounds.Min.X == 0 && bounds.Min.Y == 0 && src.Stride == bounds.Dx()*4 {
+		clearTransparentRGBA(src.Pix)
+		return src
+	}
 	rgba := image.NewNRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
 	switch src := decoded.(type) {
+	case *image.NRGBA:
+		for y := range bounds.Dy() {
+			srcOffset := src.PixOffset(bounds.Min.X, bounds.Min.Y+y)
+			dstOffset := y * rgba.Stride
+			copy(rgba.Pix[dstOffset:dstOffset+bounds.Dx()*4], src.Pix[srcOffset:srcOffset+bounds.Dx()*4])
+		}
+		clearTransparentRGBA(rgba.Pix)
 	case *image.RGBA:
 		for y := range bounds.Dy() {
 			srcOffset := src.PixOffset(bounds.Min.X, bounds.Min.Y+y)
@@ -442,7 +453,6 @@ func waveFloat16(sample float32) int16 {
 	}
 	return int16(scaled + 0.5)
 }
-
 
 // ReadAudio dispatches the bounded PCM decoder.
 func ReadAudio(data []byte, maxFrames int) (Audio, error) {

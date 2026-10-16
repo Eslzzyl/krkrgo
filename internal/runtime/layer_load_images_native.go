@@ -81,34 +81,25 @@ func (s *Services) readLayerImageResolved(name string) (string, []byte, error) {
 func (s *Services) readLayerImageSidecar(name, suffix string) (string, []byte, error) {
 	ext := extractStorageExt(name)
 	stem := name[:len(name)-len(ext)]
+	candidates := make([]string, 0, len(layerGraphicExtensions)+1)
 	if ext != "" {
-		resolved := stem + suffix + ext
-		data, err := s.readStorage(resolved)
-		if err == nil {
-			if !supportedLayerImageExtension(strings.ToLower(ext)) {
-				return "", nil, fmt.Errorf("%w: Layer.loadImages extension %q", assets.ErrUnsupported, ext)
-			}
-			return resolved, data, nil
-		}
-		if !errors.Is(err, assets.ErrNotFound) {
-			return "", nil, err
-		}
+		candidates = append(candidates, stem+suffix+ext)
 	}
 	for _, candidateExt := range layerGraphicExtensions {
-		resolved := stem + suffix + candidateExt
-		data, err := s.readStorage(resolved)
-		if errors.Is(err, assets.ErrNotFound) {
-			continue
+		candidate := stem + suffix + candidateExt
+		if len(candidates) == 0 || candidate != candidates[0] {
+			candidates = append(candidates, candidate)
 		}
-		if err != nil {
-			return "", nil, err
-		}
-		if !supportedLayerImageExtension(candidateExt) {
-			return "", nil, fmt.Errorf("%w: Layer.loadImages extension %q", assets.ErrUnsupported, candidateExt)
-		}
-		return resolved, data, nil
 	}
-	return "", nil, assets.ErrNotFound
+	resolved, data, err := s.Storage.ReadFirstExisting(candidates)
+	if err != nil {
+		return "", nil, err
+	}
+	extension := strings.ToLower(extractStorageExt(resolved))
+	if !supportedLayerImageExtension(extension) {
+		return "", nil, fmt.Errorf("%w: Layer.loadImages extension %q", assets.ErrUnsupported, extension)
+	}
+	return resolved, data, nil
 }
 
 func layerImageIndexedFormat(data []byte) bool {
@@ -250,6 +241,8 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 	}
 
 	profile := os.Getenv("KRKRGO_RENDER_STATS") != ""
+	stallTrace := StallTraceEnabled()
+	var colorKeyTime, maskTime, provinceTime, metadataTime, commitTime time.Duration
 	readStarted := time.Now()
 	resolvedName, data, err := s.readLayerImageResolved(name)
 	readTime := time.Since(readStarted)
@@ -257,10 +250,36 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q: %w", name, err)
 	}
 	decodeStarted := time.Now()
-	decoded, err := s.Storage.DecodeImage(data)
+	var decoded assets.Image
+	var decodeErr error
+	var decodeDone chan struct {
+		image assets.Image
+		err   error
+	}
+	var maskData, provinceData []byte
+	var maskErr, provinceErr error
+	if len(data) >= 256<<10 {
+		decodeDone = make(chan struct {
+			image assets.Image
+			err   error
+		}, 1)
+		go func() {
+			image, err := s.Storage.DecodeImage(data)
+			decodeDone <- struct {
+				image assets.Image
+				err   error
+			}{image: image, err: err}
+		}()
+		_, maskData, maskErr = s.readLayerImageSidecar(resolvedName, "_m")
+		_, provinceData, provinceErr = s.readLayerImageSidecar(resolvedName, "_p")
+		result := <-decodeDone
+		decoded, decodeErr = result.image, result.err
+	} else {
+		decoded, decodeErr = s.Storage.DecodeImage(data)
+	}
 	decodeTime := time.Since(decodeStarted)
-	if err != nil {
-		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q: %w", name, err)
+	if decodeErr != nil {
+		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q: %w", name, decodeErr)
 	}
 	width, height := int32(decoded.Width), int32(decoded.Height)
 	if !validLayerImageSize(width, height, len(decoded.RGBA), 4) {
@@ -269,10 +288,24 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 	if profile && readTime+decodeTime >= 2*time.Millisecond {
 		log.Printf("krkrgo startup-image storage=%q bytes=%d decoded=%dx%d read=%s decode=%s", name, len(data), width, height, readTime, decodeTime)
 	}
-	if err := applyLayerImageKey(&decoded, data, key); err != nil {
+	if stallTrace {
+		stageStarted := time.Now()
+		err = applyLayerImageKey(&decoded, data, key)
+		colorKeyTime = time.Since(stageStarted)
+	} else {
+		err = applyLayerImageKey(&decoded, data, key)
+	}
+	if err != nil {
 		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q color key: %w", name, err)
 	}
-	if _, maskData, maskErr := s.readLayerImageSidecar(resolvedName, "_m"); maskErr == nil {
+	var maskStarted time.Time
+	if stallTrace {
+		maskStarted = time.Now()
+	}
+	if decodeDone == nil {
+		_, maskData, maskErr = s.readLayerImageSidecar(resolvedName, "_m")
+	}
+	if maskErr == nil {
 		mask, err := s.Storage.DecodeImage(maskData)
 		if err != nil {
 			return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q mask: %w", resolvedName, err)
@@ -292,8 +325,18 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 	} else if !errors.Is(maskErr, assets.ErrNotFound) {
 		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q mask: %w", resolvedName, maskErr)
 	}
+	if stallTrace {
+		maskTime = time.Since(maskStarted)
+	}
+	var provinceStarted time.Time
+	if stallTrace {
+		provinceStarted = time.Now()
+	}
 	var province []byte
-	if _, provinceData, provinceErr := s.readLayerImageSidecar(resolvedName, "_p"); provinceErr == nil {
+	if decodeDone == nil {
+		_, provinceData, provinceErr = s.readLayerImageSidecar(resolvedName, "_p")
+	}
+	if provinceErr == nil {
 		indexed, err := assets.DecodeIndexedImage(provinceData)
 		if err != nil {
 			return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q province: %w", resolvedName, err)
@@ -312,15 +355,26 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 	} else if !errors.Is(provinceErr, assets.ErrNotFound) {
 		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q province: %w", resolvedName, provinceErr)
 	}
+	if stallTrace {
+		provinceTime = time.Since(provinceStarted)
+	}
+	var metadataStarted time.Time
+	if stallTrace {
+		metadataStarted = time.Now()
+	}
 	tags, err := assets.ImageMetadata(data)
 	if err != nil {
 		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q metadata: %w", name, err)
 	}
 	result, err := layerImageMetadata(vm, tags)
+	if stallTrace {
+		metadataTime = time.Since(metadataStarted)
+	}
 	if err != nil {
 		return tjs.VoidValue, err
 	}
 
+	commitStarted := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.Layers[id] != layer {
@@ -349,6 +403,11 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 	}
 	resetNativeLayerClip(layer)
 	layer.imageModified = true
+	layer.markImageDirty()
+	if stallTrace {
+		commitTime = time.Since(commitStarted)
+		traceStallLayerLoad(name, resolvedName, s.TimeMS, len(data), len(decoded.RGBA), width, height, readTime, decodeTime, colorKeyTime, maskTime, provinceTime, metadataTime, commitTime)
+	}
 	return result, nil
 }
 
@@ -423,5 +482,6 @@ func (s *Services) layerLoadProvinceImage(layer *Layer, id tjs.ObjectID, args []
 	layer.Province = append(layer.Province[:0], indexed.Pixels...)
 	layer.ProvinceWidth, layer.ProvinceHeight = width, height
 	layer.imageModified = true
+	layer.markImageDirty()
 	return nil
 }

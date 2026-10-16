@@ -38,12 +38,15 @@ type AudioOutputOptions struct {
 	Diagnostics  bool
 }
 
-// AudioOutputStats summarizes blocks accepted by the device queue.
+// AudioOutputStats summarizes accepted PCM and queue wait diagnostics.
 type AudioOutputStats struct {
-	Blocks         uint64
-	Frames         uint64
-	NonZeroSamples uint64
-	Peak           float32
+	Blocks            uint64
+	Frames            uint64
+	NonZeroSamples    uint64
+	Peak              float32
+	QueueWaits        uint64
+	QueueWaitNanos    uint64
+	MaxQueueWaitNanos uint64
 }
 
 // AudioOutput feeds runtime.Session's fixed-rate stereo float32 output into an
@@ -139,7 +142,7 @@ func (o *AudioOutput) Write(samples []float32) error {
 	return nil
 }
 
-// Diagnostics reports cumulative accepted PCM statistics when enabled.
+// Diagnostics reports cumulative accepted PCM and queue wait statistics when enabled.
 func (o *AudioOutput) Diagnostics() AudioOutputStats {
 	if o == nil || !o.diagnostics {
 		return AudioOutputStats{}
@@ -147,6 +150,12 @@ func (o *AudioOutput) Diagnostics() AudioOutputStats {
 	o.mu.Lock()
 	stats := o.stats
 	o.mu.Unlock()
+	if o.queue != nil {
+		waits, waitNanos, maxWaitNanos := o.queue.waitStats()
+		stats.QueueWaits = waits
+		stats.QueueWaitNanos = waitNanos
+		stats.MaxQueueWaitNanos = maxWaitNanos
+	}
 	return stats
 }
 
@@ -214,6 +223,8 @@ func (g *Game) AttachAudioOutput(output *AudioOutput) error {
 		return err
 	}
 	g.audioOutput = output
+	g.audioClock = time.Time{}
+	g.audioClockRemainder = 0
 	return nil
 }
 
@@ -222,7 +233,51 @@ func (g *Game) AttachAudioOutput(output *AudioOutput) error {
 func (g *Game) DetachAudioOutput() {
 	if g != nil {
 		g.audioOutput = nil
+		g.audioClock = time.Time{}
+		g.audioClockRemainder = 0
 	}
+}
+
+const maxWallAudioDelta = time.Second
+
+func (g *Game) audioDeltaMilliseconds(now time.Time) uint64 {
+	if g == nil {
+		return fixedTickMS
+	}
+	if g.audioClock.IsZero() {
+		g.audioClock = now
+		return fixedTickMS
+	}
+	elapsed := now.Sub(g.audioClock)
+	g.audioClock = now
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	if elapsed > maxWallAudioDelta {
+		elapsed = maxWallAudioDelta
+		g.audioClockRemainder = 0
+	}
+	total := elapsed + g.audioClockRemainder
+	milliseconds := total / time.Millisecond
+	g.audioClockRemainder = total % time.Millisecond
+	return uint64(milliseconds)
+}
+
+func (g *Game) limitAudioDeltaMilliseconds(milliseconds uint64) uint64 {
+	if g == nil || g.audioOutput == nil || milliseconds == 0 {
+		return milliseconds
+	}
+	capacity := g.audioOutput.CapacityFrames()
+	pending := g.audioOutput.PendingFrames()
+	if pending >= capacity {
+		return 0
+	}
+	headroom := capacity - pending
+	maxMilliseconds := uint64(headroom / (runtime.OutputRate / 1000))
+	if milliseconds > maxMilliseconds {
+		return maxMilliseconds
+	}
+	return milliseconds
 }
 
 func (g *Game) deliverAudio() error {
@@ -240,13 +295,17 @@ func (g *Game) deliverAudio() error {
 }
 
 type audioQueue struct {
-	mu       sync.Mutex
-	ready    *sync.Cond
-	data     []float32
-	head     int
-	frames   int
-	readByte int
-	closed   bool
+	mu                sync.Mutex
+	ready             *sync.Cond
+	data              []float32
+	head              int
+	frames            int
+	readByte          int
+	closed            bool
+	written           bool
+	queueWaits        uint64
+	queueWaitNanos    uint64
+	maxQueueWaitNanos uint64
 }
 
 func newAudioQueue(capacityFrames int) *audioQueue {
@@ -271,6 +330,15 @@ func (q *audioQueue) pendingFrames() int {
 	q.mu.Unlock()
 	return frames
 }
+func (q *audioQueue) waitStats() (uint64, uint64, uint64) {
+	if q == nil {
+		return 0, 0, 0
+	}
+	q.mu.Lock()
+	waits, waitNanos, maxWaitNanos := q.queueWaits, q.queueWaitNanos, q.maxQueueWaitNanos
+	q.mu.Unlock()
+	return waits, waitNanos, maxWaitNanos
+}
 
 func (q *audioQueue) write(samples []float32) error {
 	if q == nil {
@@ -294,6 +362,7 @@ func (q *audioQueue) write(samples []float32) error {
 		copy(q.data[at*2:at*2+2], samples[frame*2:frame*2+2])
 	}
 	q.frames += frames
+	q.written = true
 	q.ready.Signal()
 	return nil
 }
@@ -324,8 +393,20 @@ func (q *audioQueue) Read(p []byte) (int, error) {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	var waitStarted time.Time
+	if q.frames == 0 && !q.closed && q.written {
+		waitStarted = time.Now()
+	}
 	for q.frames == 0 && !q.closed {
 		q.ready.Wait()
+	}
+	if !waitStarted.IsZero() && !q.closed {
+		waitNanos := uint64(time.Since(waitStarted).Nanoseconds())
+		q.queueWaits++
+		q.queueWaitNanos += waitNanos
+		if waitNanos > q.maxQueueWaitNanos {
+			q.maxQueueWaitNanos = waitNanos
+		}
 	}
 	if q.frames == 0 {
 		return 0, io.EOF

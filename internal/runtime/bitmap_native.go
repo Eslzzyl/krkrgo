@@ -4,14 +4,14 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"github.com/eslzzyl/krkrgo/internal/assets"
+	"github.com/eslzzyl/krkrgo/internal/tjs"
 	"image"
 	"image/jpeg"
 	"image/png"
 	"math"
 	"strings"
-
-	"github.com/eslzzyl/krkrgo/internal/assets"
-	"github.com/eslzzyl/krkrgo/internal/tjs"
+	"time"
 )
 
 const (
@@ -29,12 +29,29 @@ type Bitmap struct {
 	RGBA          []byte
 	font          FontState
 	loading       bool
+	revision      uint64
+}
+
+func (b *Bitmap) markDirty() {
+	if b != nil {
+		b.revision++
+	}
+}
+
+func (b *Bitmap) imageRevision() uint64 {
+	if b == nil || b.revision == 0 {
+		return 1
+	}
+	return b.revision
 }
 
 type bitmapAsyncResult struct {
 	generation uint64
+	name       string
 	data       []byte
 	image      assets.Image
+	readTime   time.Duration
+	decodeTime time.Duration
 	err        error
 }
 
@@ -42,7 +59,7 @@ func newBitmap(width, height uint32) (*Bitmap, error) {
 	if width == 0 || height == 0 || width > bitmapMaxDimension || height > bitmapMaxDimension || uint64(width)*uint64(height) > bitmapMaxPixels {
 		return nil, fmt.Errorf("Bitmap: invalid dimensions %dx%d", width, height)
 	}
-	return &Bitmap{Width: width, Height: height, RGBA: make([]byte, uint64(width)*uint64(height)*4), font: *newFontState()}, nil
+	return &Bitmap{Width: width, Height: height, RGBA: make([]byte, uint64(width)*uint64(height)*4), font: *newFontState(), revision: 1}, nil
 }
 
 func (b *Bitmap) pixel(x, y int64) ([]byte, error) {
@@ -81,6 +98,7 @@ func (b *Bitmap) resize(width, height uint32, keep bool) error {
 	font := b.font
 	*b = *next
 	b.font = font
+	b.markDirty()
 	return nil
 }
 
@@ -170,10 +188,15 @@ func (s *Services) bitmapLoadAsync(id tjs.ObjectID, b *Bitmap, name string) erro
 	s.mu.Unlock()
 
 	go func() {
+		readStarted := time.Now()
 		data, err := bitmapBytes(s, name)
+		readTime := time.Since(readStarted)
 		var image assets.Image
+		var decodeTime time.Duration
 		if err == nil {
-			image, err = assets.DecodeImage(data)
+			decodeStarted := time.Now()
+			image, err = s.Storage.DecodeImage(data)
+			decodeTime = time.Since(decodeStarted)
 		}
 		if err == nil && (image.Width > bitmapMaxDimension || image.Height > bitmapMaxDimension) {
 			err = fmt.Errorf("Bitmap: image dimensions exceed limits")
@@ -186,8 +209,11 @@ func (s *Services) bitmapLoadAsync(id tjs.ObjectID, b *Bitmap, name string) erro
 		}
 		s.bitmapLoadResults[id] = bitmapAsyncResult{
 			generation: generation,
+			name:       name,
 			data:       data,
 			image:      image,
+			readTime:   readTime,
+			decodeTime: decodeTime,
 			err:        err,
 		}
 		if postErr := s.Events.Post(uint64(id), EventBitmapLoad, PriorityNormal); postErr != nil {
@@ -201,19 +227,25 @@ func (s *Services) bitmapLoadAsync(id tjs.ObjectID, b *Bitmap, name string) erro
 
 func (s *Services) takeBitmapAsyncResult(id tjs.ObjectID) (bitmapAsyncResult, bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	result, ok := s.bitmapLoadResults[id]
 	if !ok {
+		s.mu.Unlock()
 		return bitmapAsyncResult{}, false
 	}
 	delete(s.bitmapLoadResults, id)
+	var commitTime time.Duration
 	if b := s.Bitmaps[id]; b != nil && s.bitmapLoadGeneration[id] == result.generation {
 		b.loading = false
 		if result.err == nil {
+			commitStarted := time.Now()
 			b.Width, b.Height = result.image.Width, result.image.Height
-			b.RGBA = append(b.RGBA[:0], result.image.RGBA...)
+			b.RGBA = result.image.RGBA
+			b.markDirty()
+			commitTime = time.Since(commitStarted)
 		}
 	}
+	s.mu.Unlock()
+	traceStallBitmapLoad(result.name, s.TimeMS, len(result.data), result.image.Width, result.image.Height, result.readTime, result.decodeTime, commitTime, result.err != nil)
 	return result, true
 }
 
@@ -256,6 +288,7 @@ func (s *Services) bitmapLoad(vm *tjs.VM, b *Bitmap, name string) (tjs.Value, er
 	}
 	b.Width, b.Height = im.Width, im.Height
 	b.RGBA = append(b.RGBA[:0], im.RGBA...)
+	b.markDirty()
 	b.loading = false
 	return bitmapMetadata(vm, data, im.Width, im.Height)
 }
@@ -719,6 +752,7 @@ func (s *Services) bitmapNative(vm *tjs.VM, context tjs.Value, operation string,
 			} else {
 				p[0], p[1], p[2] = uint8(uint64(value)>>16), uint8(uint64(value)>>8), uint8(value)
 			}
+			b.markDirty()
 		}
 		s.mu.Unlock()
 		return tjs.VoidValue, err
@@ -775,6 +809,7 @@ func (s *Services) bitmapNative(vm *tjs.VM, context tjs.Value, operation string,
 		b.Width, b.Height = src.Width, src.Height
 		b.RGBA = append(b.RGBA[:0], src.RGBA...)
 		b.font = src.font
+		b.markDirty()
 		s.mu.Unlock()
 		return tjs.VoidValue, nil
 	case "load":

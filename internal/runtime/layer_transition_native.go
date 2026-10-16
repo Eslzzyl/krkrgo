@@ -257,6 +257,8 @@ func (s *Services) layerTransition(vm *tjs.VM, context tjs.Value, operation stri
 	layer.transitionRule = rule
 	layer.transitionSelfUpdate = selfUpdate
 	source.transitionHidden = true
+	layer.markRenderDirty()
+	source.markRenderDirty()
 	return tjs.VoidValue, nil
 }
 
@@ -266,6 +268,7 @@ func (s *Services) cancelLayerTransition(layer *Layer) {
 	}
 	if layer.transitionSource != nil {
 		layer.transitionSource.transitionHidden = false
+		layer.transitionSource.markRenderDirty()
 	}
 	layer.inTransition = false
 	layer.transitionSource = nil
@@ -288,6 +291,7 @@ func (s *Services) cancelLayerTransition(layer *Layer) {
 	layer.transitionHashesValid = false
 	layer.transitionSourceAlpha = transitionAlphaUnknown
 	layer.transitionDestAlpha = transitionAlphaUnknown
+	layer.markRenderDirty()
 }
 
 func (s *Services) advanceLayerTransitions(vm *tjs.VM, timeMS uint64, selfUpdate bool, budget *uint64) error {
@@ -362,6 +366,7 @@ func (s *Services) advanceLayerTransitionsDeferred(vm *tjs.VM, timeMS uint64, se
 		} else {
 			blendCrossfade(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage, phase, layer.transitionOpaque)
 		}
+		layer.markRenderDirty()
 		if elapsed >= layer.transitionDuration {
 			if os.Getenv("KRKRGO_TRANSITION_TRACE") == "1" {
 				fmt.Fprintf(os.Stderr, "transition-trace final time=%d layer=%d source=%d method=%s tick=%d elapsed=%d duration=%d phase=%d dest=%08x src=%08x pixels=%08x\n",
@@ -711,8 +716,12 @@ func (s *Services) stopLayerTransition(vm *tjs.VM, layer *Layer, notify bool, bu
 	layer.ImageTop, source.ImageTop = source.ImageTop, layer.ImageTop
 	layer.Bounds.X, layer.Bounds.Y, layer.Visible = srcX, srcY, srcVisible
 	source.Bounds.X, source.Bounds.Y, source.Visible = destX, destY, destVisible
+	layer.markImageDirty()
+	source.markImageDirty()
 	s.exchangeLayerTree(layer, source, !layer.transitionChildren)
 	source.transitionHidden = false
+	layer.markRenderDirty()
+	source.markRenderDirty()
 	layer.inTransition = false
 	layer.transitionSource = nil
 	layer.transitionMethod = ""

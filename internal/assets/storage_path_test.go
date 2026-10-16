@@ -233,6 +233,49 @@ func BenchmarkStorageImageExtensionProbe(b *testing.B) {
 		})
 	}
 }
+func BenchmarkStorageFirstExistingProbe(b *testing.B) {
+	project := b.TempDir()
+	storage, err := OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		b.Fatal(err)
+	}
+	names := make([]string, 0, 11)
+	for _, ext := range []string{".jxr", ".tlg6", ".tlg5", ".tlg", ".png", ".jif", ".jpg", ".jpeg", ".dib", ".bmp", ".gif"} {
+		names = append(names, "frm_quickbord"+ext)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, _, err := storage.ReadFirstExisting(names); !errors.Is(err, ErrNotFound) {
+			b.Fatalf("candidate lookup error = %v, want not found", err)
+		}
+	}
+}
+
+func BenchmarkStorageFirstExistingProbeWithSearchPath(b *testing.B) {
+	project := b.TempDir()
+	if err := os.Mkdir(filepath.Join(project, "data"), 0o755); err != nil {
+		b.Fatal(err)
+	}
+	storage, err := OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := storage.AddSearchPath("data/"); err != nil {
+		b.Fatal(err)
+	}
+	names := make([]string, 0, 11)
+	for _, ext := range []string{".jxr", ".tlg6", ".tlg5", ".tlg", ".png", ".jif", ".jpg", ".jpeg", ".dib", ".bmp", ".gif"} {
+		names = append(names, "frm_quickbord"+ext)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, _, err := storage.ReadFirstExisting(names); !errors.Is(err, ErrNotFound) {
+			b.Fatalf("candidate lookup error = %v, want not found", err)
+		}
+	}
+}
 
 func TestReadRootFastPathPreservesLooseOverlayAndCaseAliases(t *testing.T) {
 	project := t.TempDir()
@@ -259,6 +302,90 @@ func TestReadRootFastPathPreservesLooseOverlayAndCaseAliases(t *testing.T) {
 	got, err = storage.Read("image.png")
 	if err != nil || string(got) != "loose" {
 		t.Fatalf("loose overlay read = %q, %v", got, err)
+	}
+}
+
+func TestReadFirstExistingPreservesLooseAndArchiveResolution(t *testing.T) {
+	project := t.TempDir()
+	archivePath := filepath.Join(project, "data.xp3")
+	if err := os.WriteFile(archivePath, xp3TestArchive("image.png", []byte("archive")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeArchivesOnCleanup(t, storage)
+
+	if _, _, err := storage.ReadFirstExisting([]string{"missing.png"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing candidates error = %v, want ErrNotFound", err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "IMAGE.PNG"), []byte("loose"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	name, data, err := storage.ReadFirstExisting([]string{"missing.png", "image.png"})
+	if err != nil || name != "image.png" || string(data) != "loose" {
+		t.Fatalf("loose candidate = %q,%q,%v, want image.png,loose,nil", name, data, err)
+	}
+	if err := os.Remove(filepath.Join(project, "IMAGE.PNG")); err != nil {
+		t.Fatal(err)
+	}
+	name, data, err = storage.ReadFirstExisting([]string{"image.png"})
+	if err != nil || name != "image.png" || string(data) != "archive" {
+		t.Fatalf("archive candidate = %q,%q,%v, want image.png,archive,nil", name, data, err)
+	}
+}
+
+func TestReadFirstExistingSearchPathUsesLooseOverlayOrder(t *testing.T) {
+	project := t.TempDir()
+	dataDir := filepath.Join(project, "data")
+	if err := os.Mkdir(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeArchivesOnCleanup(t, storage)
+	if err := storage.AddSearchPath("data/"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "IMAGE.PNG"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	name, data, err := storage.ReadFirstExisting([]string{"missing.png", "image.png"})
+	if err != nil || name != "image.png" || string(data) != "data" {
+		t.Fatalf("search-path candidate = %q,%q,%v, want image.png,data,nil", name, data, err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "image.png"), []byte("root"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	name, data, err = storage.ReadFirstExisting([]string{"image.png"})
+	if err != nil || name != "image.png" || string(data) != "root" {
+		t.Fatalf("root candidate = %q,%q,%v, want image.png,root,nil", name, data, err)
+	}
+}
+
+func TestReadFirstExistingSearchPathUsesArchiveMembers(t *testing.T) {
+	project := t.TempDir()
+	archivePath := filepath.Join(project, "data.xp3")
+	if err := os.WriteFile(archivePath, xp3TestArchive("dir/image.png", []byte("archive")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeArchivesOnCleanup(t, storage)
+	if err := storage.Mount(archivePath, core.DefaultLimits()); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.AddSearchPath("data.xp3>dir/"); err != nil {
+		t.Fatal(err)
+	}
+	name, data, err := storage.ReadFirstExisting([]string{"image.png"})
+	if err != nil || name != "image.png" || string(data) != "archive" {
+		t.Fatalf("archive search-path candidate = %q,%q,%v, want image.png,archive,nil", name, data, err)
 	}
 }
 

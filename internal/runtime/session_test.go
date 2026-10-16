@@ -39,6 +39,25 @@ func TestSessionEvaluateAndBudget(t *testing.T) {
 		t.Fatalf("backwards tick=%v", err)
 	}
 }
+func TestTickForPresentationWithAudioDeltaKeepsLogicalClock(t *testing.T) {
+	services := DefaultServices()
+	services.SetRoot(NewRootLayer(1, 1, 1))
+	session := NewSession(services, 10_000)
+	defer session.Close()
+	frame, err := session.TickForPresentationWithAudioDelta(16, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frame.Empty() {
+		t.Fatal("audio-delta presentation returned an empty frame")
+	}
+	if session.Services.TimeMS != 16 {
+		t.Fatalf("logical time = %d, want 16", session.Services.TimeMS)
+	}
+	if got, want := len(session.AudioOutput), 32*OutputRate/1000*2; got != want {
+		t.Fatalf("audio samples = %d, want %d", got, want)
+	}
+}
 
 func TestCaptureFrameBeforeRootExists(t *testing.T) {
 	services := DefaultServices()

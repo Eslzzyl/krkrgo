@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -541,25 +542,34 @@ func projectRelativePathFolded(name, project string) (string, bool) {
 	return filepath.ToSlash(filepath.Join(pathParts[len(rootParts):]...)), true
 }
 
+func (s *Storage) archiveIndex(name string) (int, bool) {
+	archive := asciiLower(name)
+	for index, candidate := range s.Archives {
+		base := filepath.Base(candidate.Path)
+		stem := strings.TrimSuffix(base, filepath.Ext(base))
+		relative, err := filepath.Rel(s.Project, candidate.Path)
+		if err != nil {
+			continue
+		}
+		relative = filepath.ToSlash(relative)
+		if archive == asciiLower(base) || archive == asciiLower(stem) || archive == asciiLower(relative) {
+			return index, true
+		}
+	}
+	return 0, false
+}
+
 func (s *Storage) archiveLocation(name string) (int, string, bool) {
 	if i := strings.IndexByte(name, '>'); i >= 0 {
 		archive, member := name[:i], name[i+1:]
-		archive = asciiLower(archive)
-		for idx, a := range s.Archives {
-			base := filepath.Base(a.Path)
-			stem := strings.TrimSuffix(base, filepath.Ext(base))
-			relative, err := filepath.Rel(s.Project, a.Path)
-			if err != nil {
-				continue
-			}
-			relative = filepath.ToSlash(relative)
-			if archive == asciiLower(base) || archive == asciiLower(stem) || archive == asciiLower(relative) {
-				if _, ok := a.Entries[member]; ok {
-					return idx, member, true
-				}
-			}
+		index, ok := s.archiveIndex(archive)
+		if !ok {
+			return 0, "", false
 		}
-		return 0, "", false
+		if _, ok := s.Archives[index].Entries[member]; !ok {
+			return 0, "", false
+		}
+		return index, member, true
 	}
 	idx, ok := s.Catalog[name]
 	if !ok {
@@ -741,6 +751,287 @@ func (s *Storage) Read(name string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: archive entry disappeared", ErrNotFound)
 	}
 	return s.Archives[idx].Read(member)
+}
+
+// ReadFirstExisting returns the first readable candidate in names. For a
+// project-backed storage without search paths, loose candidates are resolved
+// from one cached directory index before archive fallback.
+func (s *Storage) ReadFirstExisting(names []string) (string, []byte, error) {
+	if s == nil {
+		return "", nil, fmt.Errorf("nil storage")
+	}
+	if len(names) == 0 {
+		return "", nil, ErrNotFound
+	}
+	if len(s.searchPaths) > 0 {
+		if name, data, found, fallback, err := s.readFirstLooseExistingWithSearchPaths(names); err != nil {
+			return "", nil, err
+		} else if found {
+			return name, data, nil
+		} else if !fallback {
+			for _, name := range names {
+				normalized, err := s.normalize(name, false)
+				if err != nil || strings.ContainsRune(normalized, '>') {
+					continue
+				}
+				if _, ok := s.Catalog[normalized]; !ok {
+					continue
+				}
+				data, err := s.Read(normalized)
+				if err == nil {
+					return normalized, data, nil
+				}
+				if !errors.Is(err, ErrNotFound) {
+					return "", nil, err
+				}
+			}
+			return "", nil, ErrNotFound
+		}
+	}
+	for _, name := range names {
+		data, err := s.Read(name)
+		if err == nil {
+			return name, data, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return "", nil, err
+		}
+	}
+	return "", nil, ErrNotFound
+}
+
+func (s *Storage) readFirstLooseExistingWithSearchPaths(names []string) (string, []byte, bool, bool, error) {
+	type candidate struct {
+		normalized string
+		directory  string
+		base       string
+	}
+	candidates := make([]candidate, 0, len(names))
+	fallback := false
+	for _, name := range names {
+		normalized, err := s.normalize(name, false)
+		if err != nil || strings.ContainsRune(normalized, '>') ||
+			filepath.IsAbs(filepath.FromSlash(normalized)) {
+			fallback = true
+			continue
+		}
+		directory := path.Dir(normalized)
+		if directory == "." {
+			directory = ""
+		}
+		candidates = append(candidates, candidate{
+			normalized: normalized,
+			directory:  directory,
+			base:       path.Base(normalized),
+		})
+	}
+	type searchRoot struct {
+		name         string
+		archive      bool
+		archiveIndex int
+		memberPrefix string
+	}
+	roots := make([]searchRoot, 1, len(s.searchPaths)+1)
+	roots[0] = searchRoot{archiveIndex: -1}
+	for index := len(s.searchPaths) - 1; index >= 0; index-- {
+		searchPath := s.searchPaths[index]
+		root := searchRoot{name: searchPath, archiveIndex: -1}
+		if separator := strings.IndexByte(searchPath, '>'); separator >= 0 {
+			root.archive = true
+			root.memberPrefix = searchPath[separator+1:]
+			root.archiveIndex, _ = s.archiveIndex(searchPath[:separator])
+		}
+		roots = append(roots, root)
+	}
+	directories := make(map[string]string, len(roots))
+	directoryResolved := make(map[string]bool, len(roots))
+	entries := make(map[string]map[string]directoryEntry, len(roots))
+	for _, candidate := range candidates {
+		for _, root := range roots {
+			if root.archive {
+				if root.archiveIndex < 0 {
+					continue
+				}
+				member := root.memberPrefix
+				if member != "" {
+					member += "/"
+				}
+				member += candidate.normalized
+				archive := s.Archives[root.archiveIndex]
+				if _, ok := archive.Entries[member]; !ok {
+					continue
+				}
+				data, err := archive.Read(member)
+				if err == nil {
+					return candidate.normalized, data, true, fallback, nil
+				}
+				if !errors.Is(err, ErrNotFound) {
+					return "", nil, false, fallback, err
+				}
+				continue
+			}
+			if root.name == "" {
+				if index, member, ok := s.archiveLocation(candidate.normalized); ok {
+					data, err := s.Archives[index].Read(member)
+					if err == nil {
+						return candidate.normalized, data, true, fallback, nil
+					}
+					if !errors.Is(err, ErrNotFound) {
+						return "", nil, false, fallback, err
+					}
+				}
+			}
+			directoryName := candidate.directory
+			if root.name != "" {
+				if directoryName == "" {
+					directoryName = root.name
+				} else {
+					directoryName = root.name + "/" + directoryName
+				}
+			}
+			if !directoryResolved[directoryName] {
+				directoryResolved[directoryName] = true
+				directory, resolveErr := s.resolveDirectory(directoryName)
+				if resolveErr != nil {
+					if errors.Is(resolveErr, ErrNotFound) || os.IsNotExist(resolveErr) {
+						continue
+					}
+					return "", nil, false, fallback, resolveErr
+				}
+				directories[directoryName] = directory
+			}
+			directory := directories[directoryName]
+			if directory == "" {
+				continue
+			}
+			index, ok := entries[directory]
+			if !ok {
+				info, statErr := os.Stat(directory)
+				if statErr != nil {
+					if os.IsNotExist(statErr) {
+						continue
+					}
+					return "", nil, false, fallback, statErr
+				}
+				index, statErr = s.directoryEntries(directory, info)
+				if statErr != nil {
+					return "", nil, false, fallback, statErr
+				}
+				entries[directory] = index
+			}
+			entry, ok := index[asciiLower(candidate.base)]
+			if !ok {
+				continue
+			}
+			if entry.collision {
+				return "", nil, false, fallback,
+					fmt.Errorf("ambiguous case-insensitive storage name: %s", candidate.normalized)
+			}
+			candidatePath := filepath.Join(directory, entry.name)
+			canonical, err := filepath.EvalSymlinks(candidatePath)
+			if err != nil {
+				return "", nil, false, fallback, err
+			}
+			if !within(s.Project, canonical) {
+				return "", nil, false, fallback,
+					fmt.Errorf("storage symlink escapes game directory: %s", candidate.normalized)
+			}
+			info, err := os.Stat(canonical)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return "", nil, false, fallback, err
+			}
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			data, err := s.readLoosePath(canonical)
+			if err != nil {
+				return "", nil, false, fallback, err
+			}
+			return candidate.normalized, data, true, fallback, nil
+		}
+	}
+	return "", nil, false, fallback, nil
+}
+
+func (s *Storage) readFirstLooseExisting(names []string) (string, []byte, bool, error) {
+	directories := make(map[string]string, 1)
+	directoryResolved := make(map[string]bool, 1)
+	entries := make(map[string]map[string]directoryEntry, 1)
+	for _, name := range names {
+		normalized, err := s.normalize(name, false)
+		if err != nil || strings.ContainsRune(normalized, '>') ||
+			filepath.IsAbs(filepath.FromSlash(normalized)) {
+			continue
+		}
+		directoryName := path.Dir(normalized)
+		if directoryName == "." {
+			directoryName = ""
+		}
+		if !directoryResolved[directoryName] {
+			directoryResolved[directoryName] = true
+			directory, resolveErr := s.resolveDirectory(directoryName)
+			if resolveErr != nil {
+				if errors.Is(resolveErr, ErrNotFound) || os.IsNotExist(resolveErr) {
+					continue
+				}
+				return "", nil, false, resolveErr
+			}
+			directories[directoryName] = directory
+		}
+		directory := directories[directoryName]
+		if directory == "" {
+			continue
+		}
+		index, ok := entries[directory]
+		if !ok {
+			info, statErr := os.Stat(directory)
+			if statErr != nil {
+				if os.IsNotExist(statErr) {
+					continue
+				}
+				return "", nil, false, statErr
+			}
+			index, err = s.directoryEntries(directory, info)
+			if err != nil {
+				return "", nil, false, err
+			}
+			entries[directory] = index
+		}
+		entry, ok := index[asciiLower(path.Base(normalized))]
+		if !ok {
+			continue
+		}
+		if entry.collision {
+			return "", nil, false, fmt.Errorf("ambiguous case-insensitive storage name: %s", name)
+		}
+		candidate := filepath.Join(directory, entry.name)
+		canonical, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if !within(s.Project, canonical) {
+			return "", nil, false, fmt.Errorf("storage symlink escapes game directory: %s", name)
+		}
+		info, err := os.Stat(canonical)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", nil, false, err
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		data, err := s.readLoosePath(canonical)
+		if err != nil {
+			return "", nil, false, err
+		}
+		return normalized, data, true, nil
+	}
+	return "", nil, false, nil
 }
 
 func (s *Storage) readLoosePath(path string) ([]byte, error) {

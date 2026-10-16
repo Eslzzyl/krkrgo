@@ -611,11 +611,15 @@ func (s *Services) invokeContinuousHandlers(vm *tjs.VM, tick uint64, budget *uin
 		if trace {
 			ref := callback.ObjectRef()
 			category := "unknown"
+			name := ""
 			if object, ok := vm.Objects.Lookup(ref.Object); ok && object != nil {
 				category = fmt.Sprint(object.Category)
+				if value, ok := object.Get("name"); ok {
+					name = value.Text()
+				}
 			}
-			log.Printf("continuous-handler index=%d function_id=%d context_id=%d category=%s duration=%s error=%v",
-				index, ref.Object, ref.Context, category, time.Since(started), err)
+			log.Printf("continuous-handler index=%d function_id=%d context_id=%d category=%s name=%q duration=%s error=%v",
+				index, ref.Object, ref.Context, category, name, time.Since(started), err)
 		}
 		if err != nil {
 			s.mu.Lock()

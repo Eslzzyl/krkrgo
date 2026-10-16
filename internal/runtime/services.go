@@ -100,6 +100,7 @@ type Services struct {
 	systemTitleInitialized   bool
 	systemExecutableName     string
 	systemExecutableResolved bool
+
 	EventDisabled            bool
 	ExitOnWindowClose        bool
 	DrawThreadNum            int64
@@ -109,6 +110,10 @@ type Services struct {
 	ContinuousHandlers       []tjs.Value
 	Root                     *Layer
 	Compositor               *Compositor
+	validatedTreeRoot        *Layer
+	validatedTreeRevision    uint64
+	validatedTreeError       error
+	gpuCapture               bool
 	Scheduler                *Scheduler
 	Events                   *EventQueue
 	Timers                   *TimerRegistry
@@ -907,9 +912,36 @@ func (s *Services) CaptureFrameForPresentation() (FrameSnapshot, error) {
 func (s *Services) CaptureFrameBorrowed() (FrameSnapshot, error) {
 	return s.captureFrameWithPresentation(false)
 }
-
 func (s *Services) captureFrame() (FrameSnapshot, error) {
 	return s.captureFrameWithPresentation(false)
+}
+func (s *Services) validateRootTree(root *Layer) error {
+	if s == nil || root == nil {
+		return nil
+	}
+	if s.validatedTreeRoot == root && s.validatedTreeRevision == root.subtreeRevision {
+		return s.validatedTreeError
+	}
+	err := validateTree(root, nil)
+	s.validatedTreeRoot = root
+	s.validatedTreeRevision = root.subtreeRevision
+	s.validatedTreeError = err
+	return err
+}
+
+func materializeLayerTree(layer *Layer) error {
+	if layer == nil {
+		return nil
+	}
+	if err := layer.materializeGPUStretch(); err != nil {
+		return err
+	}
+	for _, child := range layer.children {
+		if err := materializeLayerTree(child); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Services) captureFrameWithPresentation(presentation bool) (FrameSnapshot, error) {
@@ -926,16 +958,20 @@ func (s *Services) captureFrameWithPresentation(presentation bool) (FrameSnapsho
 	}
 	c := s.Compositor
 	if c.Root != nil {
+		started := time.Time{}
 		if statsEnabled {
-			started := time.Now()
-			err := validateTree(c.Root, nil)
+			started = time.Now()
+		}
+		err := s.validateRootTree(c.Root)
+		if statsEnabled {
 			timings.validate = time.Since(started)
-			if err != nil {
-				return FrameSnapshot{}, err
-			}
-		} else if err := validateTree(c.Root, nil); err != nil {
+		}
+		if err != nil {
 			return FrameSnapshot{}, err
 		}
+	}
+	if err := materializeLayerTree(c.Root); err != nil {
+		return FrameSnapshot{}, err
 	}
 	var walkStarted time.Time
 	if statsEnabled {

@@ -439,6 +439,7 @@ func (s *Services) clearMotionTarget(vm *tjs.VM, value tjs.Value) error {
 		layer.RGBA[i] = 0
 	}
 	layer.imageModified = true
+	layer.markImageDirty()
 	return nil
 }
 
@@ -449,7 +450,7 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 	if resource == nil {
 		return fmt.Errorf("Motion.Player.draw has no loaded PSB resource")
 	}
-	frame, err := renderPSBMotion(resource, state.chara, state.motion, state.frameTick)
+	frame, err := renderPSBMotion(resource, state.chara, state.motion, state.frameTick, state.completionType)
 	if err != nil {
 		return err
 	}
@@ -480,11 +481,13 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 		}
 		layer.Visible = true
 		layer.imageModified = true
+		layer.markImageDirty()
 		return nil
 	}
-	drawMotionCanvasInto(layer, frame, state.drawMatrix)
+	drawMotionCanvasInto(layer, frame, state.drawMatrix, state.completionType)
 	layer.Visible = true
 	layer.imageModified = true
+	layer.markImageDirty()
 	return nil
 }
 

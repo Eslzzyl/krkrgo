@@ -47,6 +47,13 @@ func TestNativeLayerOperateRectAndStretchCopyPixels(t *testing.T) {
 		}
 	}
 }
+func TestBilinearRGBAPreservesTransparentEdgeColor(t *testing.T) {
+	source := []byte{255, 0, 0, 255, 0, 0, 0, 0}
+	got := bilinearRGBA(source, 0, 4, 0, 4, 0.5, 0, true)
+	if got != ([4]byte{255, 0, 0, 128}) {
+		t.Fatalf("premultiplied bilinear edge = %v, want [255 0 0 128]", got)
+	}
+}
 
 func TestStretchCopyPixelsMatchesReference(t *testing.T) {
 	random := rand.New(rand.NewPCG(0x2119, 0x34c1))
@@ -342,6 +349,27 @@ func TestNativeLayerImageTransformsAndAssignImages(t *testing.T) {
 	}
 	if got := readInt(`src.getMainPixel(1,0)`); got != 0x181818 {
 		t.Fatalf("transformed source center=%#x, want %#x", got, 0x181818)
+	}
+}
+func TestNativeGPUCaptureDefersFullImageStretchCopy(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	session.Services.gpuCapture = true
+	if _, err := session.executeSource("<gpu-stretch-native-test>", `
+src = new Layer(); dst = new Layer();
+src.setImageSize(2, 1); dst.setImageSize(8, 4);
+src.fillRect(0, 0, 2, 1, 0xff204060);
+dst.stretchCopy(0, 0, 4, 2, src, 0, 0, 2, 1, stFastLinear);
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("dst")
+	if err != nil {
+		t.Fatal(err)
+	}
+	layer := session.Services.Layers[value.ObjectRef().Object]
+	if layer == nil || layer.gpuStretch == nil {
+		t.Fatal("native GPU capture did not defer full-image stretchCopy")
 	}
 }
 
