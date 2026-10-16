@@ -98,6 +98,10 @@ printf '[{"at_ms":1000,"action":"checkpoint","name":"end","inspect":[]}]' | temp
 将运行时缓存指令从公开 `LegacyInstruction` 转为不保存名称字段的紧凑结构，并在错误路径按 opcode 查询名称。`amairo` 10 s 回放从缓存版本的 61.061 s 变为 63.111 s，输出 SHA-256 保持一致。该候选产生约 3.4% 倒退，代码已撤回，没有进入生产提交。
 
 
+### 跨启动 TJS 准备缓存（跳过）
+
+当前 `DecodedBytecode` 已在单次进程内缓存 Legacy 准备结果。跨启动缓存需要独立的版本、完整性校验和失效流程；现有无头回放没有可复用的持久缓存格式，当前项目级测量也无法将磁盘缓存收益与操作系统文件缓存收益分离。该项记录为跳过，没有新增运行时代码。
+
 ### 进程内存采样
 
 使用 Windows 进程采样，每 250 ms 读取一次 `WorkingSet64` 和 `PrivateMemorySize64`。10 s `amairo` 回放的结果：
