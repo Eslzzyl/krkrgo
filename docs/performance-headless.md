@@ -288,6 +288,24 @@ printf '[{"at_ms":10000,"action":"checkpoint","name":"end","inspect":[]}]' | tem
 - Working Set 与 Private Bytes 峰值；
 - replay 错误和 checkpoint 状态。
 
+## 十项优化验收状态
+
+| 编号 | 方向 | 状态 | 提交 |
+| --- | --- | --- | --- |
+| 1 | TJS Legacy 紧凑执行形式 | 跳过：`amairo` 10 s 为 63.111 s，高于 61.061 s | `cf0227a` |
+| 2 | GPU RenderItem 与批量绘制 | 跳过：当前 backend 没有稳定批量收益 | `459c0c5` |
+| 3 | 持久化 TJS 准备缓存 | 跳过跨启动部分；进程内缓存已在 `2276a6d` 获得收益 | `3decae2` |
+| 4 | CPU dirty-region / tile cache | 跳过：当前 layer 状态没有统一区域失效信息 | `2cc21aa` |
+| 5 | TJS 属性与调用 inline cache | 跳过：缺少稳定 receiver-shape / call-target 项目测量 | `a5fe83d` |
+| 6 | VM frame / scope / register 复用 | 跳过：寄存器候选使 10 s 回放变慢 | `fc4da3a` |
+| 7 | 脚本编译准备缓存 | 跳过：10 s 回放从 61.061 s 变为 65.535 s | `6fd4240` |
+| 8 | 异步资源读取、解码与预取 | 跳过：当前 `amairo` 没有独立资源切换测量场景 | `cca57c8` |
+| 9 | FFmpeg 硬件解码与 GPU 帧链路 | 跳过：当前 sidecar 没有硬件帧路径 | `e8badc3` |
+| 10 | GPU transition 全量迁移 | 跳过重复改动：当前 crossfade/universal 已使用 Kage shader | `e445027` |
+
+运行时代码提交条件：同场景测量结果必须显示正向收益。其余项目均保留测量结论或能力限制记录。
+
+
 ## 当前判断
 
 1. `amairo` 无头启动和 10 s 回放的墙钟成本很高，启动资源初始化与 CPU frame 处理需要继续细分。
