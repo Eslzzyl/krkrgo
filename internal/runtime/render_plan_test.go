@@ -204,3 +204,99 @@ func TestCaptureRenderPlanRejectsEffectAndFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestCaptureRenderPlanCachedTransitionHashesTrackPhase(t *testing.T) {
+	services := benchmarkTransitionRenderPlanServices(true)
+	first, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := services.Root.ChildAt(0)
+	if destination == nil || first.Nodes[1].Transition == nil {
+		t.Fatal("cached transition render plan is missing its destination node")
+	}
+	transition := first.Nodes[1].Transition
+	if transition.DestinationHash != destination.transitionDestHash ||
+		transition.SourceHash != destination.transitionSourceHash ||
+		transition.RuleHash != destination.transitionRuleHash {
+		t.Fatalf("cached transition hashes = (%d, %d, %d), want (%d, %d, %d)",
+			transition.DestinationHash, transition.SourceHash, transition.RuleHash,
+			destination.transitionDestHash, destination.transitionSourceHash, destination.transitionRuleHash)
+	}
+	oldImageHash := first.Nodes[1].ImageHash
+	destination.transitionTick++
+	second, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Nodes[1].ImageHash == oldImageHash {
+		t.Fatal("cached transition image hash did not change with phase")
+	}
+}
+
+func benchmarkTransitionRenderPlanServices(cached bool) *Services {
+	const width, height = 1280, 720
+	root := NewRootLayer(1, width, height)
+	destination := NewLayer(2)
+	source := NewLayer(3)
+	destinationPixels := make([]byte, width*height*4)
+	sourcePixels := make([]byte, width*height*4)
+	rule := make([]byte, width*height)
+	for i := range destinationPixels {
+		destinationPixels[i] = byte(i)
+		sourcePixels[i] = byte(i >> 3)
+	}
+	for i := range rule {
+		rule[i] = byte(i >> 4)
+	}
+	if err := destination.SetRGBA(width, height, destinationPixels); err != nil {
+		panic(err)
+	}
+	if err := source.SetRGBA(width, height, sourcePixels); err != nil {
+		panic(err)
+	}
+	destination.inTransition = true
+	destination.transitionMethod = "universal"
+	destination.transitionChildren = true
+	destination.transitionDestImage = append([]byte(nil), destinationPixels...)
+	destination.transitionSourceImage = append([]byte(nil), sourcePixels...)
+	destination.transitionPixels = append([]byte(nil), destinationPixels...)
+	destination.transitionRule = rule
+	destination.transitionTick = 127
+	destination.transitionDuration = 255
+	destination.transitionVague = 64
+	destination.transitionHashesValid = cached
+	if cached {
+		destination.transitionDestHash = hashTransitionBytes(destination.transitionDestImage)
+		destination.transitionSourceHash = hashTransitionBytes(destination.transitionSourceImage)
+		destination.transitionRuleHash = hashTransitionBytes(destination.transitionRule)
+	}
+	if err := root.AddChild(destination); err != nil {
+		panic(err)
+	}
+	services := DefaultServices()
+	services.Root = root
+	return services
+}
+
+func BenchmarkCaptureRenderPlanUniversalTransition(b *testing.B) {
+	for _, cached := range []struct {
+		name  string
+		value bool
+	}{
+		{name: "cached", value: true},
+		{name: "full_hash", value: false},
+	} {
+		b.Run(cached.name, func(b *testing.B) {
+			services := benchmarkTransitionRenderPlanServices(cached.value)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				services.TimeMS = uint64(i)
+				if _, err := services.CaptureRenderPlan(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

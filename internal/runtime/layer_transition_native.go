@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"hash/crc32"
+	"hash/maphash"
 	"math"
 	"os"
 	"sort"
@@ -10,6 +11,23 @@ import (
 	"github.com/eslzzyl/krkrgo/internal/assets"
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
+
+var transitionHashSeed = maphash.MakeSeed()
+
+func hashTransitionBytes(pixels []byte) uint64 {
+	var hash maphash.Hash
+	hash.SetSeed(transitionHashSeed)
+	_, _ = hash.Write(pixels)
+	return hash.Sum64()
+}
+
+func transitionPixelsHash(layer *Layer, phase uint64) uint64 {
+	hash := layer.transitionDestHash
+	hash ^= layer.transitionSourceHash + 0x9e3779b97f4a7c15 + (hash << 6) + (hash >> 2)
+	hash ^= layer.transitionRuleHash + uint64(phase)*0x517cc1b727220a95
+	hash ^= uint64(layer.transitionVague) * 0x94d049bb133111eb
+	return hash
+}
 
 type transitionAlphaClass uint8
 
@@ -212,6 +230,10 @@ func (s *Services) layerTransition(vm *tjs.VM, context tjs.Value, operation stri
 	layer.transitionDestImage = append(layer.transitionDestImage[:0], layer.RGBA...)
 	layer.transitionSourceImage = append(layer.transitionSourceImage[:0], source.RGBA...)
 	layer.transitionPixels = append(layer.transitionPixels[:0], layer.RGBA...)
+	layer.transitionDestHash = hashTransitionBytes(layer.transitionDestImage)
+	layer.transitionSourceHash = hashTransitionBytes(layer.transitionSourceImage)
+	layer.transitionRuleHash = hashTransitionBytes(rule)
+	layer.transitionHashesValid = true
 	layer.transitionOpaque, layer.transitionZeroOpaque, layer.transitionDestAlpha, layer.transitionSourceAlpha =
 		classifyTransitionAlphaPlanes(layer.transitionDestImage, layer.transitionSourceImage)
 	layer.transitionOpaque = method == "crossfade" && layer.transitionOpaque
@@ -260,6 +282,10 @@ func (s *Services) cancelLayerTransition(layer *Layer) {
 	layer.transitionPixels = nil
 	layer.transitionOpaque = false
 	layer.transitionZeroOpaque = false
+	layer.transitionDestHash = 0
+	layer.transitionSourceHash = 0
+	layer.transitionRuleHash = 0
+	layer.transitionHashesValid = false
 	layer.transitionSourceAlpha = transitionAlphaUnknown
 	layer.transitionDestAlpha = transitionAlphaUnknown
 }
@@ -271,15 +297,22 @@ func (s *Services) advanceLayerTransitions(vm *tjs.VM, timeMS uint64, selfUpdate
 
 func (s *Services) advanceLayerTransitionsDeferred(vm *tjs.VM, timeMS uint64, selfUpdate bool, budget *uint64, deferCompletion bool) ([]tjs.ObjectID, error) {
 	s.mu.RLock()
-	ids := make([]tjs.ObjectID, 0, len(s.Layers))
+	ids := s.transitionIDsScratch[:0]
 	for id, layer := range s.Layers {
 		if layer.inTransition && layer.transitionSelfUpdate == selfUpdate {
 			ids = append(ids, id)
 		}
 	}
 	s.mu.RUnlock()
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	s.transitionIDsScratch = ids
+	if len(ids) > 1 {
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	}
 	var pending []tjs.ObjectID
+	if deferCompletion {
+		pending = s.pendingTransitionScratch[:0]
+		s.pendingTransitionScratch = pending
+	}
 	for _, id := range ids {
 		layer := s.Layer(id)
 		if layer == nil || !layer.inTransition {
@@ -322,28 +355,8 @@ func (s *Services) advanceLayerTransitionsDeferred(vm *tjs.VM, timeMS uint64, se
 			blendSpin(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage,
 				layer.ImageWidth, layer.ImageHeight, phase, layer.transitionType1, layer.transitionType2, layer.transitionAccel)
 		} else if layer.transitionMethod == "universal" {
-			vague := int64(layer.transitionVague)
-			phaseValue := int64(phase)
-			low := phaseValue - vague
-			for pixel := range layer.transitionRule {
-				i := pixel * 4
-				rule := int64(layer.transitionRule[i/4])
-				opacity := int64(0)
-				if rule < low {
-					opacity = 255
-				} else if rule < phaseValue {
-					if vague != 0 {
-						opacity = 255 - (rule-low)*255/vague
-					} else {
-						opacity = 255
-					}
-				}
-				for c := range 4 {
-					dest := int64(layer.transitionDestImage[i+c])
-					src := int64(layer.transitionSourceImage[i+c])
-					layer.transitionPixels[i+c] = byte(dest + ((src - dest) * opacity >> 8))
-				}
-			}
+			blendUniversal(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage,
+				layer.transitionRule, phase, layer.transitionVague)
 		} else if layer.transitionZeroOpaque {
 			blendZeroOpaqueCrossfade(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage, phase)
 		} else {
@@ -388,6 +401,9 @@ func classifyTransitionAlphaPlanes(dest, src []byte) (opaque, zeroOpaque bool, d
 		destOpaque = destOpaque && destByte == 255
 		srcZero = srcZero && srcByte == 0
 		srcOpaque = srcOpaque && srcByte == 255
+		if !destZero && !destOpaque && !srcZero && !srcOpaque {
+			break
+		}
 	}
 	switch {
 	case destZero:
@@ -434,6 +450,38 @@ func blendCrossfade(out, dest, src []byte, phase uint64, opaque bool) {
 		out[i] = byte((d*(255-p) + s*p + 127) / 255)
 	}
 }
+func blendUniversal(out, dest, src, rule []byte, phase uint64, vague int32) {
+	if phase == 0 {
+		copy(out, dest)
+		return
+	}
+	phaseValue := int64(phase)
+	vagueValue := int64(vague)
+	low := phaseValue - vagueValue
+	for pixel, ruleByte := range rule {
+		offset := pixel << 2
+		ruleValue := int64(ruleByte)
+		opacity := int64(0)
+		if ruleValue < low {
+			opacity = 255
+		} else if ruleValue < phaseValue {
+			if vagueValue != 0 {
+				opacity = 255 - (ruleValue-low)*255/vagueValue
+			} else {
+				opacity = 255
+			}
+		}
+		dest0, dest1 := int64(dest[offset]), int64(dest[offset+1])
+		dest2, dest3 := int64(dest[offset+2]), int64(dest[offset+3])
+		src0, src1 := int64(src[offset]), int64(src[offset+1])
+		src2, src3 := int64(src[offset+2]), int64(src[offset+3])
+		out[offset] = byte(dest0 + ((src0 - dest0) * opacity >> 8))
+		out[offset+1] = byte(dest1 + ((src1 - dest1) * opacity >> 8))
+		out[offset+2] = byte(dest2 + ((src2 - dest2) * opacity >> 8))
+		out[offset+3] = byte(dest3 + ((src3 - dest3) * opacity >> 8))
+	}
+}
+
 func blendZeroOpaqueCrossfade(out, dest, src []byte, phase uint64) {
 	if phase == 0 {
 		copy(out, dest)

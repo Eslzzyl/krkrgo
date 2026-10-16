@@ -533,6 +533,102 @@ func TestTransitionAlphaClassificationSelectsOnlyZeroOpaqueMode(t *testing.T) {
 	}
 }
 
+func blendUniversalReference(out, dest, src, rule []byte, phase uint64, vague int32) {
+	vagueValue := int64(vague)
+	phaseValue := int64(phase)
+	low := phaseValue - vagueValue
+	for pixel := range rule {
+		offset := pixel * 4
+		ruleValue := int64(rule[pixel])
+		opacity := int64(0)
+		if ruleValue < low {
+			opacity = 255
+		} else if ruleValue < phaseValue {
+			if vagueValue != 0 {
+				opacity = 255 - (ruleValue-low)*255/vagueValue
+			} else {
+				opacity = 255
+			}
+		}
+		for channel := range 4 {
+			destValue := int64(dest[offset+channel])
+			srcValue := int64(src[offset+channel])
+			out[offset+channel] = byte(destValue + ((srcValue - destValue) * opacity >> 8))
+		}
+	}
+}
+
+func TestBlendUniversalByteExact(t *testing.T) {
+	dest := []byte{
+		0, 32, 96, 255,
+		10, 64, 128, 200,
+		20, 96, 160, 128,
+		30, 128, 192, 0,
+	}
+	src := []byte{
+		255, 224, 160, 0,
+		245, 192, 128, 55,
+		235, 160, 96, 127,
+		225, 128, 64, 255,
+	}
+	rule := []byte{0, 64, 128, 255}
+	for _, test := range []struct {
+		phase uint64
+		vague int32
+	}{
+		{phase: 0, vague: 64},
+		{phase: 1, vague: 64},
+		{phase: 64, vague: 64},
+		{phase: 128, vague: 64},
+		{phase: 255, vague: 64},
+		{phase: 319, vague: 64},
+		{phase: 64, vague: 0},
+	} {
+		t.Run(fmt.Sprintf("phase_%d_vague_%d", test.phase, test.vague), func(t *testing.T) {
+			got := make([]byte, len(dest))
+			want := make([]byte, len(dest))
+			blendUniversal(got, dest, src, rule, test.phase, test.vague)
+			blendUniversalReference(want, dest, src, rule, test.phase, test.vague)
+			if !bytes.Equal(got, want) {
+				t.Fatalf("optimized universal blend = %v, reference = %v", got, want)
+			}
+		})
+	}
+}
+
+func BenchmarkBlendUniversal1280x720(b *testing.B) {
+	const width, height = 1280, 720
+	pixels := width * height
+	dest := make([]byte, pixels*4)
+	src := make([]byte, pixels*4)
+	rule := make([]byte, pixels)
+	out := make([]byte, pixels*4)
+	for i := range pixels {
+		offset := i * 4
+		dest[offset] = byte(i)
+		dest[offset+1] = byte(i >> 3)
+		dest[offset+2] = byte(i >> 7)
+		dest[offset+3] = byte(i >> 11)
+		src[offset] = byte(i >> 1)
+		src[offset+1] = byte(i >> 5)
+		src[offset+2] = byte(i >> 9)
+		src[offset+3] = byte(i >> 13)
+		rule[i] = byte(i >> 4)
+	}
+	b.SetBytes(int64(len(out)))
+	b.ReportAllocs()
+	b.Run("optimized", func(b *testing.B) {
+		for range b.N {
+			blendUniversal(out, dest, src, rule, 127, 64)
+		}
+	})
+	b.Run("reference", func(b *testing.B) {
+		for range b.N {
+			blendUniversalReference(out, dest, src, rule, 127, 64)
+		}
+	})
+}
+
 func BenchmarkBlendCrossfadeZeroOpaque1280x720(b *testing.B) {
 	const width, height = 1280, 720
 	pixels := width * height

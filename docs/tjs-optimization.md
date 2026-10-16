@@ -12,8 +12,8 @@ Go uses string `OpCode`s and a tagged `Op` in `internal/tjs/compiler.go:18-124`;
 
 ## Completed production results
 
-All seven optimizations were implemented and verified. Relevant tests and benchmarks are identified below; the full verification commands are listed afterward.
-
+The production changes below are implemented and verified. The list covers
+compiler, interpreter, Legacy execution, call paths, and collector work.
 1. **Direct scalar UTF-16 equality** — `internal/tjs/value.go:641-650` compares code units directly rather than calling `compareUTF16`. Equality and ordering boundary coverage includes empty strings, prefixes, and isolated surrogates (`internal/tjs/value_object_test.go:28-57`). On Apple M1 Pro, equal 32-unit inputs measured 12.69–13.65 ns/op versus 16.55–16.72 ns/op for the compare-based baseline; 1,024 units measured 346.0–351.1 ns/op versus 502.8–513.3 ns/op; 65,536 units measured 21.16–21.38 µs/op versus 31.79–32.19 µs/op. Both paths used zero allocations. These are helper benchmarks, not a VM speedup claim.
 
 2. **Direct UTF-16-unit member keys** — `memberKeyUnits` and the ordinary `getMember`, `setMember`, and `deleteMember` paths in `internal/tjs/vm.go:307-319,357-458` use existing units with `Object.GetUnits`, `SetUnits`, and `DeleteUnits`; conversion to text is deferred for global/class/super/dictionary fallback. Coverage includes non-ASCII and isolated-surrogate keys, misses, fallback, accessors, and dynamic add/delete (`internal/tjs/vm_member_access_test.go:5-90`). The ordinary-hit microbenchmark improved from 129.9 ns/op, 32 B/op, 2 allocs/op to 60.78 ns/op, zero bytes and allocations. This is not a property cache or opcode specialization.
@@ -26,6 +26,42 @@ All seven optimizations were implemented and verified. Relevant tests and benchm
 
 6. **Owned `expandArgs` slice for script calls** — `OpCall` passes its expanded argument slice through `invokeOwned`/`invokeWithOwnership` (`internal/tjs/vm.go:1810-1819,2104-2154`); script callees use it as frame arguments rather than making a second append copy. Public invocation and native/method/construction ownership boundaries retain their behavior. Call-shape tests and benchmarks are in `internal/tjs/vm_test.go:770-784` and `internal/tjs/vm_call_benchmark_test.go:16-86`. Paired medians: script/fixed 3,458→3,402 ns/op, 8,508→8,330 B/op, 26→25 allocs/op; script/forward 5,390→5,295 ns/op, 13,179→12,827 B/op, 42→40; script/spread 3,504→3,451 ns/op, 7,965→7,787 B/op, 28→27. These are local call-path results only.
 7. **Cached Legacy preparation** — `internal/tjs/bytecode_decode.go` allocates one preparation record per decoded object, while `internal/tjs/legacy_intercode.go` caches instruction boundaries and offset-to-IP tables through `sync.Once`. `ExecuteLegacy...` reuses the prepared representation; public `DecodeLegacyInstructions` returns an owned copy. On Windows amd64, the full `testdata/amairo` replay changed from 15.535 s to 13.191 s for the 1 s checkpoint and from 126.510 s to 61.061 s for the 10 s checkpoint. Replay JSON SHA-256 values remained identical.
+
+8. **Direct integer opcode path** — `binaryIntegerFast` in
+   `internal/tjs/value.go` handles integer arithmetic, comparisons, logical
+   operations, and bitwise operations before the generic `Value.Binary` path.
+   VM semantics for mixed numeric/string/object values remain on the generic
+   path. On Darwin/arm64, `BenchmarkVMRunPhases/repeated-run` moved from
+   277.1 µs/op to 275.3 µs/op with allocation volume unchanged.
+
+9. **Reusable GC workspace** — `internal/tjs/gc.go` reuses the VM-local mark
+   map, pending object IDs, host list, and sorted object-ID storage. The
+   collector keeps the existing mark order, host-root traversal, object-ID
+   sorting, and removal behavior. The focused GC test suite passed after the
+   change.
+
+10. **Pointer-based instruction dispatch and direct register operands** —
+   `internal/tjs/vm.go` reads the current instruction from `Program.Code` without
+   copying the full instruction, hoists the optional trace-host assertion, and
+   uses validated direct register access for common unary, binary, load, move,
+   get, set, and call operations. `internal/tjs/bytecode_exec.go` applies the
+   same pointer access to Legacy instructions. The Darwin/arm64
+   `VMRunPhases/repeated-run` fixture measured about 108 µs/op after the direct
+   binary-register path versus about 114 µs/op immediately before it; the
+   workload remained at 11,440 B/op and 907 allocs/op.
+
+11. **Static member-key operands** — `internal/tjs/compiler.go` emits literal
+   string member keys in `OpGet`, `OpSet`, delete, type, swap, compound, update,
+   and call-target forms. `internal/tjs/vm.go` selects the embedded `Value`
+   without compiling or loading a key register. `BenchmarkVMStaticMemberAccess`
+   measured about 2.31 µs/op, 2,289 B/op, and 12 allocs/op for the static
+   source versus about 2.94 µs/op, 2,315 B/op, and 15 allocs/op for its
+   dynamic key form on Darwin/arm64.
+
+12. **Reusable VM resource-ID workspaces** — `internal/runtime/session.go`
+   reuses paint, video, sound, transition, and deferred-completion ID storage;
+   `internal/runtime/services.go` retains the paired service workspaces. The
+   existing dispatch order and error requeue behavior remain unchanged.
 
 ### Evaluated candidates and property-frame comparison
 

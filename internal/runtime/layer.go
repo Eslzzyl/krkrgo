@@ -209,6 +209,10 @@ type Layer struct {
 	transitionPixels      []byte
 	transitionOpaque      bool
 	transitionZeroOpaque  bool
+	transitionDestHash    uint64
+	transitionSourceHash  uint64
+	transitionRuleHash    uint64
+	transitionHashesValid bool
 	transitionSourceAlpha transitionAlphaClass
 	transitionDestAlpha   transitionAlphaClass
 	transitionHidden      bool

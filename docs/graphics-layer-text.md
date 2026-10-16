@@ -2,10 +2,12 @@
 
 ## Bitmap
 
-The native adapter is `Services.bitmapNative` in [`bitmap_native.go`](../internal/runtime/bitmap_native.go). Current code uses bounded pure-Go 32bpp RGBA storage and supports synchronous storage-backed loads, pixel/alpha access, size/copy/independence operations, header metadata, and lifecycle invalidation. Saving supports PNG, BMP, and JPEG. `encodeBitmapBMP` writes 8-, 24-, and 32-bit BMP paths; JPEG uses Go's `image/jpeg` encoder and recognizes `jpg`, `jpgN`, `.jpg`, `.jpeg`, and `.jif` type names.
+The native adapter is `Services.bitmapNative` in [`bitmap_native.go`](../internal/runtime/bitmap_native.go). Current code uses bounded pure-Go 32bpp RGBA storage and supports synchronous and asynchronous storage-backed loads, pixel/alpha access, size/copy/independence operations, header metadata, and lifecycle invalidation. Saving supports PNG, BMP, and JPEG. `encodeBitmapBMP` writes 8-, 24-, and 32-bit BMP paths; JPEG uses Go's `image/jpeg` encoder and recognizes `jpg`, `jpgN`, `.jpg`, `.jpeg`, and `.jif` type names.
 `jpg` and the extension aliases use quality 90; `jpgN` selects the suffix quality, with values clamped to 1–100 and zero/empty parsed quality falling back to 10. A `quality` metadata value overrides the mode and is clamped to 1–100. `Bitmap.getSaveOption` declares only the `quality` range (1–100, default 90). These describe quality-selection semantics, not byte-identical C++ codec output.
 
-Remaining limitations include unsupported `loadAsync`/`onLoaded`, constructor/load color-key transformation, and C++ raw `buffer`/`bufferForWrite` pointers (`ErrUnsupportedDevice`). The Go JPEG encoder cannot honor C++ `subsampling`, `dct`, or `progressive` controls; explicitly supplying any of those metadata keys returns `ErrUnsupportedDevice`. Other non-PNG encoders beyond BMP and JPEG are not implemented by this source.
+`Bitmap.loadAsync` decodes storage data on a background goroutine and posts a main-session `onLoaded(meta, async, error, message)` callback. Object finalization invalidates pending requests through a generation check.
+
+Remaining limitations include constructor/load color-key transformation and C++ raw `buffer`/`bufferForWrite` pointers (`ErrUnsupportedDevice`). The Go JPEG encoder cannot honor C++ `subsampling`, `dct`, or `progressive` controls; explicitly supplying any of those metadata keys returns `ErrUnsupportedDevice`. Other non-PNG encoders beyond BMP and JPEG are not implemented by this source.
 
 ## ImageFunction
 

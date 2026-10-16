@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
 	"github.com/eslzzyl/krkrgo/internal/core"
@@ -422,5 +424,152 @@ func TestNativeBitmapJPEGSaveAndOptions(t *testing.T) {
 	}
 	if _, err := session.Evaluate(`a.save('unsupported.tlg', 'tlg')`); !errors.Is(err, ErrUnsupportedDevice) {
 		t.Fatalf("unsupported encoder error=%v", err)
+	}
+}
+
+func writeBitmapAsyncFixture(t *testing.T) (string, *assets.Storage) {
+	t.Helper()
+	project := t.TempDir()
+	imagePath := filepath.Join(project, "async.png")
+	encoded := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	encoded.Pix = []byte{1, 2, 3, 255, 4, 5, 6, 255}
+	file, err := os.Create(imagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(file, encoded); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := assets.OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return t.TempDir(), storage
+}
+
+func waitForBitmapAsyncEvent(t *testing.T, session *Session, expression string) tjs.Value {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if err := session.DispatchEvents(); err != nil {
+			t.Fatal(err)
+		}
+		value, err := session.Evaluate(expression)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, err := value.Int(); err == nil && n != 0 {
+			return value
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for bitmap async event: %s", expression)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestNativeBitmapLoadAsyncDispatchesOnLoaded(t *testing.T) {
+	saveDir, storage := writeBitmapAsyncFixture(t)
+	services := NewServices(storage, saveDir, core.DefaultLimits())
+	session := NewSession(services, 20_000)
+	defer session.Close()
+	if _, err := session.Evaluate(`
+		a = new Bitmap();
+		loaded = 0;
+		a.onLoaded = function(meta, async, error, message) {
+			loaded = [meta.width, meta.height, async, error, message];
+		};
+		a.loadAsync('async.png');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := session.Evaluate("a.loading"); err != nil {
+		t.Fatal(err)
+	} else if n, _ := value.Int(); n != 1 {
+		t.Fatalf("loading=%d immediately after loadAsync", n)
+	}
+	waitForBitmapAsyncEvent(t, session, "a.loading == 0")
+	want := []string{"2", "1", "1", "0", ""}
+	for i, expected := range want {
+		item, err := session.Evaluate(fmt.Sprintf("loaded[%d]", i))
+		if err != nil || item.Text() != expected {
+			t.Fatalf("loaded[%d]=%v, want %s; err=%v", i, item, expected, err)
+		}
+	}
+	if value, err := session.Evaluate("a.loading"); err != nil {
+		t.Fatal(err)
+	} else if n, _ := value.Int(); n != 0 {
+		t.Fatalf("loading after callback=%d", n)
+	}
+}
+
+func TestNativeBitmapLoadAsyncReportsErrorAndRejectsOverlap(t *testing.T) {
+	saveDir, storage := writeBitmapAsyncFixture(t)
+	services := NewServices(storage, saveDir, core.DefaultLimits())
+	session := NewSession(services, 20_000)
+	defer session.Close()
+	if _, err := session.Evaluate(`
+		a = new Bitmap();
+		loaded = 0;
+		a.onLoaded = function(meta, async, error, message) {
+			loaded = [async, error, message];
+		};
+		a.loadAsync('missing.png');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Evaluate("a.loadAsync('async.png')"); err == nil {
+		t.Fatal("overlapping Bitmap.loadAsync succeeded")
+	}
+	waitForBitmapAsyncEvent(t, session, "a.loading == 0")
+	for index, expected := range []string{"1", "1"} {
+		item, err := session.Evaluate(fmt.Sprintf("loaded[%d]", index))
+		if err != nil || item.Text() != expected {
+			t.Fatalf("loaded[%d]=%v, want %s; err=%v", index, item, expected, err)
+		}
+	}
+}
+
+func TestNativeBitmapLoadAsyncDropsFinalizedRequest(t *testing.T) {
+	saveDir, storage := writeBitmapAsyncFixture(t)
+	services := NewServices(storage, saveDir, core.DefaultLimits())
+	session := NewSession(services, 20_000)
+	defer session.Close()
+	if _, err := session.Evaluate(`
+		a = new Bitmap();
+		loaded = 0;
+		a.onLoaded = function() { loaded++; };
+	`); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := value.ObjectRef().Object
+	if _, err := session.Evaluate("a.loadAsync('async.png')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := services.bitmapNative(session.VM, value, "finalize", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if err := session.DispatchEvents(); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if services.Events.Count(uint64(id), EventBitmapLoad) != 0 {
+		t.Fatal("finalized bitmap retained an async completion event")
+	}
+	if value, err := session.Evaluate("loaded"); err != nil {
+		t.Fatal(err)
+	} else if n, _ := value.Int(); n != 0 {
+		t.Fatalf("finalized bitmap callback count=%d", n)
 	}
 }

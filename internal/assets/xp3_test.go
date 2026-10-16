@@ -143,7 +143,11 @@ func TestReadRangeOwnsBytesReturnedFromSegmentCache(t *testing.T) {
 				Segments:   []Segment{{Compressed: true, Offset: 1, Size: uint64(len(plain)), PackedSize: uint64(len(plain))}},
 			},
 		},
-		cache:      []cachedSegment{{offset: 1, size: uint64(len(plain)), packed: uint64(len(plain)), compressed: true, bytes: plain}},
+		cache: map[segmentCacheKey]*cachedSegment{
+			{offset: 1, size: uint64(len(plain)), packed: uint64(len(plain)), compressed: true}: {
+				offset: 1, size: uint64(len(plain)), packed: uint64(len(plain)), compressed: true, bytes: plain,
+			},
+		},
 		cacheBytes: uint64(len(plain)),
 	}
 	first, err := archive.Read("data/file.bin")
@@ -163,8 +167,12 @@ func TestReadRangeOwnsBytesReturnedFromSegmentCache(t *testing.T) {
 func BenchmarkCachedSegmentRead(b *testing.B) {
 	data := make([]byte, 1<<20)
 	archive := &Archive{
-		limits:     core.Limits{CacheBytes: uint64(len(data))},
-		cache:      []cachedSegment{{offset: 1, size: uint64(len(data)), packed: uint64(len(data)), compressed: true, bytes: data}},
+		limits: core.Limits{CacheBytes: uint64(len(data))},
+		cache: map[segmentCacheKey]*cachedSegment{
+			{offset: 1, size: uint64(len(data)), packed: uint64(len(data)), compressed: true}: {
+				offset: 1, size: uint64(len(data)), packed: uint64(len(data)), compressed: true, bytes: data,
+			},
+		},
 		cacheBytes: uint64(len(data)),
 	}
 	segment := Segment{Offset: 1, Size: uint64(len(data)), PackedSize: uint64(len(data))}
@@ -175,6 +183,36 @@ func BenchmarkCachedSegmentRead(b *testing.B) {
 		if _, err := archive.segment(segment); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+var benchmarkSegmentCacheByte byte
+
+func BenchmarkCachedSegmentLargeLookup(b *testing.B) {
+	const entries = 4096
+	archive := &Archive{
+		limits: core.Limits{CacheBytes: entries},
+		cache:  make(map[segmentCacheKey]*cachedSegment, entries),
+	}
+	for i := 0; i < entries; i++ {
+		segment := Segment{Offset: uint64(i), Size: 1, PackedSize: 1}
+		entry := &cachedSegment{
+			offset: segment.Offset, size: segment.Size, packed: segment.PackedSize,
+			bytes: []byte{1},
+		}
+		archive.cache[segmentCacheKeyFor(segment)] = entry
+		archive.appendCachedSegment(entry)
+		archive.cacheBytes++
+	}
+	target := Segment{Offset: 0, Size: 1, PackedSize: 1}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		data, err := archive.segment(target)
+		if err != nil {
+			b.Fatal(err)
+		}
+		benchmarkSegmentCacheByte = data[0]
 	}
 }
 
@@ -194,7 +232,9 @@ func TestRawSegmentReadUsesBoundedCacheAndClear(t *testing.T) {
 			t.Fatalf("Read() = %q, %v; want %q", got, err, contents)
 		}
 	}
-	if len(archive.cache) != 1 || archive.cacheBytes != uint64(len(contents)) || archive.cache[0].compressed {
+	key := segmentCacheKeyFor(archive.Entries["data/raw.bin"].Segments[0])
+	entry, ok := archive.cache[key]
+	if len(archive.cache) != 1 || !ok || archive.cacheBytes != uint64(len(contents)) || entry.compressed {
 		t.Fatalf("raw segment cache = %#v (%d bytes)", archive.cache, archive.cacheBytes)
 	}
 	archive.ClearCache()

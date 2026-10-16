@@ -14,17 +14,15 @@ type EventKind uint8
 const (
 	EventTrigger EventKind = iota
 	EventTimer
+	EventSoundTrigger
+	EventBitmapLoad
 )
-
-// EventSoundTrigger is retained for hosts that represent sound callbacks with
-// a distinct kind. The runtime's queue uses EventTrigger plus Sound=true for
-// compatibility with existing queue consumers.
-const EventSoundTrigger EventKind = 2
 
 // Compatibility names used by hosts that spell the kind explicitly.
 const (
 	EventKindTrigger      = EventTrigger
 	EventKindTimer        = EventTimer
+	EventKindBitmapLoad   = EventBitmapLoad
 	EventKindSoundTrigger = EventSoundTrigger
 )
 

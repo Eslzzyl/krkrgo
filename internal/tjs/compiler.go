@@ -81,6 +81,7 @@ type DictionaryOperand struct {
 // keeping one concrete struct makes encoding/json and compatibility tooling
 // considerably less surprising than an interface containing many variants.
 type Op struct {
+	StaticKey    bool                `json:"static_key,omitempty"`
 	Code         OpCode              `json:"code"`
 	Out          int                 `json:"out,omitempty"`
 	Input        int                 `json:"input,omitempty"`
@@ -1560,11 +1561,13 @@ func (c *compiler) emit(loc core.SourceLocation, op Op) int {
 }
 
 type swapTarget struct {
-	kind        string
-	value       int
-	name        string
-	object, key int
-	property    int
+	kind         string
+	value        int
+	name         string
+	object, key  int
+	staticKey    Value
+	staticKeySet bool
+	property     int
 }
 
 func (c *compiler) compileSwapTarget(expression *cexpr) (swapTarget, error) {
@@ -1578,11 +1581,15 @@ func (c *compiler) compileSwapTarget(expression *cexpr) (swapTarget, error) {
 		if err != nil {
 			return swapTarget{}, err
 		}
+		value := c.reg()
+		if staticKey, ok := staticMemberKey(expression.right); ok {
+			c.emit(expression.loc, Op{Code: OpGet, Out: value, Object: object, StaticKey: true, Value: staticKey})
+			return swapTarget{kind: "member", value: value, object: object, staticKey: staticKey, staticKeySet: true}, nil
+		}
 		key, err := c.compile(expression.right)
 		if err != nil {
 			return swapTarget{}, err
 		}
-		value := c.reg()
 		c.emit(expression.loc, Op{Code: OpGet, Out: value, Object: object, Key: key})
 		return swapTarget{kind: "member", value: value, object: object, key: key}, nil
 	case expression != nil && expression.kind == "unary" && expression.text == "*":
@@ -1603,7 +1610,13 @@ func (c *compiler) writeSwapTarget(target swapTarget, value int, loc core.Source
 	case "name":
 		c.emit(loc, Op{Code: OpStore, Name: target.name, Input: value})
 	case "member":
-		c.emit(loc, Op{Code: OpSet, Object: target.object, Key: target.key, Input: value})
+		op := Op{Code: OpSet, Object: target.object, Input: value}
+		if target.staticKeySet {
+			op.StaticKey, op.Value = true, target.staticKey
+		} else {
+			op.Key = target.key
+		}
+		c.emit(loc, op)
 	case "property":
 		c.emit(loc, Op{Code: OpWriteProperty, Context: target.property, Input: value})
 	default:
@@ -1638,6 +1651,10 @@ func (c *compiler) compileRawProperty(e *cexpr) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		if key, ok := staticMemberKey(e.right); ok {
+			c.emit(e.loc, Op{Code: OpGet, Out: out, Object: object, StaticKey: true, Value: key, Raw: true})
+			break
+		}
 		key, err := c.compile(e.right)
 		if err != nil {
 			return 0, err
@@ -1658,6 +1675,10 @@ func (c *compiler) writeRawProperty(e *cexpr, input int) error {
 		if err != nil {
 			return err
 		}
+		if key, ok := staticMemberKey(e.right); ok {
+			c.emit(e.loc, Op{Code: OpSet, Object: object, StaticKey: true, Value: key, Input: input, Raw: true})
+			break
+		}
 		key, err := c.compile(e.right)
 		if err != nil {
 			return err
@@ -1667,6 +1688,13 @@ func (c *compiler) writeRawProperty(e *cexpr, input int) error {
 		return fmt.Errorf("invalid raw property assignment target")
 	}
 	return nil
+}
+
+func staticMemberKey(e *cexpr) (Value, bool) {
+	if e == nil || e.kind != "value" || e.value.Kind() != KindString {
+		return Value{}, false
+	}
+	return e.value, true
 }
 
 func (c *compiler) compile(e *cexpr) (int, error) {
@@ -1690,6 +1718,10 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 		o, err := c.compile(e.left)
 		if err != nil {
 			return 0, err
+		}
+		if key, ok := staticMemberKey(e.right); ok {
+			c.emit(e.loc, Op{Code: OpGet, Out: out, Object: o, StaticKey: true, Value: key})
+			break
 		}
 		k, err := c.compile(e.right)
 		if err != nil {
@@ -1757,6 +1789,10 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 				if err != nil {
 					return 0, err
 				}
+				if key, ok := staticMemberKey(e.left.right); ok {
+					c.emit(e.loc, Op{Code: OpDeleteMember, Out: out, Object: o, StaticKey: true, Value: key})
+					break
+				}
 				k, err := c.compile(e.left.right)
 				if err != nil {
 					return 0, err
@@ -1771,6 +1807,10 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 			o, err := c.compile(e.left.left)
 			if err != nil {
 				return 0, err
+			}
+			if key, ok := staticMemberKey(e.left.right); ok {
+				c.emit(e.loc, Op{Code: OpTypeOfMember, Out: out, Object: o, StaticKey: true, Value: key})
+				break
 			}
 			k, err := c.compile(e.left.right)
 			if err != nil {
@@ -1964,11 +2004,15 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 				if x != nil {
 					return 0, x
 				}
+				old = c.reg()
+				if key, ok := staticMemberKey(e.left.right); ok {
+					c.emit(e.loc, Op{Code: OpGet, Out: old, Object: o, StaticKey: true, Value: key})
+					break
+				}
 				k, x := c.compile(e.left.right)
 				if x != nil {
 					return 0, x
 				}
-				old = c.reg()
 				c.emit(e.loc, Op{Code: OpGet, Out: old, Object: o, Key: k})
 			default:
 				return 0, fmt.Errorf("invalid assignment target")
@@ -1984,6 +2028,10 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 			o, x := c.compile(e.left.left)
 			if x != nil {
 				return 0, x
+			}
+			if key, ok := staticMemberKey(e.left.right); ok {
+				c.emit(e.loc, Op{Code: OpSet, Object: o, StaticKey: true, Value: key, Input: out})
+				break
 			}
 			k, x := c.compile(e.left.right)
 			if x != nil {
@@ -2001,12 +2049,16 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 			if err != nil {
 				return 0, err
 			}
-			k, err := c.compile(e.left.right)
-			if err != nil {
-				return 0, err
-			}
 			callee = c.reg()
-			c.emit(e.loc, Op{Code: OpGet, Out: callee, Object: o, Key: k})
+			if key, ok := staticMemberKey(e.left.right); ok {
+				c.emit(e.loc, Op{Code: OpGet, Out: callee, Object: o, StaticKey: true, Value: key})
+			} else {
+				k, err := c.compile(e.left.right)
+				if err != nil {
+					return 0, err
+				}
+				c.emit(e.loc, Op{Code: OpGet, Out: callee, Object: o, Key: k})
+			}
 			context, contextSet = o, true
 		} else {
 			var err error
@@ -2081,6 +2133,8 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 		}
 		old := c.reg()
 		var object, key int
+		var staticKey Value
+		var staticKeySet bool
 		if e.left.kind == "name" {
 			c.emit(e.loc, Op{Code: OpLoad, Out: old, Name: e.left.text})
 		} else {
@@ -2089,11 +2143,15 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 			if err != nil {
 				return 0, err
 			}
-			key, err = c.compile(e.left.right)
-			if err != nil {
-				return 0, err
+			if staticKey, staticKeySet = staticMemberKey(e.left.right); staticKeySet {
+				c.emit(e.loc, Op{Code: OpGet, Out: old, Object: object, StaticKey: true, Value: staticKey})
+			} else {
+				key, err = c.compile(e.left.right)
+				if err != nil {
+					return 0, err
+				}
+				c.emit(e.loc, Op{Code: OpGet, Out: old, Object: object, Key: key})
 			}
-			c.emit(e.loc, Op{Code: OpGet, Out: old, Object: object, Key: key})
 		}
 		one := c.reg()
 		c.emit(e.loc, Op{Code: OpConstant, Out: one, Value: IntegerValue(1)})
@@ -2106,7 +2164,13 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 		if e.left.kind == "name" {
 			c.emit(e.loc, Op{Code: OpStore, Name: e.left.text, Input: next})
 		} else {
-			c.emit(e.loc, Op{Code: OpSet, Object: object, Key: key, Input: next})
+			op := Op{Code: OpSet, Object: object, Input: next}
+			if staticKeySet {
+				op.StaticKey, op.Value = true, staticKey
+			} else {
+				op.Key = key
+			}
+			c.emit(e.loc, op)
 		}
 		if e.prefix {
 			c.emit(e.loc, Op{Code: OpMove, Out: out, Input: next})

@@ -10,11 +10,15 @@ const maxDecodedImageCacheEntries = 4096
 type imageDecodeCacheEntry struct {
 	key   [sha256.Size]byte
 	image Image
+	older *imageDecodeCacheEntry
+	newer *imageDecodeCacheEntry
 }
 
 type imageDecodeCache struct {
 	mu         sync.Mutex
-	entries    []imageDecodeCacheEntry
+	entries    map[[sha256.Size]byte]*imageDecodeCacheEntry
+	oldest     *imageDecodeCacheEntry
+	newest     *imageDecodeCacheEntry
 	bytes      uint64
 	generation uint64
 }
@@ -31,14 +35,11 @@ func (s *Storage) DecodeImage(data []byte) (Image, error) {
 	cache := &s.imageCache
 	cache.mu.Lock()
 	generation := cache.generation
-	for i := range cache.entries {
-		if cache.entries[i].key == key {
-			entry := cache.entries[i]
-			copy(cache.entries[i:], cache.entries[i+1:])
-			cache.entries[len(cache.entries)-1] = entry
-			cache.mu.Unlock()
-			return cloneImage(entry.image), nil
-		}
+	if entry, ok := cache.entries[key]; ok {
+		cache.touch(entry)
+		image := entry.image
+		cache.mu.Unlock()
+		return cloneImage(image), nil
 	}
 	cache.mu.Unlock()
 
@@ -54,22 +55,63 @@ func (s *Storage) DecodeImage(data []byte) (Image, error) {
 	if cache.generation != generation {
 		return decoded, nil
 	}
-	for i := range cache.entries {
-		if cache.entries[i].key == key {
-			entry := cache.entries[i]
-			copy(cache.entries[i:], cache.entries[i+1:])
-			cache.entries[len(cache.entries)-1] = entry
-			return cloneImage(entry.image), nil
-		}
+	if entry, ok := cache.entries[key]; ok {
+		cache.touch(entry)
+		return cloneImage(entry.image), nil
 	}
 	decodedBytes := uint64(len(decoded.RGBA))
 	for len(cache.entries) > 0 && (len(cache.entries) >= maxDecodedImageCacheEntries || cache.bytes > s.limits.CacheBytes-decodedBytes) {
-		cache.bytes -= uint64(len(cache.entries[0].image.RGBA))
-		cache.entries = cache.entries[1:]
+		cache.removeOldest()
 	}
-	cache.entries = append(cache.entries, imageDecodeCacheEntry{key: key, image: cloneImage(decoded)})
-	cache.bytes += uint64(len(decoded.RGBA))
+	if cache.entries == nil {
+		cache.entries = make(map[[sha256.Size]byte]*imageDecodeCacheEntry)
+	}
+	entry := &imageDecodeCacheEntry{key: key, image: cloneImage(decoded)}
+	cache.entries[key] = entry
+	cache.appendNewest(entry)
+	cache.bytes += decodedBytes
 	return decoded, nil
+}
+
+func (cache *imageDecodeCache) appendNewest(entry *imageDecodeCacheEntry) {
+	entry.older = cache.newest
+	entry.newer = nil
+	if cache.newest != nil {
+		cache.newest.newer = entry
+	} else {
+		cache.oldest = entry
+	}
+	cache.newest = entry
+}
+
+func (cache *imageDecodeCache) touch(entry *imageDecodeCacheEntry) {
+	if entry == cache.newest {
+		return
+	}
+	if entry.older != nil {
+		entry.older.newer = entry.newer
+	} else {
+		cache.oldest = entry.newer
+	}
+	if entry.newer != nil {
+		entry.newer.older = entry.older
+	}
+	cache.appendNewest(entry)
+}
+
+func (cache *imageDecodeCache) removeOldest() {
+	entry := cache.oldest
+	if entry == nil {
+		return
+	}
+	delete(cache.entries, entry.key)
+	cache.bytes -= uint64(len(entry.image.RGBA))
+	cache.oldest = entry.newer
+	if cache.oldest == nil {
+		cache.newest = nil
+	} else {
+		cache.oldest.older = nil
+	}
 }
 
 func cloneImage(image Image) Image {
@@ -80,6 +122,8 @@ func (cache *imageDecodeCache) clear() {
 	cache.mu.Lock()
 	cache.generation++
 	cache.entries = nil
+	cache.oldest = nil
+	cache.newest = nil
 	cache.bytes = 0
 	cache.mu.Unlock()
 }

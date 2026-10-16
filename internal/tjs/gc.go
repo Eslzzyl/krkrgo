@@ -130,8 +130,12 @@ func (v *VM) collectGarbage(host Host) (int, error) {
 	}
 	v.collecting = true
 	defer func() { v.collecting = false }()
-	seen := make(map[ObjectID]struct{}, len(v.meta))
-	pending := make([]ObjectID, 0, len(v.meta))
+	if v.gcSeen == nil {
+		v.gcSeen = make(map[ObjectID]struct{}, len(v.meta))
+	}
+	clear(v.gcSeen)
+	seen := v.gcSeen
+	pending := v.gcPending[:0]
 	seen[0] = struct{}{}
 	pending = append(pending, 0)
 	for _, x := range v.Globals {
@@ -180,7 +184,7 @@ func (v *VM) collectGarbage(host Host) (int, error) {
 		}
 		markValue(frameRoots.context, seen, &pending)
 	}
-	hosts := make([]Host, 0, len(v.frameRoots)+1)
+	hosts := v.gcHosts[:0]
 	hosts = appendGCTraceHost(hosts, host)
 	for _, frameRoots := range v.frameRoots {
 		hosts = appendGCTraceHost(hosts, frameRoots.host)
@@ -205,7 +209,8 @@ func (v *VM) collectGarbage(host Host) (int, error) {
 		}
 	}
 	removed := 0
-	for _, id := range v.allIDs() {
+	ids := v.allIDsInto(v.gcIDs)
+	for _, id := range ids {
 		if id == 0 {
 			continue
 		}
@@ -217,6 +222,9 @@ func (v *VM) collectGarbage(host Host) (int, error) {
 		delete(v.roots, ObjectRef{Object: id})
 		removed++
 	}
+	v.gcPending = pending
+	v.gcHosts = hosts
+	v.gcIDs = ids
 	v.allocationsSinceGC = 0
 	return removed, nil
 }

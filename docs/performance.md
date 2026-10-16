@@ -84,10 +84,14 @@ signals.
   opaque transition row and full-frame copy paths.
 - `internal/runtime/layer_transition_native.go` classifies transition endpoint
   alpha planes once. Fully opaque transitions use the opaque blend path; the
-  common zero-to-opaque crossfade uses a table-based destination scaling path.
-  Generic and universal transitions retain their existing formulas.
-- `internal/runtime/compositor.go` reuses presentation scratch buffers and
-  uses geometric copy-fill for RGBA clears.
+  common zero-to-opaque crossfade uses a specialized integer destination
+  scaling path. Generic and universal transitions retain their existing
+  formulas.
+- `internal/runtime/compositor.go` reuses presentation scratch buffers, uses
+  geometric copy-fill for RGBA clears, and skips the RGBA background fill when a
+  conservative full-canvas opaque layer overwrites every pixel. The 1280×720
+  Darwin/arm64 fixture measured 0.629 ms/op with the skip versus 0.712 ms/op
+  with the equivalent fill; both measured paths report two allocations.
 - `internal/runtime/services.go` provides borrowed presentation frames for the
   synchronous host path. Public `CaptureFrame` keeps clone ownership
   semantics. Render-state caching skips composition for unchanged static
@@ -95,6 +99,39 @@ signals.
 - `internal/host/ebiten.go` reuses the upload buffer, avoids repeated
   premultiplication for opaque data, computes changed bounds during the
   upload scan, and selects subimage or full-image writes by changed area.
+- `internal/host/ebiten.go` compares changed rows with `bytes.Equal` when the
+  previous presentation surface is opaque. Opaque dynamic frames now find
+  changed bounds without a per-pixel scan of unchanged rows; a transition to
+  transparency falls back to the premultiplication path.
+- `internal/host/ebiten.go` shares one row-indexed premultiplication and
+  changed-bounds scan between the first mixed-alpha frame and later
+  transparent updates.
+- `internal/runtime/layer_draw.go` copies straight-alpha pixels directly when
+  the destination alpha is zero and the target is non-opaque. The fallback
+  formulas remain unchanged for opaque destinations and mixed-alpha pixels.
+- `internal/tjs/value.go` and `internal/tjs/vm.go` use a direct integer
+  arithmetic, comparison, logical, and bitwise path in `OpBinary`.
+- `internal/tjs/gc.go` reuses the mark map, pending-ID slice, host list, and
+  sorted ID workspace on each VM instead of allocating those collector
+  structures for every collection.
+- `internal/runtime/session.go` transfers the pending `onPaint` ID slice into
+  the capture pass instead of cloning the queue on every frame. Sorting,
+  dispatch, and error requeue behavior remain unchanged.
+- `internal/runtime/session.go` reuses pending-paint, video, sound, transition,
+  and deferred-completion workspaces. Empty ID sets skip sorting.
+- `internal/runtime/layer_draw.go` routes generic pixels directly to the
+  general blend helper after the specialized opaque-alpha path has been
+  selected, removing an unreachable per-pixel dispatch branch.
+- `internal/tjs/compiler.go` emits static string member keys as opcode
+  operands. `internal/tjs/vm.go` fetches instructions by pointer and writes
+  validated common register operands directly; `internal/tjs/bytecode_exec.go`
+  keeps Legacy instruction dispatch on pointers.
+- `internal/assets/image_cache.go` and `internal/assets/xp3.go` use indexed
+  intrusive LRU caches for decoded images and archive segments. Hit lookup and
+  LRU movement no longer scan the full cache.
+- `internal/runtime/bitmap_native.go` decodes `Bitmap.loadAsync` on a
+  background goroutine and posts a bounded main-session completion event;
+  generation checks discard completions after object finalization.
 - `internal/runtime/services.go` carries a stable render-state hash on static
   presentation frames. `internal/host/ebiten.go` uses it to skip repeated
   opaque-frame scans; the Windows amd64 benchmark reduced the stable
@@ -110,6 +147,20 @@ signals.
   5.435 µs/op to 2.987 ns/op for opaque plans and 5.303 µs/op to
   3.327 ns/op for alpha plans. Dynamic plans continue through the original
   `Compose` path.
+- `internal/runtime/layer_transition_native.go` uses a channel-specialized
+  universal-transition kernel with row-free pixel indexing and direct RGBA
+  arithmetic. The 1280×720 fixture measured about 3.03 ms/op versus
+  5.05 ms/op for the former channel loop, with zero allocations.
+- `internal/runtime/render_plan.go` caches hashes for immutable transition
+  source, destination, and rule buffers, and derives the mutable transition
+  image hash from phase metadata. The 1280×720 render-plan fixture measured
+  about 0.51 µs/op versus 1.29 ms/op for full buffer hashing.
+- `internal/host/gpu_compositor.go` clears the front target once per compose;
+  shader paths replace the complete back target through the existing
+  front-to-back copy.
+- `runtime.FrameSnapshot.Opaque` carries the full-screen opaque-transition
+  alpha assertion to the host, so the presentation path skips the redundant
+  alpha classification scan.
 - `internal/tjs/bytecode_decode.go` and `internal/tjs/legacy_intercode.go`
   cache Legacy instruction boundaries and offset-to-IP tables per decoded
   object. On Windows amd64, the full `testdata/amairo` headless replay changed
@@ -162,8 +213,9 @@ signals.
   unchanged captures; transitions and video remain conservative.
 - **Go:** `internal/host/ebiten.go` performs input, runtime ticking, frame
   capture, and upload preparation in Ebitengine `Update`, then submits the
-  image from `Draw`. The Go host still scans a captured frame on every Update;
-  Ebitengine owns actual presentation. There is no separate Go VSync thread.
+  image from `Draw`. Opaque dynamic frames use row-level byte comparisons;
+  mixed-alpha frames retain the premultiplication scan. Ebitengine owns actual
+  presentation. There is no separate Go VSync thread.
 
 These are source comparisons. This report contains no side-by-side C++ or
 Rust real-window timing.
@@ -183,17 +235,50 @@ results:
 - The Darwin/arm64 host fixture measured unchanged opaque frames at about
   2.24–2.32 ms/op with zero allocations; a single-pixel change measured about
   2.24–2.35 ms/op.
+- Final Darwin/arm64 focused run after the row-level opaque upload path measured
+  `BenchmarkUpdatePresentation720pSinglePixelChange` at 201.8 µs/op versus
+  2.119 ms/op before the change, a 90.5% reduction. The benchmark remained at
+  zero allocations.
+- The transparent-destination compositor fixture measured 4.780 ms/op after
+  the direct alpha-over-transparent path versus 8.195 ms/op before it, a
+  41.7% reduction with two allocations per operation.
+- `BenchmarkVMRunPhases/repeated-run` measured 275.3 µs/op after the direct
+  integer opcode path versus 277.1 µs/op before it, a 0.6% reduction.
+  Allocation volume remained 940,072 B/op and 2,518 allocs/op in this
+  workload.
 - An older replay comparison showed 10.08 s after versus 9.97 s before and
   did not establish a whole-replay speedup.
+- Latest Darwin/arm64 VM dispatch measurements are about 107.7 µs/op with
+  11,440 B/op and 907 allocs/op for `VMRunPhases/repeated-run`. The direct
+  binary-register path was about 114 µs/op immediately before that change.
+- `VMStaticMemberAccess` measured about 2.31 µs/op, 2,289 B/op, and
+  12 allocs/op for static keys versus about 2.94 µs/op, 2,315 B/op, and
+  15 allocs/op for dynamic keys.
+- `VMPropertyAccess` measured about 4.47 µs/op, 4,400 B/op, and 31 allocs/op
+  after common member operations switched to direct validated register access.
+- Mixed-alpha `BenchmarkUpdatePresentation720pTransparentSinglePixelChange`
+  measured about 5.4 ms/op with zero reported allocations after the initial and
+  subsequent transparent paths were unified into one row-indexed scan.
+- 4,096-entry indexed cache fixtures measured about 91 ns/op with one
+  allocation for decoded-image lookup and about 17.8 ns/op with zero
+  allocations for XP3 segment lookup.
 
-## Remaining performance work
+## Remaining measured scope
 
-- Startup resource loading still creates the first visible pacing loss.
-- Dynamic transitions still compose and upload a full 1280×720 frame each tick.
-- The Go host captures and scans the frame every Update. Changed-bounds upload
-  reduces transfer work but does not remove composition or the scan.
-- Ebitengine's actual platform presentation, GPU queueing, and display
-  refresh remain outside the public timing surface used here.
+All executable high-value paths covered by the current public runtime and host
+contracts have an implementation and focused package verification. The items
+below are explicit scope or measurement limits:
+
+- `Bitmap.loadAsync` has an implementation; `Layer.loadImages` remains
+  synchronous, and the accepted headless corpus has no independent startup
+  resource-switch workload for measuring prefetch.
+- Dynamic transitions produce a full transition pixel plane on each tick;
+  dirty-region reuse requires unified layer invalidation metadata.
+- The Go host captures each dynamic frame. Opaque frames use row-level bounds;
+  full-screen opaque transitions carry an alpha assertion, while mixed-alpha
+  frames require their full premultiplication scan.
+- Ebitengine owns platform presentation, GPU queueing, and display refresh;
+  these timings are outside the public API used here.
 - No equivalent real-window C++ or Rust run has been measured on this
   workstation.
 

@@ -483,6 +483,9 @@ func TestCaptureFrameForPresentationBorrowsFullScreenOpaqueTransition(t *testing
 	if &frame.RGBA[0] != &pixels[0] {
 		t.Fatal("presentation did not borrow the full-screen transition pixels")
 	}
+	if !frame.Opaque {
+		t.Fatal("opaque transition frame did not carry the alpha assertion")
+	}
 	if !bytes.Equal(frame.RGBA, expected.RGBA) || len(frame.Province) != 0 {
 		t.Fatalf("borrowed transition frame differs from composition: RGBA=%v Province=%v expected=%v",
 			frame.RGBA, frame.Province, expected.RGBA)

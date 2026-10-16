@@ -187,6 +187,34 @@ return value;
 		benchmarkMemberValue = value
 	}
 }
+
+func BenchmarkVMStaticMemberAccess(b *testing.B) {
+	for _, test := range []struct {
+		name   string
+		source string
+	}{
+		{name: "static", source: `var object=%[value:1]; return object.value + object.value;`},
+		{name: "dynamic", source: `var object=%[value:1], key="value"; return object[key] + object[key];`},
+	} {
+		b.Run(test.name, func(b *testing.B) {
+			program, err := compile("static-member-benchmark.tjs", test.source)
+			if err != nil {
+				b.Fatal(err)
+			}
+			vm := NewVM()
+			b.ReportAllocs()
+			for range b.N {
+				budget := uint64(100000)
+				value, err := vm.Execute(&program, vmTestHost{}, &budget)
+				if err != nil {
+					b.Fatal(err)
+				}
+				benchmarkMemberValue = value
+			}
+		})
+	}
+}
+
 func BenchmarkVMPropertyNameAccess(b *testing.B) {
 	for _, tc := range []struct {
 		name   string

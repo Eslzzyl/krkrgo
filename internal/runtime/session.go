@@ -68,6 +68,10 @@ type Session struct {
 	mu                           sync.Mutex
 	deferTransitionCompletions   bool
 	pendingTransitionCompletions []tjs.ObjectID
+	videoIDsScratch              []tjs.ObjectID
+	videoScratch                 map[tjs.ObjectID]*VideoOverlay
+	soundIDsScratch              []tjs.ObjectID
+	soundScratch                 map[tjs.ObjectID]*WaveSoundBuffer
 	gpuCapture                   bool
 	gpuPlan                      RenderPlan
 }
@@ -897,11 +901,14 @@ func (s *Session) AdvanceClock(timeMS uint64) error {
 		continuousTime = time.Since(stageStarted)
 		stageStarted = time.Now()
 	}
-	videoIDs := make([]tjs.ObjectID, 0, len(s.Services.Videos))
+	videoIDs := s.videoIDsScratch[:0]
 	for id := range s.Services.Videos {
 		videoIDs = append(videoIDs, id)
 	}
-	sort.Slice(videoIDs, func(i, j int) bool { return videoIDs[i] < videoIDs[j] })
+	s.videoIDsScratch = videoIDs
+	if len(videoIDs) > 1 {
+		sort.Slice(videoIDs, func(i, j int) bool { return videoIDs[i] < videoIDs[j] })
+	}
 	videoCount = len(videoIDs)
 	for _, id := range videoIDs {
 		video := s.Services.Videos[id]
@@ -917,17 +924,24 @@ func (s *Session) AdvanceClock(timeMS uint64) error {
 		stageStarted = time.Now()
 	}
 	s.Services.mu.RLock()
-	soundIDs := make([]tjs.ObjectID, 0, len(s.Services.Sounds))
-	sounds := make(map[tjs.ObjectID]*WaveSoundBuffer, len(s.Services.Sounds))
+	soundIDs := s.soundIDsScratch[:0]
+	if s.soundScratch == nil {
+		s.soundScratch = make(map[tjs.ObjectID]*WaveSoundBuffer, len(s.Services.Sounds))
+	} else {
+		clear(s.soundScratch)
+	}
 	for id, sound := range s.Services.Sounds {
 		soundIDs = append(soundIDs, id)
-		sounds[id] = sound
+		s.soundScratch[id] = sound
 	}
 	s.Services.mu.RUnlock()
-	sort.Slice(soundIDs, func(i, j int) bool { return soundIDs[i] < soundIDs[j] })
+	s.soundIDsScratch = soundIDs
+	if len(soundIDs) > 1 {
+		sort.Slice(soundIDs, func(i, j int) bool { return soundIDs[i] < soundIDs[j] })
+	}
 	soundCount = len(soundIDs)
 	for _, id := range soundIDs {
-		sound := sounds[id]
+		sound := s.soundScratch[id]
 		if sound == nil {
 			continue
 		}
@@ -1440,6 +1454,42 @@ func (snapshot tickSnapshot) restore(s *Session) {
 	}
 	s.Services.audioMixerOwner = snapshot.mixerOwner
 }
+func (s *Session) dispatchBitmapLoad(target uint64) error {
+	result, ok := s.Services.takeBitmapAsyncResult(tjs.ObjectID(target))
+	if !ok {
+		return nil
+	}
+	targetID := tjs.ObjectID(target)
+	if _, exists := s.VM.Objects.Lookup(targetID); !exists {
+		return nil
+	}
+	receiver := tjs.ObjectValue(tjs.NewObjectRef(targetID))
+	fn, err := s.VM.GetMember(receiver, "onLoaded", s.Services, &s.Budget)
+	if err != nil {
+		return err
+	}
+	if fn.IsVoid() {
+		return nil
+	}
+	meta := tjs.NullValue
+	asyncValue := tjs.IntegerValue(1)
+	errorValue := tjs.IntegerValue(0)
+	message := ""
+	if result.err == nil {
+		meta, err = bitmapMetadata(s.VM, result.data, result.image.Width, result.image.Height)
+		if err != nil {
+			return err
+		}
+	} else {
+		errorValue = tjs.IntegerValue(1)
+		message = result.err.Error()
+	}
+	_, err = s.VM.CallEventHandler(fn, receiver,
+		[]tjs.Value{meta, asyncValue, errorValue, tjs.StringValue(message)},
+		s.Services, &s.Budget)
+	return err
+}
+
 func (s *Session) DispatchEvents() error {
 	if err := s.checkOpen(); err != nil {
 		return err
@@ -1482,6 +1532,12 @@ func (s *Session) DispatchEvents() error {
 				continue
 			}
 			targetID := tjs.ObjectID(event.Target)
+			if event.Kind == EventBitmapLoad {
+				if err := s.dispatchBitmapLoad(event.Target); err != nil {
+					return err
+				}
+				continue
+			}
 			soundTrigger := event.Sound || event.Kind == EventSoundTrigger
 			if soundTrigger {
 				s.Services.mu.Lock()
@@ -1587,10 +1643,17 @@ func (s *Session) captureFrame() (FrameSnapshot, error) {
 
 func (s *Session) captureFrameFor(forPresentation, borrowed bool) (FrameSnapshot, error) {
 	s.Services.mu.Lock()
-	ids := append([]tjs.ObjectID(nil), s.Services.pendingPaintIDs...)
-	s.Services.pendingPaintIDs = nil
+	ids := s.Services.pendingPaintIDs
+	s.Services.pendingPaintIDs = s.Services.pendingPaintScratch[:0]
 	s.Services.mu.Unlock()
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	defer func() {
+		s.Services.mu.Lock()
+		s.Services.pendingPaintScratch = ids[:0]
+		s.Services.mu.Unlock()
+	}()
+	if len(ids) > 1 {
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	}
 	for _, id := range ids {
 		layer := s.Services.Layer(id)
 		if layer == nil || !layer.callOnPaint {

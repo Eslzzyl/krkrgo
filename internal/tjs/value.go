@@ -397,6 +397,61 @@ func boolValue(b bool) Value {
 	return IntegerValue(0)
 }
 
+func binaryIntegerFast(left, right Value, op string) (Value, bool, error) {
+	if left.kind != KindInteger || right.kind != KindInteger {
+		return Value{}, false, nil
+	}
+	a, b := left.integer, right.integer
+	switch op {
+	case "&&":
+		return boolValue(a != 0 && b != 0), true, nil
+	case "||":
+		return boolValue(a != 0 || b != 0), true, nil
+	case "==", "===":
+		return boolValue(a == b), true, nil
+	case "!=", "!==":
+		return boolValue(a != b), true, nil
+	case "<":
+		return boolValue(a < b), true, nil
+	case ">":
+		return boolValue(a > b), true, nil
+	case "<=":
+		return boolValue(a <= b), true, nil
+	case ">=":
+		return boolValue(a >= b), true, nil
+	case "+":
+		return IntegerValue(a + b), true, nil
+	case "-":
+		return IntegerValue(a - b), true, nil
+	case "*":
+		return IntegerValue(a * b), true, nil
+	case "/":
+		return RealValue(float64(a) / float64(b)), true, nil
+	case "&":
+		return IntegerValue(a & b), true, nil
+	case "|":
+		return IntegerValue(a | b), true, nil
+	case "^":
+		return IntegerValue(a ^ b), true, nil
+	case "<<":
+		return IntegerValue(a << (uint(b) & 63)), true, nil
+	case ">>":
+		return IntegerValue(a >> (uint(b) & 63)), true, nil
+	case ">>>":
+		return IntegerValue(int64(uint64(a) >> (uint(b) & 63))), true, nil
+	case "\\", "%":
+		if b == 0 {
+			return Value{}, true, errors.New("TJS integer division by zero")
+		}
+		if op == "\\" {
+			return IntegerValue(a / b), true, nil
+		}
+		return IntegerValue(a % b), true, nil
+	default:
+		return Value{}, false, nil
+	}
+}
+
 func (v Value) Binary(op string, other Value) (Value, error) {
 	switch op {
 	case "&&":

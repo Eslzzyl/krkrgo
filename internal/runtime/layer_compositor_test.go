@@ -161,6 +161,48 @@ func BenchmarkComposeAlphaOverOpaqueDestination(b *testing.B) {
 	}
 }
 
+func BenchmarkComposeOpaqueFullCanvas(b *testing.B) {
+	const width, height = 1280, 720
+	root := NewRootLayer(1, width, height)
+	layer := NewLayer(2)
+	layer.Type = LayerOpaque
+	if err := layer.SetBounds(Rect{Width: width, Height: height}); err != nil {
+		b.Fatal(err)
+	}
+	pixels := make([]byte, width*height*4)
+	for i := range pixels {
+		pixels[i] = byte(i)
+	}
+	if err := layer.SetRGBA(width, height, pixels); err != nil {
+		b.Fatal(err)
+	}
+	if err := root.AddChild(layer); err != nil {
+		b.Fatal(err)
+	}
+	compositor := NewCompositorWithRoot(root, width, height)
+	compositor.SetBackground(200, 100, 50, 255)
+	run := func(bench *testing.B, withFill bool) {
+		bench.SetBytes(int64(len(pixels)))
+		bench.ReportAllocs()
+		bench.ResetTimer()
+		for range bench.N {
+			frame, err := compositor.Compose()
+			if err != nil {
+				bench.Fatal(err)
+			}
+			if withFill {
+				fillRGBA(frame.RGBA, compositor.Background)
+			}
+		}
+	}
+	b.Run("skip_background_fill", func(bench *testing.B) {
+		run(bench, false)
+	})
+	b.Run("reference_with_fill", func(bench *testing.B) {
+		run(bench, true)
+	})
+}
+
 func TestComposeOrderClipOpacityAndProvince(t *testing.T) {
 	root := NewRootLayer(1, 3, 2)
 	back := NewLayer(2)
@@ -227,6 +269,33 @@ func TestComposeOpaqueLayerCopiesRowsAndForcesAlpha(t *testing.T) {
 	}
 	if got, want := frame.RGBA, []byte{10, 20, 30, 255, 40, 50, 60, 255}; !bytes.Equal(got, want) {
 		t.Fatalf("opaque compose = %v, want %v", got, want)
+	}
+}
+
+func TestComposeOpaqueFullCanvasSkipsBackgroundFill(t *testing.T) {
+	root := NewRootLayer(1, 2, 1)
+	layer := NewLayer(2)
+	layer.Type = LayerOpaque
+	if err := layer.SetBounds(Rect{Width: 2, Height: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := layer.SetRGBA(2, 1, []byte{10, 20, 30, 0, 40, 50, 60, 128}); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.AddChild(layer); err != nil {
+		t.Fatal(err)
+	}
+	compositor := NewCompositorWithRoot(root, 2, 1)
+	compositor.SetBackground(200, 100, 50, 255)
+	if !compositor.canSkipBackgroundFill() {
+		t.Fatal("full-canvas opaque layer was not recognized")
+	}
+	frame, err := compositor.Compose()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := frame.RGBA, []byte{10, 20, 30, 255, 40, 50, 60, 255}; !bytes.Equal(got, want) {
+		t.Fatalf("opaque full-canvas compose = %v, want %v", got, want)
 	}
 }
 

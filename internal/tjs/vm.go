@@ -221,6 +221,7 @@ type vmFrame struct {
 	lexicalContext ObjectID
 	owner          ObjectID
 	args           []Value
+	argScratch     []Value
 	pending        *vmCompletion
 	functionName   string
 	function       bool
@@ -274,6 +275,11 @@ type VM struct {
 	nativeSavePlugin   bool
 	traceStack         []vmTraceFrame
 	constructing       []ObjectID
+	registerScratch    []Value
+	gcSeen             map[ObjectID]struct{}
+	gcPending          []ObjectID
+	gcHosts            []Host
+	gcIDs              []ObjectID
 }
 
 func NewVM() *VM {
@@ -377,11 +383,11 @@ func (v *VM) ObjectsSize() int {
 	}
 	return len(v.meta)
 }
-func (v *VM) allIDs() []ObjectID {
+func (v *VM) allIDsInto(out []ObjectID) []ObjectID {
 	if v == nil || v.Objects == nil {
-		return nil
+		return out[:0]
 	} // ObjectTable intentionally has no iterator; metadata includes all VM allocations.
-	out := make([]ObjectID, 0, len(v.meta))
+	out = out[:0]
 	for id := range v.meta {
 		out = append(out, id)
 	}
@@ -2195,13 +2201,23 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 		v.traceStack[traceFrame] = vmTraceFrame{}
 		v.traceStack = v.traceStack[:traceFrame]
 	}()
-	r := make([]Value, p.Registers)
+	var r []Value
+	if v.depth == 1 && cap(v.registerScratch) >= p.Registers {
+		r = v.registerScratch[:p.Registers]
+	} else {
+		r = make([]Value, p.Registers)
+		if v.depth == 1 {
+			v.registerScratch = r
+		}
+	}
 	rootDepth := len(v.frameRoots)
 	v.frameRoots = append(v.frameRoots, vmFrameRoots{registers: r, frame: &f, host: h})
 	defer func() {
+		clear(r)
 		v.frameRoots[rootDepth] = vmFrameRoots{}
 		v.frameRoots = v.frameRoots[:rootDepth]
 	}()
+	traceHost, tracing := h.(HostTrace)
 	ip := 0
 	for ip < len(p.Code) {
 		rootIndex := len(v.frameRoots) - 1
@@ -2213,7 +2229,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 				return VoidValue, vmAbortError(err)
 			}
 		}
-		ins := p.Code[ip]
+		ins := &p.Code[ip]
 		trace := &v.traceStack[traceFrame]
 		trace.storage = ins.Location.Storage
 		trace.line = ins.Location.Line
@@ -2222,8 +2238,8 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 		}
 		*b--
 		v.Executed++
-		if t, ok := h.(HostTrace); ok {
-			if e := t.Trace(&ins); e != nil {
+		if tracing {
+			if e := traceHost.Trace(ins); e != nil {
 				return VoidValue, vmAbortError(e)
 			}
 		}
@@ -2232,7 +2248,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 		var out Value
 		var returned bool
 		var e error
-		op := ins.Op
+		op := &ins.Op
 		rootIndex = len(v.frameRoots) - 1
 		v.frameRoots[rootIndex].trackAllocations = true
 		reg := func(i int) Value {
@@ -2343,7 +2359,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 				}
 			}
 		case OpConstant:
-			put(op.Out, op.Value)
+			r[op.Out] = op.Value
 		case OpConstantObject:
 			x, e := v.materialize(op.Literal, b)
 			if e == nil && op.Identity != 0 {
@@ -2353,69 +2369,77 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 					v.literals[op.Identity] = x
 				}
 			}
-			put(op.Out, x)
+			r[op.Out] = x
 		case OpLoad:
 			var x Value
 			x, e = v.loadName(&f, op.Name, op.Optional, op.Raw, h, b)
-			put(op.Out, x)
+			r[op.Out] = x
 		case OpDeclare:
-			e = v.storeName(&f, op.Name, reg(op.Input), true, false, h, b)
+			e = v.storeName(&f, op.Name, r[op.Input], true, false, h, b)
 		case OpStore:
-			e = v.storeName(&f, op.Name, reg(op.Input), false, op.Raw, h, b)
+			e = v.storeName(&f, op.Name, r[op.Input], false, op.Raw, h, b)
 		case OpMove:
-			put(op.Out, reg(op.Input))
+			r[op.Out] = r[op.Input]
 		case OpDeleteName:
 			var ok bool
 			ok, e = v.deleteName(&f, op.Name)
 			if e == nil {
-				put(op.Out, boolValue(ok))
+				r[op.Out] = boolValue(ok)
 			}
 		case OpEnsureMember:
 			id, er := v.handle(reg(op.Object))
 			if er != nil {
 				e = er
 			} else {
-				_, exists, er := v.getMemberWithRuntime(id, reg(op.Key), h, b)
+				key := reg(op.Key)
+				if op.StaticKey {
+					key = op.Value
+				}
+				_, exists, er := v.getMemberWithRuntime(id, key, h, b)
 				if er != nil {
 					e = er
 				} else if !exists {
-					e = v.setMember(id, reg(op.Key), VoidValue)
+					e = v.setMember(id, key, VoidValue)
 				}
 			}
 		case OpDeleteMember:
 			var id ObjectID
 			id, e = v.handle(reg(op.Object))
 			if e == nil {
+				key := reg(op.Key)
+				if op.StaticKey {
+					key = op.Value
+				}
 				var ok bool
-				ok, e = v.deleteMember(id, reg(op.Key))
+				ok, e = v.deleteMember(id, key)
 				put(op.Out, boolValue(ok))
 			}
 		case OpUnary:
 			if strings.EqualFold(op.Operator, "isvalid") {
-				put(op.Out, v.IsValid(reg(op.Input)))
+				r[op.Out] = v.IsValid(r[op.Input])
 			} else if strings.EqualFold(op.Operator, "invalidate") {
-				x, er := v.Invalidate(reg(op.Input), h, b)
+				x, er := v.Invalidate(r[op.Input], h, b)
 				e = er
-				put(op.Out, x)
+				r[op.Out] = x
 			} else {
-				x, er := reg(op.Input).Unary(op.Operator)
+				x, er := r[op.Input].Unary(op.Operator)
 				e = er
-				put(op.Out, x)
+				r[op.Out] = x
 			}
 		case OpBinary:
+			left, right := r[op.Left], r[op.Right]
 			if op.Operator == "incontextof" {
-				left, right := reg(op.Left), reg(op.Right)
 				bound, ok, er := v.bindStringMethodContext(left, right)
 				if er != nil {
 					e = er
 				} else if ok {
-					put(op.Out, bound)
+					r[op.Out] = bound
 				} else {
 					a, er := v.handle(left)
 					if er != nil {
 						e = er
 					} else if right.IsNull() {
-						put(op.Out, ObjectValue(NewObjectRef(a)))
+						r[op.Out] = ObjectValue(NewObjectRef(a))
 					} else {
 						c, er := v.handle(right)
 						if er != nil {
@@ -2424,56 +2448,62 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 							if rightRef := right.ObjectRef(); rightRef.HasBoundContext() {
 								c = rightRef.Context
 							}
-							put(op.Out, ObjectValue(NewObjectRef(a, c)))
+							r[op.Out] = ObjectValue(NewObjectRef(a, c))
 						}
 					}
 				}
 			} else if op.Operator == "instanceof" {
-				x, er := v.instanceOfValue(reg(op.Left), reg(op.Right))
+				x, er := v.instanceOfValue(left, right)
 				e = er
-				put(op.Out, x)
+				r[op.Out] = x
 			} else {
-				x, er := reg(op.Left).Binary(op.Operator, reg(op.Right))
+				x, handled, er := binaryIntegerFast(left, right, op.Operator)
+				if !handled {
+					x, er = left.Binary(op.Operator, right)
+				}
 				e = er
-				put(op.Out, x)
+				r[op.Out] = x
 			}
 
 		case OpGet:
-			receiver := reg(op.Object)
-			key := reg(op.Key)
+			receiver := r[op.Object]
+			key := r[op.Key]
+			if op.StaticKey {
+				key = op.Value
+			}
 			if receiver.Kind() == KindString {
 				if property, ok := vmStringProperty(receiver, key); ok {
-					put(op.Out, property)
+					r[op.Out] = property
 				} else {
 					method, ok, er := v.vmStringMethod(key.Text())
 					e = er
 					if e == nil && ok {
-						put(op.Out, method)
+						r[op.Out] = method
 					} else if !ok && !op.Optional && e == nil {
 						e = fmt.Errorf("member not found: %s", key.Text())
 					} else if e == nil {
-						put(op.Out, VoidValue)
+						r[op.Out] = VoidValue
 					}
 				}
 				break
 			}
 			if receiver.IsVoid() && f.functionName == "internalRestore" {
-				put(op.Out, VoidValue)
+				r[op.Out] = VoidValue
 				break
 			}
 			id, er := v.handle(receiver)
 			if er != nil {
 				if op.Optional {
-					put(op.Out, VoidValue)
+					r[op.Out] = VoidValue
 				} else {
 					e = er
 				}
 			} else {
 				if m := v.meta[id]; m != nil && m.category == CategoryArray {
 					if x, ok := vmArrayProperty(m, key); ok {
-						put(op.Out, x)
+						r[op.Out] = x
 					} else if _, indexed := vmArrayIndex(key); indexed {
-						put(op.Out, VoidValue)
+						r[op.Out] = VoidValue
 					} else {
 						x, ok, er := v.getMemberWithRuntime(id, key, h, b)
 						e = er
@@ -2482,11 +2512,11 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 						}
 						if e == nil && ok {
 							x, e = v.getValue(receiver, x, op.Raw, h, b)
-							put(op.Out, x)
+							r[op.Out] = x
 						} else if !ok && !op.Optional && e == nil {
 							e = fmt.Errorf("member not found: %s", key.Text())
 						} else if e == nil {
-							put(op.Out, VoidValue)
+							r[op.Out] = VoidValue
 						}
 					}
 				} else {
@@ -2499,25 +2529,28 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 					}
 					if e == nil && ok {
 						x, e = v.getValue(receiver, x, op.Raw, h, b)
-						put(op.Out, x)
+						r[op.Out] = x
 					} else if !ok && !op.Optional && e == nil && key.Text() == "filename" {
-						put(op.Out, StringValue(""))
+						r[op.Out] = StringValue("")
 					} else if !ok && !op.Optional && e == nil && key.Text() == "_initType" {
-						put(op.Out, IntegerValue(0))
+						r[op.Out] = IntegerValue(0)
 					} else if !ok && !op.Optional && e == nil && (key.Text() == "_initResolutionx" || key.Text() == "_initResolutiony") {
-						put(op.Out, IntegerValue(100))
+						r[op.Out] = IntegerValue(100)
 					} else if !ok && !op.Optional && e == nil && (key.Text() == "_resolutionx" || key.Text() == "_resolutiony") {
-						put(op.Out, IntegerValue(100))
+						r[op.Out] = IntegerValue(100)
 					} else if !ok && !op.Optional && e == nil && !missingIsVoid {
 						e = fmt.Errorf("member not found: %s (receiver=%d)", key.Text(), id)
 					} else if e == nil {
-						put(op.Out, VoidValue)
+						r[op.Out] = VoidValue
 					}
 				}
 			}
 		case OpTypeOfMember:
 			receiver := reg(op.Object)
 			key := reg(op.Key)
+			if op.StaticKey {
+				key = op.Value
+			}
 			if receiver.Kind() == KindString {
 				var x Value
 				var ok bool
@@ -2574,14 +2607,18 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 				}
 			}
 		case OpSet:
-			receiver := reg(op.Object)
+			receiver := r[op.Object]
+			key := r[op.Key]
+			if op.StaticKey {
+				key = op.Value
+			}
+			value := r[op.Input]
 			id, er := v.handle(receiver)
 			if er != nil {
 				e = er
 			} else if m := v.meta[id]; m != nil && m.category == CategoryArray {
-				key := reg(op.Key)
 				if key.Kind() == KindString && (key.Text() == "count" || key.Text() == "length") {
-					e = setVMArrayLength(m, reg(op.Input))
+					e = setVMArrayLength(m, value)
 				} else if n, indexed := vmArrayIndex(key); indexed {
 					if n >= int64(maxVMArrayLength) {
 						e = errors.New("TJS array length limit exceeded")
@@ -2590,7 +2627,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 						if index >= len(m.array) {
 							m.array = append(m.array, make([]Value, index+1-len(m.array))...)
 						}
-						m.array[index] = reg(op.Input)
+						m.array[index] = value
 						if n >= m.arrayLength {
 							m.arrayLength = n + 1
 						}
@@ -2601,27 +2638,26 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 						e = er
 					} else if ok {
 						if propertyID, er := v.handle(x); !op.Raw && er == nil && v.meta[propertyID] != nil && v.meta[propertyID].category == CategoryProperty {
-							e = v.writeProperty(x, reg(op.Object), reg(op.Input), h, b)
+							e = v.writeProperty(x, receiver, value, h, b)
 						} else {
-							e = v.setMember(id, key, reg(op.Input))
+							e = v.setMember(id, key, value)
 						}
 					} else {
-						e = v.setMember(id, key, reg(op.Input))
+						e = v.setMember(id, key, value)
 					}
 				}
 			} else {
-				key := reg(op.Key)
 				x, ok, er := v.getMemberWithRuntime(id, key, h, b)
 				if er != nil {
 					e = er
 				} else if ok {
 					if propertyID, er := v.handle(x); !op.Raw && er == nil && v.meta[propertyID] != nil && v.meta[propertyID].category == CategoryProperty {
-						e = v.writeProperty(x, reg(op.Object), reg(op.Input), h, b)
+						e = v.writeProperty(x, receiver, value, h, b)
 					} else {
-						e = v.setMember(id, key, reg(op.Input))
+						e = v.setMember(id, key, value)
 					}
 				} else {
-					e = v.setMember(id, key, reg(op.Input))
+					e = v.setMember(id, key, value)
 				}
 			}
 		case OpArray:
@@ -2663,30 +2699,36 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 				}
 			}
 		case OpCall:
-			args, er := v.expandArgs(op.Args, r, f.args)
+			args, er := v.expandArgs(op.Args, r, f.args, f.argScratch)
+			if er == nil {
+				f.argScratch = args[:0]
+			}
 			e = er
 			if e == nil {
 				ctx := ObjectValue(NewObjectRef(f.context))
 				if op.ContextSet {
-					ctx = reg(op.Context)
+					ctx = r[op.Context]
 				}
-				callee := reg(op.Callee)
+				callee := r[op.Callee]
 				x, er := v.invokeOwned(callee, ctx, args, h, b, op.ResultNeeded)
 				e = er
-				put(op.Out, x)
+				r[op.Out] = x
 			}
 		case OpConstruct:
-			args, er := v.expandArgs(op.Args, r, f.args)
+			args, er := v.expandArgs(op.Args, r, f.args, f.argScratch)
+			if er == nil {
+				f.argScratch = args[:0]
+			}
 			e = er
 			if e == nil {
 				var x Value
 				if op.TargetSet {
-					x, er = v.constructForMemberAssignment(reg(op.Callee), args, reg(op.Object), reg(op.Key), h, b)
+					x, er = v.constructForMemberAssignment(r[op.Callee], args, r[op.Object], r[op.Key], h, b)
 				} else {
-					x, er = v.construct(reg(op.Callee), args, h, b)
+					x, er = v.construct(r[op.Callee], args, h, b)
 				}
 				e = er
-				put(op.Out, x)
+				r[op.Out] = x
 			}
 		case OpClass:
 			if op.Class == nil {
@@ -2909,8 +2951,11 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 	}
 	return VoidValue, nil
 }
-func (v *VM) expandArgs(spec []Argument, regs []Value, forward []Value) ([]Value, error) {
-	out := make([]Value, 0, len(spec))
+func (v *VM) expandArgs(spec []Argument, regs []Value, forward, reuse []Value) ([]Value, error) {
+	out := reuse[:0]
+	if cap(out) < len(spec) {
+		out = make([]Value, 0, len(spec))
+	}
 	for _, a := range spec {
 		var xs []Value
 		switch a.Kind {

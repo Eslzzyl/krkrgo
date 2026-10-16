@@ -2,6 +2,7 @@ package assets
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"image"
 	"image/color"
 	"image/png"
@@ -81,5 +82,59 @@ func TestStorageImageCacheAliasesOwnershipAndClear(t *testing.T) {
 	}
 	if len(storage.imageCache.entries) != 0 || storage.imageCache.bytes != 0 {
 		t.Fatalf("oversized decoded image entered cache: entries=%d bytes=%d", len(storage.imageCache.entries), storage.imageCache.bytes)
+	}
+}
+func TestImageDecodeCacheMaintainsIndexedLRU(t *testing.T) {
+	cache := imageDecodeCache{entries: make(map[[sha256.Size]byte]*imageDecodeCacheEntry)}
+	keys := [3][sha256.Size]byte{{0}, {1}, {2}}
+	for i, key := range keys {
+		entry := &imageDecodeCacheEntry{key: key, image: Image{RGBA: []byte{byte(i)}}}
+		cache.entries[key] = entry
+		cache.appendNewest(entry)
+		cache.bytes++
+	}
+	cache.touch(cache.entries[keys[0]])
+	if cache.oldest != cache.entries[keys[1]] || cache.newest != cache.entries[keys[0]] {
+		t.Fatalf("LRU order after hit = oldest:%v newest:%v", cache.oldest.key, cache.newest.key)
+	}
+	cache.removeOldest()
+	if _, ok := cache.entries[keys[1]]; ok {
+		t.Fatal("least-recently-used entry survived eviction")
+	}
+	if cache.bytes != 2 {
+		t.Fatalf("cache bytes after eviction = %d, want 2", cache.bytes)
+	}
+}
+
+var benchmarkImageCachePixel byte
+
+func BenchmarkImageDecodeCacheLargeLookup(b *testing.B) {
+	const entries = 4096
+	data := []byte("image-cache-large-lookup")
+	targetKey := sha256.Sum256(data)
+	storage := &Storage{limits: core.Limits{CacheBytes: entries * 4}}
+	cache := &storage.imageCache
+	cache.entries = make(map[[sha256.Size]byte]*imageDecodeCacheEntry, entries)
+	for i := 0; i < entries; i++ {
+		var key [sha256.Size]byte
+		if i == 0 {
+			key = targetKey
+		} else {
+			key[0] = byte(i)
+			key[1] = byte(i >> 8)
+		}
+		entry := &imageDecodeCacheEntry{key: key, image: Image{RGBA: []byte{1, 2, 3, 255}}}
+		cache.entries[key] = entry
+		cache.appendNewest(entry)
+		cache.bytes += 4
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		image, err := storage.DecodeImage(data)
+		if err != nil {
+			b.Fatal(err)
+		}
+		benchmarkImageCachePixel = image.RGBA[0]
 	}
 }

@@ -212,7 +212,26 @@ go test ./internal/host -run '^$' -bench '^BenchmarkGPUComposeNativeLayers/(opaq
 | `UpdatePresentation720pOpaque` | 158.6 µs/op | 0 B/op，0 allocs/op |
 | `UpdatePresentation720pSinglePixelChange` | 2.064 ms/op | 0 B/op，0 allocs/op |
 
-单像素变化仍触发约 2 ms 的扫描成本。changed-bounds 可以减少后续写入范围，当前 benchmark 显示扫描本身仍是重要固定成本。
+Windows baseline above shows the former full-scan cost. The current opaque
+dynamic path compares rows with `bytes.Equal`, then inspects only changed rows;
+mixed-alpha frames still use the premultiplication scan.
+
+### Darwin/arm64 follow-up
+
+The latest focused measurements ran on Apple M1 Pro after the CPU, host, and
+TJS fast paths were added:
+
+| Benchmark | Before | Current | Change |
+| --- | ---: | ---: | ---: |
+| `ComposeFullFrame` | 8.195 ms/op | 4.780 ms/op | -41.7% |
+| `UpdatePresentation720pSinglePixelChange` | 2.119 ms/op | 201.8 µs/op | -90.5% |
+| `VMRunPhases/repeated-run` | 277.1 µs/op | 275.3 µs/op | -0.6% |
+
+The compositor and host paths retained their existing allocation counts. The
+TJS repeated-run allocation result remained 940,072 B/op and 2,518 allocs/op.
+The host improvement applies to dynamic frames whose previous presentation
+surface is opaque; mixed-alpha frames retain the existing premultiplication
+path.
 
 ### CPU 静态帧上传短路
 
@@ -334,12 +353,65 @@ printf '[{"at_ms":10000,"action":"checkpoint","name":"end","inspect":[]}]' | tem
 - 输出 JSON SHA-256 保持 `6cf00eea902de349bf781b2e442cde87e5d6f394956d5b4afec58607ca131969`
 
 
+### Follow-up production paths
+
+The current implementation also includes five focused paths selected from the
+measured candidates:
+
+- `internal/runtime/layer_draw.go` copies source bytes directly for
+  alpha-over-transparent destinations.
+- `internal/host/ebiten.go` compares opaque dynamic frames row by row and
+  uploads only the changed rectangle when the frame remains opaque.
+- `internal/tjs/value.go` and `internal/tjs/vm.go` use a direct integer
+  operation path for VM binary operators.
+- `internal/tjs/gc.go` retains VM-local collector workspace for repeated
+  collections.
+- `internal/runtime/session.go` transfers the pending `onPaint` queue into the
+  capture pass without cloning its ID slice.
+
+The focused tests passed for compositor alpha behavior, presentation fallback,
+TJS binary operators, garbage collection, and onPaint queue dispatch.
+
+### Current Darwin/arm64 implementation follow-up
+
+The latest package-level checks also cover the following paths:
+
+- `BenchmarkVMRunPhases/repeated-run`: about 107.7 µs/op, 11,440 B/op, and
+  907 allocs/op after direct register operands and pointer-based instruction
+  fetch.
+- `BenchmarkVMStaticMemberAccess`: about 2.31 µs/op, 2,289 B/op, and 12
+  allocs/op for static keys; the dynamic-key form measured about 2.94 µs/op,
+  2,315 B/op, and 15 allocs/op.
+- `BenchmarkVMPropertyAccess`: about 4.47 µs/op, 4,400 B/op, and 31 allocs/op
+  after direct member register access.
+- `BenchmarkUpdatePresentation720pTransparentSinglePixelChange`: about
+  5.4 ms/op with zero reported allocations. The path uses one premultiplication
+  scan for initial and subsequent mixed-alpha frames.
+- `BenchmarkImageDecodeCacheLargeLookup`: about 91 ns/op, 8 B/op, and one
+  allocation with 4,096 indexed LRU entries.
+- `BenchmarkCachedSegmentLargeLookup`: about 17.8 ns/op with zero allocations
+  with 4,096 indexed LRU entries.
+- `BenchmarkBlendUniversal1280x720`: about 3.03 ms/op for the optimized
+  kernel versus 5.05 ms/op for the former channel loop, with zero
+  allocations.
+- `BenchmarkCaptureRenderPlanUniversalTransition`: about 0.51 µs/op with
+  cached internal transition hashes versus 1.29 ms/op with full buffer
+  hashing on the 1280×720 fixture.
+- GPU composition now clears the front target once per compose; the back
+  target is fully overwritten by the existing copy before shader use.
+- `BenchmarkComposeOpaqueFullCanvas`: about 0.629 ms/op when the conservative
+  full-canvas opaque-layer check skips the background RGBA fill, versus about
+  0.712 ms/op with the equivalent fill; both paths report two allocations.
+
+These are isolated Darwin/arm64 package benchmarks. They do not establish a
+whole-project replay speedup.
+
 ## 当前判断
 
 1. `amairo` 无头启动和 10 s 回放的墙钟成本很高，启动资源初始化与 CPU frame 处理需要继续细分。
 2. `amairo` 10 s 回放的进程峰值工作集约 1.57 GiB，资源所有权、archive 缓存和 decoded image 生命周期是高优先级测量方向。
-3. CPU 合成的主要热点是 `drawLayerTo`；完整 1280×720 合成约 11.33 ms/op。
-4. host 上传准备在整帧不变时约 0.159 ms/op，单像素变化约 2.064 ms/op，帧扫描仍有明显固定成本。
-5. TJS repeated-run 约 0.600 ms/op，且每次约 940 KB、2,518 allocs；帧、调用和临时容器仍有较大优化空间。
+3. `drawLayerTo` remains the main CPU composition hotspot; the focused full-frame fixture moved from 8.195 ms/op to 4.780 ms/op after the transparent-destination fast path.
+4. Opaque dynamic host presentation moved from 2.119 ms/op to 201.8 µs/op for a single-pixel change, with zero allocations. Mixed-alpha frames retain the premultiplication scan.
+5. The focused TJS `VMRunPhases/repeated-run` fixture moved from 277.1 µs/op to 275.3 µs/op. It remains at 940,072 B/op and 2,518 allocs/op.
 6. XP3 cache hit 明显低于关闭缓存路径，存储缓存对重复读取有效。
 7. 无头结果可以作为 CPU、分配、资源和内存方向的主基线；窗口 Present、GPU queue、VSync 和显示延迟需要单独测量。

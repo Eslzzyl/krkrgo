@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document records a static review of the TJS memory model and memory-optimization opportunities. It does not report runtime measurements. No test, build, profile, benchmark, or game run is required for the conclusions below.
+This document records a static review of the TJS memory model and memory-optimization opportunities. The collector workspace follow-up is implemented in `internal/tjs/gc.go`; the report does not claim a whole-application memory reduction without a dedicated heap measurement.
 
 The review covers:
 
@@ -38,6 +38,11 @@ Allocation count alone cannot identify the retained-memory problem. The project 
 5. **Frames, scopes, and calls are major transient-allocation candidates.** Register slices, local maps, captured-scope slices, argument slices, rest/spread arrays, and property-call state are created across ordinary execution paths.
 6. **Decoded and compiled representations retain more metadata than a compact runtime form would require.** TJS2 decoding materializes several typed pools and per-object arrays. Source compilation retains tagged instructions, descriptors, literals, and source locations.
 7. **GC algorithm changes should come after retained-memory ownership is clarified.** Reusable mark buffers, lower root overhead, and generational collection may help, but they cannot correct metadata held strongly by process-global registries.
+8. **Interpreter scratch reuse is now limited to stable per-VM and per-session
+   workspaces.** The VM reuses top-level register storage and expanded-call
+   argument capacity; session/runtime paths reuse paint, resource-ID, and
+   transition workspaces. Nested function frames and captured scopes retain
+   their existing ownership behavior.
 
 The strongest immediate investigation target is registry ownership and cleanup. The strongest architectural target is a split between public owning representations and private compact runtime representations.
 
@@ -505,16 +510,23 @@ A runtime-only compilation mode can release tokens and preprocessing data after 
 
 ### Collector workspace
 
-`collectGarbage` creates a mark map and pending-ID slice sized from VM metadata. It also builds host lists and uses `allIDs`, which creates and sorts an ID slice.
+`collectGarbage` now retains VM-local buffers for the mark map, pending
+object IDs, host roots, and sorted object IDs. The collector still preserves
+host roots, frame registers, legacy registers, transient roots, captured
+scopes, class relations, finalizers, native outgoing references, and
+deterministic ID ordering.
 
-Potential reductions:
+Implemented workspace reuse:
 
-- reusable mark storage with epoch values;
+- reusable mark map;
 - reusable pending-ID buffer;
 - reusable host buffer;
+- reusable sorted-ID buffer.
+
+Remaining review candidates:
+
 - an object-table iterator;
 - maintained active-object vectors;
-- no sorting when stable collection order is not observable;
 - compact root ranges instead of repeated root slices.
 
 Any change must retain host roots, frame registers, legacy registers, transient roots, captured scopes, class relations, finalizers, and native outgoing references.
@@ -574,7 +586,7 @@ A diagnostic snapshot should identify the owner category of retained data. A tot
 | P2 | Compiled metadata split | Source and runtime data coexist | medium to high | source mapping and cache invalidation |
 | P2 | Legacy preparation cache | Repeated preparation is possible | startup and call benefit | retained cache memory |
 | P3 | Array specialization | Dense and sparse patterns share one backing model | workload-dependent | promotion and method semantics |
-| P3 | GC workspace reuse | Mark and pending data are rebuilt | medium | collector state management |
+| P3 | GC workspace reuse | VM-local mark, pending, host, and sorted-ID buffers are reused | medium | collector state management |
 | P4 | Generational GC | May help short-lived object workloads | workload-dependent | barriers and root complexity |
 
 ## Recommended investigation sequence
@@ -587,7 +599,7 @@ A diagnostic snapshot should identify the owner category of retained data. A tot
 6. Evaluate slot-based locals and captured environments.
 7. Evaluate member-name sharing and shape/slot storage for stable instances.
 8. Evaluate array representations from workload distributions.
-9. Reuse GC workspace after root ownership is stable.
+9. GC workspace reuse is implemented with VM-local mark, pending, host, and sorted-ID buffers.
 10. Consider generational collection only after object lifetime data supports it.
 
 ## Correctness contract

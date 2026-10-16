@@ -198,15 +198,21 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		n.ImageLeft = l.ImageLeft
 		n.ImageTop = l.ImageTop
 		n.RGBA = l.RGBA
-		hashes := renderHashes{rgba: hashBytes(l.RGBA)}
-		n.ImageHash = hashes.rgba
+		hashes := renderHashes{}
+		transitionHashCached := l.transitionHashesValid && l.inTransition &&
+			(l.transitionMethod == "crossfade" || l.transitionMethod == "universal")
+		if len(l.transitionPixels) == 0 {
+			hashes.rgba = hashBytes(l.RGBA)
+			n.ImageHash = hashes.rgba
+		} else {
+			if !transitionHashCached {
+				hashes.transition = hashBytes(l.transitionPixels)
+				n.ImageHash = hashes.transition
+			}
+			n.RGBA = l.transitionPixels
+		}
 		n.Clip = l.clip
 		n.ClipSet = l.clipSet
-		if len(l.transitionPixels) != 0 {
-			hashes.transition = hashBytes(l.transitionPixels)
-			n.RGBA = l.transitionPixels
-			n.ImageHash = hashes.transition
-		}
 		if l.inTransition && (l.transitionMethod == "crossfade" || l.transitionMethod == "universal") {
 			method := RenderTransitionCrossfade
 			if l.transitionMethod == "universal" {
@@ -224,6 +230,16 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 			if elapsed < l.transitionDuration && l.transitionDuration != 0 {
 				phase = elapsed * phaseMax / l.transitionDuration
 			}
+			if transitionHashCached {
+				hashes.transition = transitionPixelsHash(l, phase)
+				n.ImageHash = hashes.transition
+			}
+			destinationHash, sourceHash, ruleHash := l.transitionDestHash, l.transitionSourceHash, l.transitionRuleHash
+			if !transitionHashCached {
+				destinationHash = hashBytes(l.transitionDestImage)
+				sourceHash = hashBytes(l.transitionSourceImage)
+				ruleHash = hashBytes(l.transitionRule)
+			}
 			n.Transition = &RenderTransition{
 				Method:                method,
 				DestinationRGBA:       l.transitionDestImage,
@@ -238,9 +254,9 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 				Opaque:                l.transitionOpaque,
 				ZeroDestinationOpaque: l.transitionZeroOpaque,
 				WithChildren:          l.transitionChildren,
-				DestinationHash:       hashBytes(l.transitionDestImage),
-				SourceHash:            hashBytes(l.transitionSourceImage),
-				RuleHash:              hashBytes(l.transitionRule),
+				DestinationHash:       destinationHash,
+				SourceHash:            sourceHash,
+				RuleHash:              ruleHash,
 			}
 		}
 		visible := ancestorsVisible && !l.transitionHidden && l.Visible && l.Opacity != 0

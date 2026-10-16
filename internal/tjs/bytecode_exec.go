@@ -666,7 +666,7 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 	// the current frame's arguments to the callee unmodified, and the
 	// fatUnnamedExpand descriptor forwards the current frame's unnamed
 	// arguments, exactly like the macro.
-	callArguments := func(in LegacyInstruction, countOffset int, label string) ([]Value, error) {
+	callArguments := func(in *LegacyInstruction, countOffset int, label string) ([]Value, error) {
 		count := int(in.Operands[countOffset])
 		switch {
 		case count == -1:
@@ -769,7 +769,7 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 	}
 	// ENTRY/THROW/EXTRY mirror the reference VM's protected execution flow.
 	for ip := startIP; ip < len(instructions); {
-		in := instructions[ip]
+		in := &instructions[ip]
 		nextIP := ip + 1
 		switch in.Opcode {
 		case 15, 16, 17: // Jump operands are relative offsets in 16-bit code units.

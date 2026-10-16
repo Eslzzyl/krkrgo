@@ -110,6 +110,22 @@ func TestPresentationOpaqueFullFrameUsesBulkPixelsAndCountsChanges(t *testing.T)
 	}
 }
 
+func TestPresentationOpaqueFastPathFallsBackForTransparentFrame(t *testing.T) {
+	game := &Game{}
+	first := runtime.FrameSnapshot{Width: 1, Height: 1, RGBA: []byte{40, 80, 120, 255}}
+	if err := game.updatePresentation(first); err != nil {
+		t.Fatal(err)
+	}
+	next := runtime.FrameSnapshot{Width: 1, Height: 1, RGBA: []byte{200, 100, 50, 128}}
+	if err := game.updatePresentation(next); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{100, 50, 25, 128}
+	if game.presentationOpaque || string(game.pixels) != string(want) {
+		t.Fatalf("opaque fallback = opaque:%v pixels:%v, want opaque:false pixels:%v", game.presentationOpaque, game.pixels, want)
+	}
+}
+
 func TestPresentationPartialAlphaPreservesPremultipliedPixelEquivalence(t *testing.T) {
 	game := &Game{}
 	frame := runtime.FrameSnapshot{Width: 2, Height: 1, RGBA: []byte{
@@ -122,6 +138,28 @@ func TestPresentationPartialAlphaPreservesPremultipliedPixelEquivalence(t *testi
 	want := []byte{100, 50, 25, 128, 0, 0, 0, 0}
 	if game.presentationOpaque || string(game.pixels) != string(want) {
 		t.Fatalf("partial-alpha presentation = opaque:%v pixels:%v, want opaque:false pixels:%v", game.presentationOpaque, game.pixels, want)
+	}
+}
+
+func TestPresentationTransparentUpdateReusesPremultipliedSurface(t *testing.T) {
+	game := &Game{}
+	first := runtime.FrameSnapshot{Width: 2, Height: 1, RGBA: []byte{
+		200, 100, 50, 128,
+		10, 20, 30, 64,
+	}}
+	if err := game.updatePresentation(first); err != nil {
+		t.Fatal(err)
+	}
+	second := runtime.FrameSnapshot{Width: 2, Height: 1, RGBA: []byte{
+		100, 200, 50, 64,
+		30, 40, 50, 128,
+	}}
+	if err := game.updatePresentation(second); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{25, 50, 13, 64, 15, 20, 25, 128}
+	if game.presentationOpaque || string(game.pixels) != string(want) {
+		t.Fatalf("transparent update = opaque:%v pixels:%v, want opaque:false pixels:%v", game.presentationOpaque, game.pixels, want)
 	}
 }
 
@@ -267,6 +305,53 @@ func BenchmarkUpdatePresentation720pSinglePixelChange(b *testing.B) {
 	frame := runtime.FrameSnapshot{Width: 1280, Height: 720, RGBA: make([]byte, 1280*720*4)}
 	for i := 3; i < len(frame.RGBA); i += 4 {
 		frame.RGBA[i] = 255
+	}
+	game := &Game{}
+	if err := game.updatePresentation(frame); err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(frame.RGBA)))
+	pixel := (360*1280 + 640) * 4
+	value := byte(1)
+	for b.Loop() {
+		frame.RGBA[pixel] = value
+		value ^= 1
+		if err := game.updatePresentation(frame); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkUpdatePresentation720pOpaqueMetadataSinglePixelChange(b *testing.B) {
+	frame := runtime.FrameSnapshot{
+		Width:  1280,
+		Height: 720,
+		RGBA:   make([]byte, 1280*720*4),
+		Opaque: true,
+	}
+	for i := 0; i < len(frame.RGBA); i += 4 {
+		frame.RGBA[i+0], frame.RGBA[i+1], frame.RGBA[i+2], frame.RGBA[i+3] = 32, 64, 96, 255
+	}
+	game := &Game{}
+	if err := game.updatePresentation(frame); err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(frame.RGBA)))
+	pixel := (360*1280 + 640) * 4
+	value := byte(1)
+	for b.Loop() {
+		frame.RGBA[pixel] = value
+		value ^= 1
+		if err := game.updatePresentation(frame); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkUpdatePresentation720pTransparentSinglePixelChange(b *testing.B) {
+	frame := runtime.FrameSnapshot{Width: 1280, Height: 720, RGBA: make([]byte, 1280*720*4)}
+	for i := 0; i < len(frame.RGBA); i += 4 {
+		frame.RGBA[i+0], frame.RGBA[i+1], frame.RGBA[i+2], frame.RGBA[i+3] = 32, 64, 96, 128
 	}
 	game := &Game{}
 	if err := game.updatePresentation(frame); err != nil {

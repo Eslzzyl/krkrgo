@@ -40,6 +40,9 @@ type GPUCompositor struct {
 	shaders        map[gpuMethodKey]*ebiten.Shader
 	vertices       []ebiten.Vertex
 	indices        []uint16
+	uniforms       map[string]any
+	sourceOrigin   [2]float32
+	ruleOrigin     [2]float32
 	crossfade      *ebiten.Shader
 	universal      *ebiten.Shader
 	stateHash      uint64
@@ -131,7 +134,8 @@ func (c *GPUCompositor) ensureTargets(width, height int, background [4]uint8) er
 	}
 	bg := color.RGBA{R: background[0], G: background[1], B: background[2], A: background[3]}
 	c.front.Fill(bg)
-	c.back.Fill(bg)
+	// Shader paths replace the complete back target through copyFrontToBack
+	// before drawing. Filling it here would repeat a full-frame GPU clear.
 	return nil
 }
 
@@ -180,6 +184,15 @@ func (c *GPUCompositor) copyFrontToBack() {
 	c.back.DrawImage(c.front, &ebiten.DrawImageOptions{Blend: gpuReplaceBlend})
 }
 
+func (c *GPUCompositor) shaderUniforms() map[string]any {
+	if c.uniforms == nil {
+		c.uniforms = make(map[string]any, 8)
+	} else {
+		clear(c.uniforms)
+	}
+	return c.uniforms
+}
+
 func (c *GPUCompositor) drawQuad(target *ebiten.Image, shader *ebiten.Shader, images [4]*ebiten.Image, x0, y0, x1, y1, sx, sy float32, uniforms map[string]any) {
 	c.vertices = c.vertices[:0]
 	c.vertices = append(c.vertices,
@@ -188,7 +201,8 @@ func (c *GPUCompositor) drawQuad(target *ebiten.Image, shader *ebiten.Shader, im
 		ebiten.Vertex{DstX: x0, DstY: y1, SrcX: x0, SrcY: y1},
 		ebiten.Vertex{DstX: x1, DstY: y1, SrcX: x1, SrcY: y1},
 	)
-	uniforms["SourceOrigin"] = []float32{sx, sy}
+	c.sourceOrigin[0], c.sourceOrigin[1] = sx, sy
+	uniforms["SourceOrigin"] = c.sourceOrigin[:]
 	target.DrawTrianglesShader(c.vertices, c.indices, shader, &ebiten.DrawTrianglesShaderOptions{
 		Blend: gpuReplaceBlend, Uniforms: uniforms, Images: images,
 	})
@@ -254,7 +268,7 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 			var shader *ebiten.Shader
 			var err error
 			if n.Transition != nil {
-				uniforms := make(map[string]any, 4)
+				uniforms := c.shaderUniforms()
 				tr := n.Transition
 				dest, err := c.texture(gpuTextureKey{n.ID, gpuTextureDestination}, tr.ImageWidth, tr.ImageHeight, tr.DestinationRGBA, tr.DestinationHash, tr.Opaque)
 				if err != nil {
@@ -277,7 +291,8 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 					shader = c.universal
 					uniforms["Phase"] = float32(tr.Phase) / 255
 					uniforms["Vague"] = float32(tr.Vague) / 255
-					uniforms["RuleOrigin"] = []float32{float32(ax + n.ImageLeft), float32(ay + n.ImageTop)}
+					c.ruleOrigin[0], c.ruleOrigin[1] = float32(ax+n.ImageLeft), float32(ay+n.ImageTop)
+					uniforms["RuleOrigin"] = c.ruleOrigin[:]
 					images := [4]*ebiten.Image{c.front, dest, src, rule}
 					c.copyFrontToBack()
 					c.drawQuad(c.back, shader, images, float32(ax+n.ImageLeft+int32(x0)), float32(ay+n.ImageTop+int32(y0)), float32(ax+n.ImageLeft+int32(x1)), float32(ay+n.ImageTop+int32(y1)), float32(ax+n.ImageLeft), float32(ay+n.ImageTop), uniforms)
@@ -302,9 +317,12 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 						return fmt.Errorf("unsupported GPU layer type %d", n.Type)
 					}
 					c.copyFrontToBack()
-					c.drawQuad(c.back, shader, [4]*ebiten.Image{c.front, source, nil, nil}, float32(ax+n.ImageLeft+int32(x0)), float32(ay+n.ImageTop+int32(y0)), float32(ax+n.ImageLeft+int32(x1)), float32(ay+n.ImageTop+int32(y1)), float32(ax+n.ImageLeft), float32(ay+n.ImageTop), map[string]any{
-						"Mode": float32(n.Type), "TargetType": float32(targetType), "Opacity": float32(n.Opacity) / 255, "HoldAlpha": boolToFloat(n.HoldAlpha),
-					})
+					uniforms := c.shaderUniforms()
+					uniforms["Mode"] = float32(n.Type)
+					uniforms["TargetType"] = float32(targetType)
+					uniforms["Opacity"] = float32(n.Opacity) / 255
+					uniforms["HoldAlpha"] = boolToFloat(n.HoldAlpha)
+					c.drawQuad(c.back, shader, [4]*ebiten.Image{c.front, source, nil, nil}, float32(ax+n.ImageLeft+int32(x0)), float32(ay+n.ImageTop+int32(y0)), float32(ax+n.ImageLeft+int32(x1)), float32(ay+n.ImageTop+int32(y1)), float32(ax+n.ImageLeft), float32(ay+n.ImageTop), uniforms)
 					c.front, c.back = c.back, c.front
 				}
 			}

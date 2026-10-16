@@ -41,23 +41,31 @@ type Entry struct {
 	Segments     []Segment
 }
 
+type segmentCacheKey struct {
+	offset, size, packed uint64
+	compressed           bool
+}
+
 type cachedSegment struct {
 	offset, size, packed uint64
 	compressed           bool
 	bytes                []byte
+	older, newer         *cachedSegment
 }
 
 type Archive struct {
 	Path    string
 	Entries map[string]Entry
 
-	file       *os.File
-	length     uint64
-	baseOffset uint64
-	limits     core.Limits
-	mu         sync.Mutex
-	cache      []cachedSegment
-	cacheBytes uint64
+	file        *os.File
+	length      uint64
+	baseOffset  uint64
+	limits      core.Limits
+	mu          sync.Mutex
+	cache       map[segmentCacheKey]*cachedSegment
+	cacheOldest *cachedSegment
+	cacheNewest *cachedSegment
+	cacheBytes  uint64
 }
 
 func OpenArchive(path string, limits core.Limits) (*Archive, error) {
@@ -95,6 +103,8 @@ func (a *Archive) Close() error {
 func (a *Archive) ClearCache() {
 	a.mu.Lock()
 	a.cache = nil
+	a.cacheOldest = nil
+	a.cacheNewest = nil
 	a.cacheBytes = 0
 	a.mu.Unlock()
 }
@@ -392,18 +402,60 @@ func (a *Archive) readEncodedRange(e Entry, offset, size uint64) ([]byte, error)
 	return result, nil
 }
 
+func segmentCacheKeyFor(s Segment) segmentCacheKey {
+	return segmentCacheKey{offset: s.Offset, size: s.Size, packed: s.PackedSize, compressed: s.Compressed}
+}
+
+func (a *Archive) appendCachedSegment(entry *cachedSegment) {
+	entry.older = a.cacheNewest
+	entry.newer = nil
+	if a.cacheNewest != nil {
+		a.cacheNewest.newer = entry
+	} else {
+		a.cacheOldest = entry
+	}
+	a.cacheNewest = entry
+}
+
+func (a *Archive) touchCachedSegment(entry *cachedSegment) {
+	if entry == a.cacheNewest {
+		return
+	}
+	if entry.older != nil {
+		entry.older.newer = entry.newer
+	} else {
+		a.cacheOldest = entry.newer
+	}
+	if entry.newer != nil {
+		entry.newer.older = entry.older
+	}
+	a.appendCachedSegment(entry)
+}
+
+func (a *Archive) removeOldestCachedSegment() {
+	entry := a.cacheOldest
+	if entry == nil {
+		return
+	}
+	delete(a.cache, segmentCacheKey{offset: entry.offset, size: entry.size, packed: entry.packed, compressed: entry.compressed})
+	a.cacheBytes -= uint64(len(entry.bytes))
+	a.cacheOldest = entry.newer
+	if a.cacheOldest == nil {
+		a.cacheNewest = nil
+	} else {
+		a.cacheOldest.older = nil
+	}
+}
+
 func (a *Archive) segment(s Segment) ([]byte, error) {
+	key := segmentCacheKeyFor(s)
 	a.mu.Lock()
-	for i := range a.cache {
-		c := a.cache[i]
-		if c.offset == s.Offset && c.size == s.Size && c.packed == s.PackedSize && c.compressed == s.Compressed {
-			copy(a.cache[i:], a.cache[i+1:])
-			a.cache[len(a.cache)-1] = c
-			a.mu.Unlock()
-			// Segment bytes are immutable to callers; readEncodedRange only
-			// appends from them into its separately owned result buffer.
-			return c.bytes, nil
-		}
+	if entry, ok := a.cache[key]; ok {
+		a.touchCachedSegment(entry)
+		a.mu.Unlock()
+		// Segment bytes are immutable to callers; readEncodedRange only
+		// appends from them into its separately owned result buffer.
+		return entry.bytes, nil
 	}
 	a.mu.Unlock()
 	var data []byte
@@ -422,16 +474,24 @@ func (a *Archive) segment(s Segment) ([]byte, error) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if entry, ok := a.cache[key]; ok {
+		a.touchCachedSegment(entry)
+		return entry.bytes, nil
+	}
 	if uint64(len(data)) <= a.limits.CacheBytes {
 		for a.cacheBytes+uint64(len(data)) > a.limits.CacheBytes && len(a.cache) > 0 {
-			a.cacheBytes -= uint64(len(a.cache[0].bytes))
-			a.cache = a.cache[1:]
+			a.removeOldestCachedSegment()
 		}
-		a.cacheBytes += uint64(len(data))
-		a.cache = append(a.cache, cachedSegment{
+		if a.cache == nil {
+			a.cache = make(map[segmentCacheKey]*cachedSegment)
+		}
+		entry := &cachedSegment{
 			offset: s.Offset, size: s.Size, packed: s.PackedSize,
 			compressed: s.Compressed, bytes: data,
-		})
+		}
+		a.cache[key] = entry
+		a.appendCachedSegment(entry)
+		a.cacheBytes += uint64(len(data))
 	}
 	return data, nil
 }

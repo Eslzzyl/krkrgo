@@ -135,10 +135,15 @@ type Services struct {
 	Dialogs                  *DialogService
 	Layers                   map[tjs.ObjectID]*Layer
 	pendingPaintIDs          []tjs.ObjectID
+	pendingPaintScratch      []tjs.ObjectID
+	transitionIDsScratch     []tjs.ObjectID
+	pendingTransitionScratch []tjs.ObjectID
 	MotionResources          map[tjs.ObjectID]*motionResource
 	MotionPlayers            map[tjs.ObjectID]*motionPlayerState
 	MotionAdaptors           map[tjs.ObjectID]tjs.ObjectID
 	Bitmaps                  map[tjs.ObjectID]*Bitmap
+	bitmapLoadGeneration     map[tjs.ObjectID]uint64
+	bitmapLoadResults        map[tjs.ObjectID]bitmapAsyncResult
 	Fonts                    map[tjs.ObjectID]*FontState
 	TextRenderers            map[tjs.ObjectID]*textRenderState
 	LayerFonts               map[tjs.ObjectID]tjs.ObjectID
@@ -468,6 +473,12 @@ func (s *Services) ensureInit() {
 	}
 	if s.Bitmaps == nil {
 		s.Bitmaps = make(map[tjs.ObjectID]*Bitmap)
+	}
+	if s.bitmapLoadGeneration == nil {
+		s.bitmapLoadGeneration = make(map[tjs.ObjectID]uint64)
+	}
+	if s.bitmapLoadResults == nil {
+		s.bitmapLoadResults = make(map[tjs.ObjectID]bitmapAsyncResult)
 	}
 	if s.Fonts == nil {
 		s.Fonts = make(map[tjs.ObjectID]*FontState)
@@ -975,7 +986,7 @@ func (s *Services) captureFrameWithPresentation(presentation bool) (FrameSnapsho
 				transition, ok = c.fullScreenOpaqueTransition()
 			}
 			if ok {
-				composed := FrameSnapshot{Width: c.Width, Height: c.Height, RGBA: transition.transitionPixels}
+				composed := FrameSnapshot{Width: c.Width, Height: c.Height, RGBA: transition.transitionPixels, Opaque: true}
 				s.recordFrameCaptureTimed(composed, true, false, invalidated, 0, false, transitions, videos, timings, statsEnabled)
 				return composed, nil
 			}

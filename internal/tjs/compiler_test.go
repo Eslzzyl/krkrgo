@@ -175,6 +175,44 @@ func TestCompileAndRunChainedAssignments(t *testing.T) {
 	}
 }
 
+func TestCompileStaticMemberKeys(t *testing.T) {
+	program, err := compile("static-member-keys.tjs", `
+var object = %[value:1];
+var key = "value";
+object.value;
+object[key];
+object.value = 2;
+object.value += 1;
+object.value++;
+typeof object.value;
+delete object.value;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staticOps := 0
+	dynamicGets := 0
+	for _, instruction := range program.Code {
+		switch instruction.Op.Code {
+		case OpGet, OpSet, OpTypeOfMember, OpDeleteMember:
+			if instruction.Op.StaticKey {
+				staticOps++
+				if instruction.Op.Value.Kind() != KindString || instruction.Op.Value.Text() != "value" {
+					t.Fatalf("static member key = %#v, want string value", instruction.Op.Value)
+				}
+			} else if instruction.Op.Code == OpGet {
+				dynamicGets++
+			}
+		}
+	}
+	if staticOps != 8 {
+		t.Fatalf("static member operations = %d, want 8", staticOps)
+	}
+	if dynamicGets != 1 {
+		t.Fatalf("dynamic member reads = %d, want 1", dynamicGets)
+	}
+}
+
 func TestCompileAndRunSwapAssignment(t *testing.T) {
 	got := executeVMSource(t, `
 var first = "left", second = "right";

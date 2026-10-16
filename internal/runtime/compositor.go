@@ -11,6 +11,8 @@ type FrameSnapshot struct {
 	Width, Height int32
 	RGBA          []byte
 	Province      []byte
+	// Opaque asserts that every RGBA pixel has alpha 255.
+	Opaque bool
 	// RenderStateHash identifies a stable static capture when valid.
 	RenderStateHash      uint64
 	RenderStateHashValid bool
@@ -26,6 +28,7 @@ func (f FrameSnapshot) Clone() FrameSnapshot {
 		Height:               f.Height,
 		RGBA:                 append([]byte(nil), f.RGBA...),
 		Province:             append([]byte(nil), f.Province...),
+		Opaque:               f.Opaque,
 		RenderStateHash:      f.RenderStateHash,
 		RenderStateHashValid: f.RenderStateHashValid,
 	}
@@ -46,6 +49,54 @@ func NewCompositorWithRoot(root *Layer, width, height int32) *Compositor {
 }
 func (c *Compositor) SetRoot(root *Layer)            { c.Root = root }
 func (c *Compositor) SetBackground(r, g, b, a uint8) { c.Background = [4]uint8{r, g, b, a} }
+
+func (c *Compositor) canSkipBackgroundFill() bool {
+	if c == nil || c.Root == nil || c.Root.transitionHidden || !c.Root.Visible || c.Root.Opacity == 0 {
+		return false
+	}
+	if opaqueFullCanvasLayer(c.Root, 0, 0, c.Width, c.Height) {
+		return true
+	}
+	if c.Root.Type == LayerEffect || c.Root.Type == LayerFilter {
+		return false
+	}
+	ax, ay := c.Root.Bounds.X, c.Root.Bounds.Y
+	for _, child := range c.Root.children {
+		if opaqueFullCanvasLayer(child, ax, ay, c.Width, c.Height) {
+			return true
+		}
+	}
+	return false
+}
+
+func opaqueFullCanvasLayer(layer *Layer, parentX, parentY, width, height int32) bool {
+	if layer == nil || layer.transitionHidden || !layer.Visible || layer.Opacity != 255 ||
+		layer.clipSet || layer.Type == LayerBinder {
+		return false
+	}
+	pixels := layer.RGBA
+	if layer.inTransition && layer.transitionOpaque {
+		pixels = layer.transitionPixels
+	}
+	if layer.Type != LayerOpaque && !(layer.Type == LayerAlpha && layer.inTransition && layer.transitionOpaque) {
+		return false
+	}
+	if len(pixels) != int(uint64(width)*uint64(height)*4) {
+		return false
+	}
+	ax := parentX + layer.Bounds.X
+	ay := parentY + layer.Bounds.Y
+	drawWidth, drawHeight := layer.Bounds.Width, layer.Bounds.Height
+	if drawWidth == 0 {
+		drawWidth = layer.ImageWidth
+	}
+	if drawHeight == 0 {
+		drawHeight = layer.ImageHeight
+	}
+	return ax+layer.ImageLeft == 0 && ay+layer.ImageTop == 0 &&
+		drawWidth == width && drawHeight == height &&
+		layer.ImageWidth == width && layer.ImageHeight == height
+}
 
 // Compose creates a complete frame. A layer of type Effect or Filter returns
 // ErrUnsupportedLayerType rather than silently producing an approximation.
@@ -82,7 +133,9 @@ func (c *Compositor) composeInto(rgba, province []byte, skipValidation bool) (Fr
 	pixels := int(c.Width) * int(c.Height)
 	rgba = resizeBytes(rgba, pixels*4)
 	province = resizeBytes(province, pixels)
-	fillRGBA(rgba, c.Background)
+	if !c.canSkipBackgroundFill() {
+		fillRGBA(rgba, c.Background)
+	}
 	clear(province)
 	f := FrameSnapshot{Width: c.Width, Height: c.Height, RGBA: rgba, Province: province}
 	ctx := drawContext{width: c.Width, height: c.Height, rgba: f.RGBA, province: f.Province}

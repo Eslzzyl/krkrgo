@@ -31,6 +31,13 @@ type Bitmap struct {
 	loading       bool
 }
 
+type bitmapAsyncResult struct {
+	generation uint64
+	data       []byte
+	image      assets.Image
+	err        error
+}
+
 func newBitmap(width, height uint32) (*Bitmap, error) {
 	if width == 0 || height == 0 || width > bitmapMaxDimension || height > bitmapMaxDimension || uint64(width)*uint64(height) > bitmapMaxPixels {
 		return nil, fmt.Errorf("Bitmap: invalid dimensions %dx%d", width, height)
@@ -145,6 +152,69 @@ func bitmapBytes(s *Services, name string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: bitmap storage", ErrUnsupportedDevice)
 	}
 	return s.readStorage(name)
+}
+func (s *Services) bitmapLoadAsync(id tjs.ObjectID, b *Bitmap, name string) error {
+	s.mu.Lock()
+	if b.loading {
+		s.mu.Unlock()
+		return fmt.Errorf("Bitmap.loadAsync: bitmap is already loading")
+	}
+	generation := s.bitmapLoadGeneration[id] + 1
+	if generation == 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("Bitmap.loadAsync: request generation overflow")
+	}
+	s.bitmapLoadGeneration[id] = generation
+	delete(s.bitmapLoadResults, id)
+	b.loading = true
+	s.mu.Unlock()
+
+	go func() {
+		data, err := bitmapBytes(s, name)
+		var image assets.Image
+		if err == nil {
+			image, err = assets.DecodeImage(data)
+		}
+		if err == nil && (image.Width > bitmapMaxDimension || image.Height > bitmapMaxDimension) {
+			err = fmt.Errorf("Bitmap: image dimensions exceed limits")
+		}
+
+		s.mu.Lock()
+		if s.Bitmaps[id] != b || s.bitmapLoadGeneration[id] != generation {
+			s.mu.Unlock()
+			return
+		}
+		s.bitmapLoadResults[id] = bitmapAsyncResult{
+			generation: generation,
+			data:       data,
+			image:      image,
+			err:        err,
+		}
+		if postErr := s.Events.Post(uint64(id), EventBitmapLoad, PriorityNormal); postErr != nil {
+			delete(s.bitmapLoadResults, id)
+			b.loading = false
+		}
+		s.mu.Unlock()
+	}()
+	return nil
+}
+
+func (s *Services) takeBitmapAsyncResult(id tjs.ObjectID) (bitmapAsyncResult, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result, ok := s.bitmapLoadResults[id]
+	if !ok {
+		return bitmapAsyncResult{}, false
+	}
+	delete(s.bitmapLoadResults, id)
+	if b := s.Bitmaps[id]; b != nil && s.bitmapLoadGeneration[id] == result.generation {
+		b.loading = false
+		if result.err == nil {
+			b.Width, b.Height = result.image.Width, result.image.Height
+			b.RGBA = append(b.RGBA[:0], result.image.RGBA...)
+		}
+	}
+	return result, true
 }
 
 func bitmapMetadata(vm *tjs.VM, data []byte, width, height uint32) (tjs.Value, error) {
@@ -551,7 +621,10 @@ func (s *Services) bitmapNative(vm *tjs.VM, context tjs.Value, operation string,
 	if operation == "@invalidate" || operation == "finalize" {
 		s.mu.Lock()
 		delete(s.Bitmaps, id)
+		s.bitmapLoadGeneration[id]++
+		delete(s.bitmapLoadResults, id)
 		s.mu.Unlock()
+		s.Events.Cancel(uint64(id), EventBitmapLoad)
 		return tjs.VoidValue, nil
 	}
 	b, _, err := s.bitmapForContext(context, operation)
@@ -713,6 +786,10 @@ func (s *Services) bitmapNative(vm *tjs.VM, context tjs.Value, operation string,
 			return tjs.VoidValue, fmt.Errorf("Bitmap.load requires a storage name")
 		}
 		s.mu.Lock()
+		if b.loading {
+			s.mu.Unlock()
+			return tjs.VoidValue, fmt.Errorf("Bitmap.load: bitmap is already loading")
+		}
 		b.loading = true
 		s.mu.Unlock()
 		result, err := s.bitmapLoad(vm, b, name.Text())
@@ -784,8 +861,17 @@ func (s *Services) bitmapNative(vm *tjs.VM, context tjs.Value, operation string,
 			return tjs.VoidValue, err
 		}
 		return tjs.VoidValue, s.writeSave(name.Text(), out, 0)
-	case "loadAsync", "onLoaded":
-		return tjs.VoidValue, UnsupportedDevice("Bitmap asynchronous loading")
+	case "loadAsync":
+		name, err := bitmapArg(args, 0, operation)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		if name.Kind() != tjs.KindString {
+			return tjs.VoidValue, fmt.Errorf("Bitmap.loadAsync requires a storage name")
+		}
+		return tjs.VoidValue, s.bitmapLoadAsync(id, b, name.Text())
+	case "onLoaded":
+		return tjs.VoidValue, nil
 	default:
 		return tjs.VoidValue, fmt.Errorf("%w: Bitmap.%s", ErrUnsupportedNative, operation)
 	}

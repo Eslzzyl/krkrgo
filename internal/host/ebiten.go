@@ -43,21 +43,22 @@ type Game struct {
 	initialWindowWidth   int
 	initialWindowHeight  int
 
-	image                  *ebiten.Image
-	imageWidth             int
-	imageHeight            int
-	pixels                 []byte
-	uploadPixels           []byte
-	presentationOpaque     bool
-	presentationChanges    int
-	presentationStateHash  uint64
-	presentationStateValid bool
-	frameSerial            uint64
-	renderStats            renderStats
-	rendererMode           rendererMode
-	gpu                    *GPUCompositor
-	gpuImage               *ebiten.Image
-	gpuInitAttempted       bool
+	image                   *ebiten.Image
+	imageWidth              int
+	imageHeight             int
+	pixels                  []byte
+	uploadPixels            []byte
+	presentationOpaque      bool
+	presentationChanges     int
+	presentationStateHash   uint64
+	presentationStateValid  bool
+	presentationInitialized bool
+	frameSerial             uint64
+	renderStats             renderStats
+	rendererMode            rendererMode
+	gpu                     *GPUCompositor
+	gpuImage                *ebiten.Image
+	gpuInitAttempted        bool
 }
 
 // renderStats is opt-in to keep clock reads and logging out of normal runs.
@@ -454,6 +455,170 @@ func (g *Game) rememberPresentationState(frame runtime.FrameSnapshot) {
 	g.presentationStateValid = frame.RenderStateHashValid
 }
 
+func (g *Game) updateOpaquePresentation(frame runtime.FrameSnapshot, width, height int) (bool, error) {
+	if !g.presentationOpaque {
+		return false, nil
+	}
+	rowBytes := width * 4
+	minX, minY, maxX, maxY := width, height, -1, -1
+	for y := range height {
+		rowStart := y * rowBytes
+		current := g.pixels[rowStart : rowStart+rowBytes]
+		next := frame.RGBA[rowStart : rowStart+rowBytes]
+		if bytes.Equal(current, next) {
+			continue
+		}
+		for x := range width {
+			i := x * 4
+			if !frame.Opaque && next[i+3] != 255 {
+				return false, nil
+			}
+			if current[i] == next[i] && current[i+1] == next[i+1] &&
+				current[i+2] == next[i+2] && current[i+3] == next[i+3] {
+				continue
+			}
+			if g.renderStats.enabled {
+				g.presentationChanges++
+			}
+			if x < minX {
+				minX = x
+			}
+			if x > maxX {
+				maxX = x
+			}
+			if y < minY {
+				minY = y
+			}
+			if y > maxY {
+				maxY = y
+			}
+		}
+	}
+	if maxX < 0 {
+		g.presentationInitialized = true
+		g.rememberPresentationState(frame)
+		return true, nil
+	}
+	copy(g.pixels, frame.RGBA)
+	g.presentationOpaque = true
+	g.presentationInitialized = true
+	dirtyWidth, dirtyHeight := maxX-minX+1, maxY-minY+1
+	if dirtyWidth*dirtyHeight*2 < width*height {
+		dirtySize := dirtyWidth * dirtyHeight * 4
+		if cap(g.uploadPixels) < dirtySize {
+			if g.renderStats.enabled && g.renderStats.firstUploadAlloc == 0 {
+				stageStarted := time.Now()
+				g.uploadPixels = make([]byte, dirtySize)
+				g.renderStats.firstUploadAlloc = time.Since(stageStarted)
+			} else {
+				g.uploadPixels = make([]byte, dirtySize)
+			}
+		} else {
+			g.uploadPixels = g.uploadPixels[:dirtySize]
+		}
+		for y := range dirtyHeight {
+			src := ((minY+y)*width + minX) * 4
+			dst := y * dirtyWidth * 4
+			copy(g.uploadPixels[dst:dst+dirtyWidth*4], g.pixels[src:src+dirtyWidth*4])
+		}
+		g.renderStats.writePixels(g.renderStats.subImage(g.image, image.Rect(minX, minY, maxX+1, maxY+1)), g.uploadPixels)
+	} else {
+		g.renderStats.writePixels(g.image, g.pixels)
+	}
+	g.rememberPresentationState(frame)
+	return true, nil
+}
+
+func (g *Game) updateTransparentPresentation(frame runtime.FrameSnapshot, width, height, n int) error {
+	allOpaque := true
+	minX, minY, maxX, maxY := width, height, -1, -1
+	if g.renderStats.enabled {
+		g.presentationChanges = 0
+	}
+	for y := 0; y < height; y++ {
+		rowStart := y * width * 4
+		for x := 0; x < width; x++ {
+			i := rowStart + x*4
+			alpha := frame.RGBA[i+3]
+			pixelChanged := false
+			if alpha == 255 {
+				pixelChanged = g.pixels[i] != frame.RGBA[i] ||
+					g.pixels[i+1] != frame.RGBA[i+1] ||
+					g.pixels[i+2] != frame.RGBA[i+2] ||
+					g.pixels[i+3] != alpha
+				if pixelChanged {
+					g.pixels[i] = frame.RGBA[i]
+					g.pixels[i+1] = frame.RGBA[i+1]
+					g.pixels[i+2] = frame.RGBA[i+2]
+					g.pixels[i+3] = alpha
+				}
+			} else {
+				allOpaque = false
+				a := uint16(alpha)
+				for channel := 0; channel < 3; channel++ {
+					value := byte((uint16(frame.RGBA[i+channel])*a + 127) / 255)
+					if g.pixels[i+channel] != value {
+						pixelChanged = true
+						g.pixels[i+channel] = value
+					}
+				}
+				if g.pixels[i+3] != alpha {
+					pixelChanged = true
+					g.pixels[i+3] = alpha
+				}
+			}
+			if pixelChanged {
+				if g.renderStats.enabled {
+					g.presentationChanges++
+				}
+				if x < minX {
+					minX = x
+				}
+				if x > maxX {
+					maxX = x
+				}
+				if y < minY {
+					minY = y
+				}
+				if y > maxY {
+					maxY = y
+				}
+			}
+		}
+	}
+	g.presentationOpaque = allOpaque
+	g.presentationInitialized = true
+	if maxX < 0 {
+		g.rememberPresentationState(frame)
+		return nil
+	}
+	dirtyWidth, dirtyHeight := maxX-minX+1, maxY-minY+1
+	if dirtyWidth*dirtyHeight*2 < width*height {
+		dirtySize := dirtyWidth * dirtyHeight * 4
+		if cap(g.uploadPixels) < dirtySize {
+			if g.renderStats.enabled && g.renderStats.firstUploadAlloc == 0 {
+				stageStarted := time.Now()
+				g.uploadPixels = make([]byte, dirtySize)
+				g.renderStats.firstUploadAlloc = time.Since(stageStarted)
+			} else {
+				g.uploadPixels = make([]byte, dirtySize)
+			}
+		} else {
+			g.uploadPixels = g.uploadPixels[:dirtySize]
+		}
+		for y := range dirtyHeight {
+			src := ((minY+y)*width + minX) * 4
+			dst := y * dirtyWidth * 4
+			copy(g.uploadPixels[dst:dst+dirtyWidth*4], g.pixels[src:src+dirtyWidth*4])
+		}
+		g.renderStats.writePixels(g.renderStats.subImage(g.image, image.Rect(minX, minY, maxX+1, maxY+1)), g.uploadPixels)
+		g.rememberPresentationState(frame)
+		return nil
+	}
+	g.rememberPresentationState(frame)
+	return nil
+}
+
 func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 	if frame.Empty() {
 		return fmt.Errorf("runtime returned an empty frame")
@@ -497,6 +662,7 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 			g.pixels = make([]byte, n)
 		}
 		g.presentationOpaque = false
+		g.presentationInitialized = false
 		// Keep the presentation surface at the runtime's native pixel size.
 		// Otherwise Layout resamples a differently-sized game canvas into the
 		// launcher's fixed window, changing antialiased glyph coverage.
@@ -518,12 +684,23 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 			g.renderStats.firstSurface = g.renderStats.firstNewImage + g.renderStats.firstResize
 		}
 	}
+	if frame.Opaque {
+		g.presentationOpaque = true
+	}
 	// Opaque frames already use the same byte representation in the runtime
 	// snapshot and Ebitengine image. Avoid the per-pixel conversion and dirty
 	// bounds scan when a static scene is presented again.
 	if g.presentationOpaque && bytes.Equal(g.pixels, frame.RGBA) {
 		g.rememberPresentationState(frame)
 		return nil
+	}
+	if g.presentationOpaque {
+		if handled, err := g.updateOpaquePresentation(frame, width, height); handled || err != nil {
+			return err
+		}
+	}
+	if g.presentationInitialized && !g.presentationOpaque {
+		return g.updateTransparentPresentation(frame, width, height, n)
 	}
 	allOpaque := true
 	minX, minY, maxX, maxY := width, height, -1, -1
@@ -562,6 +739,7 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 		// updating each pixel's channels individually.
 		if maxX < 0 {
 			g.presentationOpaque = true
+			g.presentationInitialized = true
 			g.rememberPresentationState(frame)
 			return nil
 		}
@@ -587,97 +765,16 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 				copy(g.uploadPixels[dst:dst+dirtyWidth*4], g.pixels[src:src+dirtyWidth*4])
 			}
 			g.renderStats.writePixels(g.renderStats.subImage(g.image, image.Rect(minX, minY, maxX+1, maxY+1)), g.uploadPixels)
+			g.presentationInitialized = true
 			g.rememberPresentationState(frame)
 			return nil
 		}
 		g.renderStats.writePixels(g.image, g.pixels)
+		g.presentationInitialized = true
 		g.rememberPresentationState(frame)
 		return nil
 	}
-	allOpaque = false
-	minX, minY, maxX, maxY = width, height, -1, -1
-	if g.renderStats.enabled {
-		g.presentationChanges = 0
-	}
-	for i := 0; i < n; i += 4 {
-		alpha := frame.RGBA[i+3]
-		pixelChanged := false
-		if alpha == 255 {
-			pixelChanged = g.pixels[i] != frame.RGBA[i] ||
-				g.pixels[i+1] != frame.RGBA[i+1] ||
-				g.pixels[i+2] != frame.RGBA[i+2] ||
-				g.pixels[i+3] != alpha
-			if pixelChanged {
-				g.pixels[i] = frame.RGBA[i]
-				g.pixels[i+1] = frame.RGBA[i+1]
-				g.pixels[i+2] = frame.RGBA[i+2]
-				g.pixels[i+3] = alpha
-			}
-		} else {
-			allOpaque = false
-			a := uint16(alpha)
-			for channel := 0; channel < 3; channel++ {
-				value := byte((uint16(frame.RGBA[i+channel])*a + 127) / 255)
-				if g.pixels[i+channel] != value {
-					pixelChanged = true
-					g.pixels[i+channel] = value
-				}
-			}
-			if g.pixels[i+3] != alpha {
-				pixelChanged = true
-				g.pixels[i+3] = alpha
-			}
-		}
-		if pixelChanged {
-			if g.renderStats.enabled {
-				g.presentationChanges++
-			}
-			x := (i / 4) % width
-			y := (i / 4) / width
-			if x < minX {
-				minX = x
-			}
-			if x > maxX {
-				maxX = x
-			}
-			if y < minY {
-				minY = y
-			}
-			if y > maxY {
-				maxY = y
-			}
-		}
-	}
-	g.presentationOpaque = allOpaque
-	if maxX < 0 {
-		g.rememberPresentationState(frame)
-		return nil
-	}
-	dirtyWidth, dirtyHeight := maxX-minX+1, maxY-minY+1
-	if dirtyWidth*dirtyHeight*2 < width*height {
-		dirtySize := dirtyWidth * dirtyHeight * 4
-		if cap(g.uploadPixels) < dirtySize {
-			if g.renderStats.enabled && g.renderStats.firstUploadAlloc == 0 {
-				stageStarted := time.Now()
-				g.uploadPixels = make([]byte, dirtySize)
-				g.renderStats.firstUploadAlloc = time.Since(stageStarted)
-			} else {
-				g.uploadPixels = make([]byte, dirtySize)
-			}
-		} else {
-			g.uploadPixels = g.uploadPixels[:dirtySize]
-		}
-		for y := range dirtyHeight {
-			src := ((minY+y)*width + minX) * 4
-			dst := y * dirtyWidth * 4
-			copy(g.uploadPixels[dst:dst+dirtyWidth*4], g.pixels[src:src+dirtyWidth*4])
-		}
-		g.renderStats.writePixels(g.renderStats.subImage(g.image, image.Rect(minX, minY, maxX+1, maxY+1)), g.uploadPixels)
-		g.rememberPresentationState(frame)
-		return nil
-	}
-	g.rememberPresentationState(frame)
-	return nil
+	return g.updateTransparentPresentation(frame, width, height, n)
 }
 
 // Draw presents the latest runtime frame. Ebitengine applies Layout's logical

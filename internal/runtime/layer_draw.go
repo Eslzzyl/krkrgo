@@ -63,6 +63,12 @@ func (d *drawContext) drawLayerTo(l *Layer, parentX, parentY int32, targetType L
 			x0 == 0 && y0 == 0 && x1 == int64(d.width) && y1 == int64(d.height) &&
 			len(pixels) == len(d.rgba) {
 			copy(d.rgba, pixels)
+		} else if l.Type == LayerAlpha && l.Opacity == 255 {
+			if provinceMatchesImage {
+				d.drawOpaqueAlphaLayer(pixels, l, targetType, ax, ay, x0, y0, x1, y1)
+			} else {
+				d.drawOpaqueAlphaLayerNoProvince(pixels, l, targetType, ax, ay, x0, y0, x1, y1)
+			}
 		} else {
 			for sy := int32(y0); int64(sy) < y1; sy++ {
 				localY := l.ImageTop + sy
@@ -106,39 +112,7 @@ func (d *drawContext) drawLayerTo(l *Layer, parentX, parentY int32, targetType L
 					dx := ax + localX
 					si := sourceRowOffset + int(sx)*4
 					di := (destinationRowOffset + int(dx)) * 4
-					if l.Type == LayerAlpha && l.Opacity == 255 {
-						srcA := int(pixels[si+3])
-						if srcA == 0 {
-							// Transparent source pixels leave both color and province
-							// unchanged, so avoid the general blend dispatcher.
-							continue
-						}
-						if srcA == 255 {
-							d.rgba[di], d.rgba[di+1], d.rgba[di+2], d.rgba[di+3] =
-								pixels[si], pixels[si+1], pixels[si+2], 255
-						} else {
-							da := int(d.rgba[di+3])
-							invA := 255 - srcA
-							if targetType == LayerOpaque || da == 255 {
-								for c := range 3 {
-									d.rgba[di+c] = byte((int(d.rgba[di+c])*invA + int(pixels[si+c])*srcA + 127) / 255)
-								}
-							} else {
-								outA := srcA + da*(255-srcA)/255
-								for c := range 3 {
-									p := int(pixels[si+c])*srcA + int(d.rgba[di+c])*da*(255-srcA)/255
-									d.rgba[di+c] = byte((p*255 + outA*127) / (outA * 255))
-								}
-							}
-							if targetType == LayerOpaque {
-								d.rgba[di+3] = byte((da*invA + srcA*srcA + 127) / 255)
-							} else if da != 255 {
-								d.rgba[di+3] = byte(srcA + da*(255-srcA)/255)
-							}
-						}
-					} else {
-						blendPixelForTarget(d.rgba[di:di+4], pixels[si:si+4], l.Opacity, l.Type, targetType)
-					}
+					blendPixelForTarget(d.rgba[di:di+4], pixels[si:si+4], l.Opacity, l.Type, targetType)
 					if provinceMatchesImage {
 						provinceID := l.Province[sourceProvinceRowOffset+int(sx)]
 						if provinceID != 0 && pixels[si+3] != 0 {
@@ -159,6 +133,128 @@ func (d *drawContext) drawLayerTo(l *Layer, parentX, parentY int32, targetType L
 		}
 	}
 	return nil
+}
+
+func (d *drawContext) drawOpaqueAlphaLayer(pixels []byte, l *Layer, targetType LayerType, ax, ay int32, x0, y0, x1, y1 int64) {
+	startX, endX := int(x0), int(x1)
+	startY, endY := int(y0), int(y1)
+	if startX >= endX || startY >= endY {
+		return
+	}
+	imageWidth := int(l.ImageWidth)
+	destinationWidth := int(d.width)
+	sourceLeft := startX * 4
+	destinationX := int(ax) + int(l.ImageLeft) + startX
+	for sy := startY; sy < endY; sy++ {
+		source := sy*imageWidth*4 + sourceLeft
+		destinationY := int(ay) + int(l.ImageTop) + sy
+		destination := (destinationY*destinationWidth + destinationX) * 4
+		province := sy * imageWidth
+		for offset, sx := 0, startX; sx < endX; offset, sx = offset+1, sx+1 {
+			si := source + offset*4
+			di := destination + offset*4
+			srcA := int(pixels[si+3])
+			if srcA != 0 {
+				if srcA == 255 {
+					d.rgba[di], d.rgba[di+1], d.rgba[di+2], d.rgba[di+3] =
+						pixels[si], pixels[si+1], pixels[si+2], 255
+				} else {
+					da := int(d.rgba[di+3])
+					if da == 0 && targetType != LayerOpaque {
+						d.rgba[di], d.rgba[di+1], d.rgba[di+2], d.rgba[di+3] =
+							pixels[si], pixels[si+1], pixels[si+2], byte(srcA)
+					} else {
+						invA := 255 - srcA
+						if targetType == LayerOpaque || da == 255 {
+							for c := range 3 {
+								d.rgba[di+c] = byte((int(d.rgba[di+c])*invA + int(pixels[si+c])*srcA + 127) / 255)
+							}
+						} else {
+							outA := srcA + da*(255-srcA)/255
+							for c := range 3 {
+								p := int(pixels[si+c])*srcA + int(d.rgba[di+c])*da*(255-srcA)/255
+								d.rgba[di+c] = byte((p*255 + outA*127) / (outA * 255))
+							}
+						}
+						if targetType == LayerOpaque {
+							d.rgba[di+3] = byte((da*invA + srcA*srcA + 127) / 255)
+						} else if da != 255 {
+							d.rgba[di+3] = byte(srcA + da*(255-srcA)/255)
+						}
+					}
+				}
+				provinceID := l.Province[province+sx]
+				if provinceID != 0 {
+					d.province[destinationY*destinationWidth+destinationX+offset] = provinceID
+				}
+			}
+		}
+	}
+}
+
+func (d *drawContext) drawOpaqueAlphaLayerNoProvince(pixels []byte, l *Layer, targetType LayerType, ax, ay int32, x0, y0, x1, y1 int64) {
+	startX, endX := int(x0), int(x1)
+	startY, endY := int(y0), int(y1)
+	if startX >= endX || startY >= endY {
+		return
+	}
+	imageWidth := int(l.ImageWidth)
+	destinationWidth := int(d.width)
+	rowBytes := (endX - startX) * 4
+	sourceLeft := startX * 4
+	destinationX := int(ax) + int(l.ImageLeft) + startX
+	for sy := startY; sy < endY; sy++ {
+		source := sy*imageWidth*4 + sourceLeft
+		destinationY := int(ay) + int(l.ImageTop) + sy
+		destination := (destinationY*destinationWidth + destinationX) * 4
+		allAlphaOpaque := true
+		for alpha := source + 3; alpha < source+rowBytes; alpha += 4 {
+			if pixels[alpha] != 255 {
+				allAlphaOpaque = false
+				break
+			}
+		}
+		if allAlphaOpaque {
+			copy(d.rgba[destination:destination+rowBytes], pixels[source:source+rowBytes])
+			continue
+		}
+		for offset, sx := 0, startX; sx < endX; offset, sx = offset+1, sx+1 {
+			si := source + offset*4
+			di := destination + offset*4
+			srcA := int(pixels[si+3])
+			if srcA == 0 {
+				continue
+			}
+			if srcA == 255 {
+				d.rgba[di], d.rgba[di+1], d.rgba[di+2], d.rgba[di+3] =
+					pixels[si], pixels[si+1], pixels[si+2], 255
+				continue
+			}
+			da := int(d.rgba[di+3])
+			if da == 0 && targetType != LayerOpaque {
+				d.rgba[di], d.rgba[di+1], d.rgba[di+2], d.rgba[di+3] =
+					pixels[si], pixels[si+1], pixels[si+2], byte(srcA)
+				continue
+			}
+			invA := 255 - srcA
+			if targetType == LayerOpaque || da == 255 {
+				for c := range 3 {
+					d.rgba[di+c] = byte((int(d.rgba[di+c])*invA + int(pixels[si+c])*srcA + 127) / 255)
+				}
+			} else {
+				outA := srcA + da*(255-srcA)/255
+				for c := range 3 {
+					p := int(pixels[si+c])*srcA + int(d.rgba[di+c])*da*(255-srcA)/255
+					d.rgba[di+c] = byte((p*255 + outA*127) / (outA * 255))
+				}
+			}
+			if targetType == LayerOpaque {
+				d.rgba[di+3] = byte((da*invA + srcA*srcA + 127) / 255)
+			} else if da != 255 {
+				d.rgba[di+3] = byte(srcA + da*(255-srcA)/255)
+			}
+		}
+	}
 }
 
 func maxInt64(a, b int64) int64 {

@@ -29,7 +29,7 @@ The codebase is incremental and bounded; registered method names do not guarante
 - [TJS and KAG](tjs-kag.md): compiled TJS2 storage input, selected `Scripts` operations, KAG inline `[iscript]`/`[endscript]`, nested macro definitions, and broader C++ KAG tags.
 - [Assets, storage, and media](assets-storage-media.md): non-file storage backends, C++ media semantics, and unsupported codec/mode coverage.
 - [Runtime and native services](runtime-natives.md): process/host semantics, injected dialogs/shell, and unavailable devices.
-- [Graphics, layers, and text](graphics-layer-text.md): Bitmap supports PNG/BMP/JPEG saving with bounded metadata/options; asynchronous, color-key, and raw-pointer paths remain unsupported. ImageFunction operations, complete layer effects, and full text/font behavior remain bounded.
+- [Graphics, layers, and text](graphics-layer-text.md): Bitmap supports PNG/BMP/JPEG saving with bounded metadata/options and asynchronous loading; color-key and raw-pointer paths remain unsupported. ImageFunction operations, complete layer effects, and full text/font behavior remain bounded.
 - [Audio and video](audio-video.md): MPEG picture/chroma limits, absent video audio stream, and headless samples versus device output.
 - [Host, Ebitengine, and platforms](host-platform.md): generic project launching, platform backend qualifications, mobile policy, and Linux clipboard utilities.
 
