@@ -104,6 +104,7 @@ printf '[{"at_ms":1000,"action":"checkpoint","name":"end","inspect":[]}]' | temp
 
 ### 进程内存采样
 
+
 使用 Windows 进程采样，每 250 ms 读取一次 `WorkingSet64` 和 `PrivateMemorySize64`。10 s `amairo` 回放的结果：
 
 | 指标 | 峰值 |
@@ -114,6 +115,10 @@ printf '[{"at_ms":1000,"action":"checkpoint","name":"end","inspect":[]}]' | temp
 | 进程退出码 | 0 |
 
 该采样反映进程工作集与私有字节，不能替代 Go heap live bytes、保留 descriptor bytes 或 GPU 显存统计。当前结果说明 `amairo` 的资源生命周期和峰值内存值得优先测量。
+
+### 脚本编译准备缓存（跳过）
+
+`Session.executeSource` 的 source+name+expression 编译缓存候选已在完整 `amairo` replay 中测量。10 s 回放从 61.061 s 变为 65.535 s，输出 SHA-256 保持一致；映射查找和缓存占用抵消了编译收益，代码已撤回。
 
 ## Go benchmark 结果
 
