@@ -72,6 +72,28 @@ printf '[{"at_ms":10000,"action":"checkpoint","name":"end","inspect":[]}]' | tem
 
 每个 frame 为 1280×720，RGBA 字节数为 3,686,400。10 s 回放的 626 个 frame 对应初始 frame 加上 16 ms tick 产生的 625 个时间点。
 
+### TJS2 Legacy 准备缓存
+
+`DecodeBytecode` 为每个 Legacy object 保留一次性准备结果。首次执行时解析指令边界并建立 offset-to-IP 表，后续执行直接复用；公开的 `DecodeLegacyInstructions` 仍返回独立副本。
+
+| 回放 | 缓存前 | 当前实现 | 墙钟变化 | 输出 |
+| --- | ---: | ---: | ---: | --- |
+| 启动 + 1 s | 15.535 s | 13.191 s | -15.1% | SHA-256 相同 |
+| 启动 + 10 s | 126.510 s | 61.061 s | -51.7% | SHA-256 相同 |
+
+1 s 对照使用本次同一命令重新运行。10 s 缓存前数值来自本文已有的同机基线；两次 JSON 文件 SHA-256 均保持一致：1 s 为 `6cf00eea902de349bf781b2e442cde87e5d6f394956d5b4afec58607ca131969`，10 s 为 `21ed220ff5d867bc40ae5d8e5d5bc831f1a5610c9be43735dfe4b8504d5a60fd`。
+
+该改动针对完整 amairo replay 的 TJS2 Legacy 执行路径，收益覆盖启动和持续 tick。
+
+可重复命令：
+
+```sh
+printf '[{"at_ms":1000,"action":"checkpoint","name":"end","inspect":[]}]' | temp/krkrgo-tool-perf.exe replay \
+  --project testdata/amairo --input - --output temp/perf-amairo-1s.json \
+  --step-ms 16 --budget 100000000
+```
+
+
 ### 进程内存采样
 
 使用 Windows 进程采样，每 250 ms 读取一次 `WorkingSet64` 和 `PrivateMemorySize64`。10 s `amairo` 回放的结果：

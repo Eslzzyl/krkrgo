@@ -1,6 +1,9 @@
 package tjs
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 // LegacyInstruction is one instruction in the original TJS2 intercode stream.
 // Offset and operands are measured in 16-bit code units, exactly as serialized.
@@ -17,9 +20,61 @@ var legacyOpcodeNames = map[int16]string{
 	82: "BNOT", 83: "TYPEOF", 84: "TYPEOFD", 85: "TYPEOFI", 86: "EVAL", 87: "EEXP", 88: "CHKINS", 89: "ASC", 90: "CHR", 91: "NUM", 92: "CHS", 93: "INV", 94: "CHKINV", 95: "INT", 96: "REAL", 97: "STR", 98: "OCTET", 99: "CALL", 100: "CALLD", 101: "CALLI", 102: "NEW", 103: "GPD", 104: "SPD", 105: "SPDE", 106: "SPDEH", 107: "GPI", 108: "SPI", 109: "SPIE", 110: "GPDS", 111: "SPDS", 112: "GPIS", 113: "SPIS", 114: "SETP", 115: "GETP", 116: "DELD", 117: "DELI", 118: "SRV", 119: "RET", 120: "ENTRY", 121: "EXTRY", 122: "THROW", 123: "CHGTHIS", 124: "GLOBAL", 125: "ADDCI", 126: "REGMEMBER", 127: "DEBUGGER",
 }
 
-// DecodeLegacyInstructions parses instruction boundaries without executing them.
-// Unknown instructions and malformed operands report the owning object and offset.
+type legacyPreparation struct {
+	once         sync.Once
+	instructions []LegacyInstruction
+	offsetToIP   map[int]int
+	err          error
+}
+
+func (d *DecodedBytecode) preparedLegacyInstructions(object int) ([]LegacyInstruction, map[int]int, error) {
+	if object < 0 || object >= len(d.Objects) {
+		return nil, nil, fmt.Errorf("legacy intercode object %d: index out of range", object)
+	}
+	if len(d.legacyPrepared) != len(d.Objects) {
+		instructions, err := d.decodeLegacyInstructions(object)
+		if err != nil {
+			return nil, nil, err
+		}
+		offsetToIP := make(map[int]int, len(instructions)+1)
+		for i, instruction := range instructions {
+			offsetToIP[instruction.Offset] = i
+		}
+		offsetToIP[len(d.Objects[object].Code)] = len(instructions)
+		return instructions, offsetToIP, nil
+	}
+	prepared := &d.legacyPrepared[object]
+	prepared.once.Do(func() {
+		prepared.instructions, prepared.err = d.decodeLegacyInstructions(object)
+		if prepared.err != nil {
+			return
+		}
+		prepared.offsetToIP = make(map[int]int, len(prepared.instructions)+1)
+		for i, instruction := range prepared.instructions {
+			prepared.offsetToIP[instruction.Offset] = i
+		}
+		prepared.offsetToIP[len(d.Objects[object].Code)] = len(prepared.instructions)
+	})
+	return prepared.instructions, prepared.offsetToIP, prepared.err
+}
+
+// DecodeLegacyInstructions returns an owned copy of the prepared instructions.
 func (d *DecodedBytecode) DecodeLegacyInstructions(object int) ([]LegacyInstruction, error) {
+	instructions, _, err := d.preparedLegacyInstructions(object)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]LegacyInstruction, len(instructions))
+	for i, instruction := range instructions {
+		result[i] = instruction
+		result[i].Operands = append([]int16(nil), instruction.Operands...)
+	}
+	return result, nil
+}
+
+// decodeLegacyInstructions parses instruction boundaries without executing them.
+// Unknown instructions and malformed operands report the owning object and offset.
+func (d *DecodedBytecode) decodeLegacyInstructions(object int) ([]LegacyInstruction, error) {
 	if object < 0 || object >= len(d.Objects) {
 		return nil, fmt.Errorf("legacy intercode object %d: index out of range", object)
 	}

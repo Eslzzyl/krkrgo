@@ -134,15 +134,10 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		return VoidValue, fmt.Errorf("legacy intercode object %d: index out of range", object)
 	}
 	o := &d.Objects[object]
-	instructions, err := d.DecodeLegacyInstructions(object)
+	instructions, offsetToIP, err := d.preparedLegacyInstructions(object)
 	if err != nil {
 		return VoidValue, err
 	}
-	offsetToIP := make(map[int]int, len(instructions)+1)
-	for i, instruction := range instructions {
-		offsetToIP[instruction.Offset] = i
-	}
-	offsetToIP[len(o.Code)] = len(instructions)
 	startIP := 0
 	if startOffset >= 0 {
 		var ok bool

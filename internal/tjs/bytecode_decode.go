@@ -47,6 +47,8 @@ type DecodedBytecode struct {
 	Strings  []string
 	Octets   [][]byte
 	Objects  []BytecodeObject
+
+	legacyPrepared []legacyPreparation
 }
 
 // DecodeBytecode validates the complete container before decoding any records.
@@ -186,6 +188,7 @@ func DecodeBytecode(data []byte) (*DecodedBytecode, error) {
 			o.Properties[j].Object, _ = r.i32("property object")
 		}
 	}
+	d.legacyPrepared = make([]legacyPreparation, len(d.Objects))
 	return d, nil
 }
 

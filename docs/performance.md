@@ -110,6 +110,12 @@ signals.
   5.435 µs/op to 2.987 ns/op for opaque plans and 5.303 µs/op to
   3.327 ns/op for alpha plans. Dynamic plans continue through the original
   `Compose` path.
+- `internal/tjs/bytecode_decode.go` and `internal/tjs/legacy_intercode.go`
+  cache Legacy instruction boundaries and offset-to-IP tables per decoded
+  object. On Windows amd64, the full `testdata/amairo` headless replay changed
+  from 15.535 s to 13.191 s for the 1 s checkpoint and from 126.510 s to
+  61.061 s for the 10 s checkpoint. The 1 s and 10 s replay JSON SHA-256
+  values remained identical.
 - `internal/host/gpu_compositor.go` creates shader `uniforms` maps only for
   transition and generic shader layers. Native opaque/alpha layers now skip
   that temporary map; the Windows amd64 dynamic native-layer benchmark reduced

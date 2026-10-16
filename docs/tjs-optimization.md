@@ -2,7 +2,7 @@
 
 ## Scope and semantic target
 
-The official C++ implementation at `/Users/eslzzyl/WorkSpace/krkrz/tjs2` is the semantic authority for TJS behavior; Rust is a migration reference only. Go optimizations must preserve observable language semantics, exception/finally and scope unwinding, source locations, execution budgets, tracing, and garbage-collector rooting. The six production changes below are narrow helper, key-conversion, and call-path optimizations. Measurements are local Darwin/arm64 results, not evidence of a full-VM or whole-application speedup.
+The official C++ implementation at `/Users/eslzzyl/WorkSpace/krkrz/tjs2` is the semantic authority for TJS behavior; Rust is a migration reference only. Go optimizations must preserve observable language semantics, exception/finally and scope unwinding, source locations, execution budgets, tracing, and garbage-collector rooting. The seven production changes below include narrow helper, key-conversion, call-path, and Legacy preparation optimizations. Measurements include local microbenchmarks and a Windows amd64 `testdata/amairo` replay comparison.
 
 ## C++ and Go execution models
 
@@ -12,7 +12,7 @@ Go uses string `OpCode`s and a tagged `Op` in `internal/tjs/compiler.go:18-124`;
 
 ## Completed production results
 
-All six optimizations were implemented and verified on Darwin arm64. Relevant tests and benchmarks are identified below; the full verification commands are listed afterward.
+All seven optimizations were implemented and verified. Relevant tests and benchmarks are identified below; the full verification commands are listed afterward.
 
 1. **Direct scalar UTF-16 equality** — `internal/tjs/value.go:641-650` compares code units directly rather than calling `compareUTF16`. Equality and ordering boundary coverage includes empty strings, prefixes, and isolated surrogates (`internal/tjs/value_object_test.go:28-57`). On Apple M1 Pro, equal 32-unit inputs measured 12.69–13.65 ns/op versus 16.55–16.72 ns/op for the compare-based baseline; 1,024 units measured 346.0–351.1 ns/op versus 502.8–513.3 ns/op; 65,536 units measured 21.16–21.38 µs/op versus 31.79–32.19 µs/op. Both paths used zero allocations. These are helper benchmarks, not a VM speedup claim.
 
@@ -25,6 +25,7 @@ All six optimizations were implemented and verified on Darwin arm64. Relevant te
 5. **Shared `VM.handle` error sentinel** — `internal/tjs/vm.go:70,234-242` reuses `errTJSNonNullObject` for non-object/null values instead of constructing a fixed error each call. Error text and `VMAbortError` wrapping remain unchanged; `internal/tjs/vm_exception_test.go:96-114` and `internal/tjs/delete_test.go:73-81` cover error behavior. On Apple M1 Pro, non-object/null handling fell from about 10 ns/op, 16 B/op, one allocation to about 2.5–2.6 ns/op, zero bytes and allocations. This is a localized error-path result.
 
 6. **Owned `expandArgs` slice for script calls** — `OpCall` passes its expanded argument slice through `invokeOwned`/`invokeWithOwnership` (`internal/tjs/vm.go:1810-1819,2104-2154`); script callees use it as frame arguments rather than making a second append copy. Public invocation and native/method/construction ownership boundaries retain their behavior. Call-shape tests and benchmarks are in `internal/tjs/vm_test.go:770-784` and `internal/tjs/vm_call_benchmark_test.go:16-86`. Paired medians: script/fixed 3,458→3,402 ns/op, 8,508→8,330 B/op, 26→25 allocs/op; script/forward 5,390→5,295 ns/op, 13,179→12,827 B/op, 42→40; script/spread 3,504→3,451 ns/op, 7,965→7,787 B/op, 28→27. These are local call-path results only.
+7. **Cached Legacy preparation** — `internal/tjs/bytecode_decode.go` allocates one preparation record per decoded object, while `internal/tjs/legacy_intercode.go` caches instruction boundaries and offset-to-IP tables through `sync.Once`. `ExecuteLegacy...` reuses the prepared representation; public `DecodeLegacyInstructions` returns an owned copy. On Windows amd64, the full `testdata/amairo` replay changed from 15.535 s to 13.191 s for the 1 s checkpoint and from 126.510 s to 61.061 s for the 10 s checkpoint. Replay JSON SHA-256 values remained identical.
 
 ### Evaluated candidates and property-frame comparison
 
@@ -47,7 +48,7 @@ These checks establish the reported test/build status, not overall VM or applica
 
 These are open research directions, not pending production optimizations:
 
-- **Private predecode or compact opcode representation:** Go's string opcodes and tagged instruction are in `internal/tjs/compiler.go:18-124`; benchmark a private execution form without changing the public/serializable program contract or losing validation, source maps, budgets, tracing, and GC visibility.
+- **Private execution form:** Go's string opcodes and tagged instruction are in `internal/tjs/compiler.go:18-124`; benchmark a private execution form without changing the public/serializable program contract or losing validation, source maps, budgets, tracing, and GC visibility.
 - **Peephole and jump-chain pass:** C++ jump-chain handling is in `tjs2/tjsInterCodeGen.cpp:855-900`; Go branch patching is in `internal/tjs/compiler.go:1402`. Any pass needs correct target remapping and preservation of observable instruction accounting, source locations, and unwind behavior.
 - **Guarded property fast path:** profile repeated access before considering guards around `OpGet`/`OpSet` (`internal/tjs/vm.go:1582-1754`) and object storage (`internal/tjs/object.go:101-120`). Mutation, prototypes, accessors, and dynamic receiver/key patterns constrain safe caching.
 - **Frame arena or lazy scope representation:** the Go/C++ allocation comparison above motivates research only; correctness constraints include GC roots, closure capture, reentrancy, and exceptions.
@@ -59,7 +60,7 @@ The current implementation has two execution paths: the source compiler emits a 
 
 ### Recommended execution tiers
 
-1. **Cached preparation:** retain decoded Legacy instructions, offset-to-IP tables, compact constant metadata, and call-site metadata on the decoded program instead of rebuilding them for every invocation.
+1. **Cached preparation (implemented):** retain decoded Legacy instructions, offset-to-IP tables, compact constant metadata, and call-site metadata on the decoded program instead of rebuilding instruction metadata for every invocation.
 2. **Private execution form:** lower `Program` into integer opcodes and compact operands while retaining the current serializable/debug representation as the public form. The private form must preserve validation, source locations, budgets, tracing, exception/finally unwinding, and GC roots.
 3. **Interpreter fast paths:** specialize integer arithmetic, local register moves, direct jumps, and common load/store operations. Trace and diagnostic checks can use a separate execution mode so ordinary execution pays less fixed cost.
 4. **Feedback-guided caches:** add guarded caches for repeated member reads, writes, and calls. A cache needs an object-layout/version guard and a generic fallback for mutation, accessors, dynamic receivers, `with`, `eval`, and class lookup.
@@ -73,7 +74,7 @@ Object member lookup currently combines UTF-16 key handling, object-table lookup
 
 ### JIT and AOT assessment
 
-A persistent optimized bytecode cache is the practical AOT direction: compile source once, predecode Legacy intercode, build instruction metadata, and reload the prepared form on later starts. Native-code AOT or JIT requires platform-specific code generation, executable-memory policy, Go ABI integration, precise GC root maps, exception unwinding, tracing, budgets, and deoptimization back to the interpreter. Those requirements make native code generation a later tier after measured hot functions justify the runtime complexity.
+A persistent optimized bytecode cache remains the practical AOT direction: compile source once, predecode Legacy intercode, build instruction metadata, and reload the prepared form on later starts. The runtime now has an in-memory per-decoded-program Legacy preparation cache; persistent cross-start storage remains a later step. Native-code AOT or JIT requires platform-specific code generation, executable-memory policy, Go ABI integration, precise GC root maps, exception unwinding, tracing, budgets, and deoptimization back to the interpreter.
 
 The recommended overall sequence is:
 
@@ -88,7 +89,7 @@ These directions are research guidance. They are not claims of whole-application
 
 ### Executive summary
 
-The TJS runtime is a register-based Go interpreter with a separate TJS2 intercode interpreter. The current design prioritizes compatibility, explicit resource limits, source locations, host tracing, and precise GC rooting. It does not currently have a JIT, native-code AOT tier, inline caches, object shapes, or a persistent prepared-program cache.
+The highest-value path is a tiered runtime. The first tier now exists for decoded Legacy programs: instruction boundaries and offset-to-IP tables are prepared once per object and reused by later calls. The next tiers remain private execution representation, interpreter fast paths, guarded member/call caches, and specialized bytecode.
 
 The highest-value path is a tiered runtime:
 
