@@ -93,3 +93,7 @@ visibility, alpha semantics, transition phase, or hit testing.
 ### CPU dirty-region / tile cache（跳过）
 
 CPU compositor 的 layer mutation 当前没有统一的 dirty-rect 传播，父子 transform、clip、province、transition 和 `onPaint` 都会影响可见范围。新增区域缓存需要改变 layer 状态接口与失效流程，当前 `ComposeFullFrame` 基准没有可安全复用的区域信息。本项跳过。
+
+### GPU transition 全量迁移（已具备，跳过重复改动）
+
+当前 crossfade 和 universal transition 已由 Kage shader 处理，destination/source/rule 纹理直接参与 GPU 合成，transition path 没有逐帧 CPU readback。该能力已存在于当前实现，重复迁移没有新的可测量改动。本项记录为跳过。
