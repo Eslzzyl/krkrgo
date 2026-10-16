@@ -1,6 +1,11 @@
 package runtime
 
-import "github.com/eslzzyl/krkrgo/internal/tjs"
+import (
+	"fmt"
+	"os"
+
+	"github.com/eslzzyl/krkrgo/internal/tjs"
+)
 
 func (s *Session) dispatchLayerMouseInput(windowID uint64, window *WindowState, ev InputEvent) error {
 	switch ev.Kind {
@@ -52,13 +57,25 @@ func (s *Session) dispatchLayerMouseInput(windowID uint64, window *WindowState, 
 		}
 	}
 	if dispatchTarget == nil {
+		inputTrace("kind=%d x=%d y=%d button=%d target=none", ev.Kind, ev.X, ev.Y, ev.Button)
 		return nil
 	}
 	name, args := layerMouseEventArgs(dispatchTarget, ev)
 	if name == "" {
 		return nil
 	}
+	inputTrace("kind=%d x=%d y=%d button=%d target=%d handler=%s", ev.Kind, ev.X, ev.Y, ev.Button, dispatchTarget.ID, name)
 	return s.Services.layerEvent(s.VM, dispatchTarget, name, args, &s.Budget)
+}
+
+// inputTrace prints one line per pointer event routed to a layer when
+// KRKRGO_INPUT_TRACE is set, so windowed input can be followed from the log
+// without a debugger.
+func inputTrace(format string, args ...any) {
+	if os.Getenv("KRKRGO_INPUT_TRACE") == "" {
+		return
+	}
+	fmt.Printf("input-trace "+format+"\n", args...)
 }
 
 // hitTestLayer adds scriptable onHitTest filtering while preserving the current

@@ -2,10 +2,11 @@ package runtime
 
 import (
 	"fmt"
-	"github.com/eslzzyl/krkrgo/internal/tjs"
 	"math"
 	"time"
 	"unsafe"
+
+	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
 type nativeLayerImage struct {
@@ -169,6 +170,7 @@ func layerOperationPixel(dst, src []byte, face, mode, opacity int32, holdAlpha b
 		return nil
 	}
 	if mode == int32(LayerPSMultiplicative) {
+		oldAlpha := dst[3]
 		alpha := int(src[3])
 		if opacity != 255 {
 			alpha = alpha * int(opacity) >> 8
@@ -177,8 +179,12 @@ func layerOperationPixel(dst, src []byte, face, mode, opacity int32, holdAlpha b
 			multiplied := int(dst[c]) * int(src[c]) >> 8
 			dst[c] = byte(int(dst[c]) + ((multiplied - int(dst[c])) * alpha >> 8))
 		}
-		if !holdAlpha {
-			dst[3] = 0
+		// TVPPS_ALPHABLEND stores the blended source verbatim; the _HDA variant
+		// keeps the destination alpha.
+		if holdAlpha {
+			dst[3] = oldAlpha
+		} else {
+			dst[3] = src[3]
 		}
 		return nil
 	}
@@ -202,15 +208,19 @@ func layerOperationPixel(dst, src []byte, face, mode, opacity int32, holdAlpha b
 		}
 		return nil
 	}
-	if face == layerFaceAlpha {
-		weight := straightAlphaWeight(dst[3], uint8(alpha))
-		for c := 0; c < 3; c++ {
-			dst[c] = byte(int(dst[c]) + ((int(source[c]) - int(dst[c])) * weight >> 8))
+	// The layered alpha face uses bmAlpha: straight-alpha "source over" with the
+	// layer pixels as the backdrop, matching the compositor's alpha path. A
+	// fully transparent backdrop takes the source pixels verbatim, which is what
+	// layered image composition (ui button state copies) relies on.
+	if face == layerFaceAlpha && mode < int32(LayerPSNormal) {
+		backdrop := dst[3]
+		blendPixelForTarget(dst, source[:], uint8(opacity), LayerAlpha, target)
+		if holdAlpha {
+			dst[3] = backdrop
 		}
-		dst[3] = byte(255 - (255-int(dst[3]))*(255-alpha)/255)
 		return nil
 	}
-	if face == layerFaceAddAlpha || mode == int32(LayerAddAlpha) {
+	if (face == layerFaceAddAlpha && mode < int32(LayerPSNormal)) || mode == int32(LayerAddAlpha) {
 		if mode == int32(LayerAddAlpha) && face == layerFaceOpaque && !holdAlpha && opacity != 255 {
 			opacity += opacity >> 7
 			alpha = int(source[3]) * int(opacity) >> 8
@@ -254,7 +264,17 @@ func layerOperationPixel(dst, src []byte, face, mode, opacity int32, holdAlpha b
 
 	oldAlpha := dst[3]
 	blendPixelForTarget(dst, source[:], uint8(opacity), LayerType(mode), target)
-	if holdAlpha {
+	switch {
+	case mode >= int32(LayerPSNormal):
+		// TVPPS_ALPHABLEND: the plain variant stores the blended source, whose
+		// alpha channel is the source's; the _HDA variant keeps the
+		// destination's alpha byte.
+		if holdAlpha {
+			dst[3] = oldAlpha
+		} else {
+			dst[3] = source[3]
+		}
+	case holdAlpha:
 		dst[3] = oldAlpha
 	}
 	return nil

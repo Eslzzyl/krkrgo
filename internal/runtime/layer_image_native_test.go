@@ -517,3 +517,72 @@ func TestLayerAffineCopyClampsInterpolationTapsToPlane(t *testing.T) {
 		t.Fatalf("corner pixel = %v, want [32 64 96 255]", got)
 	}
 }
+
+func TestLayerOperateRectAlphaFaceOverTransparentBackdrop(t *testing.T) {
+	// Layered image composition copies button artwork with operateRect from a
+	// composite onto an alpha face that a preceding clear left fully
+	// transparent. bmAlpha must hand the layer the source pixels there; keeping
+	// the zero backdrop color instead renders the artwork black.
+	session := NewSession(DefaultServices(), 100_000)
+	if _, err := session.executeSource("<layer-alpha-face-test>", `
+	src = new Layer(); dst = new Layer();
+	src.setImageSize(1, 1); dst.setImageSize(1, 1);
+	src.face = dfBoth; src.fillRect(0, 0, 1, 1, 0x802468ac);
+	dst.face = dfBoth; dst.fillRect(0, 0, 1, 1, 0x00000000);
+	dst.operateRect(0, 0, src, 0, 0, 1, 1, omAlpha);
+	`, false); err != nil {
+		t.Fatal(err)
+	}
+	readInt := func(source string) int64 {
+		t.Helper()
+		value, err := session.Evaluate(source)
+		if err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+		got, err := value.Int()
+		if err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+		return got
+	}
+	if got := [2]int64{readInt(`dst.getMainPixel(0,0)`), readInt(`dst.getMaskPixel(0,0)`)}; got != [2]int64{0x2468ac, 0x80} {
+		t.Fatalf("alpha face copy over transparent backdrop = %#x,%#x, want %#x,0x80", got[0], got[1], 0x2468ac)
+	}
+}
+
+func TestLayerOperateRectPhotoshopBlendAlphaRule(t *testing.T) {
+	// tvpps.c TVPPS_ALPHABLEND stores the blended source, whose alpha channel is
+	// the source's, and its _HDA form keeps the destination alpha byte. A
+	// Photoshop blend over a transparent backdrop therefore paints the source
+	// alpha instead of an opaque result.
+	session := NewSession(DefaultServices(), 100_000)
+	if _, err := session.executeSource("<layer-ps-blend-test>", `
+	function blendInto(hold) {
+		var src = new Layer(), dst = new Layer();
+		src.setImageSize(1, 1); dst.setImageSize(1, 1);
+		src.face = dfMain; src.fillRect(0, 0, 1, 1, 0x801dabdf);
+		dst.face = dfMain; dst.fillRect(0, 0, 1, 1, 0x00000000);
+		dst.holdAlpha = hold;
+		dst.operateRect(0, 0, src, 0, 0, 1, 1, omPsOverlay, 255);
+		return dst.getMaskPixel(0, 0);
+	}
+	held = blendInto(true); composed = blendInto(false);
+	`, false); err != nil {
+		t.Fatal(err)
+	}
+	readInt := func(source string) int64 {
+		t.Helper()
+		value, err := session.Evaluate(source)
+		if err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+		got, err := value.Int()
+		if err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+		return got
+	}
+	if got := [2]int64{readInt("held"), readInt("composed")}; got != [2]int64{0, 0x80} {
+		t.Fatalf("photoshop overlay alpha = hold:%#x plain:%#x, want 0x0 and 0x80", got[0], got[1])
+	}
+}

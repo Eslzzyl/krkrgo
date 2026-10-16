@@ -288,7 +288,7 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 			l.hitTestWork = hit
 		}
 		return tjs.VoidValue, nil
-	case "onMouseMove", "onMouseDown", "onMouseUp", "onClick", "onDoubleClick", "onMouseEnter", "onMouseLeave", "onMouseWheel", "onKeyDown", "onKeyUp", "onKeyPress", "onFocus", "onBlur", "onPaint", "onTransitionCompleted", "onNodeEnabled", "onNodeDisabled":
+	case "onMouseMove", "onMouseDown", "onMouseUp", "onClick", "onDoubleClick", "onMouseEnter", "onMouseLeave", "onMouseWheel", "onKeyDown", "onKeyUp", "onKeyPress", "onFocus", "onBlur", "onBeforeFocus", "onSearchPrevFocusable", "onSearchNextFocusable", "onPaint", "onTransitionCompleted", "onNodeEnabled", "onNodeDisabled", "onTouchDown", "onTouchUp", "onTouchMove", "onTouchScaling", "onTouchRotate", "onMultiTouch":
 		return tjs.VoidValue, nil
 	case "setPos":
 		x, err := intArg(0)

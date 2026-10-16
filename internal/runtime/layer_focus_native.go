@@ -97,6 +97,9 @@ func (s *Services) layerEvent(vm *tjs.VM, layer *Layer, name string, args []tjs.
 	if err != nil || handler.Kind() == tjs.KindVoid {
 		return err
 	}
+	if name != "onPaint" {
+		inputTrace("hook layer=%d name=%s args=%d", layer.ID, name, len(args))
+	}
 	_, err = vm.CallFunction(handler, context, args, s, budget)
 	return err
 }

@@ -24,18 +24,39 @@ const (
 	motionProgressMaxMS        = 60000
 )
 
+// Motion.PlayFlag* values the native namespace exposes (cpp/plugins/
+// motionplayer/main.cpp). The games apply a motion through
+// MotionAffineSourceLayer.setOptions, which calls play(label, flags) once per
+// frame with PlayFlagForce, so the same-label form of play has to keep the
+// playback position: shipped krkr2 runs these games with that call pattern and
+// a restart there would pin every cut-in to its first frame.
+const (
+	motionPlayFlagForce   = 1
+	motionPlayFlagChain   = 2
+	motionPlayFlagAsCan   = 4
+	motionPlayFlagJoin    = 8
+	motionPlayFlagStealth = 16
+)
+
 type motionPlayerState struct {
 	resourceManager tjs.ObjectID
 	chara           string
 	motion          string
+	stealthMotion   string
 	frameTick       float64
 	speed           float64
 	playing         bool
-	completionType  int64
-	outline         int64
-	onAction        tjs.Value
-	drawMatrix      motionDrawMatrix
-	playerID        tjs.ObjectID
+	// held marks a one-shot motion that reached its last time: the reference
+	// stops advancing the timeline at that point and keeps the evaluated pose,
+	// and the layer keeps drawing the clamped frame. A repeat apply of the same
+	// motion keeps the held pose; an explicit stop clears the mark so a later
+	// apply starts the motion again.
+	held           bool
+	completionType int64
+	outline        int64
+	onAction       tjs.Value
+	drawMatrix     motionDrawMatrix
+	playerID       tjs.ObjectID
 }
 
 func (s *Services) loadMotionResource(path string) (*motionResource, error) {
@@ -101,16 +122,47 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 			return tjs.VoidValue, fmt.Errorf("Motion.Player.play requires a motion name")
 		}
 		motion := args[0].Text()
-		if state.playing && state.motion == motion {
+		flags := int64(0)
+		if len(args) > 1 && args[1].Kind() != tjs.KindVoid {
+			value, err := args[1].Int()
+			if err != nil {
+				return tjs.VoidValue, err
+			}
+			flags = value
+		}
+		if flags&motionPlayFlagStealth != 0 {
+			// PlayFlagStealth stores the request without loading or starting it
+			// (Player_playImpl commit step).
+			state.stealthMotion = motion
+			return tjs.VoidValue, nil
+		}
+		if motion == "" {
+			// Empty request restarts the loaded motion from its origin unless
+			// the chain flag keeps the current position.
+			if flags&motionPlayFlagChain == 0 {
+				state.frameTick = 0
+			}
+			state.playing = state.motion != ""
+			state.held = false
+			return tjs.VoidValue, nil
+		}
+		if state.motion == motion && (state.playing || state.held) {
+			// Same request as the loaded motion: keep playing, or keep holding
+			// the pose the motion reached. Layers re-apply their source options
+			// every frame, so this form is the common case.
 			return tjs.VoidValue, nil
 		}
 		state.motion = motion
-		state.frameTick = 0
+		if flags&motionPlayFlagChain == 0 {
+			state.frameTick = 0
+		}
 		state.playing = true
-		motionTrace("play id=%d chara=%q motion=%q", id, state.chara, state.motion)
+		state.held = false
+		motionTrace("play id=%d chara=%q motion=%q flags=%d", id, state.chara, state.motion, flags)
 		return tjs.VoidValue, nil
 	case "stop":
 		state.playing = false
+		state.held = false
 		return tjs.VoidValue, nil
 	case "progress":
 		if len(args) == 0 {
@@ -123,12 +175,19 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		if interval < 0 || interval > motionProgressMaxMS {
 			interval = 0
 		}
+		// A player that was stopped or that reached the end of a one-shot
+		// motion holds the pose it has; further progress calls do not move it.
+		if !state.playing {
+			return tjs.VoidValue, nil
+		}
 		state.frameTick += float64(interval) * motionFramesPerMillisecond * state.speed
 		if resource := s.playerResource(state); resource != nil {
-			if last := motionLastTime(resource, state.chara, state.motion); last >= 0 && state.frameTick >= last {
-				state.frameTick = last
-				state.playing = false
-				motionTrace("progress-stop id=%d motion=%q frame=%.2f last=%.2f", id, state.motion, state.frameTick, last)
+			last := motionLastTime(resource, state.chara, state.motion)
+			if last >= 0 && state.frameTick >= last {
+				advanceMotionClock(state, last, motionLoopTime(resource, state.chara, state.motion))
+				if !state.playing {
+					motionTrace("progress-stop id=%d motion=%q frame=%.2f last=%.2f", id, state.motion, state.frameTick, last)
+				}
 			}
 		}
 		if os.Getenv("KRKRGO_MOTION_TRACE") != "" {
@@ -199,6 +258,8 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 		return tjs.StringValue(state.chara), nil
 	case "motion":
 		return tjs.StringValue(state.motion), nil
+	case "stealthMotion":
+		return tjs.StringValue(state.stealthMotion), nil
 	case "tickCount":
 		// Reference Player.h: the TJS property converts the frame clock back to
 		// milliseconds and clamps non-positive clocks to zero.
@@ -230,14 +291,28 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 	switch property {
 	case "chara":
 		state.chara = value.Text()
+	case "stealthMotion":
+		state.stealthMotion = value.Text()
 	case "motion":
-		state.motion = value.Text()
+		motion := value.Text()
+		if state.motion == motion {
+			return nil
+		}
+		// Reference Player::setMotion starts the requested motion through the
+		// load path; a repeat of the loaded key only reselects it.
+		state.motion = motion
+		state.frameTick = 0
+		state.playing = motion != ""
+		state.held = false
 	case "tickCount":
 		n, err := value.Real()
 		if err != nil {
 			return err
 		}
 		state.frameTick = n * motionFramesPerMillisecond
+		// An explicit seek moves the pose, so a later repeat of the same
+		// motion starts over instead of holding.
+		state.held = false
 	case "speed":
 		n, err := value.Real()
 		if err != nil {
@@ -277,9 +352,11 @@ func (s *Services) playerResource(state *motionPlayerState) *motionResource {
 	return resource
 }
 
-func motionLastTime(resource *motionResource, chara, motion string) float64 {
+// motionField reads one numeric field of a motion entry, returning fallback
+// when the resource, the character, or the motion is unavailable.
+func motionField(resource *motionResource, chara, motion, key string, fallback float64) float64 {
 	if resource == nil || resource.doc == nil {
-		return -1
+		return fallback
 	}
 	root, _ := resource.doc.Root.(map[string]assets.Value)
 	objects, _ := root["object"].(map[string]assets.Value)
@@ -287,9 +364,41 @@ func motionLastTime(resource *motionResource, chara, motion string) float64 {
 	motions, _ := character["motion"].(map[string]assets.Value)
 	value, _ := motions[motion].(map[string]assets.Value)
 	if value == nil {
-		return -1
+		return fallback
 	}
-	return psbMotionFloat(value, "lastTime", -1)
+	return psbMotionFloat(value, key, fallback)
+}
+
+func motionLastTime(resource *motionResource, chara, motion string) float64 {
+	return motionField(resource, chara, motion, "lastTime", -1)
+}
+
+func motionLoopTime(resource *motionResource, chara, motion string) float64 {
+	return motionField(resource, chara, motion, "loopTime", -1)
+}
+
+// advanceMotionClock moves the frame clock by one interval and applies the
+// reference loop rule: a negative loopTime clamps at lastTime and ends
+// playback, a loopTime inside the timeline wraps the clock back to the loop
+// start and keeps playing.
+func advanceMotionClock(state *motionPlayerState, last, loop float64) {
+	if last < 0 || state.frameTick < last {
+		return
+	}
+	if loop < 0 || loop >= last {
+		state.frameTick = last
+		state.playing = false
+		state.held = true
+		return
+	}
+	for guard := 0; state.frameTick >= last && guard < 1024; guard++ {
+		state.frameTick += loop - last
+	}
+	if state.frameTick >= last {
+		state.frameTick = last
+		state.playing = false
+		state.held = true
+	}
 }
 
 func (s *Services) motionLayerFromValue(_ *tjs.VM, value tjs.Value) (*Layer, error) {
