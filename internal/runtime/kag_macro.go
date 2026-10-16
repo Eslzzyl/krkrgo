@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/eslzzyl/krkrgo/internal/kag"
@@ -83,8 +84,9 @@ func indexKAGMacros(scenario kag.Scenario) (map[string][]kag.Token, map[int]int,
 func macroArgumentMap(tag *kag.Tag) map[string]string {
 	args := make(map[string]string, len(tag.Attributes))
 	for _, attr := range tag.Attributes {
-		if attr.Name != "tagname" {
-			args[attr.Name] = attr.Value
+		name := strings.ToLower(attr.Name)
+		if name != "tagname" {
+			args[name] = attr.Value
 		}
 	}
 	return args
@@ -131,8 +133,19 @@ func substituteKAGMacroValue(value string, args map[string]string) string {
 }
 
 func expandKAGTag(tag kag.Tag, pmacros map[string][]kag.Attribute, args map[string]string) kag.Tag {
-	attributes := make([]kag.Attribute, 0, len(tag.Attributes))
+	attributes := make([]kag.Attribute, 0, len(tag.Attributes)+len(args))
 	for _, attr := range tag.Attributes {
+		if attr.Name == "*" && args != nil {
+			names := make([]string, 0, len(args))
+			for name := range args {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				attributes = append(attributes, kag.Attribute{Name: name, Value: args[name]})
+			}
+			continue
+		}
 		if replacements, ok := pmacros[attr.Name]; ok {
 			for _, replacement := range replacements {
 				attributes = append(attributes, kag.Attribute{

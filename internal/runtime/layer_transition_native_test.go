@@ -620,3 +620,46 @@ func BenchmarkBlendCrossfadeOpaque1280x720(b *testing.B) {
 		})
 	}
 }
+
+func TestLayerSpinTransitionUsesTypesAndCompletes(t *testing.T) {
+	session := NewSession(DefaultServices(), 10_000)
+	defer session.Close()
+	if _, err := session.executeSource("<spin-transition-setup>", `
+		rootLayer = new Layer();
+		rootLayer.setSize(4, 1);
+		sourceLayer = new Layer(null, rootLayer);
+		destinationLayer = new Layer(null, rootLayer);
+		sourceLayer.fillRect(0, 0, 4, 1, 0xff000000);
+		destinationLayer.fillRect(0, 0, 4, 1, 0xffffffff);
+		sourceLayer.visible = true;
+		destinationLayer.visible = true;
+		destinationLayer.beginTransition("spin", true, sourceLayer, %[
+			time: 10, type1: 4, type2: 5, accel: -1
+		]);
+	`, false); err != nil {
+		t.Fatal(err)
+	}
+	destinationValue, err := session.Evaluate("destinationLayer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := session.Services.Layer(destinationValue.ObjectRef().Object)
+	if destination == nil || destination.transitionMethod != "spin" ||
+		destination.transitionType1 != 4 || destination.transitionType2 != 5 || destination.transitionAccel != -1 {
+		t.Fatalf("spin transition state = %#v", destination)
+	}
+	sourceImage := append([]byte(nil), destination.transitionSourceImage...)
+	if err := session.AdvanceClock(5); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(destination.transitionPixels, destination.transitionDestImage) ||
+		bytes.Equal(destination.transitionPixels, destination.transitionSourceImage) {
+		t.Fatalf("spin midpoint pixels did not apply a rotation: %v", destination.transitionPixels)
+	}
+	if err := session.AdvanceClock(10); err != nil {
+		t.Fatal(err)
+	}
+	if destination.inTransition || !bytes.Equal(destination.RGBA, sourceImage) {
+		t.Fatalf("spin completion state: active=%t rgba=%v", destination.inTransition, destination.RGBA)
+	}
+}

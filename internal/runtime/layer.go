@@ -193,6 +193,9 @@ type Layer struct {
 	inTransition          bool
 	transitionSource      *Layer
 	transitionMethod      string
+	transitionType1       int32
+	transitionType2       int32
+	transitionAccel       int32
 	transitionChildren    bool
 	transitionCallback    tjs.Value
 	transitionDuration    uint64

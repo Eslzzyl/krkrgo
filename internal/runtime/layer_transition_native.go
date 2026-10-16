@@ -101,7 +101,7 @@ func (s *Services) layerTransition(vm *tjs.VM, context tjs.Value, operation stri
 		return tjs.VoidValue, fmt.Errorf("Layer.beginTransition requires method, withchildren, source, and options")
 	}
 	method := args[0].Text()
-	if method != "crossfade" && method != "universal" {
+	if method != "crossfade" && method != "universal" && method != "spin" {
 		return tjs.VoidValue, fmt.Errorf("Layer.beginTransition: unsupported transition provider %q", method)
 	}
 	if layer.inTransition {
@@ -159,6 +159,36 @@ func (s *Services) layerTransition(vm *tjs.VM, context tjs.Value, operation stri
 	if layer.ImageWidth <= 0 || layer.ImageHeight <= 0 || layer.ImageWidth != source.ImageWidth || layer.ImageHeight != source.ImageHeight || len(layer.RGBA) == 0 || len(layer.RGBA) != len(source.RGBA) {
 		return tjs.VoidValue, fmt.Errorf("Layer.beginTransition: transition source and destination images must have matching sizes")
 	}
+	type1, type2, accel := int32(0), int32(0), int32(0)
+	if method == "spin" {
+		readSpinOption := func(name string, defaultValue int32) (int32, error) {
+			value, ok := options.Get(name)
+			if !ok || value.IsVoid() {
+				return defaultValue, nil
+			}
+			n, err := value.Int()
+			if err != nil || n < -1 || n > 11 {
+				return 0, fmt.Errorf("Layer.beginTransition: options.%s must be an integer from -1 through 11", name)
+			}
+			return int32(n), nil
+		}
+		type1, err = readSpinOption("type1", type1)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		type2, err = readSpinOption("type2", type2)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		if value, ok := options.Get("accel"); ok && !value.IsVoid() {
+			n, intErr := value.Int()
+			if intErr != nil || n < math.MinInt32 || n > math.MaxInt32 {
+				return tjs.VoidValue, fmt.Errorf("Layer.beginTransition: options.accel must be a signed 32-bit integer")
+			}
+			accel = int32(n)
+		}
+	}
+
 	vague := int32(0)
 	var rule []byte
 	if method == "universal" {
@@ -189,6 +219,9 @@ func (s *Services) layerTransition(vm *tjs.VM, context tjs.Value, operation stri
 	layer.inTransition = true
 	layer.transitionSource = source
 	layer.transitionMethod = method
+	layer.transitionType1 = type1
+	layer.transitionType2 = type2
+	layer.transitionAccel = accel
 	layer.transitionChildren = withChildren
 	layer.transitionCallback = callback
 	layer.transitionDuration = uint64(time)
@@ -215,6 +248,9 @@ func (s *Services) cancelLayerTransition(layer *Layer) {
 	layer.inTransition = false
 	layer.transitionSource = nil
 	layer.transitionMethod = ""
+	layer.transitionType1 = 0
+	layer.transitionType2 = 0
+	layer.transitionAccel = 0
 	layer.transitionChildren = false
 	layer.transitionCallback = tjs.VoidValue
 	layer.transitionVague = 0
@@ -282,7 +318,10 @@ func (s *Services) advanceLayerTransitionsDeferred(vm *tjs.VM, timeMS uint64, se
 		if elapsed < layer.transitionDuration {
 			phase = elapsed * phaseMax / layer.transitionDuration
 		}
-		if layer.transitionMethod == "universal" {
+		if layer.transitionMethod == "spin" {
+			blendSpin(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage,
+				layer.ImageWidth, layer.ImageHeight, phase, layer.transitionType1, layer.transitionType2, layer.transitionAccel)
+		} else if layer.transitionMethod == "universal" {
 			vague := int64(layer.transitionVague)
 			phaseValue := int64(phase)
 			low := phaseValue - vague
@@ -413,6 +452,100 @@ func blendZeroOpaqueCrossfade(out, dest, src []byte, phase uint64) {
 		out[offset+3] = byte(q)
 	}
 }
+func blendSpin(out, dest, src []byte, width, height int32, phase uint64, type1, type2, accel int32) {
+	if phase == 0 {
+		copy(out, dest)
+		return
+	}
+	if phase >= 255 {
+		copy(out, src)
+		return
+	}
+	if type1 == -1 && type2 == -1 {
+		blendCrossfade(out, dest, src, phase, false)
+		return
+	}
+	progress := spinTransitionProgress(float64(phase)/255, accel)
+	clear(out)
+	if progress < 0.5 {
+		turn := progress * 2
+		if type1 == -1 {
+			blendSpinFlat(out, dest, 1-turn)
+		} else {
+			drawSpinImage(out, dest, width, height, math.Cos(turn*math.Pi/2), type1)
+		}
+		return
+	}
+	turn := (progress - 0.5) * 2
+	if type2 == -1 {
+		blendSpinFlat(out, src, turn)
+	} else {
+		drawSpinImage(out, src, width, height, math.Sin(turn*math.Pi/2), type2)
+	}
+}
+
+func spinTransitionProgress(progress float64, accel int32) float64 {
+	if accel == 0 {
+		return progress
+	}
+	power := int64(accel)
+	if power < 0 {
+		power = -power
+	}
+	if power > 7 {
+		power = 7
+	}
+	power++
+	if accel < 0 {
+		return 1 - math.Pow(1-progress, float64(power))
+	}
+	return math.Pow(progress, float64(power))
+}
+
+func blendSpinFlat(out, image []byte, amount float64) {
+	if amount <= 0 {
+		return
+	}
+	if amount >= 1 {
+		copy(out, image)
+		return
+	}
+	factor := int(math.Round(amount * 255))
+	for i, value := range image {
+		out[i] = byte(int(value) * factor / 255)
+	}
+}
+
+func drawSpinImage(out, image []byte, width, height int32, scale float64, kind int32) {
+	if scale <= 0 {
+		return
+	}
+	if scale > 1 {
+		scale = 1
+	}
+	visibleWidth := int(math.Round(float64(width) * scale))
+	if visibleWidth <= 0 {
+		return
+	}
+	pivotRight := kind&1 != 0
+	start := 0
+	if pivotRight {
+		start = int(width) - visibleWidth
+	}
+	for y := range int(height) {
+		outRow := y * int(width) * 4
+		imageRow := outRow
+		for offset := range visibleWidth {
+			sourceX := int(float64(offset) / scale)
+			if sourceX >= int(width) {
+				sourceX = int(width) - 1
+			}
+			outOffset := outRow + (start+offset)*4
+			imageOffset := imageRow + sourceX*4
+			copy(out[outOffset:outOffset+4], image[imageOffset:imageOffset+4])
+		}
+	}
+}
 
 // exchangeLayerTree mirrors Layer.exchange: the layers exchange positions, and
 // children either follow their layer (withChildren) or remain in place.
@@ -535,6 +668,9 @@ func (s *Services) stopLayerTransition(vm *tjs.VM, layer *Layer, notify bool, bu
 	layer.inTransition = false
 	layer.transitionSource = nil
 	layer.transitionMethod = ""
+	layer.transitionType1 = 0
+	layer.transitionType2 = 0
+	layer.transitionAccel = 0
 	layer.transitionChildren = false
 	layer.transitionCallback = tjs.VoidValue
 	layer.transitionDuration = 0

@@ -162,7 +162,9 @@ func (s *Services) kagNativeCall(vm *tjs.VM, name string, context tjs.Value, arg
 			if err != nil {
 				return false, err
 			}
-			value, err := vm.Execute(&program, s, budget)
+			value, err := withKAGMacroExpressionScope(vm, p, budget, func() (tjs.Value, error) {
+				return vm.Execute(&program, s, budget)
+			})
 			if err != nil {
 				return false, err
 			}
@@ -173,7 +175,9 @@ func (s *Services) kagNativeCall(vm *tjs.VM, name string, context tjs.Value, arg
 			if err != nil {
 				return tjs.VoidValue, err
 			}
-			return vm.Execute(&program, s, budget)
+			return withKAGMacroExpressionScope(vm, p, budget, func() (tjs.Value, error) {
+				return vm.Execute(&program, s, budget)
+			})
 		})
 		defer func() {
 			p.SetCallbacks(previousCallbacks)
@@ -415,6 +419,32 @@ func kagMacroParametersValue(vm *tjs.VM, parameters map[string]string, budget *u
 		}
 	}
 	return tjs.ObjectValue(object.Ref()), nil
+}
+func withKAGMacroExpressionScope(vm *tjs.VM, parser *KAGParser, budget *uint64, fn func() (tjs.Value, error)) (tjs.Value, error) {
+	if vm == nil || parser == nil || len(parser.macroFrames) == 0 {
+		return fn()
+	}
+	parameters, err := kagMacroParametersValue(vm, parser.macroFrames[len(parser.macroFrames)-1].arguments, budget)
+	if err != nil {
+		return tjs.VoidValue, err
+	}
+	previousMP, hadMP := vm.Globals["mp"]
+	previousMacroParams, hadMacroParams := vm.Globals["macroParams"]
+	vm.Globals["mp"] = parameters
+	vm.Globals["macroParams"] = parameters
+	defer func() {
+		if hadMP {
+			vm.Globals["mp"] = previousMP
+		} else {
+			delete(vm.Globals, "mp")
+		}
+		if hadMacroParams {
+			vm.Globals["macroParams"] = previousMacroParams
+		} else {
+			delete(vm.Globals, "macroParams")
+		}
+	}()
+	return fn()
 }
 
 func kagStateValue(vm *tjs.VM, state KAGState) (tjs.Value, error) {

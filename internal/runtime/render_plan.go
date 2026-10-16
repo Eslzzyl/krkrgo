@@ -198,9 +198,9 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 			n.RGBA = l.transitionPixels
 			n.ImageHash = hashes.transition
 		}
-		if l.inTransition {
+		if l.inTransition && (l.transitionMethod == "crossfade" || l.transitionMethod == "universal") {
 			method := RenderTransitionCrossfade
-			if l.transitionMethod != "crossfade" {
+			if l.transitionMethod == "universal" {
 				method = RenderTransitionUniversal
 			}
 			phaseMax := uint64(255)

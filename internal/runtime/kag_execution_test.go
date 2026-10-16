@@ -1270,3 +1270,69 @@ func TestKAGInterruptIsNotSerializedInParserState(t *testing.T) {
 		t.Fatalf("restored event = %#v, %v; want text without interrupt", event, err)
 	}
 }
+
+func TestKAGMacroStarMergeCopiesActiveArguments(t *testing.T) {
+	parser, err := NewKAGParser("macro-star.ks", `
+[macro name=outer]
+[inner *]
+[endmacro]
+[macro name=inner]
+[emit value=%flag]
+[endmacro]
+[outer flag=ok]
+[end]
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var emitted kag.Tag
+	parser.SetTagCallback(func(_ *KAGParser, tag *kag.Tag) error {
+		if tag.Name == "emit" {
+			emitted = *tag
+		}
+		return nil
+	})
+	if _, err := parser.Run(nil); err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := emitted.Get("value"); !ok || value != "ok" {
+		t.Fatalf("merged macro argument = %q, %v; want ok", value, ok)
+	}
+}
+
+func TestSessionKAGMacroExpressionsExposeMP(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	scenario := `
+[macro name=outer]
+[inner *]
+[endmacro]
+[macro name=inner]
+[emit value=conditional cond="mp.flag == 'ok' && macroParams.flag == 'ok'"]
+[endmacro]
+[outer flag=ok]
+[end]
+`
+	source := `Plugins.link("plugin/KAGParser.dll");
+parser = new KAGParser();
+global.emitted = "";
+parser.loadScenario("macro-mp.ks", ` + strconv.Quote(scenario) + `);
+var tag;
+while ((tag = parser.getNextTag()) !== void) {
+	if (tag.tagname == "emit") {
+		global.emitted = tag.value;
+		break;
+	}
+}
+`
+	if _, err := session.executeSource("<kag-macro-mp-test>", source, false); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("global.emitted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value.Text(); got != "conditional" {
+		t.Fatalf("macro mp expression result = %q; want conditional", got)
+	}
+}
