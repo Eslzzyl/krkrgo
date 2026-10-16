@@ -323,10 +323,10 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 	return nil
 }
 
-// drawOpaqueLayer mirrors krkr2's CopyOpaqueImage/bmCopy path. The source
-// texture has alpha 1 by the time it reaches this function.
+// drawOpaqueLayer draws directly into the current front target. The source
+// texture is independent from that target, so a full-frame ping-pong copy is
+// unnecessary for the native replace/source-over blend paths.
 func (c *GPUCompositor) drawOpaqueLayer(source *ebiten.Image, x0, y0, x1, y1 int64, ax, ay int32, n runtime.RenderNode) {
-	c.copyFrontToBack()
 	visible := source.SubImage(image.Rect(int(x0), int(y0), int(x1), int(y1))).(*ebiten.Image)
 	blend := ebiten.BlendSourceOver
 	if n.Opacity == 255 {
@@ -335,21 +335,18 @@ func (c *GPUCompositor) drawOpaqueLayer(source *ebiten.Image, x0, y0, x1, y1 int
 	options := &ebiten.DrawImageOptions{Blend: blend}
 	options.GeoM.Translate(float64(ax+n.ImageLeft+int32(x0)), float64(ay+n.ImageTop+int32(y0)))
 	options.ColorScale.ScaleAlpha(float32(n.Opacity) / 255)
-	c.back.DrawImage(visible, options)
-	c.front, c.back = c.back, c.front
+	c.front.DrawImage(visible, options)
 }
 
-// drawAlphaLayer uses Ebitengine's premultiplied source-over path. For a
-// normal layer under a binder, this is the same operation as the CPU alpha
-// compositor and keeps layer opacity in the native blend stage.
+// drawAlphaLayer draws directly into the current front target. The source
+// texture is independent from that target, and source-over blending preserves
+// the existing destination in place.
 func (c *GPUCompositor) drawAlphaLayer(source *ebiten.Image, x0, y0, x1, y1 int64, ax, ay int32, n runtime.RenderNode) {
-	c.copyFrontToBack()
 	visible := source.SubImage(image.Rect(int(x0), int(y0), int(x1), int(y1))).(*ebiten.Image)
 	options := &ebiten.DrawImageOptions{Blend: ebiten.BlendSourceOver}
 	options.GeoM.Translate(float64(ax+n.ImageLeft+int32(x0)), float64(ay+n.ImageTop+int32(y0)))
 	options.ColorScale.ScaleAlpha(float32(n.Opacity) / 255)
-	c.back.DrawImage(visible, options)
-	c.front, c.back = c.back, c.front
+	c.front.DrawImage(visible, options)
 }
 
 func boolToFloat(v bool) float32 {

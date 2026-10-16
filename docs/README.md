@@ -13,6 +13,7 @@ Each domain guide links the relevant Go source and records current implementatio
 - [Modern animation and rendering architecture](modern-animation-rendering.md)
 - [Host, Ebitengine, platforms, and dependencies](host-platform.md)
 - [Verification and cross-cutting gaps](verification-and-gaps.md)
+- [Headless performance baseline](performance-headless.md): reproducible no-window measurements for TJS, CPU composition, assets, and replay.
 - [Launcher architecture](launcher.md)
 
 Design notes that are not porting status:

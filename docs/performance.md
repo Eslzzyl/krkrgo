@@ -7,6 +7,8 @@ This report evaluates the Go application in a real window with the
 startup and animation in that window. Headless replay and isolated benchmarks
 are supporting data only.
 
+For reproducible no-window measurements, see [Headless performance baseline](performance-headless.md).
+
 The latest controlled run used:
 
 ```sh
@@ -93,6 +95,11 @@ signals.
 - `internal/host/ebiten.go` reuses the upload buffer, avoids repeated
   premultiplication for opaque data, computes changed bounds during the
   upload scan, and selects subimage or full-image writes by changed area.
+- `internal/host/gpu_compositor.go` draws native opaque layers and binder-target
+  alpha layers directly into the current target, removing one full-frame
+  ping-pong copy per layer. The Windows amd64 benchmark measured median
+  `Compose` time reductions of 37.5% for opaque layers and 44.3% for alpha
+  layers, with allocations reduced from 64 to 40 per operation.
 - `internal/krkrgocli` passes the already configured initial window dimensions
   to `host.NewGameWithInitialWindowSize`. The host skips one redundant
   same-size resize and continues to resize on the first mismatch or later
