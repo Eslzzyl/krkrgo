@@ -127,7 +127,7 @@ type Services struct {
 	Natives                  *NativeRegistry
 	KAGParsers               map[tjs.ObjectID]*KAGParser
 	CSVParsers               map[tjs.ObjectID]*csvParserState
-	Videos                    map[tjs.ObjectID]*VideoOverlay
+	Videos                   map[tjs.ObjectID]*VideoOverlay
 	PhaseVocoders            map[tjs.ObjectID]*phaseVocoderConfig
 	Sounds                   map[tjs.ObjectID]*WaveSoundBuffer
 	SoundEvents              map[tjs.ObjectID][]SoundEvent
@@ -1032,6 +1032,8 @@ func (s *Services) captureFrameWithPresentation(presentation bool) (FrameSnapsho
 	if err != nil {
 		return FrameSnapshot{}, err
 	}
+	frame.RenderStateHash = fingerprint
+	frame.RenderStateHashValid = true
 	s.frameCache = frame
 	s.frameCacheHash = fingerprint
 	s.frameCacheValid = true

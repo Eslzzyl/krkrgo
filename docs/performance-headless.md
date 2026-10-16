@@ -160,6 +160,23 @@ go test ./internal/host -run '^$' -bench '^BenchmarkGPUComposeNativeLayers$' -be
 
 单像素变化仍触发约 2 ms 的扫描成本。changed-bounds 可以减少后续写入范围，当前 benchmark 显示扫描本身仍是重要固定成本。
 
+### CPU 静态帧上传短路
+
+静态帧缓存现在向 `FrameSnapshot` 传递稳定的 render-state hash。host 在尺寸和 hash 同时一致时直接复用已上传图像，transition、video 和其他动态帧继续走原扫描路径。
+
+| Benchmark | 优化前 | 当前实现 | 时间变化 | 分配 |
+| --- | ---: | ---: | ---: | ---: |
+| `UpdatePresentation720pStableRenderState` | 138.061 µs/op | 2.822 ns/op | -99.998% | 0 B/op，0 allocs/op |
+
+该 benchmark 使用 1280×720 opaque 静态帧，前后均为同一帧数据。优化前后对照使用同一机器、同一参数；当前结果移除了 host 对 3.5 MiB RGBA 缓冲的重复扫描。
+
+可重复命令：
+
+```sh
+go test ./internal/host -run '^$' -bench '^BenchmarkUpdatePresentation720pStableRenderState$' -benchmem -benchtime=500ms -count=3
+```
+
+
 ### 资产与 XP3
 
 | Benchmark | 中位数 | 分配 |

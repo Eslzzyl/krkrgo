@@ -11,6 +11,9 @@ type FrameSnapshot struct {
 	Width, Height int32
 	RGBA          []byte
 	Province      []byte
+	// RenderStateHash identifies a stable static capture when valid.
+	RenderStateHash      uint64
+	RenderStateHashValid bool
 }
 
 func (f FrameSnapshot) Empty() bool { return f.Width <= 0 || f.Height <= 0 || len(f.RGBA) == 0 }
@@ -18,8 +21,14 @@ func (f FrameSnapshot) Image() (width, height int32, rgba []byte) {
 	return f.Width, f.Height, append([]byte(nil), f.RGBA...)
 }
 func (f FrameSnapshot) Clone() FrameSnapshot {
-	return FrameSnapshot{Width: f.Width, Height: f.Height,
-		RGBA: append([]byte(nil), f.RGBA...), Province: append([]byte(nil), f.Province...)}
+	return FrameSnapshot{
+		Width:                f.Width,
+		Height:               f.Height,
+		RGBA:                 append([]byte(nil), f.RGBA...),
+		Province:             append([]byte(nil), f.Province...),
+		RenderStateHash:      f.RenderStateHash,
+		RenderStateHashValid: f.RenderStateHashValid,
+	}
 }
 
 // Compositor owns a layer tree root and performs deterministic CPU composition.

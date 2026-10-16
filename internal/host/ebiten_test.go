@@ -54,6 +54,34 @@ func TestPresentationBufferReusesAndUpdatesFrameStorage(t *testing.T) {
 		t.Fatalf("same-size frame did not reuse/update presentation buffer")
 	}
 }
+func TestPresentationStateHashChangesUpdatePixels(t *testing.T) {
+	game := &Game{}
+	first := runtime.FrameSnapshot{
+		Width:                1,
+		Height:               1,
+		RGBA:                 []byte{1, 2, 3, 255},
+		RenderStateHash:      1,
+		RenderStateHashValid: true,
+	}
+	if err := game.updatePresentation(first); err != nil {
+		t.Fatal(err)
+	}
+	second := runtime.FrameSnapshot{
+		Width:                1,
+		Height:               1,
+		RGBA:                 []byte{4, 5, 6, 255},
+		RenderStateHash:      2,
+		RenderStateHashValid: true,
+	}
+	if err := game.updatePresentation(second); err != nil {
+		t.Fatal(err)
+	}
+	if string(game.pixels) != string(second.RGBA) ||
+		!game.presentationStateValid ||
+		game.presentationStateHash != second.RenderStateHash {
+		t.Fatalf("state-hash frame was not applied: pixels=%v hash=%d valid=%v", game.pixels, game.presentationStateHash, game.presentationStateValid)
+	}
+}
 
 func TestPresentationOpaqueFullFrameUsesBulkPixelsAndCountsChanges(t *testing.T) {
 	game := &Game{renderStats: renderStats{enabled: true}}

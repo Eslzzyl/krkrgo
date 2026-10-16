@@ -43,19 +43,21 @@ type Game struct {
 	initialWindowWidth   int
 	initialWindowHeight  int
 
-	image               *ebiten.Image
-	imageWidth          int
-	imageHeight         int
-	pixels              []byte
-	uploadPixels        []byte
-	presentationOpaque  bool
-	presentationChanges int
-	frameSerial         uint64
-	renderStats         renderStats
-	rendererMode        rendererMode
-	gpu                 *GPUCompositor
-	gpuImage            *ebiten.Image
-	gpuInitAttempted    bool
+	image                  *ebiten.Image
+	imageWidth             int
+	imageHeight            int
+	pixels                 []byte
+	uploadPixels           []byte
+	presentationOpaque     bool
+	presentationChanges    int
+	presentationStateHash  uint64
+	presentationStateValid bool
+	frameSerial            uint64
+	renderStats            renderStats
+	rendererMode           rendererMode
+	gpu                    *GPUCompositor
+	gpuImage               *ebiten.Image
+	gpuInitAttempted       bool
 }
 
 // renderStats is opt-in to keep clock reads and logging out of normal runs.
@@ -439,6 +441,11 @@ func (g *Game) updateGPUPresentation(plan runtime.RenderPlan) error {
 	return nil
 }
 
+func (g *Game) rememberPresentationState(frame runtime.FrameSnapshot) {
+	g.presentationStateHash = frame.RenderStateHash
+	g.presentationStateValid = frame.RenderStateHashValid
+}
+
 func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 	if frame.Empty() {
 		return fmt.Errorf("runtime returned an empty frame")
@@ -455,6 +462,14 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 		return fmt.Errorf("runtime frame has %d RGBA bytes, want %d", len(frame.RGBA), n)
 	}
 	g.presentationChanges = 0
+	if frame.RenderStateHashValid &&
+		g.presentationStateValid &&
+		g.image != nil &&
+		g.imageWidth == width &&
+		g.imageHeight == height &&
+		g.presentationStateHash == frame.RenderStateHash {
+		return nil
+	}
 	if g.image == nil || g.imageWidth != width || g.imageHeight != height {
 		var surfaceStarted time.Time
 		if g.renderStats.enabled && g.renderStats.firstSurface == 0 {
@@ -499,6 +514,7 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 	// snapshot and Ebitengine image. Avoid the per-pixel conversion and dirty
 	// bounds scan when a static scene is presented again.
 	if g.presentationOpaque && bytes.Equal(g.pixels, frame.RGBA) {
+		g.rememberPresentationState(frame)
 		return nil
 	}
 	allOpaque := true
@@ -538,6 +554,7 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 		// updating each pixel's channels individually.
 		if maxX < 0 {
 			g.presentationOpaque = true
+			g.rememberPresentationState(frame)
 			return nil
 		}
 		copy(g.pixels, frame.RGBA)
@@ -562,9 +579,11 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 				copy(g.uploadPixels[dst:dst+dirtyWidth*4], g.pixels[src:src+dirtyWidth*4])
 			}
 			g.renderStats.writePixels(g.renderStats.subImage(g.image, image.Rect(minX, minY, maxX+1, maxY+1)), g.uploadPixels)
+			g.rememberPresentationState(frame)
 			return nil
 		}
 		g.renderStats.writePixels(g.image, g.pixels)
+		g.rememberPresentationState(frame)
 		return nil
 	}
 	allOpaque = false
@@ -623,6 +642,7 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 	}
 	g.presentationOpaque = allOpaque
 	if maxX < 0 {
+		g.rememberPresentationState(frame)
 		return nil
 	}
 	dirtyWidth, dirtyHeight := maxX-minX+1, maxY-minY+1
@@ -645,9 +665,10 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 			copy(g.uploadPixels[dst:dst+dirtyWidth*4], g.pixels[src:src+dirtyWidth*4])
 		}
 		g.renderStats.writePixels(g.renderStats.subImage(g.image, image.Rect(minX, minY, maxX+1, maxY+1)), g.uploadPixels)
+		g.rememberPresentationState(frame)
 		return nil
 	}
-	g.renderStats.writePixels(g.image, g.pixels)
+	g.rememberPresentationState(frame)
 	return nil
 }
 

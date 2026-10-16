@@ -374,6 +374,9 @@ func TestCaptureFrameForPresentationBorrowsDynamicAndCachedBuffers(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if first.RenderStateHashValid {
+		t.Fatal("dynamic presentation frame exposed a static render-state hash")
+	}
 	if &first.RGBA[0] != &services.dynamicRGBA[0] || &first.Province[0] != &services.dynamicProvince[0] {
 		t.Fatal("presentation frame does not borrow dynamic composition buffers")
 	}
@@ -385,6 +388,9 @@ func TestCaptureFrameForPresentationBorrowsDynamicAndCachedBuffers(t *testing.T)
 	if &first.RGBA[0] != &second.RGBA[0] || second.RGBA[0] != 99 {
 		t.Fatal("dynamic presentation frame was not reused on the next capture")
 	}
+	if second.RenderStateHashValid {
+		t.Fatal("dynamic presentation frame exposed a static render-state hash")
+	}
 
 	root.inTransition = false
 	cached, err := services.CaptureFrameForPresentation()
@@ -393,6 +399,16 @@ func TestCaptureFrameForPresentationBorrowsDynamicAndCachedBuffers(t *testing.T)
 	}
 	if &cached.RGBA[0] != &services.frameCache.RGBA[0] {
 		t.Fatal("static presentation frame does not borrow the cached frame")
+	}
+	if !cached.RenderStateHashValid {
+		t.Fatal("static presentation frame did not expose a render-state hash")
+	}
+	cachedAgain, err := services.CaptureFrameForPresentation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cachedAgain.RenderStateHashValid || cachedAgain.RenderStateHash != cached.RenderStateHash {
+		t.Fatalf("static render-state hash changed across cache hit: first=%#x second=%#x", cached.RenderStateHash, cachedAgain.RenderStateHash)
 	}
 }
 

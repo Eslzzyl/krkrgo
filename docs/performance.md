@@ -95,6 +95,10 @@ signals.
 - `internal/host/ebiten.go` reuses the upload buffer, avoids repeated
   premultiplication for opaque data, computes changed bounds during the
   upload scan, and selects subimage or full-image writes by changed area.
+- `internal/runtime/services.go` carries a stable render-state hash on static
+  presentation frames. `internal/host/ebiten.go` uses it to skip repeated
+  opaque-frame scans; the Windows amd64 benchmark reduced the stable
+  1280×720 presentation path from 138.061 µs/op to 2.822 ns/op.
 - `internal/host/gpu_compositor.go` draws native opaque layers and binder-target
   alpha layers directly into the current target, removing one full-frame
   ping-pong copy per layer. The Windows amd64 benchmark measured median
