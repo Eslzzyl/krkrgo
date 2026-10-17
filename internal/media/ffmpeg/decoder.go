@@ -64,26 +64,26 @@ type streamState struct {
 
 // Decoder owns an FFmpeg demuxer and its selected audio/video decoder contexts.
 type Decoder struct {
-	mu       sync.Mutex
-	loader   *Loader
-	api      *api
-	name     string
-	format   uintptr
-	io       *avioState
-	packet   uintptr
-	video    *streamState
-	audio    *streamState
-	metadata Metadata
-	sws      uintptr
-	eof      bool
-	drained  bool
-	closed   bool
-	frameSeq uint64
-	audioPos uint64
-	pending  []Frame
-	audioOut []AudioBlock
-	last     *Frame
-	requireVideo bool
+	mu             sync.Mutex
+	loader         *Loader
+	api            *api
+	name           string
+	format         uintptr
+	io             *avioState
+	packet         uintptr
+	video          *streamState
+	audio          *streamState
+	metadata       Metadata
+	sws            uintptr
+	eof            bool
+	drained        bool
+	closed         bool
+	frameSeq       uint64
+	audioPos       uint64
+	pending        []Frame
+	audioOut       []AudioBlock
+	last           *Frame
+	requireVideo   bool
 	audioUnlimited bool
 }
 
@@ -245,7 +245,7 @@ func (d *Decoder) discover() error {
 	}
 	meta := Metadata{Name: d.name, Format: "FFmpeg", Width: width, Height: height, FPS: fps, Frames: frames, DurationMS: durationMS}
 	if d.video != nil {
-		meta.Format = "ASF/FFmpeg"
+		meta.Format = "FFmpeg"
 	}
 	if d.audio != nil {
 		meta.HasAudio = true

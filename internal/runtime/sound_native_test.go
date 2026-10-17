@@ -12,6 +12,13 @@ import (
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
+func requireSidecarWAV(t *testing.T) {
+	t.Helper()
+	if _, err := ffmpeg.DecodeAudioBytes("<test>", testRuntimeWave(1), 10); err != nil {
+		t.Skipf("FFmpeg WAV decoding unavailable: %v", err)
+	}
+}
+
 func TestWaveSoundBufferNativeConstructionAndProperties(t *testing.T) {
 	s := NewSession(DefaultServices(), 10_000)
 	sound := evalSoundValue(t, s, "sound = new WaveSoundBuffer()")
@@ -60,6 +67,7 @@ func TestWaveSoundBufferNativeConstructionAndProperties(t *testing.T) {
 }
 
 func TestWaveSoundBufferNativeWaveTransportAndFade(t *testing.T) {
+	requireSidecarWAV(t)
 	s := NewSession(DefaultServices(), 20_000)
 	evalSoundValue(t, s, "sound = new WaveSoundBuffer()")
 	wave := testRuntimeWave(882)
@@ -148,6 +156,7 @@ func TestWaveSoundBufferNativeWaveTransportAndFade(t *testing.T) {
 }
 
 func TestDispatchEventsFindsInheritedSoundCallback(t *testing.T) {
+	requireSidecarWAV(t)
 	s := NewSession(DefaultServices(), 10_000)
 	if _, err := s.executeSource("sound-callback-test.tjs", `
 class SoundStatusBase extends WaveSoundBuffer {
@@ -221,6 +230,7 @@ global.lastSystemVoiceStatus = "";
 		t.Fatal("failed system voice blocked SystemSeWait")
 	}
 
+	requireSidecarWAV(t)
 	evalSoundValue(t, session, "global.systemVoice.openBytes("+tjsOctetLiteral(testRuntimeWave(882))+")")
 	evalSoundValue(t, session, "global.systemVoice.play()")
 	if err := session.DispatchEvents(); err != nil {
@@ -313,7 +323,7 @@ func TestWaveSoundBufferNativeMalformedMissingAndUnsupportedDevice(t *testing.T)
 
 	if _, err := s.Evaluate("sound.openBytes(" + tjsOctetLiteral([]byte("RIFF")) + ")"); err != nil {
 		if _, loadErr := ffmpeg.DefaultLoader(); loadErr == nil {
-			if !errors.Is(err, assets.ErrMalformed) {
+			if !errors.Is(err, ffmpeg.ErrMalformed) {
 				t.Fatalf("malformed WAVE error = %v", err)
 			}
 		} else {
@@ -334,6 +344,7 @@ func TestWaveSoundBufferNativeMalformedMissingAndUnsupportedDevice(t *testing.T)
 }
 
 func TestWaveSoundBufferNativeGlobalControlsAndStopAll(t *testing.T) {
+	requireSidecarWAV(t)
 	s := NewSession(DefaultServices(), 50_000)
 	wave := tjsOctetLiteral(testRuntimeWave(882))
 	for _, source := range []string{

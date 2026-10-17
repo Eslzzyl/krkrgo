@@ -189,6 +189,43 @@ func TestVideoOpenDegradesWithoutSidecar(t *testing.T) {
 	}
 }
 
+func TestVideoFFmpegMPEGOpen(t *testing.T) {
+	requireFFmpegSidecar(t)
+	v := NewVideoOverlay()
+	if err := v.Open("movies/intro.mpg", runtimeMPEGFixture()); err != nil {
+		t.Fatalf("open MPEG through FFmpeg: %v", err)
+	}
+	source, ok := v.Source()
+	if !ok || source.Format != "FFmpeg" || source.Width != 16 || source.Height != 16 || source.Frames != 1 {
+		t.Fatalf("MPEG source = %+v ok=%t", source, ok)
+	}
+	frame, ok := v.CurrentFrame()
+	if !ok || frame.Width != 16 || frame.Height != 16 || len(frame.RGBA) != 16*16*4 {
+		t.Fatalf("MPEG frame = %+v ok=%t", frame, ok)
+	}
+}
+
+func runtimeMPEGFixture() []byte {
+	sequence := []byte{0, 0, 1, 0xb3, 0x01, 0x00, 0x10, 0x32, 0, 0, 0x20, 0}
+	picture := []byte{0, 0, 1, 0, 0, 0x08, 0, 0}
+	slice := []byte{0, 0, 1, 0x01, 0x0b, 0x94, 0xa5, 0x22, 0x20}
+	pesPayload := append(append(sequence, picture...), slice...)
+	pts := uint64(90_000)
+	stamp := [5]byte{byte(0x21 | ((pts >> 30) & 7 << 1)), byte(pts >> 22), byte(((pts>>15)&0x7f)<<1 | 1), byte(pts >> 7), byte((pts&0x7f)<<1 | 1)}
+	body := append([]byte{0x80, 0x80, 5}, stamp[:]...)
+	body = append(body, pesPayload...)
+	pes := []byte{0, 0, 1, 0xe0, 0, 0}
+	binary.BigEndian.PutUint16(pes[4:], uint16(len(body)))
+	pes = append(pes, body...)
+	packet := make([]byte, 188)
+	packet[0], packet[1], packet[2], packet[3] = 0x47, 0x40, 0x01, 0x10
+	copy(packet[4:], pes)
+	for i := range packet[4+len(pes):] {
+		packet[4+len(pes)+i] = 0xff
+	}
+	return packet
+}
+
 func TestVideoWindowsMediaRequiresFFmpeg(t *testing.T) {
 	requireFFmpegSidecar(t)
 	const asfHeader = "\x30\x26\xb2\x75\x8e\x66\xcf\x11\xa6\xd9\x00\xaa\x00\x62\xce\x6c"
@@ -220,84 +257,6 @@ func TestVideoWindowsMediaRequiresFFmpeg(t *testing.T) {
 				t.Fatal("invalid Windows Media input presented a frame")
 			}
 		})
-	}
-}
-
-func TestVideoMPEGMalformedPreservesSource(t *testing.T) {
-	// An invalid sequence marker is rejected before any source state is installed.
-	data := append([]byte{0, 0, 1, 0xb3, 0x01, 0x00, 0x10, 0x32, 0, 0, 0, 0}, []byte{0, 0, 1, 0, 0, 0, 0x08}...)
-	v := NewVideoOverlay()
-	err := v.Open("movies/intro.mpg", data)
-	if !errors.Is(err, assets.ErrMPEGMalformed) {
-		t.Fatalf("error = %v", err)
-	}
-	var ve *VideoError
-	if !errors.As(err, &ve) || ve.Source != "movies/intro.mpg" || !strings.Contains(err.Error(), "intro.mpg") {
-		t.Fatalf("source context = %v", err)
-	}
-	if _, ok := v.Source(); ok {
-		t.Fatal("unsupported source was installed")
-	}
-}
-
-func runtimeMPEGFixture() []byte {
-	sequence := []byte{0, 0, 1, 0xb3, 0x01, 0x00, 0x10, 0x32, 0, 0, 0x20, 0}
-	picture := []byte{0, 0, 1, 0, 0, 0x08, 0, 0}
-	slice := []byte{0, 0, 1, 0x01, 0x0b, 0x94, 0xa5, 0x22, 0x20}
-	pesPayload := append(append(sequence, picture...), slice...)
-	pts := uint64(90_000)
-	stamp := [5]byte{byte(0x21 | ((pts >> 30) & 7 << 1)), byte(pts >> 22), byte(((pts>>15)&0x7f)<<1 | 1), byte(pts >> 7), byte((pts&0x7f)<<1 | 1)}
-	body := append([]byte{0x80, 0x80, 5}, stamp[:]...)
-	body = append(body, pesPayload...)
-	pes := []byte{0, 0, 1, 0xe0, 0, 0}
-	binary.BigEndian.PutUint16(pes[4:], uint16(len(body)))
-	pes = append(pes, body...)
-	packet := make([]byte, 188)
-	packet[0], packet[1], packet[2], packet[3] = 0x47, 0x40, 0x01, 0x10
-	copy(packet[4:], pes)
-	for i := range packet[4+len(pes):] {
-		packet[4+len(pes)+i] = 0xff
-	}
-	return packet
-}
-
-func TestVideoMPEGOpenCurrentFrameAndLayer(t *testing.T) {
-	v := NewVideoOverlay()
-	if err := v.Open("movies/intro.mpg", runtimeMPEGFixture()); err != nil {
-		t.Fatal(err)
-	}
-	source, ok := v.Source()
-	if !ok || source.Format != "MPEG" || source.Width != 16 || source.Height != 16 || source.Frames != 1 {
-		t.Fatalf("source = %+v, %v", source, ok)
-	}
-	frame, ok := v.CurrentFrame()
-	if !ok || frame.Index != 0 || frame.Width != 16 || frame.Height != 16 || frame.PTSMS != 1000 || len(frame.RGBA) != 16*16*4 {
-		t.Fatalf("frame = %+v, %v", frame, ok)
-	}
-	if frame.RGBA[0] != 130 || frame.RGBA[1] != 130 || frame.RGBA[2] != 130 || frame.RGBA[3] != 255 {
-		t.Fatalf("neutral MPEG pixel = %v", frame.RGBA[:4])
-	}
-	layer := NewLayer(17)
-	if err := v.SetLayer(0, layer); err != nil {
-		t.Fatal(err)
-	}
-	if err := v.SetFrame(0); err != nil {
-		t.Fatal(err)
-	}
-	if len(layer.RGBA) != len(frame.RGBA) || layer.RGBA[0] != 130 || layer.RGBA[3] != 255 {
-		t.Fatalf("layer MPEG pixels = %v", layer.RGBA[:4])
-	}
-}
-
-func TestVideoMPEGUnsupportedWithoutIFrame(t *testing.T) {
-	data := append([]byte{0, 0, 1, 0xb3, 0x01, 0x00, 0x10, 0x32, 0, 0, 0x20, 0}, []byte{0, 0, 1, 0xb7}...)
-	v := NewVideoOverlay()
-	err := v.Open("movies/empty.mpg", data)
-	if !errors.Is(err, ErrVideoUnsupported) {
-		t.Fatalf("error = %v", err)
-	}
-	if _, ok := v.Source(); ok {
-		t.Fatal("unsupported MPEG source was installed")
 	}
 }
 

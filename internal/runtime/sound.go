@@ -246,17 +246,12 @@ func (s *WaveSoundBuffer) Open(audio assets.Audio, info assets.LoopInfo) error {
 }
 
 // OpenBytes decodes through the FFmpeg sidecar. A missing or ABI-incompatible
-// sidecar is reported once and the open degrades to a no-op; the bounded Go
-// decoder still handles WAVE sources.
+// sidecar is reported once and the open degrades to a no-op.
 func (s *WaveSoundBuffer) OpenBytes(data []byte, info assets.LoopInfo) error {
 	pcm, err := ffmpeg.DecodeAudioBytes("<memory>", data, 32_000_000)
 	if sidecarUnavailable(err) {
 		reportSidecarUnavailable(err)
-		audio, fallbackErr := assets.ReadAudio(data, 32_000_000)
-		if fallbackErr != nil {
-			return nil
-		}
-		return s.OpenAudio(audio, info)
+		return nil
 	}
 	if err != nil {
 		return err

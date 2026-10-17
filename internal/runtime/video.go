@@ -16,7 +16,6 @@ const (
 	MaxVideoFrames      = 8
 	MaxVideoAudioBlocks = 32
 	MaxVideoSourceBytes = 256 * 1024 * 1024
-	MaxVideoFrameBytes  = 64 * 1024 * 1024
 )
 
 var (
@@ -73,7 +72,7 @@ type VideoEvent struct {
 	Reason     int
 }
 
-// VideoSource is bounded metadata parsed from an MPEG/AMV/FFmpeg source.
+// VideoSource is bounded metadata parsed from an AMV or FFmpeg source.
 type VideoSource struct {
 	Name          string
 	Format        string
@@ -86,8 +85,8 @@ type VideoSource struct {
 	HasAudio      bool
 }
 
-// VideoFrame is decoded RGBA. MPEG frames are converted from the assets
-// decoder's progressive 4:2:0 planar output using BT.601 limited-range math.
+// VideoFrame is decoded RGBA. FFmpeg frames are converted to RGBA by the
+// sidecar decoder; AMV frames are decoded by the repository decoder.
 type VideoFrame struct {
 	Index         uint64
 	Width, Height int32
@@ -104,8 +103,8 @@ type VideoAudioBlock struct {
 }
 
 // VideoOverlay is a deterministic, bounded movie state model. AMV sources
-// retain their checked movie and one decoded frame; MPEG and FFmpeg sources
-// retain bounded decoded state. Audio and host-queued frames are independently
+// retain their checked movie and one decoded frame; FFmpeg sources retain
+// bounded decoded state. Audio and host-queued frames are independently
 // bounded by their respective limits.
 type VideoOverlay struct {
 	mu             sync.Mutex
@@ -114,7 +113,6 @@ type VideoOverlay struct {
 	ffmpeg         *ffmpeg.Decoder
 	status         VideoStatus
 	amv            *assets.Movie
-	mpeg           []VideoFrame
 	positionMS     float64
 	rate           float64
 	volume         int32
@@ -349,33 +347,6 @@ func (v *VideoOverlay) Open(name string, data []byte) error {
 	if len(data) > MaxVideoSourceBytes {
 		return videoErr(name, fmt.Errorf("source exceeds %d bytes", MaxVideoSourceBytes))
 	}
-	if isWindowsMediaSource(name, data) {
-		decoder, err := ffmpeg.OpenBytes(name, data)
-		if err != nil {
-			return v.failOpen(name, err)
-		}
-		meta := videoSourceFromFFmpeg(decoder.Metadata())
-		initial, audio, err := decoder.DecodeUntil(0)
-		if err != nil || initial == nil {
-			_ = decoder.Close()
-			if err == nil {
-				err = ErrVideoUnsupported
-			}
-			return videoErr(name, err)
-		}
-		if err := v.installSource(name, meta, nil, nil, decoder, &VideoFrame{
-			Index: initial.Index, Width: initial.Width, Height: initial.Height,
-			PTSMS: initial.PTSMS, RGBA: initial.RGBA,
-		}); err != nil {
-			_ = decoder.Close()
-			return err
-		}
-		if err := v.enqueueFFmpegAudio(audio); err != nil {
-			v.Close()
-			return videoErr(name, err)
-		}
-		return nil
-	}
 	if len(data) >= 4 && string(data[:4]) == "AJPM" {
 		owned := append([]byte(nil), data...)
 		movie, err := assets.ParseAMV(owned)
@@ -397,136 +368,33 @@ func (v *VideoOverlay) Open(name string, data []byte) error {
 		if err := validateAMVFrame(&meta, initial); err != nil {
 			return videoErr(name, err)
 		}
-		return v.installSource(name, meta, movie, nil, nil, initial)
+		return v.installSource(name, meta, movie, nil, initial)
 	}
-	meta, mpeg, err := decodeMPEGSource(name, data)
+	decoder, err := ffmpeg.OpenBytes(name, data)
 	if err != nil {
+		return v.failOpen(name, err)
+	}
+	meta := videoSourceFromFFmpeg(decoder.Metadata())
+	initial, audio, err := decoder.DecodeUntil(0)
+	if err != nil || initial == nil {
+		_ = decoder.Close()
+		if err == nil {
+			err = ErrVideoUnsupported
+		}
+		return videoErr(name, err)
+	}
+	if err := v.installSource(name, meta, nil, decoder, &VideoFrame{
+		Index: initial.Index, Width: initial.Width, Height: initial.Height,
+		PTSMS: initial.PTSMS, RGBA: initial.RGBA,
+	}); err != nil {
+		_ = decoder.Close()
 		return err
 	}
-	return v.installSource(name, meta, nil, mpeg, nil, &mpeg[0])
-}
-
-func isWindowsMediaSource(name string, data []byte) bool {
-	const asfHeader = "\x30\x26\xb2\x75\x8e\x66\xcf\x11\xa6\xd9\x00\xaa\x00\x62\xce\x6c"
-	if len(data) >= len(asfHeader) && string(data[:len(asfHeader)]) == asfHeader {
-		return true
-	}
-	lowerName := strings.ToLower(strings.TrimSpace(name))
-	for _, suffix := range []string{".asf", ".wma", ".wmv"} {
-		if strings.HasSuffix(lowerName, suffix) {
-			return true
-		}
-	}
-	return false
-}
-
-func decodeMPEGSource(name string, data []byte) (VideoSource, []VideoFrame, error) {
-	s, err := assets.ParseMPEGStream(data)
-	if err != nil {
-		return VideoSource{}, nil, videoErr(name, err)
-	}
-	if s.Sequence == nil {
-		return VideoSource{}, nil, videoErr(name, ErrVideoUnsupported)
-	}
-	fps := float64(s.Sequence.FrameRateNumerator) / float64(s.Sequence.FrameRateDenominator)
-	if fps <= 0 {
-		return VideoSource{}, nil, videoErr(name, ErrVideoUnsupported)
-	}
-	decoded, err := assets.DecodeMPEG2(data)
-	if err != nil {
-		return VideoSource{}, nil, videoErr(name, err)
-	}
-	if len(decoded) == 0 {
-		return VideoSource{}, nil, videoErr(name, ErrVideoUnsupported)
-	}
-	if len(decoded) > MaxVideoFrames {
-		return VideoSource{}, nil, videoErr(name, fmt.Errorf("%w: decoded frame count %d exceeds %d", ErrVideoUnsupported, len(decoded), MaxVideoFrames))
-	}
-	frames := make([]VideoFrame, 0, len(decoded))
-	for i := range decoded {
-		if decoded[i].Width != s.Sequence.Width || decoded[i].Height != s.Sequence.Height {
-			return VideoSource{}, nil, videoErr(name, fmt.Errorf("MPEG frame dimensions do not match sequence"))
-		}
-		frame, e := videoFrameFromMPEG(uint64(i), &decoded[i])
-		if e != nil {
-			return VideoSource{}, nil, videoErr(name, e)
-		}
-		frames = append(frames, *frame)
-	}
-	meta := VideoSource{Name: name, Format: "MPEG", Width: s.Sequence.Width, Height: s.Sequence.Height,
-		FPS: fps, Frames: uint64(len(frames)), DurationMS: uint64(float64(len(frames)) * 1000 / fps)}
-	return meta, frames, nil
-}
-
-func videoFrameFromMPEG(index uint64, frame *assets.MPEGFrame) (*VideoFrame, error) {
-	if frame == nil || frame.Format != assets.MPEGYUV420 || !frame.Progressive || frame.PictureType != 1 {
-		return nil, fmt.Errorf("%w: MPEG frame is not a progressive I-frame 4:2:0 picture", ErrVideoUnsupported)
-	}
-	if frame.Width == 0 || frame.Height == 0 || frame.Width > math.MaxInt32 || frame.Height > math.MaxInt32 {
-		return nil, fmt.Errorf("invalid MPEG frame dimensions")
-	}
-	w, h := int(frame.Width), int(frame.Height)
-	pixels := uint64(w) * uint64(h)
-	if pixels > uint64(MaxVideoFrameBytes/4) || pixels > uint64(int(^uint(0)>>1))/4 {
-		return nil, fmt.Errorf("MPEG frame dimensions exceed memory limit")
-	}
-	cw, ch := (w+1)/2, (h+1)/2
-	yPlane, uPlane, vPlane := frame.Y, frame.U, frame.V
-	if len(yPlane.Data) == 0 && len(frame.Planes[0].Data) != 0 {
-		yPlane, uPlane, vPlane = frame.Planes[0], frame.Planes[1], frame.Planes[2]
-	}
-	if err := validateMPEGPlane(yPlane, w, h, "Y"); err != nil {
-		return nil, err
-	}
-	if err := validateMPEGPlane(uPlane, cw, ch, "U"); err != nil {
-		return nil, err
-	}
-	if err := validateMPEGPlane(vPlane, cw, ch, "V"); err != nil {
-		return nil, err
-	}
-	rgba := make([]byte, int(pixels)*4)
-	// BT.601 limited-range: C=Y-16, D=U-128, E=V-128;
-	// R=(298C+409E+128)>>8, G=(298C-100D-208E+128)>>8,
-	// B=(298C+516D+128)>>8, with each result clipped to 0..255.
-	for y := range h {
-		for x := range w {
-			yv := int(yPlane.Data[y*yPlane.Stride+x]) - 16
-			uv := int(uPlane.Data[(y/2)*uPlane.Stride+x/2]) - 128
-			vv := int(vPlane.Data[(y/2)*vPlane.Stride+x/2]) - 128
-			r := (298*yv + 409*vv + 128) >> 8
-			g := (298*yv - 100*uv - 208*vv + 128) >> 8
-			b := (298*yv + 516*uv + 128) >> 8
-			o := (y*w + x) * 4
-			rgba[o], rgba[o+1], rgba[o+2], rgba[o+3] = clipMPEGByte(r), clipMPEGByte(g), clipMPEGByte(b), 255
-		}
-	}
-	ptsMS := uint64(0)
-	if frame.HasPTS {
-		// MPEG timestamps are 90 kHz; VideoFrame timestamps are milliseconds.
-		ptsMS = frame.PTS / 90
-	}
-	return &VideoFrame{Index: index, Width: int32(w), Height: int32(h), PTSMS: ptsMS, RGBA: rgba}, nil
-}
-
-func validateMPEGPlane(plane assets.MPEGPixelPlane, width, height int, name string) error {
-	if plane.Width != width || plane.Height != height || plane.Stride < width || plane.Stride <= 0 {
-		return fmt.Errorf("invalid MPEG %s plane dimensions", name)
-	}
-	need := uint64(plane.Stride)*uint64(height-1) + uint64(width)
-	if need > uint64(len(plane.Data)) {
-		return fmt.Errorf("invalid MPEG %s plane data", name)
+	if err := v.enqueueFFmpegAudio(audio); err != nil {
+		v.Close()
+		return videoErr(name, err)
 	}
 	return nil
-}
-
-func clipMPEGByte(value int) byte {
-	if value < 0 {
-		return 0
-	}
-	if value > 255 {
-		return 255
-	}
-	return byte(value)
 }
 
 func videoSourceFromAMV(name string, movie *assets.Movie) (VideoSource, error) {
@@ -607,7 +475,7 @@ func (v *VideoOverlay) appendFFmpegAudioLocked(blocks []ffmpeg.AudioBlock) error
 	return nil
 }
 
-func (v *VideoOverlay) installSource(name string, meta VideoSource, movie *assets.Movie, mpeg []VideoFrame, decoder *ffmpeg.Decoder, initial *VideoFrame) error {
+func (v *VideoOverlay) installSource(name string, meta VideoSource, movie *assets.Movie, decoder *ffmpeg.Decoder, initial *VideoFrame) error {
 	if meta.Width == 0 || meta.Height == 0 || meta.Frames == 0 || !isFinite(meta.FPS) || meta.FPS <= 0 {
 		return videoErr(name, ErrVideoUnsupported)
 	}
@@ -624,7 +492,6 @@ func (v *VideoOverlay) installSource(name string, meta VideoSource, movie *asset
 	v.source = &meta
 	v.ffmpeg = decoder
 	v.amv = movie
-	v.mpeg = mpeg
 	v.positionMS = 0
 	v.clockSet = false
 	v.frameQueue = nil
@@ -638,7 +505,7 @@ func (v *VideoOverlay) installSource(name string, meta VideoSource, movie *asset
 }
 
 func (v *VideoOverlay) setSourceMetadata(name string, meta VideoSource) error {
-	return v.installSource(name, meta, nil, nil, nil, nil)
+	return v.installSource(name, meta, nil, nil, nil)
 }
 
 // SetSourceMetadata installs metadata supplied by a host decoder. It does not
@@ -677,7 +544,6 @@ func (v *VideoOverlay) Close() {
 		v.ffmpeg = nil
 	}
 	v.amv = nil
-	v.mpeg = nil
 	v.current = nil
 	v.frameQueue = nil
 	v.audioQueue = nil
@@ -986,11 +852,6 @@ func (v *VideoOverlay) presentLocked() error {
 			v.current = frame
 		}
 		shouldPresent = v.current != nil
-	} else if v.mpeg != nil {
-		if idx < uint64(len(v.mpeg)) {
-			v.current = &v.mpeg[idx]
-			shouldPresent = true
-		}
 	} else if v.current != nil && v.current.Index == idx {
 		shouldPresent = true
 	} else {
