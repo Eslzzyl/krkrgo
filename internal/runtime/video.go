@@ -108,32 +108,33 @@ type VideoAudioBlock struct {
 // retain bounded decoded state. Audio and host-queued frames are independently
 // bounded by their respective limits.
 type VideoOverlay struct {
-	mu               sync.Mutex
-	owner            tjs.ObjectID
-	source           *VideoSource
-	ffmpeg           *ffmpeg.Decoder
-	status           VideoStatus
-	amv              *assets.Movie
-	mpeg             []VideoFrame
-	positionMS       float64
-	rate             float64
-	volume           int32
-	balance          int32
-	bounds           Rect
-	visible          bool
-	looping          bool
-	mode             int32
-	layers           [2]*Layer
-	segment          [2]int64
-	period           int64
-	generation       uint64
-	events           []VideoEvent
-	frameQueue       []VideoFrame
-	audioQueue       []VideoAudioBlock
-	current          *VideoFrame
-	clockMS          uint64
-	clockSet         bool
-	callback         func(VideoEvent)
+	mu             sync.Mutex
+	owner          tjs.ObjectID
+	source         *VideoSource
+	ffmpeg         *ffmpeg.Decoder
+	status         VideoStatus
+	amv            *assets.Movie
+	mpeg           []VideoFrame
+	positionMS     float64
+	rate           float64
+	volume         int32
+	balance        int32
+	bounds         Rect
+	visible        bool
+	looping        bool
+	mode           int32
+	layers         [2]*Layer
+	segment        [2]int64
+	period         int64
+	generation     uint64
+	events         []VideoEvent
+	frameQueue     []VideoFrame
+	audioQueue     []VideoAudioBlock
+	current        *VideoFrame
+	clockMS        uint64
+	clockSet       bool
+	callback       func(VideoEvent)
+	sidecarSkipped bool
 }
 
 func NewVideoOverlay() *VideoOverlay {
@@ -311,6 +312,21 @@ func (v *VideoOverlay) setStatusLocked(s VideoStatus) {
 		v.emitLocked(VideoEvent{Generation: v.generation, Kind: "status", Status: s})
 	}
 }
+
+// failOpen turns a missing or ABI-incompatible sidecar into a logged no-op and
+// keeps script playback calls tolerant until the overlay is reused with a
+// supported source.
+func (v *VideoOverlay) failOpen(name string, err error) error {
+	if !sidecarUnavailable(err) {
+		return videoErr(name, err)
+	}
+	reportSidecarUnavailable(err)
+	v.mu.Lock()
+	v.sidecarSkipped = true
+	v.mu.Unlock()
+	return nil
+}
+
 func (v *VideoOverlay) frameAtLocked() uint64 {
 	if v.source == nil || v.source.Frames == 0 || v.source.FPS <= 0 {
 		return 0
@@ -336,7 +352,7 @@ func (v *VideoOverlay) Open(name string, data []byte) error {
 	if isWindowsMediaSource(name, data) {
 		decoder, err := ffmpeg.OpenBytes(name, data)
 		if err != nil {
-			return videoErr(name, err)
+			return v.failOpen(name, err)
 		}
 		meta := videoSourceFromFFmpeg(decoder.Metadata())
 		initial, audio, err := decoder.DecodeUntil(0)
@@ -403,7 +419,6 @@ func isWindowsMediaSource(name string, data []byte) bool {
 	}
 	return false
 }
-
 
 func decodeMPEGSource(name string, data []byte) (VideoSource, []VideoFrame, error) {
 	s, err := assets.ParseMPEGStream(data)
@@ -615,6 +630,7 @@ func (v *VideoOverlay) installSource(name string, meta VideoSource, movie *asset
 	v.frameQueue = nil
 	v.audioQueue = nil
 	v.current = initial
+	v.sidecarSkipped = false
 	v.bounds.Width = int32(meta.Width)
 	v.bounds.Height = int32(meta.Height)
 	v.setStatusLocked(VideoStopped)
@@ -680,7 +696,7 @@ func (v *VideoOverlay) transport(s VideoStatus) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.source == nil {
-		if s == VideoStopped {
+		if s == VideoStopped || v.sidecarSkipped {
 			return nil
 		}
 		return ErrVideoNoSource
@@ -695,6 +711,9 @@ func (v *VideoOverlay) Prepare() error {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if v.sidecarSkipped {
+		return nil
+	}
 	v.emitLocked(VideoEvent{Generation: v.generation, Kind: "frame", Frame: 0})
 	v.emitLocked(VideoEvent{Generation: v.generation, Kind: "period", Reason: 2})
 	v.setStatusLocked(VideoPaused)
@@ -707,6 +726,9 @@ func (v *VideoOverlay) Seek(positionMS uint64) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.source == nil {
+		if v.sidecarSkipped {
+			return nil
+		}
 		return ErrVideoNoSource
 	}
 	if positionMS > v.source.DurationMS {

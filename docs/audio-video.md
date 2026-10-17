@@ -2,7 +2,7 @@
 
 ## Audio data and runtime path
 
-[`internal/media/ffmpeg`](../internal/media/ffmpeg) is the primary decoder for WAVE, Ogg/Vorbis, ASF/WMV/WMA, and other formats enabled by the deployed FFmpeg libraries. It uses purego bindings with a bounded memory-backed AVIO reader and converts audio to interleaved signed-16 PCM for `WaveSoundBuffer`; the existing Go WAVE decoder remains available when the FFmpeg sidecar is absent. `runtime.SoundStream` and `WaveSoundBuffer` preserve source-rate transport and SLI loop/label state. The runtime mixer produces bounded 48 kHz stereo float32 data for session extraction/frame-sink delivery.
+[`internal/media/ffmpeg`](../internal/media/ffmpeg) is the primary decoder for WAVE, Ogg/Vorbis, ASF/WMV/WMA, and other formats enabled by the deployed FFmpeg libraries. It uses purego bindings with a bounded memory-backed AVIO reader and converts audio to interleaved signed-16 PCM for `WaveSoundBuffer`; the existing Go WAVE decoder remains available when the FFmpeg sidecar is absent. A missing or ABI-incompatible sidecar is reported once, WAVE sources still decode through the Go decoder, and other audio opens become no-ops. `runtime.SoundStream` and `WaveSoundBuffer` preserve source-rate transport and SLI loop/label state. The runtime mixer produces bounded 48 kHz stereo float32 data for session extraction/frame-sink delivery.
 
 The script-native `WaveSoundBuffer` in [`sound_native.go`](../internal/runtime/sound_native.go) includes storage/`openBytes`, transport, seek, fade, properties, and deterministic event delivery. This is headless state and sample generation; it does not itself open an OS audio device.
 
@@ -12,7 +12,7 @@ Linking `getSample.dll` installs the source-backed `WaveSoundBuffer.sampleValue`
 
 `VideoOverlay` in [`video.go`](../internal/runtime/video.go) provides bounded source metadata, playback/event state, frame queues, and native-rate audio queues. Supported paths include AMV frame handling, progressive MPEG-1/2 4:2:0 I-frame decode/presentation, and FFmpeg-backed ASF/WMV/WMA sources. FFmpeg video frames are converted to RGBA and queued with bounded ownership; decoded movie audio is mixed through the shared 48 kHz stereo mixer.
 
-ASF/WMV sources are opened through the FFmpeg shared-library sidecar. `VideoOverlay.Open` selects the first decodable video and audio streams, reports stream metadata, converts video frames to RGBA, and queues bounded audio blocks. Decoder errors are returned with the source name and operation context.
+ASF/WMV sources are opened through the FFmpeg shared-library sidecar. `VideoOverlay.Open` selects the first decodable video and audio streams, reports stream metadata, converts video frames to RGBA, and queues bounded audio blocks. Decoder errors are returned with the source name and operation context. When the sidecar is missing or ABI-incompatible, the first failure is logged once and the open, transport, and seek calls become no-ops so the runtime keeps running.
 
 The runtime requires `avutil`, `avcodec`, `avformat`, and `swscale` from the deployed FFmpeg 9.0.2 ABI. The loader searches `KRKRGO_FFMPEG_DIR`, `lib/ffmpeg`, and the executable directory; the deployment workflow installs the libraries beside the application.
 

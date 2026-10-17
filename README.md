@@ -16,7 +16,7 @@ The project brings the engine's scripting, storage, rendering, input, audio, and
 - Deterministic headless replay and XP3 extraction tools for development and verification.
 - Pure-Go desktop implementation with platform support centered on macOS, Linux, and Windows.
 
-The runtime loads ASF/WMV/WMA media through the FFmpeg 9.0.2 shared-library sidecar. AMV, MPEG, and WAVE paths remain available; the FFmpeg sidecar is required for the ASF/WMV/WMA profile.
+The runtime loads ASF/WMV/WMA media through the FFmpeg 9.0.2 shared-library sidecar. AMV, MPEG, and WAVE paths remain available. A missing or ABI-incompatible sidecar is logged once and media opens degrade to no-ops; the runtime keeps running instead of failing.
 
 ## Quick start
 

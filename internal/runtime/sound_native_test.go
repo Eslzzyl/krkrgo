@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
+	"github.com/eslzzyl/krkrgo/internal/media/ffmpeg"
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
@@ -213,9 +214,9 @@ global.lastSystemVoiceStatus = "";
 		t.Fatal(err)
 	}
 	voice := session.Services.Sound(voiceValue.ObjectRef().Object)
-	if err := voice.OpenBytes([]byte("OggS"), assets.LoopInfo{}); err == nil {
-		t.Fatal("malformed system voice opened successfully")
-	}
+	// A malformed Ogg source fails when the sidecar is present and degrades to
+	// a no-op when it is absent; either way the wait must stay responsive.
+	_ = voice.OpenBytes([]byte("OggS"), assets.LoopInfo{})
 	if !continues() {
 		t.Fatal("failed system voice blocked SystemSeWait")
 	}
@@ -290,12 +291,34 @@ func TestWaveSoundBufferNativeReplacingFadeQueuesCompletion(t *testing.T) {
 	}
 }
 
+func TestWaveSoundBufferOpenDegradesWithoutSidecar(t *testing.T) {
+	if _, err := ffmpeg.DefaultLoader(); err == nil {
+		t.Skip("FFmpeg sidecar is available")
+	}
+	sound := NewWaveSoundBuffer()
+	if err := sound.OpenBytes([]byte("OggS"), assets.LoopInfo{}); err != nil {
+		t.Fatalf("open without sidecar = %v; want nil", err)
+	}
+	if sound.Status() != SoundUnload {
+		t.Fatalf("degraded open status = %q; want %q", sound.Status(), SoundUnload)
+	}
+	if err := sound.Play(); err != nil {
+		t.Fatalf("play after degraded open = %v; want nil", err)
+	}
+}
+
 func TestWaveSoundBufferNativeMalformedMissingAndUnsupportedDevice(t *testing.T) {
 	s := NewSession(DefaultServices(), 10_000)
 	evalSoundValue(t, s, "sound = new WaveSoundBuffer()")
 
-	if _, err := s.Evaluate("sound.openBytes(" + tjsOctetLiteral([]byte("RIFF")) + ")"); !errors.Is(err, assets.ErrMalformed) {
-		t.Fatalf("malformed WAVE error = %v", err)
+	if _, err := s.Evaluate("sound.openBytes(" + tjsOctetLiteral([]byte("RIFF")) + ")"); err != nil {
+		if _, loadErr := ffmpeg.DefaultLoader(); loadErr == nil {
+			if !errors.Is(err, assets.ErrMalformed) {
+				t.Fatalf("malformed WAVE error = %v", err)
+			}
+		} else {
+			t.Fatalf("malformed WAVE without sidecar = %v; want no-op", err)
+		}
 	}
 	if _, err := s.Evaluate(`sound.open("missing.wav")`); !errors.Is(err, ErrUnsupportedDevice) {
 		t.Fatalf("missing source error = %v", err)

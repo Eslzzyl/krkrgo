@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
@@ -246,14 +245,16 @@ func (s *WaveSoundBuffer) Open(audio assets.Audio, info assets.LoopInfo) error {
 	return s.OpenAudio(audio, info)
 }
 
-// OpenBytes decodes through the FFmpeg sidecar. The bounded Go decoder remains
-// available when the sidecar is absent in a development environment.
+// OpenBytes decodes through the FFmpeg sidecar. A missing or ABI-incompatible
+// sidecar is reported once and the open degrades to a no-op; the bounded Go
+// decoder still handles WAVE sources.
 func (s *WaveSoundBuffer) OpenBytes(data []byte, info assets.LoopInfo) error {
 	pcm, err := ffmpeg.DecodeAudioBytes("<memory>", data, 32_000_000)
-	if errors.Is(err, ffmpeg.ErrUnavailable) {
+	if sidecarUnavailable(err) {
+		reportSidecarUnavailable(err)
 		audio, fallbackErr := assets.ReadAudio(data, 32_000_000)
 		if fallbackErr != nil {
-			return fallbackErr
+			return nil
 		}
 		return s.OpenAudio(audio, info)
 	}

@@ -3,10 +3,10 @@ package runtime
 import (
 	"errors"
 	"testing"
-
 )
 
 func TestInvalidWMVReportsSourceContext(t *testing.T) {
+	requireFFmpegSidecar(t)
 	v := NewVideoOverlay()
 	err := v.Open("logo.wmv", []byte("invalid movie payload"))
 	if err == nil {

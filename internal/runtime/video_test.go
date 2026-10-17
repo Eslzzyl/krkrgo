@@ -9,7 +9,15 @@ import (
 	"testing"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
+	"github.com/eslzzyl/krkrgo/internal/media/ffmpeg"
 )
+
+func requireFFmpegSidecar(t *testing.T) {
+	t.Helper()
+	if _, err := ffmpeg.DefaultLoader(); err != nil {
+		t.Skipf("FFmpeg sidecar unavailable: %v", err)
+	}
+}
 
 func testVideo(t *testing.T) *VideoOverlay {
 	t.Helper()
@@ -23,6 +31,31 @@ func testVideo(t *testing.T) *VideoOverlay {
 		}
 	}
 	return v
+}
+
+func TestVideoSidecarUnavailableSkipsOpenAndTransport(t *testing.T) {
+	v := NewVideoOverlay()
+	if err := v.failOpen("movies/logo.wmv", ffmpeg.ErrUnavailable); err != nil {
+		t.Fatalf("open with missing sidecar = %v; want nil", err)
+	}
+	if _, ok := v.Source(); ok {
+		t.Fatal("skipped open installed a source")
+	}
+	calls := map[string]func() error{
+		"play":    v.Play,
+		"pause":   v.Pause,
+		"stop":    v.Stop,
+		"prepare": v.Prepare,
+		"seek":    func() error { return v.Seek(500) },
+	}
+	for name, call := range calls {
+		if err := call(); err != nil {
+			t.Fatalf("%s on skipped sidecar = %v; want nil", name, err)
+		}
+	}
+	if err := v.Advance(100); err != nil {
+		t.Fatalf("advance on skipped sidecar = %v; want nil", err)
+	}
 }
 
 func TestVideoPropertiesAndLayerAssociation(t *testing.T) {
@@ -140,7 +173,24 @@ func TestVideoLoopSegmentSeekAndPeriodOrdering(t *testing.T) {
 	}
 }
 
+func TestVideoOpenDegradesWithoutSidecar(t *testing.T) {
+	if _, err := ffmpeg.DefaultLoader(); err == nil {
+		t.Skip("FFmpeg sidecar is available")
+	}
+	v := NewVideoOverlay()
+	if err := v.Open("movies/clip.wmv", []byte("not an ASF stream")); err != nil {
+		t.Fatalf("open without sidecar = %v; want nil", err)
+	}
+	if _, ok := v.Source(); ok {
+		t.Fatal("degraded open installed a source")
+	}
+	if err := v.Play(); err != nil {
+		t.Fatalf("play after degraded open = %v; want nil", err)
+	}
+}
+
 func TestVideoWindowsMediaRequiresFFmpeg(t *testing.T) {
+	requireFFmpegSidecar(t)
 	const asfHeader = "\x30\x26\xb2\x75\x8e\x66\xcf\x11\xa6\xd9\x00\xaa\x00\x62\xce\x6c"
 	tests := []struct {
 		name   string
