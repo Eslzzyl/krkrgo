@@ -11,6 +11,170 @@ import (
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
+const kagConductorQueuesMember = "__krkrgoConductorQueues"
+
+var kagConductorQueueNames = [...]string{"pendings", "fasttags", "nexttags"}
+
+func cloneKAGConductorQueue(vm *tjs.VM, value tjs.Value, host tjs.Host, budget *uint64) (tjs.Value, error) {
+	if value.Kind() != tjs.KindObject || value.IsNull() {
+		return tjs.VoidValue, fmt.Errorf("KAG conductor queue is not an Array")
+	}
+	if _, err := vm.ArrayItems(value); err != nil {
+		return tjs.VoidValue, fmt.Errorf("KAG conductor queue is not an Array: %w", err)
+	}
+	copy, err := vm.NewArray(nil)
+	if err != nil {
+		return tjs.VoidValue, err
+	}
+	arrayClass, ok := vm.Globals["Array"]
+	if !ok {
+		return tjs.VoidValue, fmt.Errorf("Array class is unavailable")
+	}
+	assign, err := vm.GetMember(arrayClass, "assignStruct", host, budget)
+	if err != nil {
+		return tjs.VoidValue, err
+	}
+	if _, err := vm.CallFunction(assign, copy, []tjs.Value{value}, host, budget); err != nil {
+		return tjs.VoidValue, err
+	}
+	return copy, nil
+}
+
+func storeKAGConductorQueues(vm *tjs.VM, context, state tjs.Value, host tjs.Host, budget *uint64) error {
+	queues := make([]tjs.Value, len(kagConductorQueueNames))
+	present := 0
+	for index, name := range kagConductorQueueNames {
+		value, exists, err := vm.GetMemberIfPresent(context, name, host, budget)
+		if err != nil {
+			return fmt.Errorf("read KAG conductor %s: %w", name, err)
+		}
+		if !exists {
+			continue
+		}
+		queues[index], err = cloneKAGConductorQueue(vm, value, host, budget)
+		if err != nil {
+			return fmt.Errorf("copy KAG conductor %s: %w", name, err)
+		}
+		present++
+	}
+	if present == 0 {
+		return nil
+	}
+	if present != len(kagConductorQueueNames) {
+		return fmt.Errorf("incomplete KAG conductor queue state")
+	}
+
+	queueState, err := vm.NewDictionary()
+	if err != nil {
+		return err
+	}
+	for index, name := range kagConductorQueueNames {
+		if err := vm.SetMemberWithRuntime(queueState, name, queues[index], 0, host, budget); err != nil {
+			return fmt.Errorf("store KAG conductor %s: %w", name, err)
+		}
+	}
+	if err := vm.SetMemberWithRuntime(state, kagConductorQueuesMember, queueState, 0, host, budget); err != nil {
+		return fmt.Errorf("store KAG conductor queues: %w", err)
+	}
+	return nil
+}
+
+func restoreKAGConductorQueues(vm *tjs.VM, context, state tjs.Value, host tjs.Host, budget *uint64) error {
+	queueState, exists, err := vm.GetMemberIfPresent(state, kagConductorQueuesMember, host, budget)
+	if err != nil {
+		return err
+	}
+	if exists {
+		for _, name := range kagConductorQueueNames {
+			value, found, err := vm.GetMemberIfPresent(queueState, name, host, budget)
+			if err != nil {
+				return fmt.Errorf("read saved KAG conductor %s: %w", name, err)
+			}
+			if !found {
+				return fmt.Errorf("saved KAG conductor state missing %s", name)
+			}
+			copy, err := cloneKAGConductorQueue(vm, value, host, budget)
+			if err != nil {
+				return fmt.Errorf("restore KAG conductor %s: %w", name, err)
+			}
+			if err := vm.SetMemberWithRuntime(context, name, copy, 0, host, budget); err != nil {
+				return fmt.Errorf("restore KAG conductor %s: %w", name, err)
+			}
+		}
+	}
+	return resumeSavedKAGScenePlayer(vm, context, host, budget)
+}
+
+func conductorHasTag(vm *tjs.VM, context tjs.Value, tagName string, host tjs.Host, budget *uint64) (bool, error) {
+	for _, queueName := range kagConductorQueueNames {
+		queue, exists, err := vm.GetMemberIfPresent(context, queueName, host, budget)
+		if err != nil {
+			return false, fmt.Errorf("read KAG conductor %s: %w", queueName, err)
+		}
+		if !exists {
+			continue
+		}
+		items, err := vm.ArrayItems(queue)
+		if err != nil {
+			return false, fmt.Errorf("read KAG conductor %s: %w", queueName, err)
+		}
+		for _, item := range items {
+			if item.Kind() != tjs.KindObject || item.IsNull() {
+				continue
+			}
+			name, found, err := vm.GetMemberIfPresent(item, "tagname", host, budget)
+			if err != nil {
+				return false, err
+			}
+			if found && name.Kind() == tjs.KindString && name.Text() == tagName {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func resumeSavedKAGScenePlayer(vm *tjs.VM, context tjs.Value, host tjs.Host, budget *uint64) error {
+	owner, exists, err := vm.GetMemberIfPresent(context, "owner", host, budget)
+	if err != nil || !exists || owner.Kind() != tjs.KindObject || owner.IsNull() {
+		return err
+	}
+	mainConductor, exists, err := vm.GetMemberIfPresent(owner, "mainConductor", host, budget)
+	if err != nil || !exists || mainConductor.Kind() != tjs.KindObject || mainConductor.IsNull() {
+		return err
+	}
+	if mainConductor.ObjectRef().Object != context.ObjectRef().Object {
+		return nil
+	}
+	flags, exists, err := vm.GetMemberIfPresent(owner, "pcflags", host, budget)
+	if err != nil || !exists || flags.Kind() != tjs.KindObject || flags.IsNull() {
+		return err
+	}
+	scenePlayer, exists, err := vm.GetMemberIfPresent(flags, "scenePlayer", host, budget)
+	if err != nil || !exists || scenePlayer.Kind() != tjs.KindObject || scenePlayer.IsNull() {
+		return err
+	}
+	scene, exists, err := vm.GetMemberIfPresent(scenePlayer, "scene", host, budget)
+	if err != nil || !exists || scene.Kind() != tjs.KindString || scene.Text() == "" {
+		return err
+	}
+	queued, err := conductorHasTag(vm, context, "sceneplay", host, budget)
+	if err != nil || queued {
+		return err
+	}
+	insertTag, exists, err := vm.GetMemberIfPresent(context, "insertTag", host, budget)
+	if err != nil {
+		return err
+	}
+	if !exists || insertTag.IsVoid() {
+		return fmt.Errorf("KAG conductor cannot resume a saved scene player")
+	}
+	if _, err := vm.CallFunction(insertTag, context, []tjs.Value{tjs.StringValue("sceneplay")}, host, budget); err != nil {
+		return fmt.Errorf("queue sceneplay for saved KAG scene player: %w", err)
+	}
+	return nil
+}
+
 func (s *Services) kagNativeCall(vm *tjs.VM, name string, context tjs.Value, args []tjs.Value, budget *uint64) (tjs.Value, error) {
 	s.ensureInit()
 	if context.Kind() != tjs.KindObject || context.IsNull() {
@@ -384,7 +548,14 @@ func (s *Services) kagNativeCall(vm *tjs.VM, name string, context tjs.Value, arg
 		}
 		return vm.NewArray(values)
 	case "store":
-		return kagStateValue(vm, p.Store())
+		value, err := kagStateValue(vm, p.Store())
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		if err := storeKAGConductorQueues(vm, context, value, s, budget); err != nil {
+			return tjs.VoidValue, err
+		}
+		return value, nil
 	case "restore":
 		value, err := arg(0)
 		if err != nil {
@@ -394,7 +565,13 @@ func (s *Services) kagNativeCall(vm *tjs.VM, name string, context tjs.Value, arg
 		if !ok {
 			return tjs.VoidValue, fmt.Errorf("invalid KAG restore object")
 		}
-		return tjs.VoidValue, p.RestoreObject(object)
+		if err := p.RestoreObject(object); err != nil {
+			return tjs.VoidValue, err
+		}
+		if err := restoreKAGConductorQueues(vm, context, value, s, budget); err != nil {
+			return tjs.VoidValue, err
+		}
+		return tjs.VoidValue, nil
 	case "get:ignoreCR":
 		return tjs.IntegerValue(boolInt(p.ignoreCR)), nil
 	case "set:ignoreCR":
