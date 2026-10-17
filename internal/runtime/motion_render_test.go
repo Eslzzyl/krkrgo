@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
@@ -39,6 +40,23 @@ func TestBlendMotionImageIdentityTranslationUsesSourcePixels(t *testing.T) {
 	}
 	if got := dst[4:]; got[0] != 0 || got[1] != 255 || got[2] != 0 || got[3] != 255 {
 		t.Fatalf("transparent source changed destination = %v", got)
+	}
+}
+
+func TestBlendMotionImageIdentityTranslationBlendsTranslucentPixels(t *testing.T) {
+	src := &assets.Image{
+		Width:  1,
+		Height: 1,
+		RGBA:   []byte{53, 211, 231, 128},
+	}
+	dst := []byte{255, 255, 255, 255}
+	ctx := motionRenderContext{opacity: 255, matrix: identityMotionMatrix}
+
+	if err := blendMotionImage(dst, 1, 1, src, 0.5, 0.5, 1, nil, false, ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := dst, []byte{153, 232, 242, 255}; !bytes.Equal(got, want) {
+		t.Fatalf("translucent identity sample = %v, want %v", got, want)
 	}
 }
 

@@ -1021,14 +1021,14 @@ func blendMotionPixel(dst, src []byte, alpha uint8) {
 		copy(dst, src[:4])
 		return
 	}
-	srcA := uint16(alpha)
-	dstA := uint16(dst[3])
+	srcA := uint32(alpha)
+	dstA := uint32(dst[3])
 	outA := srcA + dstA*(255-srcA)/255
 	if outA == 0 {
 		return
 	}
 	for i := 0; i < 3; i++ {
-		value := uint16(src[i])*srcA + uint16(dst[i])*dstA*(255-srcA)/255
+		value := uint32(src[i])*srcA + uint32(dst[i])*dstA*(255-srcA)/255
 		dst[i] = uint8(value / outA)
 	}
 	dst[3] = uint8(outA)
