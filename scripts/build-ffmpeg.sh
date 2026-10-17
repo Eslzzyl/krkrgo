@@ -179,10 +179,22 @@ configure_args=(
     "--disable-protocols"
     "--enable-demuxer=asf"
     "--enable-demuxer=ogg"
+    "--enable-demuxer=wav"
+    "--enable-demuxer=mpegvideo"
+    "--enable-demuxer=mpeg"
+    "--enable-demuxer=mpegts"
     "--enable-parser=vc1"
+    "--enable-parser=mpegvideo"
     "--enable-decoder=vorbis"
     "--enable-decoder=wmv3"
     "--enable-decoder=wmav2"
+    "--enable-decoder=pcm_u8"
+    "--enable-decoder=pcm_s16le"
+    "--enable-decoder=pcm_s24le"
+    "--enable-decoder=pcm_s32le"
+    "--enable-decoder=pcm_f32le"
+    "--enable-decoder=mpeg1video"
+    "--enable-decoder=mpeg2video"
 )
 
 if [[ -n "$HOST_CC" ]]; then
