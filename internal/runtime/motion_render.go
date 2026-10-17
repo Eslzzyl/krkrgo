@@ -2,11 +2,12 @@ package runtime
 
 import (
 	"fmt"
-	"github.com/eslzzyl/krkrgo/internal/assets"
 	"math"
 	goruntime "runtime"
 	"strings"
 	"sync"
+
+	"github.com/eslzzyl/krkrgo/internal/assets"
 )
 
 type motionResource struct {
@@ -23,6 +24,41 @@ type motionResource struct {
 	canvasTick    float64
 	canvasFilter  int64
 	canvasValid   bool
+}
+
+func (l *Layer) materializeGPUMotion() error {
+	if l == nil || l.gpuMotion == nil {
+		return nil
+	}
+	if l.ImageWidth <= 0 || l.ImageHeight <= 0 {
+		return fmt.Errorf("%w: deferred motion has invalid layer size", ErrInvalidLayer)
+	}
+	want := int(l.ImageWidth) * int(l.ImageHeight) * 4
+	if len(l.RGBA) != want {
+		l.RGBA = make([]byte, want)
+	}
+	clear(l.RGBA)
+	motion := l.gpuMotion
+	for _, draw := range motion.Draws {
+		if draw.Width <= 0 || draw.Height <= 0 ||
+			uint64(draw.Width)*uint64(draw.Height)*4 != uint64(len(draw.RGBA)) {
+			return fmt.Errorf("%w: deferred motion source has invalid size", ErrInvalidLayer)
+		}
+		ctx := motionRenderContext{
+			x:       draw.TX - float64(l.ImageWidth)/2,
+			y:       draw.TY - float64(l.ImageHeight)/2,
+			opacity: draw.Opacity,
+			matrix:  motionMatrix{a: draw.A, b: draw.B, c: draw.C, d: draw.D},
+		}
+		source := &assets.Image{Width: uint32(draw.Width), Height: uint32(draw.Height), RGBA: draw.RGBA}
+		if err := blendMotionImage(l.RGBA, int(l.ImageWidth), int(l.ImageHeight), source, 0, 0, motion.Filter, nil, false, ctx); err != nil {
+			return err
+		}
+	}
+	l.gpuMotion = nil
+	l.imageModified = true
+	l.markImageDirty()
+	return nil
 }
 
 type motionMatrix struct {
@@ -124,6 +160,137 @@ func renderMotionValue(resource *motionResource, root map[string]assets.Value, v
 		}
 	}
 	return nil
+}
+func buildGPUMotion(resource *motionResource, chara, motion string, tick float64, filter int64, drawMatrix motionDrawMatrix) (*RenderMotion, error) {
+	if resource == nil || resource.doc == nil {
+		return nil, fmt.Errorf("motion resource is unavailable")
+	}
+	root, ok := resource.doc.Root.(map[string]assets.Value)
+	if !ok {
+		return nil, fmt.Errorf("motion PSB root is not a dictionary")
+	}
+	result := &RenderMotion{Filter: filter, Draws: make([]RenderMotionDraw, 0, 8)}
+	determinant := drawMatrix.a*drawMatrix.d - drawMatrix.b*drawMatrix.c
+	if math.Abs(determinant) < 1e-9 || math.IsNaN(determinant) || math.IsInf(determinant, 0) {
+		return result, nil
+	}
+	objects, _ := root["object"].(map[string]assets.Value)
+	character, _ := objects[chara].(map[string]assets.Value)
+	motions, _ := character["motion"].(map[string]assets.Value)
+	motionValue, _ := motions[motion].(map[string]assets.Value)
+	layers, _ := motionValue["layer"].([]assets.Value)
+	if len(layers) == 0 {
+		return result, nil
+	}
+	if resource.stack == nil {
+		resource.stack = make(map[string]bool)
+	} else {
+		clear(resource.stack)
+	}
+	ctx := motionRenderContext{opacity: 255, matrix: identityMotionMatrix}
+	if err := collectGPUMotionValue(resource, root, layers, tick, filter, ctx, drawMatrix, result, resource.stack); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func collectGPUMotionValue(resource *motionResource, root map[string]assets.Value, value assets.Value, tick float64, filter int64, parent motionRenderContext, drawMatrix motionDrawMatrix, result *RenderMotion, stack map[string]bool) error {
+	switch node := value.(type) {
+	case []assets.Value:
+		for _, child := range node {
+			if err := collectGPUMotionValue(resource, root, child, tick, filter, parent, drawMatrix, result, stack); err != nil {
+				return err
+			}
+		}
+	case map[string]assets.Value:
+		ctx := parent
+		if frameList, ok := node["frameList"].([]assets.Value); ok {
+			content, visible := psbMotionResolvedContent(frameList, tick)
+			if visible {
+				ctx = psbMotionContext(parent, content, node)
+				if err := collectGPUMotionFrame(resource, root, content, ctx, filter, drawMatrix, result, stack); err != nil {
+					return err
+				}
+			}
+		}
+		if children, ok := node["children"]; ok {
+			if err := collectGPUMotionValue(resource, root, children, tick, filter, ctx, drawMatrix, result, stack); err != nil {
+				return err
+			}
+		}
+		if layers, ok := node["layer"]; ok {
+			if err := collectGPUMotionValue(resource, root, layers, tick, filter, ctx, drawMatrix, result, stack); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func collectGPUMotionFrame(resource *motionResource, root map[string]assets.Value, content map[string]assets.Value, ctx motionRenderContext, filter int64, drawMatrix motionDrawMatrix, result *RenderMotion, stack map[string]bool) error {
+	source, _ := content["src"].(string)
+	if source == "" {
+		return nil
+	}
+	if strings.HasPrefix(source, "src/") {
+		image, originX, originY, err := motionSourceImage(resource, root, source)
+		if err != nil {
+			return err
+		}
+		originX += psbMotionFloat(content, "ox", 0)
+		originY += psbMotionFloat(content, "oy", 0)
+		transform, tx, ty := motionGPUTransform(drawMatrix, ctx, originX, originY)
+		key := source
+		if resource.path != "" {
+			key = resource.path + "\x00" + source
+		}
+		result.Draws = append(result.Draws, RenderMotionDraw{
+			SourceKey: key,
+			RGBA:      image.RGBA,
+			Width:     int32(image.Width),
+			Height:    int32(image.Height),
+			A:         transform.a,
+			B:         transform.b,
+			C:         transform.c,
+			D:         transform.d,
+			TX:        tx,
+			TY:        ty,
+			Opacity:   ctx.opacity,
+		})
+		return nil
+	}
+	if strings.HasPrefix(source, "motion/") {
+		parts := strings.Split(strings.TrimPrefix(source, "motion/"), "/")
+		if len(parts) >= 2 {
+			key := parts[0] + "/" + parts[1]
+			if !stack[key] {
+				stack[key] = true
+				objects, _ := root["object"].(map[string]assets.Value)
+				character, _ := objects[parts[0]].(map[string]assets.Value)
+				motions, _ := character["motion"].(map[string]assets.Value)
+				nested, _ := motions[parts[1]].(map[string]assets.Value)
+				if nestedLayers, ok := nested["layer"]; ok {
+					if err := collectGPUMotionValue(resource, root, nestedLayers, 0, filter, ctx, drawMatrix, result, stack); err != nil {
+						return err
+					}
+				}
+				delete(stack, key)
+			}
+		}
+	}
+	return nil
+}
+
+func motionGPUTransform(drawMatrix motionDrawMatrix, ctx motionRenderContext, originX, originY float64) (motionMatrix, float64, float64) {
+	transform := motionMatrix{
+		a: drawMatrix.a*ctx.matrix.a + drawMatrix.b*ctx.matrix.c,
+		b: drawMatrix.a*ctx.matrix.b + drawMatrix.b*ctx.matrix.d,
+		c: drawMatrix.c*ctx.matrix.a + drawMatrix.d*ctx.matrix.c,
+		d: drawMatrix.c*ctx.matrix.b + drawMatrix.d*ctx.matrix.d,
+	}
+	tx := drawMatrix.tx + drawMatrix.a*ctx.x + drawMatrix.b*ctx.y - transform.a*originX - transform.b*originY
+	ty := drawMatrix.ty + drawMatrix.c*ctx.x + drawMatrix.d*ctx.y - transform.c*originX - transform.d*originY
+	return transform, tx, ty
 }
 
 func renderMotionFrame(resource *motionResource, root map[string]assets.Value, content map[string]assets.Value, layer map[string]assets.Value, filter int64, ctx motionRenderContext, pixels []byte, width, height int, stack map[string]bool) error {

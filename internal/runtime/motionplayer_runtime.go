@@ -57,6 +57,17 @@ type motionPlayerState struct {
 	onAction       tjs.Value
 	drawMatrix     motionDrawMatrix
 	playerID       tjs.ObjectID
+	gpuMotion      *RenderMotion
+	gpuMotionValid bool
+	gpuMotionKey   motionPlayerGPUKey
+}
+
+type motionPlayerGPUKey struct {
+	resource      *motionResource
+	chara, motion string
+	tick          float64
+	filter        int64
+	matrix        motionDrawMatrix
 }
 
 func (s *Services) loadMotionResource(path string) (*motionResource, error) {
@@ -432,6 +443,7 @@ func (s *Services) clearMotionTarget(vm *tjs.VM, value tjs.Value) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	layer.gpuMotion = nil
 	if len(layer.RGBA) == 0 {
 		return nil
 	}
@@ -450,25 +462,45 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 	if resource == nil {
 		return fmt.Errorf("Motion.Player.draw has no loaded PSB resource")
 	}
-	frame, err := renderPSBMotion(resource, state.chara, state.motion, state.frameTick, state.completionType)
+	layer, err := s.motionLayerFromValue(vm, value)
 	if err != nil {
 		return err
 	}
-	if motionTraceEnabled() {
-		opaque := 0
-		for i := 3; i < len(frame.RGBA); i += 4 {
-			if frame.RGBA[i] != 0 {
-				opaque++
-			}
+	if s.gpuCapture && layerHasCanvas(layer) && layer.Type == LayerAlpha {
+		key := motionPlayerGPUKey{
+			resource: resource, chara: state.chara, motion: state.motion,
+			tick: state.frameTick, filter: state.completionType, matrix: state.drawMatrix,
 		}
-		motionTrace("canvas time=%d id=%d motion=%q frame=%.2f alpha_px=%d", s.Timers.Now(), state.playerID, state.motion, state.frameTick, opaque)
+		motion := state.gpuMotion
+		if !state.gpuMotionValid || state.gpuMotionKey != key {
+			var err error
+			motion, err = buildGPUMotion(resource, state.chara, state.motion, state.frameTick, state.completionType, state.drawMatrix)
+			if err != nil {
+				return err
+			}
+			state.gpuMotion, state.gpuMotionKey, state.gpuMotionValid = motion, key, true
+		}
+		s.mu.Lock()
+		changed := layer.gpuMotion != motion
+		layer.gpuMotion = motion
+		layer.Visible = true
+		if changed {
+			layer.imageModified = true
+			layer.markImageDirty()
+		}
+		s.mu.Unlock()
+		if motionTraceEnabled() {
+			motionTrace("gpu-draw time=%d id=%d type=%d canvas=%v motion=%q frame=%.2f draws=%d cached=%v", s.Timers.Now(), state.playerID, layer.Type, layerHasCanvas(layer), state.motion, state.frameTick, len(motion.Draws), !changed)
+		}
+		return nil
 	}
-	layer, err := s.motionLayerFromValue(vm, value)
+	frame, err := renderPSBMotion(resource, state.chara, state.motion, state.frameTick, state.completionType)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	layer.gpuMotion = nil
 	// A motion layer draws into the canvas its owner layer already owns, so the
 	// layer keeps the size its KAG definition assigned. Only a layer without a
 	// bitmap adopts the motion canvas size.

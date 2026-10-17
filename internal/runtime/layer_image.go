@@ -57,6 +57,9 @@ func validLayerPixels(l *Layer) error {
 	if l == nil {
 		return fmt.Errorf("%w: layer has no valid image", ErrInvalidLayer)
 	}
+	if err := l.materializeGPUMotion(); err != nil {
+		return err
+	}
 	if err := l.materializeGPUStretch(); err != nil {
 		return err
 	}
@@ -859,6 +862,33 @@ func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft
 		return fmt.Errorf("%w: affineCopy transform outside safe numeric range", ErrUnsupportedNative)
 	}
 	if determinant == 0 {
+		return nil
+	}
+	const identityTolerance = 1e-9
+	// Pixel-aligned identity mapping has no interpolation work. Copying the
+	// covered rows preserves the result for every supported affine filter.
+	if swidth == sourceWidth && sheight == sourceHeight &&
+		sleft == 0 && stop == 0 &&
+		l.ImageWidth == sourceWidth &&
+		math.Abs(a-1) <= identityTolerance && math.Abs(b) <= identityTolerance &&
+		math.Abs(c) <= identityTolerance && math.Abs(d-1) <= identityTolerance &&
+		math.Abs(tx) <= identityTolerance && math.Abs(ty) <= identityTolerance {
+		rgbOnly := face == layerFaceOpaque && l.HoldAlpha
+		copyBottom := min64(int64(bottom), int64(sheight))
+		for y := int64(top); y < copyBottom; y++ {
+			sourceOffset := y * int64(sourceWidth) * 4
+			destinationOffset := (y*int64(l.ImageWidth) + int64(left)) * 4
+			if !rgbOnly && left == 0 && right == l.ImageWidth {
+				copy(l.RGBA[destinationOffset:destinationOffset+int64(right-left)*4],
+					source[sourceOffset:sourceOffset+int64(right-left)*4])
+				continue
+			}
+			for x := int64(left); x < int64(right); x++ {
+				copyPixelForFace(
+					l.RGBA[destinationOffset+(x-int64(left))*4:destinationOffset+(x-int64(left)+1)*4],
+					source[sourceOffset+x*4:sourceOffset+(x+1)*4], face, l.HoldAlpha)
+			}
+		}
 		return nil
 	}
 	sourceWidthF, sourceHeightF := float64(swidth), float64(sheight)

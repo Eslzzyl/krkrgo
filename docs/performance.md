@@ -192,6 +192,26 @@ device-side queue starvation during a long runtime or presentation stage.
   an integer-weighted premultiplied-alpha sampler with independent destination
   rows processed across available Go workers. These paths reduce CPU work and
   per-frame allocation pressure.
+- GPU presentation now carries normal-alpha Motion.Player source images and
+  composed affine transforms as deferred render descriptors.
+  `internal/host/gpu_compositor.go` caches source textures, composes each
+  Motion target in a reusable GPU image with `GeoM` and the requested filter,
+  then feeds that image through the existing layer blend path. Other Motion
+  layer types retain the CPU compositor. CPU frame capture materializes the
+  same descriptor through the existing compositor.
+- `internal/runtime/motionplayer_runtime.go` reuses the GPU Motion pose descriptor
+  while its resource, tick, filter, and transform are unchanged. The host GPU
+  compositor packs all source views for one Motion node into a reusable atlas,
+  so successive transformed draws share one backing texture.
+- `internal/runtime/layer_image.go` recognizes pixel-aligned identity affine
+  copies, including a taller destination canvas, and copies rows directly
+  instead of running the bilinear sampler. The amairo pre-title path had been
+  sending a 1280×720 source through that sampler into a 1280×960 destination
+  on every frame.
+- `internal/runtime/layer_transition_native.go` keeps crossfade and universal
+  transition pixel blending out of GPU-capture ticks. The render plan already
+  carries both endpoints, rule, and phase to the host compositor; CPU capture
+  retains the original pixel blend.
 - `internal/runtime/layer_image.go` uses a row-copy path when `stretchCopy`
   keeps source and destination dimensions identical, skipping interpolation
   setup for identity-size transfers.
@@ -351,6 +371,11 @@ results:
 All executable high-value paths covered by the current public runtime and host
 contracts have an implementation and focused package verification. The items
 below are explicit scope or measurement limits:
+- The amairo pre-title trace still contains application-level long ticks after
+  the identity-copy fix: a 28.378 ms `attention.png` decode and 22–25 ms timer
+  callbacks on the title startup path were measured separately from GPU
+  composition. These stages require their own script/resource scheduling
+  measurement before a semantic change.
 
 - `Bitmap.loadAsync` has an implementation; `Layer.loadImages` remains
   synchronous, and the accepted headless corpus has no independent startup

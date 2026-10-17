@@ -546,6 +546,39 @@ func TestLayerAffineCopyClampsInterpolationTapsToPlane(t *testing.T) {
 	}
 }
 
+func TestLayerAffineCopyIdentityCopiesIntoTallerDestination(t *testing.T) {
+	source := &Layer{
+		Type:        LayerAlpha,
+		ImageWidth:  2,
+		ImageHeight: 2,
+		RGBA: []byte{
+			10, 20, 30, 40, 50, 60, 70, 80,
+			90, 100, 110, 120, 130, 140, 150, 160,
+		},
+	}
+	destination := &Layer{
+		Type:        LayerAlpha,
+		ImageWidth:  2,
+		ImageHeight: 3,
+		RGBA:        make([]byte, 24),
+	}
+	for i := range destination.RGBA {
+		destination.RGBA[i] = 255
+	}
+	if err := destination.affineCopyPixels(source.RGBA, 2, 2, 0, 0, 2, 2,
+		[6]float64{1, 0, 0, 1, 0, 0}, 1, true); err != nil {
+		t.Fatalf("affineCopyPixels: %v", err)
+	}
+	want := []byte{
+		10, 20, 30, 40, 50, 60, 70, 80,
+		90, 100, 110, 120, 130, 140, 150, 160,
+		255, 255, 255, 0, 255, 255, 255, 0,
+	}
+	if string(destination.RGBA) != string(want) {
+		t.Fatalf("identity affine result = %v, want %v", destination.RGBA, want)
+	}
+}
+
 func TestLayerOperateRectAlphaFaceOverTransparentBackdrop(t *testing.T) {
 	// Layered image composition copies button artwork with operateRect from a
 	// composite onto an alpha face that a preceding clear left fully

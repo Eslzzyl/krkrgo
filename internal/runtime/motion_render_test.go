@@ -59,3 +59,35 @@ func TestBlendMotionImageOpaqueIdentityCopiesRows(t *testing.T) {
 		t.Fatalf("opaque identity copy = %v, want source pixels", got)
 	}
 }
+
+func TestMaterializeGPUMotionUsesDeferredSourceTransform(t *testing.T) {
+	layer := NewLayer(1)
+	if err := layer.SetRGBA(2, 1, make([]byte, 2*4)); err != nil {
+		t.Fatal(err)
+	}
+	layer.gpuMotion = &RenderMotion{
+		Filter: 1,
+		Draws: []RenderMotionDraw{{
+			SourceKey: "test/source",
+			RGBA:      []byte{255, 0, 0, 255},
+			Width:     1,
+			Height:    1,
+			A:         1,
+			D:         1,
+			TX:        1,
+			Opacity:   255,
+		}},
+	}
+	if err := layer.materializeGPUMotion(); err != nil {
+		t.Fatal(err)
+	}
+	if layer.gpuMotion != nil {
+		t.Fatal("deferred motion was retained after materialization")
+	}
+	if got := layer.RGBA[:4]; got[3] != 0 {
+		t.Fatalf("materialized first pixel = %v, want transparent", got)
+	}
+	if got := layer.RGBA[4:]; got[0] != 255 || got[1] != 0 || got[2] != 0 || got[3] != 255 {
+		t.Fatalf("materialized translated pixel = %v, want opaque red", got)
+	}
+}

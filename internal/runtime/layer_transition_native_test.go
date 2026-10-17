@@ -95,6 +95,39 @@ func TestLayerTransitionLifecycleAndCompletionCallback(t *testing.T) {
 	}
 }
 
+func TestGPUCaptureDefersCrossfadePixelBlend(t *testing.T) {
+	services := DefaultServices()
+	layer := NewLayer(1)
+	layer.ImageWidth, layer.ImageHeight = 1, 1
+	layer.RGBA = []byte{255, 255, 255, 255}
+	layer.inTransition = true
+	layer.transitionMethod = "crossfade"
+	layer.transitionDuration = 100
+	layer.transitionStart = 0
+	layer.transitionTick = 0
+	layer.transitionOpaque = true
+	layer.transitionDestImage = []byte{255, 255, 255, 255}
+	layer.transitionSourceImage = []byte{0, 0, 0, 255}
+	layer.transitionPixels = append([]byte(nil), layer.transitionDestImage...)
+	services.Layers[1] = layer
+
+	services.gpuCapture = true
+	if _, err := services.advanceLayerTransitionsDeferred(nil, 50, false, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := layer.transitionPixels; string(got) != string(layer.transitionDestImage) {
+		t.Fatalf("GPU transition pixels = %v, want unchanged destination %v", got, layer.transitionDestImage)
+	}
+
+	services.gpuCapture = false
+	if _, err := services.advanceLayerTransitionsDeferred(nil, 75, false, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := layer.transitionPixels; string(got) == string(layer.transitionDestImage) {
+		t.Fatalf("CPU transition pixels remained unchanged: %v", got)
+	}
+}
+
 func TestLayerUniversalTransitionUsesGrayscaleRule(t *testing.T) {
 	project := t.TempDir()
 	rule := image.NewGray(image.Rect(0, 0, 16, 16))

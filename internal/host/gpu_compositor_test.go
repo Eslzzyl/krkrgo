@@ -62,6 +62,101 @@ func TestGPUCompositorComposeCreatesNativeTarget(t *testing.T) {
 	}
 }
 
+func TestGPUCompositorComposesDeferredMotionTarget(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	plan := runtime.RenderPlan{
+		Width:  1,
+		Height: 1,
+		Nodes: []runtime.RenderNode{{
+			ID:          1,
+			Bounds:      runtime.Rect{Width: 1, Height: 1},
+			Type:        runtime.LayerAlpha,
+			Visible:     true,
+			Opacity:     255,
+			ImageWidth:  1,
+			ImageHeight: 1,
+			Motion: &runtime.RenderMotion{
+				Filter: 1,
+				Draws: []runtime.RenderMotionDraw{{
+					SourceKey: "test/motion",
+					RGBA:      []byte{255, 0, 0, 255},
+					Width:     1,
+					Height:    1,
+					A:         1,
+					D:         1,
+					Opacity:   255,
+				}},
+			},
+		}},
+	}
+	image, err := compositor.Compose(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := image.Bounds().Size(); got.X != 1 || got.Y != 1 {
+		t.Fatalf("deferred motion target size = %v", got)
+	}
+}
+
+func TestGPUCompositorPacksMotionSourcesIntoReusableAtlas(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	plan := runtime.RenderPlan{
+		Width:  2,
+		Height: 1,
+		Nodes: []runtime.RenderNode{{
+			ID:          7,
+			Bounds:      runtime.Rect{Width: 2, Height: 1},
+			Type:        runtime.LayerAlpha,
+			Visible:     true,
+			Opacity:     255,
+			ImageWidth:  2,
+			ImageHeight: 1,
+			Motion: &runtime.RenderMotion{
+				Draws: []runtime.RenderMotionDraw{
+					{SourceKey: "motion/a", RGBA: []byte{255, 0, 0, 255}, Width: 1, Height: 1, A: 1, D: 1, Opacity: 255},
+					{SourceKey: "motion/b", RGBA: []byte{0, 255, 0, 255}, Width: 1, Height: 1, A: 1, D: 1, Opacity: 255},
+				},
+			},
+		}},
+	}
+	if _, err := compositor.Compose(plan); err != nil {
+		t.Fatal(err)
+	}
+	atlas := compositor.motionAtlases[7]
+	if atlas == nil || atlas.texture == nil {
+		t.Fatal("motion atlas was not allocated")
+	}
+	if len(atlas.entries) != 2 {
+		t.Fatalf("motion atlas entries = %d, want 2", len(atlas.entries))
+	}
+	if got := atlas.texture.Bounds().Dy(); got != 2 {
+		t.Fatalf("motion atlas height = %d, want 2", got)
+	}
+	texture := atlas.texture
+	views := map[string]*ebiten.Image{
+		"a": atlas.entries["motion/a"].view,
+		"b": atlas.entries["motion/b"].view,
+	}
+	if _, err := compositor.Compose(plan); err != nil {
+		t.Fatal(err)
+	}
+	if compositor.motionAtlases[7].texture != texture {
+		t.Fatal("unchanged motion sources rebuilt the atlas")
+	}
+	if compositor.motionAtlases[7].entries["motion/a"].view != views["a"] ||
+		compositor.motionAtlases[7].entries["motion/b"].view != views["b"] {
+		t.Fatal("unchanged motion sources replaced atlas views")
+	}
+}
+
 func TestPremultipliedPixelsMatchesPresentationContract(t *testing.T) {
 	src := []byte{200, 100, 50, 128, 10, 20, 30, 255}
 	dst := make([]byte, len(src))

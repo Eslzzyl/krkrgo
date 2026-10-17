@@ -298,6 +298,44 @@ func TestGPUStretchRenderPlanDefersAndCPUCaptureMaterializes(t *testing.T) {
 	}
 }
 
+func TestGPUMotionRenderPlanDefersAndCPUCaptureMaterializes(t *testing.T) {
+	root := NewRootLayer(1, 2, 1)
+	if err := root.SetRGBA(2, 1, make([]byte, 2*4)); err != nil {
+		t.Fatal(err)
+	}
+	root.gpuMotion = &RenderMotion{
+		Filter: 1,
+		Draws: []RenderMotionDraw{{
+			SourceKey: "test/motion",
+			RGBA:      []byte{255, 0, 0, 255},
+			Width:     1,
+			Height:    1,
+			A:         1,
+			D:         1,
+			Opacity:   255,
+		}},
+	}
+	services := DefaultServices()
+	services.Root = root
+	services.gpuCapture = true
+	gpuPlan, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gpuPlan.Nodes[0].Motion == nil || gpuPlan.Nodes[0].RGBA != nil {
+		t.Fatalf("GPU motion render node = %+v", gpuPlan.Nodes[0])
+	}
+	services.gpuCapture = false
+	cpuPlan, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cpuPlan.Nodes[0].Motion != nil || root.gpuMotion != nil ||
+		cpuPlan.Nodes[0].RGBA[0] != 255 || cpuPlan.Nodes[0].RGBA[3] != 255 {
+		t.Fatalf("CPU materialized motion = node:%+v rgba:%v", cpuPlan.Nodes[0], cpuPlan.Nodes[0].RGBA)
+	}
+}
+
 func TestCaptureRenderPlanTransitionMetadata(t *testing.T) {
 	root := NewRootLayer(1, 2, 2)
 	d := NewLayer(2)

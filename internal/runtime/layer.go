@@ -223,6 +223,7 @@ type Layer struct {
 	hitTestWork           bool
 	callOnPaint           bool
 	gpuStretch            *gpuStretchCopy
+	gpuMotion             *RenderMotion
 	imageModified         bool
 	imageRevision         uint64
 	subtreeRevision       uint64
@@ -489,6 +490,7 @@ func (l *Layer) SetRGBA(width, height int32, rgba []byte) error {
 		return ErrProvinceSizeMismatch
 	}
 	l.gpuStretch = nil
+	l.gpuMotion = nil
 	l.RGBA = append(l.RGBA[:0], rgba...)
 	l.ImageWidth, l.ImageHeight = width, height
 	if l.Bounds.Width == 0 {
@@ -536,6 +538,9 @@ func (l *Layer) SetSize(width, height int32) error {
 func (l *Layer) SetImageSize(width, height int32) error {
 	if l == nil {
 		return fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
+	}
+	if err := l.materializeGPUMotion(); err != nil {
+		return err
 	}
 	if err := l.materializeGPUStretch(); err != nil {
 		return err
@@ -713,6 +718,7 @@ func (l *Layer) SetImage(im assets.Image) error {
 }
 func (l *Layer) ClearImage() {
 	l.gpuStretch = nil
+	l.gpuMotion = nil
 	l.RGBA = nil
 	l.ImageWidth, l.ImageHeight = 0, 0
 	l.markImageDirty()

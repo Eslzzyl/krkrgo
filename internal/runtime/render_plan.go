@@ -26,6 +26,7 @@ type RenderNode struct {
 	HoldAlpha                                               bool
 	ImageWidth, ImageHeight, ImageLeft, ImageTop            int32
 	RGBA                                                    []byte
+	Motion                                                  *RenderMotion
 	ImageHash                                               uint64
 	GPUStretch                                              bool
 	GPUStretchSourceWidth, GPUStretchSourceHeight           int32
@@ -36,6 +37,24 @@ type RenderNode struct {
 	ChildStart, ChildCount                                  int
 	Transition                                              *RenderTransition
 }
+
+// RenderMotion describes one deferred Motion.Player composition. Draws map
+// source-image pixels directly into the owning layer's image coordinates.
+// RGBA slices are borrowed from the motion resource until the next frame.
+type RenderMotion struct {
+	Filter int64
+	Draws  []RenderMotionDraw
+}
+
+type RenderMotionDraw struct {
+	SourceKey     string
+	RGBA          []byte
+	Width, Height int32
+	A, B, C, D    float64
+	TX, TY        float64
+	Opacity       uint8
+}
+
 type RenderTransition struct {
 	Method                                RenderTransitionMethod
 	DestinationRGBA, SourceRGBA, Rule     []byte
@@ -247,6 +266,17 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 				n.RGBA = l.RGBA
 			}
 			n.gpuStretchSourceBitmap = pending.sourceBitmap
+		}
+		if l.gpuMotion != nil && len(l.transitionPixels) == 0 {
+			if s.gpuCapture {
+				n.Motion = l.gpuMotion
+				n.RGBA = nil
+			} else {
+				if err := l.materializeGPUMotion(); err != nil {
+					return -1, err
+				}
+				n.RGBA = l.RGBA
+			}
 		}
 		transitionHashCached := l.transitionHashesValid && l.inTransition &&
 			(l.transitionMethod == "crossfade" || l.transitionMethod == "universal")

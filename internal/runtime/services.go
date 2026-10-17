@@ -933,6 +933,9 @@ func materializeLayerTree(layer *Layer) error {
 	if layer == nil {
 		return nil
 	}
+	if err := layer.materializeGPUMotion(); err != nil {
+		return err
+	}
 	if err := layer.materializeGPUStretch(); err != nil {
 		return err
 	}

@@ -355,16 +355,20 @@ func (s *Services) advanceLayerTransitionsDeferred(vm *tjs.VM, timeMS uint64, se
 		if elapsed < layer.transitionDuration {
 			phase = elapsed * phaseMax / layer.transitionDuration
 		}
-		if layer.transitionMethod == "spin" {
-			blendSpin(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage,
-				layer.ImageWidth, layer.ImageHeight, phase, layer.transitionType1, layer.transitionType2, layer.transitionAccel)
-		} else if layer.transitionMethod == "universal" {
-			blendUniversal(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage,
-				layer.transitionRule, phase, layer.transitionVague)
-		} else if layer.transitionZeroOpaque {
-			blendZeroOpaqueCrossfade(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage, phase)
-		} else {
-			blendCrossfade(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage, phase, layer.transitionOpaque)
+		// GPU render plans carry transition endpoints and phase to the host;
+		// keep the CPU pixel buffer untouched for those two GPU-native methods.
+		if !(s.gpuCapture && (layer.transitionMethod == "crossfade" || layer.transitionMethod == "universal")) {
+			if layer.transitionMethod == "spin" {
+				blendSpin(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage,
+					layer.ImageWidth, layer.ImageHeight, phase, layer.transitionType1, layer.transitionType2, layer.transitionAccel)
+			} else if layer.transitionMethod == "universal" {
+				blendUniversal(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage,
+					layer.transitionRule, phase, layer.transitionVague)
+			} else if layer.transitionZeroOpaque {
+				blendZeroOpaqueCrossfade(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage, phase)
+			} else {
+				blendCrossfade(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage, phase, layer.transitionOpaque)
+			}
 		}
 		layer.markRenderDirty()
 		if elapsed >= layer.transitionDuration {
