@@ -88,6 +88,35 @@ scripts/build-ffmpeg.sh
 
 The workflow is [`.github/workflows/build-ffmpeg.yml`](.github/workflows/build-ffmpeg.yml). It builds and uploads the FFmpeg shared libraries, required Windows MinGW runtime DLLs, LGPL license, source version, configure manifest, and ABI probe output.
 
+### Package the application
+
+The packaging scripts build one archive per platform and architecture. They download the FFmpeg sidecar from the `ffmpeg-sidecar-v9.0.2-r3` release and do not build FFmpeg locally.
+
+On a Linux build host, build every target:
+
+```sh
+scripts/package.sh all --out dist
+```
+
+The Windows target runs through PowerShell; Linux and macOS hosts need `pwsh` for it. Each platform script also runs on its own host:
+
+```sh
+scripts/package-macos.sh all
+scripts/package-linux.sh all
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1 -Arch all
+```
+
+Artifacts:
+
+- `dist/krkrgo-macos-<arch>.zip` with `krkrgo.app`, dylibs under `Contents/MacOS/lib/ffmpeg`, and the LGPL license.
+- `dist/krkrgo-linux-<arch>.tar.gz` with the binary, `lib/ffmpeg`, and the license.
+- `dist/krkrgo-windows-<arch>.zip` with `krkrgo.exe`, FFmpeg and MinGW runtime DLLs beside the executable, and the license.
+
+A `.sha256` file is written next to each archive. `--tag` selects another sidecar release; `--sidecar DIR` uses an extracted sidecar directory. The macOS script signs the bundle ad hoc when `codesign` is available and includes `cmd/krkrgo/appicon.icns` when that file exists.
+
 The repository keeps generated binaries, profiles, logs, local replay data, and local test fixtures out of version control through [.gitignore](.gitignore).
 
 ## Architecture

@@ -27,3 +27,6 @@ lib/*
 /krkrgo
 /krkrgo-tool
 /krkrgo_startup_measure
+
+# Packaging output
+/dist/
