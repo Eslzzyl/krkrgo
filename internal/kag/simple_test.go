@@ -132,6 +132,36 @@ func TestParseRecognizesIndentedLineCommands(t *testing.T) {
 		t.Errorf("ordinary text = %q, want leading spaces preserved", got)
 	}
 }
+
+func TestParseIgnoresIndentationOnBracketTagCommandLines(t *testing.T) {
+	scenario, err := Parse("indented-tags.ks", "*start\n\t[clearvar]\n \t[historyopt uiload]\n  visible text [literal]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scenario.Tokens) != 8 {
+		t.Fatalf("tokens = %#v, want label, two tag/newline pairs, text, tag, and newline", scenario.Tokens)
+	}
+	for i, want := range []struct {
+		name   string
+		column uint64
+	}{{"clearvar", 2}, {"historyopt", 3}} {
+		token := scenario.Tokens[1+i*2]
+		if token.Kind != KindTag || token.Tag == nil || token.Tag.Name != want.name {
+			t.Errorf("tag token %d = %#v, want %s", i, token, want.name)
+			continue
+		}
+		if token.Location.Column != want.column {
+			t.Errorf("tag %s column = %d, want %d", want.name, token.Location.Column, want.column)
+		}
+	}
+	if got := scenario.Tokens[5].Text; got != "  visible text " {
+		t.Fatalf("ordinary text before inline tag = %q, want leading spaces preserved", got)
+	}
+	if token := scenario.Tokens[6]; token.Kind != KindTag || token.Tag == nil || token.Tag.Name != "literal" {
+		t.Fatalf("inline tag after text = %#v, want literal tag", token)
+	}
+}
+
 func TestParseMarksLeadingEntityExpressionsWithoutChangingLiteralValues(t *testing.T) {
 	scenario, err := Parse("test.ks", `[link storage="&sf.chapter + f.suffixks" target=&f.callbackpos literal="`+"`"+`&literal"]`)
 	if err != nil {

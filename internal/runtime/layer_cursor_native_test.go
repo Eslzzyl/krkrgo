@@ -75,3 +75,35 @@ func TestNativeLayerCursorCoordinateValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeLayerHintProperties(t *testing.T) {
+	session := NewSession(DefaultServices(), 10_000)
+	if _, err := session.Evaluate(`l = new Layer()`); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate(`l.hint`)
+	if err != nil {
+		t.Fatalf("read default Layer.hint: %v", err)
+	}
+	if value.Kind() != tjs.KindString || value.Text() != "" {
+		t.Fatalf("default Layer.hint = %#v, want empty string", value)
+	}
+	if _, err := session.executeSource("<layer-hint-test>", `l.hint = "button tip"; l.showParentHint = 1`, false); err != nil {
+		t.Fatal(err)
+	}
+	value, err = session.Evaluate(`l.hint`)
+	if err != nil || value.Kind() != tjs.KindString || value.Text() != "button tip" {
+		t.Fatalf("Layer.hint = %#v, %v", value, err)
+	}
+	value, err = session.Evaluate(`l.showParentHint`)
+	if err != nil || value.Kind() != tjs.KindInteger || value.IntegerValue() != 1 {
+		t.Fatalf("Layer.showParentHint = %#v, %v", value, err)
+	}
+	if _, err := session.executeSource("<layer-hint-test>", `l.hint = "next tip"`, false); err != nil {
+		t.Fatal(err)
+	}
+	value, err = session.Evaluate(`l.showParentHint`)
+	if err != nil || value.Kind() != tjs.KindInteger || value.IntegerValue() != 0 {
+		t.Fatalf("Layer.showParentHint after hint assignment = %#v, %v", value, err)
+	}
+}

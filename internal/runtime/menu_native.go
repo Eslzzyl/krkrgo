@@ -890,6 +890,9 @@ func (s *Services) LastMenuPopup() (MenuPopupRequest, bool) {
 
 func (m *menuModel) gcRoots() []tjs.Value {
 	roots := make([]tjs.Value, 0, 4)
+	for _, root := range m.roots {
+		roots = append(roots, root)
+	}
 	if m.textToKeycode.Kind() == tjs.KindObject && !m.textToKeycode.IsNull() {
 		roots = append(roots, m.textToKeycode)
 	}

@@ -411,6 +411,9 @@ func memberKeyUnits(key Value) UTF16 {
 func (v *VM) setMember(id ObjectID, key Value, val Value) error {
 	o, e := v.obj(id)
 	if e != nil {
+		if strings.Contains(e.Error(), "invalid TJS object handle") {
+			fmt.Printf("[tjs-invalid-set] receiver=%d key=%q trace=%+v\n", id, key.Text(), v.traceStack)
+		}
 		return e
 	}
 	return o.SetUnits(memberKeyUnits(key), val)
@@ -462,6 +465,7 @@ func (v *VM) lookupClassMemberWithRuntime(classID ObjectID, name string, depth i
 			}
 		}
 	}
+
 	if !skipSuperclassConstructor && meta.legacyClassInitializing {
 		for index := range meta.superclassGetterOffsets {
 			baseID, resolveErr := v.resolveLegacySuperclassBase(classID, index, host, budget)
@@ -606,6 +610,9 @@ func (v *VM) getMember(id ObjectID, key Value) (Value, bool, error) {
 func (v *VM) getMemberWithRuntime(id ObjectID, key Value, host Host, budget *uint64) (Value, bool, error) {
 	o, e := v.obj(id)
 	if e != nil {
+		if strings.Contains(e.Error(), "invalid TJS object handle") {
+			fmt.Printf("[tjs-invalid-get] receiver=%d key=%q trace=%+v\n", id, key.Text(), v.traceStack)
+		}
 		return VoidValue, false, e
 	}
 	if m := v.meta[id]; m != nil && m.category == CategoryArray {
@@ -3218,8 +3225,14 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 	}
 	callee = v.bindConstructingBaseConstructor(callee)
 	context = v.forwardClassMethodReceiver(callee, context)
-	if m.category == CategoryNative && v.linkNativeClassConstructor(callee, context) {
-		return VoidValue, nil
+	if m.category == CategoryNative {
+		constructorContext := context
+		if callee.ObjectRef().HasBoundContext() {
+			constructorContext = v.boundContextValue(callee.ObjectRef())
+		}
+		if v.linkNativeClassConstructor(callee, constructorContext) {
+			return VoidValue, nil
+		}
 	}
 	if (m.category == CategoryNative || m.category == CategoryMethod) && callee.ObjectRef().HasBoundContext() {
 		context = v.boundContextValue(callee.ObjectRef())
@@ -3650,10 +3663,7 @@ func (v *VM) callRegexpMethod(context Value, name string, args []Value) (Value, 
 	case "exec", "match":
 		match, ok := r.Find(args[0].Text())
 		if !ok {
-			if name == "match" {
-				return v.NewArray(nil)
-			}
-			return NullValue, nil
+			return v.NewArray(nil)
 		}
 		items := make([]Value, 1, len(match.Submatches)+1)
 		items[0] = StringValue(match.Text)

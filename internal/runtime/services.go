@@ -157,6 +157,8 @@ type Services struct {
 	LayerCursors             map[tjs.ObjectID]tjs.Value
 	FontBook                 *FontBook
 	FontSystem               *FontSystem
+	prerenderedFonts         map[string]*prerenderedFont
+	prerenderedFontMappings  map[prerenderedFontMapKey]string
 	Pads                     map[tjs.ObjectID]*padState
 	Roots                    []tjs.Value
 	scriptsInitialized       bool
@@ -351,6 +353,8 @@ func NewServices(storage *assets.Storage, saveDir string, limits core.Limits) *S
 		Limits:                  limits,
 		FontBook:                book,
 		FontSystem:              NewFontSystem(book),
+		prerenderedFonts:        make(map[string]*prerenderedFont),
+		prerenderedFontMappings: make(map[prerenderedFontMapKey]string),
 		graphicCacheSystemLimit: limits.CacheBytes,
 		clipboardBackend:        systemClipboardBackend{},
 		Events:                  events,
@@ -505,6 +509,12 @@ func (s *Services) ensureInit() {
 	}
 	if s.FontBook == nil {
 		s.FontBook = NewFontBook()
+	}
+	if s.prerenderedFonts == nil {
+		s.prerenderedFonts = make(map[string]*prerenderedFont)
+	}
+	if s.prerenderedFontMappings == nil {
+		s.prerenderedFontMappings = make(map[prerenderedFontMapKey]string)
 	}
 	if s.FontSystem == nil {
 		s.FontSystem = NewFontSystem(s.FontBook)
@@ -1318,6 +1328,11 @@ func (s *Services) GCRoots() []tjs.Value {
 		out = append(out, callback)
 	}
 	out = append(out, s.menuData.gcRoots()...)
+	for _, macros := range s.KAGMacroObjects {
+		if macros.Kind() == tjs.KindObject && !macros.IsNull() {
+			out = append(out, macros)
+		}
+	}
 	s.mu.RUnlock()
 	s.kagHookMu.Lock()
 	for _, registrations := range s.pendingKAGHooks {

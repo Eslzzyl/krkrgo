@@ -109,6 +109,23 @@ func TestDispatchRegexpMatchReturnsCaptureArrayAndEmptyMiss(t *testing.T) {
 	}
 }
 
+func TestDispatchRegexpExecReturnsEmptyArrayOnMiss(t *testing.T) {
+	table := NewObjectTable()
+	dispatcher := NewDispatcher(table)
+	pattern, err := NewRegExp(table, "foo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	missed, err := dispatcher.CallMember(ObjectValue(pattern.Ref()), "exec", StringValue("bar"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	missArray, ok := table.Lookup(missed.ObjectRef().Object)
+	if !ok || missArray.Category != CategoryArray || arrayLength(missArray) != 0 {
+		t.Fatalf("unmatched RegExp.exec = %v; want empty array", missed)
+	}
+}
+
 func TestDispatchArrayCanonicalIndicesAndBounds(t *testing.T) {
 	table := NewObjectTable()
 	d := NewDispatcher(table)

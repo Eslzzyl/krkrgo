@@ -401,7 +401,7 @@ func (p *KAGParser) ReturnFromCall() error {
 			return err
 		}
 		p.crossCalls = p.crossCalls[:n-1]
-		return nil
+		return p.notifyAfterReturn()
 	}
 	if localCalls != 0 {
 		if err := p.parser.ReturnFromCall(); err != nil {
@@ -413,7 +413,7 @@ func (p *KAGParser) ReturnFromCall() error {
 		} else {
 			p.conditions = nil
 		}
-		return nil
+		return p.notifyAfterReturn()
 	}
 	if n := len(p.crossCalls); n != 0 {
 		frame := p.crossCalls[n-1]
@@ -421,9 +421,21 @@ func (p *KAGParser) ReturnFromCall() error {
 			return err
 		}
 		p.crossCalls = p.crossCalls[:n-1]
-		return nil
+		return p.notifyAfterReturn()
 	}
 	return p.parser.ReturnFromCall()
+}
+
+func (p *KAGParser) notifyAfterReturn() error {
+	if p.callbacks != nil && p.callbacks.OnAfterReturn != nil {
+		if err := p.callbacks.OnAfterReturn(p); err != nil {
+			return err
+		}
+		if !p.Alive() {
+			return ErrKAGParserInvalid
+		}
+	}
+	return nil
 }
 
 // State returns the low-level cursor used by internal/kag.

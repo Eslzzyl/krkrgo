@@ -37,6 +37,14 @@ func TestPSBScalarsAndLists(t *testing.T) {
 	}
 }
 
+func TestPSBAllowsZeroHeaderLength(t *testing.T) {
+	data := minimalPSB([]byte{4})
+	binary.LittleEndian.PutUint32(data[8:], 0)
+	if _, err := ParsePSB(data); err != nil {
+		t.Fatalf("zero header length rejected: %v", err)
+	}
+}
+
 func TestPSBRejectsTruncation(t *testing.T) {
 	full := minimalPSB([]byte{4})
 	for n := range full {

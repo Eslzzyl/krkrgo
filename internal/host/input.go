@@ -221,6 +221,8 @@ func (p *InputPoller) PollRuntime(dst []runtime.InputEvent) []runtime.InputEvent
 			kind := runtime.InputPointerUp
 			if pressed {
 				kind = runtime.InputPointerDown
+			} else if i == 0 {
+				dst = append(dst, runtime.InputEvent{Kind: runtime.InputClick, X: int32(x), Y: int32(y), Shift: p.shiftState()})
 			}
 			dst = append(dst, runtime.InputEvent{Kind: kind, X: int32(x), Y: int32(y), Button: int32(i), Shift: p.shiftState() | p.mouseStateWith(i, pressed)})
 		}

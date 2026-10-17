@@ -12,14 +12,13 @@ import (
 // selected face is resolved only through Services.FontSystem; no host fallback
 // is attempted.
 type FontState struct {
-	Face                   string
-	Height                 int32
-	Bold                   bool
-	Italic                 bool
-	Underline              bool
-	Strikeout              bool
-	Angle                  int32
-	PrerenderedFontStorage string
+	Face      string
+	Height    int32
+	Bold      bool
+	Italic    bool
+	Underline bool
+	Strikeout bool
+	Angle     int32
 }
 
 func newFontState() *FontState {
@@ -113,11 +112,34 @@ func (s *Services) fontFace(f *FontState) (FontFace, error) {
 	if err != nil {
 		return nil, err
 	}
-	face = withGlyphFallback(face)
+	if system.Book != nil {
+		face = withGlyphFallback(withGlyphFallbackChain(face, system.Book, state.Face, size))
+	} else {
+		face = withGlyphFallback(face)
+	}
+	key := prerenderedFontMapKeyFor(state)
+	s.mu.RLock()
+	storage := s.prerenderedFontMappings[key]
+	s.mu.RUnlock()
 	if !state.Bold && !state.Italic {
+		if storage != "" {
+			prerendered, err := s.loadPrerenderedFont(storage)
+			if err != nil {
+				return nil, err
+			}
+			return &prerenderedFontFace{FontFace: face, font: prerendered}, nil
+		}
 		return face, nil
 	}
-	return &styledFontFace{FontFace: face, bold: state.Bold, italic: state.Italic}, nil
+	face = &styledFontFace{FontFace: face, bold: state.Bold, italic: state.Italic}
+	if storage != "" {
+		prerendered, err := s.loadPrerenderedFont(storage)
+		if err != nil {
+			return nil, err
+		}
+		face = &prerenderedFontFace{FontFace: face, font: prerendered}
+	}
+	return face, nil
 }
 
 func (s *Services) fontNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value, budget *uint64) (tjs.Value, error) {
@@ -275,7 +297,7 @@ func (s *Services) fontNative(vm *tjs.VM, context tjs.Value, operation string, a
 		if storage == "" {
 			return tjs.VoidValue, fmt.Errorf("Font.mapPrerenderedFont requires a storage name")
 		}
-		if _, err := s.readStorage(storage); err != nil {
+		if _, err := s.loadPrerenderedFont(storage); err != nil {
 			return tjs.VoidValue, fmt.Errorf("Font.mapPrerenderedFont %q: %w", storage, err)
 		}
 		s.mu.Lock()
@@ -283,8 +305,18 @@ func (s *Services) fontNative(vm *tjs.VM, context tjs.Value, operation string, a
 			s.mu.Unlock()
 			return tjs.VoidValue, fmt.Errorf("Font.mapPrerenderedFont: context has no Font native instance")
 		} else {
-			current.PrerenderedFontStorage = storage
+			s.prerenderedFontMappings[prerenderedFontMapKeyFor(*current)] = storage
 		}
+		s.mu.Unlock()
+		return tjs.VoidValue, nil
+	case "unmapPrerenderedFont":
+		s.mu.Lock()
+		current := s.Fonts[id]
+		if current == nil {
+			s.mu.Unlock()
+			return tjs.VoidValue, fmt.Errorf("Font.unmapPrerenderedFont: context has no Font native instance")
+		}
+		delete(s.prerenderedFontMappings, prerenderedFontMapKeyFor(*current))
 		s.mu.Unlock()
 		return tjs.VoidValue, nil
 	case "getList":

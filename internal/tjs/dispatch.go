@@ -1365,13 +1365,10 @@ func (d *Dispatcher) RegExpCall(o *Object, name string, args ...Value) (Value, e
 	case "exec", "match":
 		match, ok := r.Find(s)
 		if !ok {
-			if name == "match" {
-				if table := dTable(d); table != nil {
-					return ObjectValue(table.New(CategoryArray).Ref()), nil
-				}
-				return ObjectValue(NewObject(CategoryArray).Ref()), nil
+			if table := dTable(d); table != nil {
+				return ObjectValue(table.New(CategoryArray).Ref()), nil
 			}
-			return NullValue, nil
+			return ObjectValue(NewObject(CategoryArray).Ref()), nil
 		}
 		a := NewObject(CategoryArray)
 		if table := dTable(d); table != nil {

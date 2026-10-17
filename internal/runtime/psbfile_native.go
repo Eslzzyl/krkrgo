@@ -37,7 +37,7 @@ func (s *Services) psbFileNative(vm *tjs.VM, context tjs.Value, operation string
 			}
 			return tjs.VoidValue, fmt.Errorf("PSBFile.load: missing argument 0")
 		}
-		root, err := s.loadPSBRoot(vm, args[0].Text())
+		root, err := s.loadPSBRoot(vm, args[0])
 		if err != nil {
 			return tjs.IntegerValue(0), nil
 		}
@@ -55,10 +55,19 @@ func (s *Services) psbFileNative(vm *tjs.VM, context tjs.Value, operation string
 	}
 }
 
-func (s *Services) loadPSBRoot(vm *tjs.VM, storage string) (tjs.Value, error) {
-	data, err := s.readStorage(storage)
-	if err != nil {
-		return tjs.VoidValue, err
+func (s *Services) loadPSBRoot(vm *tjs.VM, source tjs.Value) (tjs.Value, error) {
+	var data []byte
+	if source.Kind() == tjs.KindOctet {
+		data = source.Octets()
+	} else {
+		if source.Kind() != tjs.KindString {
+			return tjs.VoidValue, fmt.Errorf("PSBFile source must be a storage string or Octet")
+		}
+		var err error
+		data, err = s.readStorage(source.Text())
+		if err != nil {
+			return tjs.VoidValue, err
+		}
 	}
 	doc, err := assets.ParsePSB(data)
 	if err != nil {

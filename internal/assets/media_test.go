@@ -158,6 +158,25 @@ func TestImageToStraightRGBAUnpremultiplies(t *testing.T) {
 	}
 }
 
+func TestDecodeWebPImage(t *testing.T) {
+	data := []byte{
+		0x52, 0x49, 0x46, 0x46, 0x1e, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+		0x56, 0x50, 0x38, 0x4c, 0x11, 0x00, 0x00, 0x00, 0x2f, 0x01, 0x40, 0x00,
+		0x00, 0x07, 0x50, 0x9a, 0x4a, 0xd4, 0xaa, 0xff, 0x81, 0x88, 0xe8, 0x7f,
+		0x00, 0x00,
+	}
+	got, err := DecodeImage(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Width != 2 || got.Height != 2 {
+		t.Fatalf("WebP dimensions = %dx%d, want 2x2", got.Width, got.Height)
+	}
+	if pixel := got.RGBA[:4]; !bytes.Equal(pixel, []byte{18, 52, 86, 255}) {
+		t.Fatalf("WebP pixel = %v, want [18 52 86 255]", pixel)
+	}
+}
+
 func TestImageToStraightRGBA64(t *testing.T) {
 	rect := image.Rect(0, 0, 3, 1)
 	premultiplied := image.NewRGBA64(rect)
@@ -243,13 +262,11 @@ func TestImageMetadataAndWriteNoReplace(t *testing.T) {
 	}
 }
 
-
 func TestUnsupportedCodecs(t *testing.T) {
 	if _, err := DecodeImage([]byte("TLG6.0\x00raw\x1a")); !errors.Is(err, ErrTruncated) {
 		t.Fatalf("TLG error = %v", err)
 	}
 }
-
 
 func testWave(bits, channels uint16, pcm []byte) []byte {
 	block := channels * bits / 8

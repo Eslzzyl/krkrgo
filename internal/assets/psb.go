@@ -137,6 +137,9 @@ func ParsePSB(data []byte) (*Document, error) {
 		if err != nil {
 			return nil, err
 		}
+		if i == 0 && n == 0 {
+			continue
+		}
 		if n > uint64(len(data)) || n < 40 {
 			return nil, psbErr("invalid header offset")
 		}

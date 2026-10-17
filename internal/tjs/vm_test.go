@@ -463,6 +463,14 @@ return result === void && r.test("FOO");
 	}
 }
 
+func TestVMRegExpExecReturnsEmptyArrayOnMiss(t *testing.T) {
+	got := executeVMSource(t, `var r = new RegExp("foo"); var result = r.exec("bar"); return result !== null && result.count == 0;`)
+	truth, err := got.Truth()
+	if err != nil || !truth {
+		t.Fatalf("RegExp.exec miss = %v, %v; want empty array", got, err)
+	}
+}
+
 func TestVMRegExpCompileInternalEncodingErrors(t *testing.T) {
 	for _, source := range []string{
 		`var r=new RegExp();r._compile("bad");`,

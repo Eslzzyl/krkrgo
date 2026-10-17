@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	_ "golang.org/x/image/webp"
 	"image"
 	"image/draw"
 	_ "image/gif"
@@ -43,9 +44,9 @@ func unsupported(format string) error {
 	return &FormatError{Kind: ErrUnsupported, Msg: "unsupported " + format}
 }
 
-// DecodeImage decodes an image using the codecs included in the Go standard
-// library and returns non-premultiplied RGBA pixels. BMP is handled by the
-// bounded decoder in media_indexed.go.
+// DecodeImage decodes an image using the Go standard library and x/image codecs
+// and returns non-premultiplied RGBA pixels. BMP is handled by the bounded
+// decoder in media_indexed.go.
 func DecodeImage(data []byte) (Image, error) {
 	if bytes.HasPrefix(data, []byte("TLG")) {
 		return DecodeTLG(data)

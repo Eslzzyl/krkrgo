@@ -85,6 +85,8 @@ type KAGCallbacks struct {
 	OnLabel          func(parser *KAGParser, label *kag.Label) error
 	OnScript         func(parser *KAGParser, script, storage string, startLine uint64) error
 	OnEvent          func(parser *KAGParser, event KAGEvent) error
+	OnReturn         func(parser *KAGParser, tag *kag.Tag) (bool, error)
+	OnAfterReturn    func(parser *KAGParser) error
 }
 
 type KAGConditionState struct {
@@ -500,15 +502,19 @@ func (p *KAGParser) restoreScenarioCallFrame(frame kagScenarioCallFrame) error {
 func (p *KAGParser) consumeExplicitReturnFrame(parser *kag.Parser, localCalls int) error {
 	if n := len(p.crossCalls); n != 0 && len(p.crossCalls[n-1].state.Calls) >= localCalls {
 		p.crossCalls = p.crossCalls[:n-1]
-		return nil
+		return p.notifyAfterReturn()
 	}
 	if localCalls != 0 {
 		cursor := parser.State()
 		cursor.Calls = cursor.Calls[:len(cursor.Calls)-1]
-		return parser.Restore(cursor)
+		if err := parser.Restore(cursor); err != nil {
+			return err
+		}
+		return p.notifyAfterReturn()
 	}
 	if n := len(p.crossCalls); n != 0 {
 		p.crossCalls = p.crossCalls[:n-1]
+		return p.notifyAfterReturn()
 	}
 	return nil
 }
@@ -690,6 +696,20 @@ func (p *KAGParser) Step(budget *uint64) (KAGEvent, error) {
 				continue
 			case "return":
 				if !p.conditionActive() {
+					continue
+				}
+				processReturn := true
+				if p.callbacks != nil && p.callbacks.OnReturn != nil {
+					var err error
+					processReturn, err = p.callbacks.OnReturn(p, token.Tag)
+					if err != nil {
+						return KAGEvent{}, kagLocationError(token.Location, err)
+					}
+					if !p.Alive() {
+						return KAGEvent{}, ErrKAGParserInvalid
+					}
+				}
+				if !processReturn {
 					continue
 				}
 				storage, _ := token.Tag.Get("storage")

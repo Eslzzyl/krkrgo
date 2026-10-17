@@ -3,6 +3,8 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
 	"github.com/eslzzyl/krkrgo/internal/kag"
@@ -25,6 +27,7 @@ func (s *Services) kagNativeCall(vm *tjs.VM, name string, context tjs.Value, arg
 			p.Invalidate()
 		}
 		delete(s.KAGParsers, id)
+		delete(s.KAGMacroObjects, id)
 		return tjs.VoidValue, nil
 	}
 	p := s.KAGParsers[id]
@@ -37,7 +40,7 @@ func (s *Services) kagNativeCall(vm *tjs.VM, name string, context tjs.Value, arg
 		}
 		return args[index], nil
 	}
-	if op == "getNextTag" || op == "step" || op == "run" || op == "loadScenario" {
+	if op == "getNextTag" || op == "step" || op == "run" || op == "loadScenario" || op == "return" {
 		previousCallbacks := p.callbacks
 		callbacks := KAGCallbacks{}
 		if previousCallbacks != nil {
@@ -151,6 +154,96 @@ func (s *Services) kagNativeCall(vm *tjs.VM, name string, context tjs.Value, arg
 			}
 			if previousOnScript != nil {
 				return previousOnScript(parser, script, storage, startLine)
+			}
+			return nil
+		}
+		previousOnReturn := callbacks.OnReturn
+		callbacks.OnReturn = func(parser *KAGParser, tag *kag.Tag) (bool, error) {
+			process := true
+			event := KAGEvent{Kind: KAGEventTag, Tag: tag}
+			event.Location.Storage = parser.StorageName()
+			value, err := kagEventValue(vm, event)
+			if err != nil {
+				return false, fmt.Errorf("KAGParser.onReturn event: %w", err)
+			}
+			handler, err := vm.GetMember(context, "onReturn", s, budget)
+			if err != nil {
+				return false, fmt.Errorf("KAGParser.onReturn lookup: %w", err)
+			}
+			if !handler.IsVoid() {
+				if parser.StorageName() == "backlog.ks" {
+					handlerID := handler.ObjectRef().Object
+					eventID := value.ObjectRef().Object
+					_, handlerAlive := vm.Objects.Lookup(handlerID)
+					_, eventAlive := vm.Objects.Lookup(eventID)
+					fmt.Printf("[kag-return-hook] parser=%p context=%d handler=%d/%t event=%d/%t depth=%d\n", parser, id, handlerID, handlerAlive, eventID, eventAlive, parser.kagCallDepth())
+				}
+				result, err := vm.CallFunction(handler, context, []tjs.Value{value}, s, budget)
+				if err != nil {
+					fmt.Printf("[kag-return-hook] callback error=%v\n", err)
+					marker := "invalid TJS object handle: "
+					if index := strings.LastIndex(err.Error(), marker); index >= 0 {
+						if raw := strings.TrimSpace(err.Error()[index+len(marker):]); raw != "" {
+							if parsed, parseErr := strconv.ParseUint(raw, 10, 64); parseErr == nil {
+								fault := tjs.ObjectID(parsed)
+								_, isMenuItem := s.menuData.items[fault]
+								fmt.Printf("[kag-return-hook] invalid=%d menu_item=%t roots=%d items=%d\n", fault, isMenuItem, len(s.menuData.roots), len(s.menuData.items))
+								for windowID, root := range s.menuData.roots {
+									if root.Kind() == tjs.KindObject && !root.IsNull() {
+										fmt.Printf("[kag-return-hook] menu_root window=%d object=%d valid=%t\n", windowID, root.ObjectRef().Object, vm.IsValid(root).IntegerValue() != 0)
+									}
+								}
+								for itemID, item := range s.menuData.items {
+									arrayID := tjs.ObjectID(0)
+									if item.array.Kind() == tjs.KindObject && !item.array.IsNull() {
+										arrayID = item.array.ObjectRef().Object
+									}
+									matched := itemID == fault || arrayID == fault
+									for _, childID := range item.children {
+										matched = matched || childID == fault
+									}
+									if matched {
+										fmt.Printf("[kag-return-hook] menu_match item=%d array=%d children=%v\n", itemID, arrayID, item.children)
+									}
+								}
+							}
+						}
+					}
+					return false, fmt.Errorf("KAGParser.onReturn call: %w", err)
+				}
+				if !parser.Alive() {
+					return false, ErrKAGParserInvalid
+				}
+				process, err = result.Truth()
+				if err != nil {
+					return false, fmt.Errorf("KAGParser.onReturn result: %w", err)
+				}
+			}
+			if previousOnReturn != nil {
+				previousProcess, err := previousOnReturn(parser, tag)
+				if err != nil {
+					return false, err
+				}
+				process = process && previousProcess
+			}
+			return process, nil
+		}
+		previousOnAfterReturn := callbacks.OnAfterReturn
+		callbacks.OnAfterReturn = func(parser *KAGParser) error {
+			handler, err := vm.GetMember(context, "onAfterReturn", s, budget)
+			if err != nil {
+				return fmt.Errorf("KAGParser.onAfterReturn lookup: %w", err)
+			}
+			if !handler.IsVoid() {
+				if _, err := vm.CallFunction(handler, context, nil, s, budget); err != nil {
+					return fmt.Errorf("KAGParser.onAfterReturn call: %w", err)
+				}
+				if !parser.Alive() {
+					return ErrKAGParserInvalid
+				}
+			}
+			if previousOnAfterReturn != nil {
+				return previousOnAfterReturn(parser)
 			}
 			return nil
 		}

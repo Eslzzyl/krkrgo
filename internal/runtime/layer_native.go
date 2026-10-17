@@ -933,6 +933,10 @@ func (s *Services) layerGet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, b
 		return tjs.IntegerValue(int64(l.CursorX)), nil
 	case "cursorY":
 		return tjs.IntegerValue(int64(l.CursorY)), nil
+	case "hint":
+		return tjs.StringValue(l.Hint), nil
+	case "showParentHint":
+		return tjs.IntegerValue(boolInt(l.ShowParentHint)), nil
 	case "name":
 		return tjs.StringValue(l.Name), nil
 	case "hasImage":
@@ -1263,6 +1267,17 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 			return tjs.VoidValue, e
 		}
 		l.CursorY = n
+		return tjs.VoidValue, nil
+	case "hint":
+		l.Hint = value.Text()
+		l.ShowParentHint = false
+		return tjs.VoidValue, nil
+	case "showParentHint":
+		b, e := boolArg(0)
+		if e != nil {
+			return tjs.VoidValue, e
+		}
+		l.ShowParentHint = b
 		return tjs.VoidValue, nil
 	case "name":
 		l.Name = value.Text()

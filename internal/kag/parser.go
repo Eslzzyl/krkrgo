@@ -118,6 +118,46 @@ func isInlineScriptMarker(line, name string) bool {
 	return line == "["+name+"]" || line == "["+name+"]\\" || line == "@"+name
 }
 
+func isBracketTagCommandLine(line []rune, start int) bool {
+	seenTag := false
+	for {
+		for start < len(line) && (line[start] == ' ' || line[start] == '\t') {
+			start++
+		}
+		if start == len(line) {
+			return seenTag
+		}
+		if line[start] != '[' || start+1 < len(line) && line[start+1] == '[' {
+			return false
+		}
+		start++
+		quote := rune(0)
+		for start < len(line) {
+			c := line[start]
+			if c == '`' {
+				if start+1 >= len(line) {
+					return false
+				}
+				start += 2
+				continue
+			}
+			if quote == c {
+				quote = 0
+			} else if quote == 0 && (c == '\'' || c == '"') {
+				quote = c
+			} else if quote == 0 && c == ']' {
+				break
+			}
+			start++
+		}
+		if start == len(line) {
+			return false
+		}
+		start++
+		seenTag = true
+	}
+}
+
 // Parse parses source as a KAG scenario stored under storage.
 func Parse(storage, source string) (Scenario, error) {
 	lines := scenarioLines(source)
@@ -229,11 +269,21 @@ func Parse(storage, source string) (Scenario, error) {
 		}
 
 		chars := []rune(text)
+		bracketTagLine := commandStart < len(chars) && isBracketTagCommandLine(chars, commandStart)
 		i := 0
 		column := 1
+		if bracketTagLine {
+			i = commandStart
+			column = commandStart + 1
+		}
 		var literal strings.Builder
 		for i < len(chars) {
 			c := chars[i]
+			if bracketTagLine && (c == ' ' || c == '\t') {
+				i++
+				column++
+				continue
+			}
 			if c == '[' && i+1 < len(chars) && chars[i+1] == '[' {
 				literal.WriteRune('[')
 				i += 2

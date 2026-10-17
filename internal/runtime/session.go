@@ -273,7 +273,7 @@ func (s *Session) registerNatives() error {
 	if err := s.VM.RegisterNativeMethod(layer, "light", "Layer.light"); err != nil {
 		return err
 	}
-	for _, property := range []string{"parent", "children", "order", "absolute", "absoluteOrderMode", "window", "isPrimary", "left", "top", "width", "height", "imageLeft", "imageTop", "imageWidth", "imageHeight", "visible", "nodeVisible", "opacity", "enabled", "eventTransparent", "type", "face", "holdAlpha", "hitType", "hitThreshold", "name", "hasImage", "imageModified", "clipLeft", "clipTop", "clipWidth", "clipHeight", "cursor", "cursorX", "cursorY", "neutralColor", "callOnPaint", "font", "focusable", "nodeEnabled", "nodeFocusable", "focused"} {
+	for _, property := range []string{"parent", "children", "order", "absolute", "absoluteOrderMode", "window", "isPrimary", "left", "top", "width", "height", "imageLeft", "imageTop", "imageWidth", "imageHeight", "visible", "nodeVisible", "opacity", "enabled", "eventTransparent", "type", "face", "holdAlpha", "hitType", "hitThreshold", "name", "hasImage", "imageModified", "clipLeft", "clipTop", "clipWidth", "clipHeight", "cursor", "cursorX", "cursorY", "hint", "showParentHint", "neutralColor", "callOnPaint", "font", "focusable", "nodeEnabled", "nodeFocusable", "focused"} {
 		setter := "Layer.set:" + property
 		switch property {
 		case "children", "nodeVisible", "nodeEnabled", "nodeFocusable", "focused", "window", "isPrimary", "neutralColor":
@@ -348,7 +348,7 @@ func (s *Session) registerNatives() error {
 	if err != nil {
 		return err
 	}
-	for _, method := range []string{"@initialize", "@invalidate", "Font", "finalize", "getTextWidth", "getTextHeight", "getEscWidthX", "getEscWidthY", "getEscHeightX", "getEscHeightY", "getList", "mapPrerenderedFont"} {
+	for _, method := range []string{"@initialize", "@invalidate", "Font", "finalize", "getTextWidth", "getTextHeight", "getEscWidthX", "getEscWidthY", "getEscHeightX", "getEscHeightY", "getList", "mapPrerenderedFont", "unmapPrerenderedFont"} {
 		if err := s.VM.RegisterNativeMethod(font, method, "Font."+method); err != nil {
 			return err
 		}

@@ -186,6 +186,8 @@ type Layer struct {
 	Face                          int32
 	HoldAlpha                     bool
 	CursorX, CursorY              int32
+	Hint                          string
+	ShowParentHint                bool
 
 	Parent   *Layer
 	children []*Layer

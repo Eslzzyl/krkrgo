@@ -132,3 +132,26 @@ func TestTimerFixedPointCapacityLateWakeupAndLax(t *testing.T) {
 		t.Fatalf("disable did not cancel events: %d", q.Len())
 	}
 }
+
+func TestTimerZeroIntervalDoesNotFire(t *testing.T) {
+	q := NewEventQueue()
+	r := NewTimerRegistry(q)
+	timer, err := r.Register(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := timer.SetInterval(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := timer.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	for _, now := range []uint64{0, 1, 2, 1000} {
+		if err := r.Advance(now); err != nil {
+			t.Fatal(err)
+		}
+		if got := q.Count(8, EventTimer); got != 0 {
+			t.Fatalf("zero timer fired at %d ms: %d", now, got)
+		}
+	}
+}

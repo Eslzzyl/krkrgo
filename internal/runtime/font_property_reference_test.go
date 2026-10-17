@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/math/fixed"
+
 	"github.com/eslzzyl/krkrgo/internal/assets"
 	"github.com/eslzzyl/krkrgo/internal/core"
 )
@@ -36,9 +39,9 @@ result = original == "second" && second.face == "bound" && first.face == "first"
 		t.Fatalf("bound native Font property reference = %v, %v; want true", got, err)
 	}
 }
-func TestFontMapPrerenderedFontBindsStorageToReceiver(t *testing.T) {
+func TestFontMapPrerenderedFontSharesMappingByFontState(t *testing.T) {
 	project := t.TempDir()
-	if err := os.WriteFile(filepath.Join(project, "mapped.tft"), []byte("font data"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(project, "mapped.tft"), testPrerenderedFontData('A', 64, 9), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	storage, err := assets.OpenStorage(project, core.DefaultLimits())
@@ -46,34 +49,61 @@ func TestFontMapPrerenderedFontBindsStorageToReceiver(t *testing.T) {
 		t.Fatal(err)
 	}
 	services := NewServices(storage, "", core.Limits{})
+	if err := services.RegisterFontFace("Synthetic", basicfont.Face7x13); err != nil {
+		t.Fatal(err)
+	}
 	session := NewSession(services, 10_000)
 	defer session.Close()
 
 	if _, err := session.Evaluate(`
-first = new Font();
-second = new Font();
+first = new Font("Synthetic", 13);
+second = new Font("Synthetic", 13);
+caseVariant = new Font("synthetic", 13);
+styled = new Font("Synthetic", 13);
+styled.bold = true;
 first.mapPrerenderedFont("mapped.tft");
 `); err != nil {
-		t.Fatal(err)
-	}
-	firstValue, err := session.Evaluate("first")
-	if err != nil {
 		t.Fatal(err)
 	}
 	secondValue, err := session.Evaluate("second")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := services.Font(firstValue.ObjectRef().Object).PrerenderedFontStorage; got != "mapped.tft" {
-		t.Fatalf("first mapped font = %q, want mapped.tft", got)
+	secondFont, err := services.fontFace(services.Font(secondValue.ObjectRef().Object))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := services.Font(secondValue.ObjectRef().Object).PrerenderedFontStorage; got != "" {
-		t.Fatalf("second mapped font = %q, want no mapping", got)
+	mappedFace, ok := secondFont.(*prerenderedFontFace)
+	if !ok {
+		t.Fatalf("matching Font instance face = %T, want shared prerendered mapping", secondFont)
+	}
+	if advance, ok := mappedFace.GlyphAdvance('A'); !ok || advance != fixed.I(9) {
+		t.Fatalf("shared mapped advance = %v, %t; want 9 px", advance, ok)
+	}
+	for _, name := range []string{"caseVariant", "styled"} {
+		value, err := session.Evaluate(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		face, err := services.fontFace(services.Font(value.ObjectRef().Object))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := face.(*prerenderedFontFace); ok {
+			t.Errorf("%s received the mapped font face for a different font state", name)
+		}
 	}
 	if _, err := session.Evaluate(`first.mapPrerenderedFont("missing.tft")`); err == nil {
 		t.Fatal("mapping a missing storage unexpectedly succeeded")
 	}
-	if got := services.Font(firstValue.ObjectRef().Object).PrerenderedFontStorage; got != "mapped.tft" {
-		t.Fatalf("failed mapping changed receiver state to %q", got)
+	if _, err := session.Evaluate("second.unmapPrerenderedFont()"); err != nil {
+		t.Fatal(err)
+	}
+	unmappedFace, err := services.fontFace(services.Font(secondValue.ObjectRef().Object))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := unmappedFace.(*prerenderedFontFace); ok {
+		t.Fatalf("font face after unmap = %T, want the selected face", unmappedFace)
 	}
 }
