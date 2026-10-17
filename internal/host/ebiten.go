@@ -2,6 +2,7 @@ package host
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"log"
@@ -340,6 +341,10 @@ func (g *Game) Update() error {
 	if g.session.Services == nil {
 		return fmt.Errorf("runtime session has no services")
 	}
+	services := g.session.Services
+	if services.ExitRequested() {
+		return ebiten.Termination
+	}
 
 	statsEnabled := g.renderStats.enabled
 	traceEnabled := g.renderStats.stallTrace
@@ -359,6 +364,9 @@ func (g *Game) Update() error {
 		if err := g.session.Input(g.windowID, event); err != nil {
 			return fmt.Errorf("dispatch input: %w", err)
 		}
+	}
+	if services.ExitRequested() {
+		return ebiten.Termination
 	}
 	var err error
 	if g.rendererMode == rendererGPU && !g.gpuInitAttempted {
@@ -417,7 +425,13 @@ func (g *Game) Update() error {
 		totalPixels = int(frame.Width) * int(frame.Height)
 	}
 	if err != nil {
+		if errors.Is(err, runtime.ErrSystemExit) {
+			return ebiten.Termination
+		}
 		return fmt.Errorf("runtime tick and capture: %w", err)
+	}
+	if services.ExitRequested() {
+		return ebiten.Termination
 	}
 	var audioTime time.Duration
 	if timingEnabled {

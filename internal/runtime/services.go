@@ -868,6 +868,22 @@ func (s *Services) Window(id tjs.ObjectID) *WindowState {
 	defer s.mu.RUnlock()
 	return s.WindowObjects[id]
 }
+
+// ExitRequested reports whether the runtime's main window or process has been
+// closed by the script. The presentation host uses this to end its event loop.
+func (s *Services) ExitRequested() bool {
+	if s == nil {
+		return true
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.Terminated || s.MainWindow == 0 {
+		return true
+	}
+	window := s.Windows[s.MainWindow]
+	return window == nil || window.Closed
+}
+
 func (s *Services) SetRoot(root *Layer) {
 	s.Root = root
 	if root == nil {

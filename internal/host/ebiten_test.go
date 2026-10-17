@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hajimehoshi/ebiten/v2"
+
 	runtime "github.com/eslzzyl/krkrgo/internal/runtime"
 )
 
@@ -33,6 +35,20 @@ func TestGameConstructorsSelectGPUAndCPUModes(t *testing.T) {
 	}
 	if NewCPUGame(session).rendererMode != rendererCPU {
 		t.Fatal("NewCPUGame did not select CPU mode")
+	}
+}
+
+func TestGameUpdateTerminatesWhenMainWindowIsClosed(t *testing.T) {
+	services := runtime.DefaultServices()
+	session := runtime.NewSession(services, 32)
+	t.Cleanup(func() { _ = session.Close() })
+	if _, err := session.Evaluate(`window = new Window(); window.close()`); err != nil {
+		t.Fatal(err)
+	}
+
+	game := NewGame(session)
+	if err := game.Update(); err != ebiten.Termination {
+		t.Fatalf("Update() error = %v, want ebiten.Termination", err)
 	}
 }
 
