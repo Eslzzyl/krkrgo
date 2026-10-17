@@ -76,6 +76,27 @@ func TestNativeLayerCursorCoordinateValidation(t *testing.T) {
 	}
 }
 
+func TestNativeLayerSetCursorPos(t *testing.T) {
+	session := NewSession(DefaultServices(), 10_000)
+	if _, err := session.Evaluate(`l = new Layer(); l.setCursorPos(-17, 23)`); err != nil {
+		t.Fatal(err)
+	}
+	for property, want := range map[string]int64{"cursorX": -17, "cursorY": 23} {
+		value, err := session.Evaluate("l." + property)
+		if err != nil {
+			t.Fatalf("read Layer.%s after setCursorPos: %v", property, err)
+		}
+		if value.Kind() != tjs.KindInteger || value.IntegerValue() != want {
+			t.Errorf("Layer.%s after setCursorPos = %#v, want integer %d", property, value, want)
+		}
+	}
+	for _, source := range []string{`l.setCursorPos()`, `l.setCursorPos(1)`, `l.setCursorPos(2147483648, 0)`} {
+		if _, err := session.Evaluate(source); err == nil {
+			t.Errorf("accepted invalid Layer.setCursorPos call %q", source)
+		}
+	}
+}
+
 func TestNativeLayerHintProperties(t *testing.T) {
 	session := NewSession(DefaultServices(), 10_000)
 	if _, err := session.Evaluate(`l = new Layer()`); err != nil {

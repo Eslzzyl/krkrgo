@@ -186,7 +186,7 @@ func (s *Services) layerSetMode(vm *tjs.VM, layer *Layer, budget *uint64) error 
 	var result error
 	if len(window.modalLayers) != 0 {
 		current := s.Layer(tjs.ObjectID(window.modalLayers[len(window.modalLayers)-1]))
-		if current != nil && layerIsWithin(current, layer) {
+		if current != nil && current != layer && layerIsWithin(current, layer) {
 			result = fmt.Errorf("cannot set mode to an ancestor or current modal Layer")
 		}
 	}

@@ -265,6 +265,22 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 	switch operation {
 	case "openMovie", "startMovie", "stopMovie", "isPlayingMovie":
 		return tjs.VoidValue, UnsupportedDevice("layerExMovie video decoding and presentation")
+	case "setCursorPos":
+		if len(args) < 2 {
+			return tjs.VoidValue, fmt.Errorf("Layer.setCursorPos requires x and y")
+		}
+		x, err := intArg(0)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		y, err := intArg(1)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		s.mu.Lock()
+		l.CursorX, l.CursorY = x, y
+		s.mu.Unlock()
+		return tjs.VoidValue, nil
 	case "beginTransition", "stopTransition":
 		return s.layerTransition(vm, context, operation, args, budget)
 	case "update":

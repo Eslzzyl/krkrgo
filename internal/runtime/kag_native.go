@@ -40,7 +40,7 @@ func (s *Services) kagNativeCall(vm *tjs.VM, name string, context tjs.Value, arg
 		}
 		return args[index], nil
 	}
-	if op == "getNextTag" || op == "step" || op == "run" || op == "loadScenario" || op == "return" {
+	if op == "getNextTag" || op == "step" || op == "run" || op == "loadScenario" || op == "return" || op == "restore" {
 		previousCallbacks := p.callbacks
 		callbacks := KAGCallbacks{}
 		if previousCallbacks != nil {
@@ -546,6 +546,7 @@ func kagStateValue(vm *tjs.VM, state KAGState) (tjs.Value, error) {
 		return tjs.VoidValue, err
 	}
 	_ = object.Set("storage", tjs.StringValue(state.Storage))
+	_ = object.Set("storageName", tjs.StringValue(state.Storage))
 	_ = object.Set("position", tjs.IntegerValue(int64(state.Position)))
 	_ = object.Set("calls", tjs.StringValue(joinCallPositions(state.Calls)))
 	_ = object.Set("fingerprint", tjs.StringValue(state.Fingerprint))

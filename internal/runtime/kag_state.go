@@ -205,6 +205,7 @@ func (p *KAGParser) StoreObject() *tjs.Object {
 	state := p.Store()
 	object := tjs.NewObject(tjs.CategoryDictionary)
 	_ = object.Set("storage", tjs.StringValue(state.Storage))
+	_ = object.Set("storageName", tjs.StringValue(state.Storage))
 	_ = object.Set("position", tjs.IntegerValue(int64(state.Position)))
 	_ = object.Set("current_line", tjs.IntegerValue(int64(state.CurrentLine)))
 	_ = object.Set("calls", tjs.StringValue(joinCallPositions(state.Calls)))
@@ -257,7 +258,7 @@ func parseCallPositions(value string) ([]int, error) {
 }
 
 // RestoreObject accepts the dictionary returned by StoreObject and validates
-// all fields before mutating parser state.
+// its fields before resolving the scenario and applying the checkpoint.
 func (p *KAGParser) RestoreObject(value any) error {
 	object, ok := value.(*tjs.Object)
 	if !ok || object == nil {
@@ -386,6 +387,20 @@ func (p *KAGParser) RestoreObject(value any) error {
 			if err := json.Unmarshal([]byte(crossScenarioCallsValue.Text()), &state.CrossScenarioCalls); err != nil {
 				return fmt.Errorf("invalid KAG cross-scenario calls: %w", err)
 			}
+		}
+	}
+	// The native KAGParser restore operation reloads the saved scenario before
+	// restoring its cursor. In the runtime, this callback resolves storage from
+	// the project; it also makes restore work after KAGParser.clear().
+	if state.Storage == "" {
+		if p.StorageName() != "" {
+			if err := p.clear(); err != nil {
+				return err
+			}
+		}
+	} else if p.callbacks != nil && p.callbacks.OnScenarioLoad != nil {
+		if err := p.LoadScenario(state.Storage, ""); err != nil {
+			return fmt.Errorf("load KAG restore scenario %q: %w", state.Storage, err)
 		}
 	}
 	return p.RestoreState(state)
