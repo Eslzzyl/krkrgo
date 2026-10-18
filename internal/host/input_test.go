@@ -63,12 +63,6 @@ func TestInputEventSequenceUsesRuntimeKinds(t *testing.T) {
 	if got := p.mouseStateWith(0, false); got&ShiftStateLeft != 0 {
 		t.Fatal("released pointer button remained in shift state")
 	}
-	if runtime.InputKeyDown == runtime.InputPointerDown {
-		t.Fatal("runtime input kinds must remain distinct")
-	}
-	if ebiten.KeyShift == ebiten.KeyControl {
-		t.Fatal("Ebitengine modifier keys must remain distinct")
-	}
 }
 
 func TestTouchMapsPrimaryContactToMouseEvents(t *testing.T) {

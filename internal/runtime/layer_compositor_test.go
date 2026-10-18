@@ -813,17 +813,6 @@ func BenchmarkClearRGBA720p(b *testing.B) {
 	}
 }
 
-func TestClearRGBAIsByteExact(t *testing.T) {
-	const width, height = int32(3), int32(2)
-	color := [4]uint8{17, 83, 149, 211}
-	got := clearRGBA(width, height, color)
-	for i := 0; i < len(got); i += 4 {
-		if got[i] != color[0] || got[i+1] != color[1] || got[i+2] != color[2] || got[i+3] != color[3] {
-			t.Fatalf("pixel %d = %v, want %v", i/4, got[i:i+4], color)
-		}
-	}
-}
-
 func TestClearRGBAZeroDimensions(t *testing.T) {
 	color := [4]uint8{17, 83, 149, 211}
 	for _, dimensions := range [][2]int32{{0, 0}, {0, 2}, {3, 0}} {

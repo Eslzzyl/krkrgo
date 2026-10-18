@@ -355,12 +355,18 @@ func TestCompileOctetLiteralRejectsMalformedInput(t *testing.T) {
 }
 
 func TestCompileStatementsAndShortCircuit(t *testing.T) {
-	p, err := compile("unit.tjs", "var x = 1; if (x && x < 3) x = x + 1; while (x < 3) x = x + 1;")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(p.Code) < 8 {
-		t.Fatalf("too little code: %d", len(p.Code))
+	got := executeVMSource(t, `
+var calls = 0;
+function bump() { calls = calls + 1; return true; }
+var x = 1;
+if (x && x < 3) x = x + 1;
+while (x < 3) x = x + 1;
+var skipped = false && bump();
+return x * 1000 + calls * 100 + (skipped ? 10 : 0);
+`)
+	value, err := got.Int()
+	if err != nil || value != 3000 {
+		t.Fatalf("statement result = %v (err %v), want 3000", value, err)
 	}
 }
 
@@ -379,12 +385,19 @@ func TestCompilePreprocessor(t *testing.T) {
 }
 
 func TestCompileSwitch(t *testing.T) {
-	p, err := compile("switch.tjs", "switch (x) { case 1: x = 2; default: x = 3; }")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(p.Code) < 6 {
-		t.Fatalf("switch emitted too little code: %d", len(p.Code))
+	got := executeVMSource(t, `
+var n = 0;
+switch (2) {
+case 1: n = 1; break;
+case 2: n = 20;
+case 3: n = n + 3; break;
+default: n = 90;
+}
+return n;
+`)
+	value, err := got.Int()
+	if err != nil || value != 23 {
+		t.Fatalf("switch result = %v (err %v), want 23", value, err)
 	}
 }
 

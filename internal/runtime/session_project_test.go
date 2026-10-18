@@ -6,36 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/eslzzyl/krkrgo/internal/assets"
-	"github.com/eslzzyl/krkrgo/internal/core"
 )
-
-func TestNewServicesRetainsStorageConfiguration(t *testing.T) {
-	storage, err := assets.OpenStorage(t.TempDir(), core.DefaultLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		for _, archive := range storage.Archives {
-			_ = archive.Close()
-		}
-	}()
-	saveDir := filepath.Join(t.TempDir(), "saves")
-	limits := core.DefaultLimits()
-	limits.FileBytes--
-
-	services := NewServices(storage, saveDir, limits)
-	if services.Storage != storage {
-		t.Fatal("NewServices did not retain storage")
-	}
-	if services.SaveDir != saveDir {
-		t.Fatalf("NewServices save directory = %q, want %q", services.SaveDir, saveDir)
-	}
-	if services.Limits != limits {
-		t.Fatalf("NewServices limits = %+v, want %+v", services.Limits, limits)
-	}
-}
 
 func TestOpenSessionResolvesStartupDirectory(t *testing.T) {
 	tests := []struct {

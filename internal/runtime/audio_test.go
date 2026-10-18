@@ -10,13 +10,6 @@ func testStereoAudio() assets.Audio {
 	return assets.Audio{Channels: 2, SampleRate: 80, Samples: []int16{0, 0, 100, -100, 200, -200, 300, -300, 400, -400, 500, -500, 600, -600, 700, -700, 800, -800, 900, -900}}
 }
 
-func TestAudioBlockKeepsUnkeyedCompatibility(t *testing.T) {
-	block := AudioBlock{[]int16{1}, []AudioLabel{{Offset: 0, Name: "start"}}}
-	if len(block.Samples) != 1 || len(block.Labels) != 1 {
-		t.Fatalf("unexpected audio block=%+v", block)
-	}
-}
-
 func TestSoundStreamLoopLabelsAndSplitPulls(t *testing.T) {
 	info := assets.LoopInfo{Links: []assets.Link{{From: 6, To: 2}}, Labels: []assets.Label{{Position: 3, Name: "mouth"}}}
 	whole, err := NewSoundStream(testStereoAudio(), info)

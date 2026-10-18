@@ -766,9 +766,6 @@ func TestServicesNativeMessagesAndTrace(t *testing.T) {
 	if len(s.Services.TraceEvents) == 0 {
 		t.Fatal("trace is empty")
 	}
-	if !errors.Is(ErrUnsupportedDevice, ErrUnsupportedDevice) {
-		t.Fatal("sentinel broken")
-	}
 }
 
 func TestConsoleGlobalAliasesDebugConsoleAndLogs(t *testing.T) {
