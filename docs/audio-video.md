@@ -6,6 +6,8 @@
 
 The script-native `WaveSoundBuffer` in [`sound_native.go`](../internal/runtime/sound_native.go) includes storage/`openBytes`, transport, seek, fade, properties, and deterministic event delivery. This is headless state and sample generation; it does not itself open an OS audio device.
 
+TCWF0 sources are detected by the `TCWF0\x1a` signature and decoded in-process by `internal/assets/wutcwf.go` before the FFmpeg path. The decoder covers mono/stereo MS+IMA ADPCM blocks and peak corrections; TCWF carries no loop metadata.
+
 Linking `getSample.dll` installs the source-backed `WaveSoundBuffer.sampleValue`, `sampleCount`, and `sampleAhead` properties plus the static `setDefaultCounts(count)` and `setDefaultAheads(ahead)` methods. Defaults are 100 frames and 0 frames ahead. Reading `sampleValue` enables `useVisBuffer` and returns `(peak / 32768)^2` from the configured window of decoded PCM on channel 1, starting at the current source frame plus `sampleAhead`; sampling does not advance or seek playback. `sampleCount` must be non-negative. The legacy `WaveSoundBuffer.getSample([n])` function is not exposed: that implementation calls `getVisBuffer(buffer, n, 1)` and averages only non-negative samples, while this runtime has no native `getVisBuffer` callback/buffer contract to reproduce that behavior faithfully.
 
 ## Video path

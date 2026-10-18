@@ -245,9 +245,18 @@ func (s *WaveSoundBuffer) Open(audio assets.Audio, info assets.LoopInfo) error {
 	return s.OpenAudio(audio, info)
 }
 
-// OpenBytes decodes through the FFmpeg sidecar. A missing or ABI-incompatible
-// sidecar is reported once and the open degrades to a no-op.
+// OpenBytes decodes through the FFmpeg sidecar. TCWF0 sources are decoded
+// in-process by the wutcwf decoder and bypass the sidecar; the format carries
+// no loop metadata. A missing or ABI-incompatible sidecar is reported once and
+// the open degrades to a no-op.
 func (s *WaveSoundBuffer) OpenBytes(data []byte, info assets.LoopInfo) error {
+	if assets.IsTCWF(data) {
+		audio, _, err := assets.DecodeTCWF(data)
+		if err != nil {
+			return err
+		}
+		return s.OpenAudio(audio, assets.LoopInfo{})
+	}
 	pcm, err := ffmpeg.DecodeAudioBytes("<memory>", data, 32_000_000)
 	if sidecarUnavailable(err) {
 		reportSidecarUnavailable(err)
