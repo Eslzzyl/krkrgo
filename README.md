@@ -128,6 +128,7 @@ The repository keeps generated binaries, profiles, logs, local replay data, and 
 - `internal/host` — Ebitengine presentation, input, audio output, and deterministic replay support.
 - `cmd/krkrgo` — MyGo interactive game launcher and `run` game runtime.
 - `cmd/krkrgo-tool` — extraction and headless replay utilities.
+- `internal/launcher` — launcher UI, game catalog, and message catalogs. Its `locales` directory holds `en.json` and `zh-Hans.json`; edit those and run `go run github.com/egoist/mygo/cmd/mygo@v0.5.5 generate` to regenerate `catalog_gen.go`.
 
 ## Documentation
 

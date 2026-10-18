@@ -80,6 +80,78 @@ The `internal/launcher` package does not import Ebitengine or the game runtime.
 The combined executable starts itself in `run` mode with `os/exec` and passes
 arguments without shell interpolation.
 
+### Localization
+
+The launcher uses MyGo catalogs, the same mechanism as MyGo's controls and
+menus. The configuration lives in `mygo.json` at the repository root:
+
+```json
+{
+  "name": "krkrgo",
+  "identifier": "com.eslzzyl.krkrgo",
+  "main": "./cmd/krkrgo",
+  "i18n": {
+    "dir": "internal/launcher/locales",
+    "source": "en"
+  }
+}
+```
+
+`main` names the launcher command package, so `mygo generate` can resolve the
+packages the app is built from and verify that the catalogs are imported.
+
+The catalog directory holds one ARB-format JSON file per language:
+
+```text
+internal/launcher/locales/
+├── en.json          source language, every message
+├── zh-Hans.json     Simplified Chinese
+├── catalog_gen.go   written by mygo generate
+└── catalog_test.go  key parity and formatting checks
+```
+
+Messages use ICU MessageFormat. Keys are flat and named after generated
+functions: `launchGame` becomes `locales.LaunchGame()`. Placeholders carry
+types in the source catalog:
+
+```json
+"catalogLoadFailed": "Could not load game catalog: {error}",
+"gamesReady": "{count, plural, one {1 game ready.} other {# games ready.}}",
+"@gamesAddedWithFailures": {"placeholders": {"failures": {"type": "String"}}},
+"gamesAddedWithFailures": "{count, plural, one {Added 1 game. {failures}} other {Added # games. {failures}}}"
+```
+
+The generator derives Go signatures from those declarations:
+
+```go
+locales.CatalogLoadFailed(err.Error())
+locales.GamesReady(len(a.catalog.Games))
+locales.GamesAddedWithFailures(failures, added)
+locales.Instructions(strconv.FormatUint(game.Budget, 10))
+```
+
+`catalog_gen.go` registers the catalog in `init`, which makes the catalog's
+languages the application's languages. `cmd/krkrgo/main.go` imports the package
+with a blank import to make that registration explicit at the application
+entry point. The launcher reads the active language through MyGo's locale and
+does not call `SetLanguages`.
+
+Language changes rebuild the application menu and reset the status line in
+`OnLocaleChanged`; message calls during rendering pick up the new catalog
+immediately.
+
+After changing any JSON catalog, regenerate the accessors and commit both the
+catalog and the generated file:
+
+```sh
+go run github.com/egoist/mygo/cmd/mygo@v0.5.5 generate
+go test ./internal/launcher/...
+```
+
+`catalog_test.go` checks that English and Chinese carry the same message keys,
+that no message is empty, and that plural and placeholder formatting matches
+the generated API.
+
 ## Mobile: native library in the application process
 
 Mobile uses one application package and one main application process. The

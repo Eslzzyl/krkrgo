@@ -14,7 +14,7 @@ Each domain guide links the relevant Go source and records current implementatio
 - [Host, Ebitengine, platforms, and dependencies](host-platform.md)
 - [Verification and cross-cutting gaps](verification-and-gaps.md)
 - [Headless performance baseline](performance-headless.md): reproducible no-window measurements for TJS, CPU composition, assets, and replay.
-- [Launcher architecture](launcher.md)
+- [Launcher architecture](launcher.md), including the MyGo message catalogs used for localization.
 
 Design notes that are not porting status:
 

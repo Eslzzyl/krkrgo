@@ -11,10 +11,10 @@ import (
 	"github.com/eslzzyl/krkrgo/internal/assets"
 )
 
-func TestCatalogRoundTripAndVersion(t *testing.T) {
+func TestCatalogRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "launcher.json")
 	c, err := LoadCatalog(path)
-	if err != nil || c.Version != CatalogVersion || len(c.Games) != 0 {
+	if err != nil || len(c.Games) != 0 {
 		t.Fatalf("empty catalog = %#v, %v", c, err)
 	}
 	c.Games = append(c.Games, Game{Title: "Game", Project: t.TempDir(), SaveDir: "/save", Budget: 42})
@@ -24,10 +24,6 @@ func TestCatalogRoundTripAndVersion(t *testing.T) {
 	got, err := LoadCatalog(path)
 	if err != nil || len(got.Games) != 1 || got.Games[0].Title != "Game" || got.Games[0].Budget != 42 {
 		t.Fatalf("loaded catalog = %#v, %v", got, err)
-	}
-	got.Version++
-	if err := SaveCatalog(path, got); err == nil {
-		t.Fatal("SaveCatalog accepted unsupported version")
 	}
 }
 

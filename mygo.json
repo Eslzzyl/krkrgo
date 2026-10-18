@@ -1,0 +1,9 @@
+{
+  "name": "krkrgo",
+  "identifier": "com.eslzzyl.krkrgo",
+  "main": "./cmd/krkrgo",
+  "i18n": {
+    "dir": "internal/launcher/locales",
+    "source": "en"
+  }
+}
