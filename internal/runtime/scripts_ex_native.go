@@ -101,12 +101,15 @@ func scriptsExNative(vm *tjs.VM, operation string, args []tjs.Value, resultNeede
 		if operation == "getObjectCount" {
 			return tjs.IntegerValue(int64(object.Len())), nil
 		}
-		keys := object.Keys()
-		items := make([]tjs.Value, len(keys))
-		for i, key := range keys {
-			items[i] = tjs.StringValue(key)
+		entries := object.Entries()
+		keys := make([]tjs.Value, 0, len(entries))
+		for _, entry := range entries {
+			if entry.Flags&tjs.HiddenMember != 0 {
+				continue
+			}
+			keys = append(keys, tjs.StringValue(entry.Name))
 		}
-		return vm.NewArray(items)
+		return vm.NewArray(keys)
 	case "getMD5HashString":
 		value, err := arg(0)
 		if err != nil {

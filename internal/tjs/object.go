@@ -267,6 +267,46 @@ func (o *Object) SetFlags(name string, flags uint32) error {
 	o.members[k] = m
 	return nil
 }
+
+// ChangeFlags updates the requested flag bits on an existing member. Missing
+// members are ignored; callers that need a member create it first.
+func (o *Object) ChangeFlags(name string, set, clear uint32) error {
+	if o == nil {
+		return errInvalidObject
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.valid {
+		return errInvalidObject
+	}
+	o.changeFlagsLocked(memberKeyString(name), set, clear)
+	return nil
+}
+
+// ChangeFlagsUnits is ChangeFlags for a member addressed by its UTF-16 units,
+// which preserves unpaired surrogates in script-created names.
+func (o *Object) ChangeFlagsUnits(key UTF16, set, clear uint32) error {
+	if o == nil {
+		return errInvalidObject
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.valid {
+		return errInvalidObject
+	}
+	o.changeFlagsLocked(memberKey(key), set, clear)
+	return nil
+}
+
+func (o *Object) changeFlagsLocked(k string, set, clear uint32) {
+	m, ok := o.members[k]
+	if !ok {
+		return
+	}
+	m.flags = m.flags&^clear | set
+	o.members[k] = m
+}
+
 func (o *Object) Get(name string) (Value, bool) { return o.GetString(name) }
 func (o *Object) GetString(name string) (Value, bool) {
 	if o == nil {

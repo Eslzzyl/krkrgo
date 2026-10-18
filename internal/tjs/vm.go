@@ -416,12 +416,18 @@ func (v *VM) setMember(id ObjectID, key Value, val Value) error {
 		}
 		return e
 	}
+	if e := o.ChangeFlagsUnits(memberKeyUnits(key), 0, HiddenMember|StaticMember); e != nil {
+		return e
+	}
 	return o.SetUnits(memberKeyUnits(key), val)
 }
 
 func (v *VM) setMemberString(id ObjectID, name string, val Value) error {
 	o, e := v.obj(id)
 	if e != nil {
+		return e
+	}
+	if e := o.ChangeFlags(name, 0, HiddenMember|StaticMember); e != nil {
 		return e
 	}
 	return o.SetString(name, val)
@@ -448,7 +454,10 @@ func (v *VM) lookupClassMemberWithRuntime(classID ObjectID, name string, depth i
 			}
 			return value, true, nil
 		}
-		if memberID, memberErr := v.handle(value); memberErr != nil || v.meta[memberID] == nil || !v.meta[memberID].nativeStatic {
+		if _, memberFlags, direct := hasDirect(classObject, UTF16FromString(name)); direct && memberFlags&StaticMember != 0 {
+			// A member marked static by Scripts.propSet is not inherited by
+			// instances; fall through to the superclass chain.
+		} else if memberID, memberErr := v.handle(value); memberErr != nil || v.meta[memberID] == nil || !v.meta[memberID].nativeStatic {
 			return value, true, nil
 		}
 	}
@@ -856,18 +865,27 @@ func (v *VM) SetMemberWithRuntime(receiver Value, name string, value Value, flag
 		if memberReadOnly(memberFlags) {
 			return ErrReadOnly
 		}
+		if err := object.ChangeFlags(name, flags&(HiddenMember|StaticMember), ^flags&(HiddenMember|StaticMember)); err != nil {
+			return err
+		}
 		if flags&IgnoreProperty == 0 {
 			if propertyID, handleErr := v.handle(direct); handleErr == nil && v.meta[propertyID] != nil && v.meta[propertyID].category == CategoryProperty {
 				return v.writeProperty(direct, receiver, value, host, budget)
 			}
 		}
-		return v.setMemberString(id, name, value)
+		if err := v.setMemberString(id, name, value); err != nil {
+			return err
+		}
+		return object.ChangeFlags(name, flags&(HiddenMember|StaticMember), 0)
 	}
 	if meta := v.meta[id]; meta != nil && meta.category == CategoryClass && meta.legacyClassInitializer != nil && !meta.legacyClassInitialized {
 		// A deferred script class may receive static values before its body is
 		// runnable. Store the value and let the first read or construction run
 		// the initializer with the then-current runtime globals.
-		return v.setMemberString(id, name, value)
+		if err := v.setMemberString(id, name, value); err != nil {
+			return err
+		}
+		return object.ChangeFlags(name, flags&(HiddenMember|StaticMember), 0)
 	}
 	member, exists, err := v.getMemberWithRuntime(id, StringValue(name), host, budget)
 	if err != nil {
@@ -879,12 +897,266 @@ func (v *VM) SetMemberWithRuntime(receiver Value, name string, value Value, flag
 				return v.writeProperty(member, receiver, value, host, budget)
 			}
 		}
-		return v.setMemberString(id, name, value)
+		if err := v.setMemberString(id, name, value); err != nil {
+			return err
+		}
+		return object.ChangeFlags(name, flags&(HiddenMember|StaticMember), 0)
 	}
 	if flags&MemberMustExist != 0 && object.Category == CategoryDictionary {
 		return ErrMemberNotFound
 	}
-	return v.setMemberString(id, name, value)
+	if err := v.setMemberString(id, name, value); err != nil {
+		return err
+	}
+	return object.ChangeFlags(name, flags&(HiddenMember|StaticMember), 0)
+}
+
+// ArrayElement returns an array's stored element without applying property
+// dispatch. Negative indexes count from the end, and an in-range hole exists
+// and yields void.
+func (v *VM) ArrayElement(value Value, index int64) (Value, bool, error) {
+	if v == nil || v.Objects == nil {
+		return VoidValue, false, errors.New("nil TJS VM")
+	}
+	id, err := v.handle(value)
+	if err != nil {
+		return VoidValue, false, err
+	}
+	meta := v.meta[id]
+	if meta == nil || meta.category != CategoryArray {
+		return VoidValue, false, errors.New("TJS array required")
+	}
+	element, exists := arrayElementAt(meta, index)
+	return element, exists, nil
+}
+
+// GetMemberByKey reads a member with the flag semantics of the C++ dispatch
+// API used by Scripts.propGet. The key keeps its variant type: integer and
+// numeric-string keys address array elements, and negative indexes count from
+// the end. The boolean result reports whether the caller may discard the
+// value. The reference PropGet returns TJS_E_INVALIDPARAM when its result
+// pointer is null and the member resolves to plain data, while a getter that
+// runs or a missing optional dictionary member succeeds.
+func (v *VM) GetMemberByKey(receiver, key Value, flags uint32, host Host, budget *uint64) (Value, bool, error) {
+	if v == nil || v.Objects == nil {
+		return VoidValue, false, errors.New("nil TJS VM")
+	}
+	id, err := v.handle(receiver)
+	if err != nil {
+		return VoidValue, false, err
+	}
+	meta := v.meta[id]
+	name := key.Text()
+	if meta != nil && meta.category == CategoryArray {
+		if index, indexed := arrayMemberIndex(key); indexed {
+			element, exists := arrayElementAt(meta, index)
+			if !exists {
+				if flags&MemberMustExist != 0 {
+					return VoidValue, false, ErrMemberNotFound
+				}
+				// TJSDefaultPropGet on a void element still requires a result.
+				return VoidValue, false, nil
+			}
+			if flags&IgnoreProperty != 0 {
+				return element, false, nil
+			}
+			return v.readMemberValue(receiver, element, flags, host, budget)
+		}
+		if property, ok := vmArrayProperty(meta, StringValue(name)); ok {
+			return v.readMemberValue(receiver, property, flags, host, budget)
+		}
+	}
+	member, found, err := v.getMemberWithRuntime(id, key, host, budget)
+	if err != nil {
+		return VoidValue, false, err
+	}
+	if !found && meta != nil && meta.category == CategoryArray {
+		member, found, err = v.vmArrayMethod(id, name)
+		if err != nil {
+			return VoidValue, false, err
+		}
+	}
+	if !found {
+		if flags&MemberEnsure != 0 {
+			if err := v.setMember(id, key, VoidValue); err != nil {
+				return VoidValue, false, err
+			}
+			// The created data member is void; PropGet without a result still
+			// fails with TJS_E_INVALIDPARAM.
+			return VoidValue, false, nil
+		}
+		if meta != nil && meta.category == CategoryDictionary && flags&MemberMustExist == 0 {
+			return VoidValue, true, nil
+		}
+		return VoidValue, false, ErrMemberNotFound
+	}
+	return v.readMemberValue(receiver, member, flags, host, budget)
+}
+
+// readMemberValue applies TJSDefaultPropGet to one resolved member. A property
+// with a getter runs it and may be discarded; a raw read or plain data member
+// may not be discarded because the reference returns TJS_E_INVALIDPARAM.
+func (v *VM) readMemberValue(receiver, member Value, flags uint32, host Host, budget *uint64) (Value, bool, error) {
+	if flags&IgnoreProperty != 0 {
+		value, err := v.getValue(receiver, member, true, host, budget)
+		return value, false, err
+	}
+	if id, err := v.handle(member); err == nil && v.meta[id] != nil && v.meta[id].category == CategoryProperty {
+		if !v.propertyAccessorPresent(member, true) {
+			return VoidValue, true, ErrAccessDenied
+		}
+		value, err := v.getValue(receiver, member, false, host, budget)
+		return value, true, err
+	}
+	value, err := v.getValue(receiver, member, false, host, budget)
+	return value, false, err
+}
+
+// SetMemberByKey writes a member with the flag semantics of the C++ dispatch
+// API used by Scripts.propSet. Missing object members require MemberEnsure; an
+// array index at or past the end grows the array unless MemberMustExist, and a
+// negative index that remains negative is rejected after end-relative
+// adjustment.
+func (v *VM) SetMemberByKey(receiver, key, value Value, flags uint32, host Host, budget *uint64) error {
+	if v == nil || v.Objects == nil {
+		return errors.New("nil TJS VM")
+	}
+	id, err := v.handle(receiver)
+	if err != nil {
+		return err
+	}
+	meta := v.meta[id]
+	if meta != nil && meta.category == CategoryArray {
+		if index, indexed := arrayMemberIndex(key); indexed {
+			return v.writeArrayElement(receiver, meta, index, value, flags, host, budget)
+		}
+	}
+	object, err := v.obj(id)
+	if err != nil {
+		return err
+	}
+	units := memberKeyUnits(key)
+	_, _, direct := hasDirect(object, units)
+	member, found, err := v.getMemberWithRuntime(id, key, host, budget)
+	if err != nil {
+		return err
+	}
+	if found {
+		if !direct {
+			// TJS instances own a copy of each inherited member. Materialize
+			// it before applying flags; flag-only storage would shadow an
+			// inherited property with void.
+			if err := v.setMember(id, key, member); err != nil {
+				return err
+			}
+		}
+		if err := object.ChangeFlagsUnits(units, flags&(HiddenMember|StaticMember), ^flags&(HiddenMember|StaticMember)); err != nil {
+			return err
+		}
+		if flags&IgnoreProperty == 0 {
+			if propertyID, handleErr := v.handle(member); handleErr == nil && v.meta[propertyID] != nil && v.meta[propertyID].category == CategoryProperty {
+				if !v.propertyAccessorPresent(member, false) {
+					return ErrAccessDenied
+				}
+				return v.writeProperty(member, receiver, value, host, budget)
+			}
+		}
+		if err := v.setMember(id, key, value); err != nil {
+			return err
+		}
+		return object.ChangeFlagsUnits(units, flags&(HiddenMember|StaticMember), 0)
+	}
+	if flags&MemberEnsure == 0 {
+		return ErrMemberNotFound
+	}
+	if err := v.setMember(id, key, value); err != nil {
+		return err
+	}
+	return object.ChangeFlagsUnits(units, flags&(HiddenMember|StaticMember), 0)
+}
+
+// writeArrayElement applies TJSArrayObject::PropSetByNum.
+func (v *VM) writeArrayElement(receiver Value, meta *vmObject, index int64, value Value, flags uint32, host Host, budget *uint64) error {
+	n := index
+	if n < 0 {
+		n += meta.arrayLength
+	}
+	if n < 0 {
+		return ErrMemberNotFound
+	}
+	if n >= meta.arrayLength && flags&MemberMustExist != 0 {
+		return ErrMemberNotFound
+	}
+	if n >= int64(maxVMArrayLength) {
+		return errors.New("TJS array length limit exceeded")
+	}
+	existing := VoidValue
+	if n < int64(len(meta.array)) {
+		existing = meta.array[n]
+	}
+	if flags&IgnoreProperty == 0 {
+		if propertyID, err := v.handle(existing); err == nil && v.meta[propertyID] != nil && v.meta[propertyID].category == CategoryProperty {
+			if !v.propertyAccessorPresent(existing, false) {
+				return ErrAccessDenied
+			}
+			return v.writeProperty(existing, receiver, value, host, budget)
+		}
+	}
+	if n >= int64(len(meta.array)) {
+		meta.array = append(meta.array, make([]Value, int(n)+1-len(meta.array))...)
+	}
+	meta.array[n] = value
+	if n >= meta.arrayLength {
+		meta.arrayLength = n + 1
+	}
+	return nil
+}
+
+// arrayElementAt resolves one array index the way TJSArrayObject reads items:
+// negative indexes count from the end, and an in-range hole is a present void.
+func arrayElementAt(meta *vmObject, index int64) (Value, bool) {
+	if meta == nil || meta.category != CategoryArray {
+		return VoidValue, false
+	}
+	n := index
+	if n < 0 {
+		n += meta.arrayLength
+	}
+	if n < 0 || n >= meta.arrayLength {
+		return VoidValue, false
+	}
+	if n >= int64(len(meta.array)) {
+		return VoidValue, true
+	}
+	return meta.array[n], true
+}
+
+// propertyAccessorPresent reports whether a property descriptor carries the
+// requested accessor. The reference returns TJS_E_ACCESSDENYED when a read has
+// no getter or a write has no setter.
+func (v *VM) propertyAccessorPresent(property Value, getter bool) bool {
+	id, err := v.handle(property)
+	if err != nil {
+		return true
+	}
+	meta := v.meta[id]
+	if meta == nil || meta.category != CategoryProperty {
+		return true
+	}
+	if meta.legacyProperty != nil {
+		accessor := meta.legacyProperty.getter
+		if !getter {
+			accessor = meta.legacyProperty.setter
+		}
+		return accessor.Kind() == KindObject && !accessor.IsNull()
+	}
+	if meta.property == nil {
+		return false
+	}
+	if getter {
+		return meta.property.Getter != nil
+	}
+	return meta.property.Setter != nil
 }
 
 // SetPropertyWithRuntime writes through a property descriptor value itself.
@@ -1625,6 +1897,61 @@ func vmArrayIndex(key Value) (int64, bool) {
 		return canonicalArrayIndex(key.Text())
 	}
 	return 0, false
+}
+
+// arrayMemberIndex converts a member key to an array index using the
+// member-name rule of TJSArrayObject (IsNumber in tjsArray.cpp). Integer keys
+// are exact; other keys stringify first, then accept surrounding spaces, a
+// sign, digits, and a fractional suffix that TJS_atoi truncates.
+func arrayMemberIndex(key Value) (int64, bool) {
+	if key.Kind() == KindInteger {
+		return key.IntegerValue(), true
+	}
+	s := key.Text()
+	i := 0
+	for i < len(s) && arrayMemberSpace(s[i]) {
+		i++
+	}
+	negative := false
+	if i < len(s) && (s[i] == '-' || s[i] == '+') {
+		negative = s[i] == '-'
+		i++
+	}
+	for i < len(s) && arrayMemberSpace(s[i]) {
+		i++
+	}
+	if i >= len(s) || s[i] < '0' || s[i] > '9' {
+		return 0, false
+	}
+	var n int64
+	for i < len(s) && ((s[i] >= '0' && s[i] <= '9') || s[i] == '.') {
+		if s[i] != '.' {
+			digit := int64(s[i] - '0')
+			if n > (math.MaxInt64-digit)/10 {
+				return 0, false
+			}
+			n = n*10 + digit
+		}
+		i++
+	}
+	for i < len(s) && arrayMemberSpace(s[i]) {
+		i++
+	}
+	if i != len(s) {
+		return 0, false
+	}
+	if negative {
+		n = -n
+	}
+	return n, true
+}
+
+func arrayMemberSpace(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\v', '\f', '\r':
+		return true
+	}
+	return false
 }
 
 func vmStringProperty(value, key Value) (Value, bool) {

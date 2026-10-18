@@ -755,7 +755,7 @@ func (s *Session) registerScriptsNative() error {
 	if err := s.VM.RegisterNativeMethod(class, "@initialize", "Scripts.@initialize"); err != nil {
 		return err
 	}
-	for _, method := range []string{"execStorage", "evalStorage", "compileStorage", "exec", "eval", "dump", "getTraceString", "setCallMissing", "getClassNames", "getObjectKeys", "getObjectCount", "getMD5HashString", "equalStruct", "equalStructNumericLoose", "foreach", "clone", "getObjectContext", "isNullContext"} {
+	for _, method := range []string{"execStorage", "evalStorage", "compileStorage", "exec", "eval", "dump", "getTraceString", "setCallMissing", "getClassNames", "getObjectKeys", "getObjectCount", "getMD5HashString", "equalStruct", "equalStructNumericLoose", "foreach", "clone", "getObjectContext", "isNullContext", "propGet", "propSet", "safeEvalStorage", "rehash"} {
 		if err := s.VM.RegisterNativeStaticMethod(class, method, "Scripts."+method); err != nil {
 			return err
 		}
@@ -958,6 +958,11 @@ func (s *Services) scriptsNative(vm *tjs.VM, operation string, args []tjs.Value,
 		callbackArgs := make([]tjs.Value, 2, len(args))
 		callbackArgs = append(callbackArgs, args[2:]...)
 		for _, entry := range entries {
+			// The reference callback skips a member only when the flag word is
+			// exactly TJS_HIDDENMEMBER, not merely when the hidden bit is set.
+			if entry.Flags == tjs.HiddenMember {
+				continue
+			}
 			callbackArgs[0] = tjs.StringValue(entry.Name)
 			callbackArgs[1] = entry.Value
 			value, err := vm.InvokeLegacy(callback, tjs.VoidValue, callbackArgs, s, budget, true)
@@ -976,6 +981,99 @@ func (s *Services) scriptsNative(vm *tjs.VM, operation string, args []tjs.Value,
 		}
 		cloned, err := scriptsClone(vm, value, s, budget)
 		return finish(cloned, err)
+	case "propGet", "propSet":
+		required := 2
+		if operation == "propSet" {
+			required = 3
+		}
+		if len(args) < required {
+			return tjs.VoidValue, fmt.Errorf("%w: Scripts.%s needs %d arguments", tjs.ErrBadParamCount, operation, required)
+		}
+		receiver := args[0]
+		if receiver.Kind() != tjs.KindObject || receiver.IsNull() {
+			return tjs.VoidValue, fmt.Errorf("Scripts.%s: expected object closure", operation)
+		}
+		key := args[1]
+		flagIndex := 2
+		flags := uint32(tjs.MemberMustExist)
+		if operation == "propSet" {
+			flagIndex = 3
+			flags = tjs.MemberEnsure
+		}
+		if len(args) > flagIndex {
+			n, err := args[flagIndex].Int()
+			if err != nil {
+				return tjs.VoidValue, fmt.Errorf("Scripts.%s flag: %w", operation, err)
+			}
+			flags = uint32(n)
+		}
+		if operation == "propGet" {
+			value, discardable, err := vm.GetMemberByKey(receiver, key, flags, s, budget)
+			if err != nil {
+				return tjs.VoidValue, fmt.Errorf("Scripts.propGet %q: %w", key.Text(), err)
+			}
+			if !resultNeeded && !discardable {
+				return tjs.VoidValue, fmt.Errorf("Scripts.propGet: %q resolves to a data member, so its result cannot be discarded", key.Text())
+			}
+			return finish(value, nil)
+		}
+		if err := vm.SetMemberByKey(receiver, key, args[2], flags, s, budget); err != nil {
+			return tjs.VoidValue, fmt.Errorf("Scripts.propSet %q: %w", key.Text(), err)
+		}
+		return tjs.VoidValue, nil
+	case "safeEvalStorage":
+		if len(args) < 1 {
+			return tjs.VoidValue, fmt.Errorf("%w: Scripts.safeEvalStorage needs 1 argument", tjs.ErrBadParamCount)
+		}
+		storageName := args[0].Text()
+		mode := ""
+		if len(args) >= 2 && !args[1].IsVoid() {
+			mode = args[1].Text()
+		}
+		context := tjs.VoidValue
+		if len(args) >= 3 && !args[2].IsVoid() {
+			if args[2].Kind() != tjs.KindObject {
+				return tjs.VoidValue, fmt.Errorf("Scripts.safeEvalStorage: context must be an object closure")
+			}
+			if !args[2].IsNull() {
+				context = args[2]
+			}
+		}
+		data, err := s.readStorage(storageName)
+		if err != nil {
+			return tjs.VoidValue, fmt.Errorf("Scripts.safeEvalStorage storage %q: %w", storageName, err)
+		}
+		offset, err := scriptReadOffset(mode)
+		if err != nil {
+			return tjs.VoidValue, fmt.Errorf("Scripts.safeEvalStorage: %w", err)
+		}
+		if offset > uint64(len(data)) {
+			return tjs.VoidValue, fmt.Errorf("Scripts.safeEvalStorage: offset %d exceeds storage size %d", offset, len(data))
+		}
+		source, err := s.decodeScriptStorage(data[offset:])
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		source = stripEvalStorageConstDictionary("(const)[" + source + "]")
+		value, err := executeScriptSource(vm, s, budget, preprocessor, scriptStorageName(storageName), source, true, 0, context)
+		if err != nil {
+			return tjs.VoidValue, fmt.Errorf("Scripts.safeEvalStorage storage %q: %w", storageName, err)
+		}
+		if !resultNeeded {
+			return tjs.VoidValue, nil
+		}
+		// The reference evaluates (const)[source] and returns element 0 with
+		// TJS_IGNOREPROP, so a declared accessor is not invoked.
+		element, _, err := vm.ArrayElement(value, 0)
+		if err != nil {
+			return tjs.VoidValue, fmt.Errorf("Scripts.safeEvalStorage: %w", err)
+		}
+		return element, nil
+	case "rehash":
+		// C++ TJSDoRehash bumps TJSGlobalRebuildHashMagic so custom objects
+		// rebuild their hash chains. Go members are map entries keyed by UTF-16
+		// units, so lookups never consult a rebuildable hash index.
+		return tjs.VoidValue, nil
 	case "getObjectKeys", "getObjectCount", "getMD5HashString", "equalStruct", "equalStructNumericLoose":
 		value, err := scriptsExNative(vm, operation, args, resultNeeded)
 		return finish(value, err)

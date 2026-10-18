@@ -15,6 +15,7 @@ const ReadOnly = MemberReadOnly
 
 var (
 	ErrMemberNotFound = errors.New("TJS member not found")
+	ErrAccessDenied   = errors.New("TJS access denied")
 	ErrReadOnly       = errors.New("TJS member is read-only")
 	ErrCannotDelete   = errors.New("TJS member cannot be deleted")
 	ErrBadParamCount  = errors.New("TJS bad parameter count")
