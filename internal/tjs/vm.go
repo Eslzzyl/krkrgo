@@ -106,10 +106,7 @@ func (v *VM) RegisterLegacyFunction(name string, call LegacyFunction) (Value, er
 	return value, nil
 }
 
-const (
-	maxVMArrayLength = 100000
-	maxVMObjectCount = 100000
-)
+const maxVMArrayLength = 100000
 
 // RegisterLegacyProperty creates a VM-owned property value whose accessors are
 // compiled legacy callables (the property's getter and setter objects). The
@@ -348,16 +345,13 @@ func (v *VM) alloc(category ObjectCategory) (Value, ObjectID, error) {
 	if v.Objects == nil {
 		return VoidValue, 0, vmAbortError(errors.New("nil TJS VM"))
 	}
-	if v.depth > 0 && !v.collecting && (v.allocationsSinceGC >= vmGCAllocationThreshold || len(v.meta) >= maxVMObjectCount) {
+	if v.depth > 0 && !v.collecting && v.allocationsSinceGC >= vmGCAllocationThreshold {
 		if len(v.frameRoots) != v.depth {
 			return VoidValue, 0, vmAbortError(errors.New("TJS allocation reached an incomplete collection safe point"))
 		}
 		if _, err := v.collectAtSafePoint(v.frameRoots[len(v.frameRoots)-1].host); err != nil {
 			return VoidValue, 0, vmAbortError(err)
 		}
-	}
-	if len(v.meta) >= maxVMObjectCount {
-		return VoidValue, 0, vmAbortError(errors.New("TJS object allocation limit exceeded"))
 	}
 	o := v.Objects.New(category)
 	id := o.ID

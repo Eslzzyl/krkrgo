@@ -101,15 +101,6 @@ func (v *VM) copyStructureInto(targetID, sourceID ObjectID, stack []ObjectID, bu
 		return err
 	}
 	entries := sourceObject.Entries()
-	memberCount := 0
-	for _, entry := range entries {
-		if entry.Flags&MemberHidden == 0 {
-			memberCount++
-		}
-	}
-	if memberCount > maxVMObjectCount {
-		return errors.New("assignStruct dictionary member limit exceeded")
-	}
 	for _, entry := range entries {
 		if entry.Flags&MemberHidden != 0 {
 			continue
@@ -242,8 +233,8 @@ func (v *VM) dictionaryAssign(receiver Value, args []Value, budget *uint64) (Val
 	if err := chargeAssignmentBudget(budget, uint64(len(entries)), "Dictionary.assign"); err != nil {
 		return VoidValue, err
 	}
-	if targetObject.Len()+reserve > maxVMObjectCount {
-		return VoidValue, errors.New("Dictionary.assign member limit exceeded")
+	if targetObject.Len() > int(^uint(0)>>1)-reserve {
+		return VoidValue, errors.New("Dictionary.assign member count overflow")
 	}
 	for _, entry := range entries {
 		if err := setDictionaryMember(targetObject, entry.key, entry.value, entry.flags); err != nil {
