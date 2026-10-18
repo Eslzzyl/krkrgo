@@ -822,6 +822,24 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 				return VoidValue, e
 			}
 			regs[index] = VoidValue
+		case 4: // CCL clears Operands[1] consecutive registers starting at
+			// Operands[0], mirroring the reference ContinuousClear: the second
+			// operand is a raw element count, not a register offset, and the
+			// comparison flag is left untouched.
+			start, e := reg(in.Operands[0], in.Offset)
+			if e != nil {
+				return VoidValue, e
+			}
+			count := int(in.Operands[1])
+			if count < 0 {
+				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: CCL count %d is negative, but the reference ContinuousClear reads code[2] as a non-negative element count", object, in.Offset, count)
+			}
+			if start+count > len(regs) {
+				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: CCL clears %d registers from register %d, past the %d-register frame allocated by the reference register map; ContinuousClear would write beyond the reference register area", object, in.Offset, count, start, len(regs))
+			}
+			for index := start; index < start+count; index++ {
+				regs[index] = VoidValue
+			}
 		case 7, 8: // CEQ/CDEQ update the VM comparison flag.
 			left, e := reg(in.Operands[0], in.Offset)
 			if e != nil {

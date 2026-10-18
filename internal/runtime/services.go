@@ -129,6 +129,7 @@ type Services struct {
 	sampleDefaultAheads      int
 	samplePluginVMs          map[*tjs.VM]struct{}
 	KAGMacroObjects          map[tjs.ObjectID]tjs.Value
+	KAGParamMacroObjects     map[tjs.ObjectID]tjs.Value
 	Natives                  *NativeRegistry
 	KAGParsers               map[tjs.ObjectID]*KAGParser
 	CSVParsers               map[tjs.ObjectID]*csvParserState
@@ -446,6 +447,9 @@ func (s *Services) ensureInit() {
 	}
 	if s.KAGMacroObjects == nil {
 		s.KAGMacroObjects = make(map[tjs.ObjectID]tjs.Value)
+	}
+	if s.KAGParamMacroObjects == nil {
+		s.KAGParamMacroObjects = make(map[tjs.ObjectID]tjs.Value)
 	}
 	if s.Arguments == nil {
 		s.Arguments = make(map[string]string)
@@ -1345,6 +1349,11 @@ func (s *Services) GCRoots() []tjs.Value {
 	}
 	out = append(out, s.menuData.gcRoots()...)
 	for _, macros := range s.KAGMacroObjects {
+		if macros.Kind() == tjs.KindObject && !macros.IsNull() {
+			out = append(out, macros)
+		}
+	}
+	for _, macros := range s.KAGParamMacroObjects {
 		if macros.Kind() == tjs.KindObject && !macros.IsNull() {
 			out = append(out, macros)
 		}

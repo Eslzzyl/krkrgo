@@ -3214,3 +3214,193 @@ func TestExecuteLegacyDEBUGGERIsNoop(t *testing.T) {
 		t.Fatalf("DEBUGGER result = %v (kind %v), want void", got, got.Kind())
 	}
 }
+
+func TestExecuteLegacyCCLClearsContiguousRegisters(t *testing.T) {
+	table := NewObjectTable()
+	global := table.New(CategoryDictionary)
+	bytecode := &DecodedBytecode{Objects: []BytecodeObject{{
+		ArgumentCount: 1,
+		MaxVariables:  3,
+		Code: []int16{
+			1, 0, 0, // CONST r0, "alpha"
+			1, 1, 1, // CONST r1, "beta"
+			1, 2, 2, // CONST r2, "gamma"
+			4, 0, 2, // CCL r0, 2
+			104, -2, 3, 0, // SPD global, "r0", r0
+			104, -2, 4, 1, // SPD global, "r1", r1
+			104, -2, 5, 2, // SPD global, "r2", r2
+			119, // RET
+		},
+		Constants: []BytecodeConstant{
+			{Value: StringValue("alpha")},
+			{Value: StringValue("beta")},
+			{Value: StringValue("gamma")},
+			{Value: StringValue("r0")},
+			{Value: StringValue("r1")},
+			{Value: StringValue("r2")},
+		},
+	}}}
+	instructions, err := bytecode.DecodeLegacyInstructions(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instructions[3].Name != "CCL" || instructions[3].Offset != 9 ||
+		len(instructions[3].Operands) != 2 || instructions[3].Operands[0] != 0 || instructions[3].Operands[1] != 2 {
+		t.Fatalf("decoded CCL = %#v; want register 0 and count 2", instructions[3])
+	}
+	if _, err := bytecode.ExecuteLegacy(0, ObjectValue(global.Ref()), table); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"r0", "r1"} {
+		got, ok := global.Get(name)
+		if !ok || !got.IsVoid() {
+			t.Fatalf("CCL cleared %s = %v (kind %v, present %v); want void", name, got, got.Kind(), ok)
+		}
+	}
+	if got, ok := global.Get("r2"); !ok || !got.StrictEqual(StringValue("gamma")) {
+		t.Fatalf("CCL over-cleared r2 = %v (present %v); want gamma", got, ok)
+	}
+}
+
+func TestExecuteLegacyCCLClearsArgumentRegisterRange(t *testing.T) {
+	table := NewObjectTable()
+	global := table.New(CategoryDictionary)
+	bytecode := &DecodedBytecode{Objects: []BytecodeObject{{
+		ArgumentCount: 3,
+		MaxVariables:  1,
+		Code: []int16{
+			4, -4, 1, // CCL from the second argument, one register
+			104, -2, 0, -3, // SPD global, "a0", arg0
+			104, -2, 1, -4, // SPD global, "a1", arg1
+			104, -2, 2, -5, // SPD global, "a2", arg2
+			119, // RET
+		},
+		Constants: []BytecodeConstant{
+			{Value: StringValue("a0")},
+			{Value: StringValue("a1")},
+			{Value: StringValue("a2")},
+		},
+	}}}
+	if _, err := bytecode.ExecuteLegacyWithContextAndConstructionAndArguments(
+		0, ObjectValue(global.Ref()), ObjectValue(global.Ref()),
+		[]Value{IntegerValue(10), IntegerValue(20), IntegerValue(30)}, nil, nil, nil, table,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := global.Get("a0"); !got.StrictEqual(IntegerValue(10)) {
+		t.Fatalf("CCL changed the first argument = %v, want 10", got)
+	}
+	if got, ok := global.Get("a1"); !ok || !got.IsVoid() {
+		t.Fatalf("CCL second argument = %v (present %v); want void", got, ok)
+	}
+	if got, _ := global.Get("a2"); !got.StrictEqual(IntegerValue(30)) {
+		t.Fatalf("CCL changed the third argument = %v, want 30", got)
+	}
+}
+
+func TestExecuteLegacyCCLLeavesFlagAndControlFlowIntact(t *testing.T) {
+	table := NewObjectTable()
+	global := table.New(CategoryDictionary)
+	bytecode := &DecodedBytecode{Objects: []BytecodeObject{{
+		ArgumentCount: 1,
+		MaxVariables:  2,
+		Code: []int16{
+			7, -3, -3, // CEQ arg0, arg0 -- sets the flag true
+			4, 0, 2, // CCL r0, 2 -- must not touch the flag
+			11, 0, // SETF r0
+			17, 5, // JMP +5 to the instruction after the skipped CONST
+			1, 1, 1, // CONST r1, 99 (skipped)
+			118, 0, // SRV r0
+			119, // RET
+		},
+		Constants: []BytecodeConstant{
+			{Value: StringValue("unused")},
+			{Value: IntegerValue(99)},
+		},
+	}}}
+	got, err := bytecode.ExecuteLegacy(0, ObjectValue(global.Ref()), table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.StrictEqual(IntegerValue(1)) {
+		t.Fatalf("CCL result = %v (kind %v), want integer 1", got, got.Kind())
+	}
+}
+
+func TestExecuteLegacyCCLKeepsPropertyMembersReachable(t *testing.T) {
+	table := NewObjectTable()
+	global := table.New(CategoryDictionary)
+	subject := table.New(CategoryDictionary)
+	if err := subject.Set("x", IntegerValue(7)); err != nil {
+		t.Fatal(err)
+	}
+	bytecode := &DecodedBytecode{Objects: []BytecodeObject{{
+		ArgumentCount: 1,
+		MaxVariables:  3,
+		Code: []int16{
+			104, -2, 0, -3, // SPD global, "subject", arg0
+			4, 0, 2, // CCL r0, 2
+			103, 0, -2, 0, // GPD r0, global, "subject"
+			103, 1, 0, 1, // GPD r1, r0, "x"
+			118, 1, // SRV r1
+			119, // RET
+		},
+		Constants: []BytecodeConstant{
+			{Value: StringValue("subject")},
+			{Value: StringValue("x")},
+		},
+	}}}
+	got, err := bytecode.ExecuteLegacyWithContextAndConstructionAndArguments(
+		0, ObjectValue(global.Ref()), ObjectValue(global.Ref()),
+		[]Value{ObjectValue(subject.Ref())}, nil, nil, nil, table,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.StrictEqual(IntegerValue(7)) {
+		t.Fatalf("CCL property read = %v (kind %v), want integer 7", got, got.Kind())
+	}
+	if stored, ok := subject.Get("x"); !ok || !stored.StrictEqual(IntegerValue(7)) {
+		t.Fatalf("CCL changed the subject member to %v (present %v)", stored, ok)
+	}
+}
+
+func TestExecuteLegacyCCLRejectsMalformedCounts(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		code []int16
+		want string
+	}{
+		{name: "negative count", code: []int16{4, 0, -1, 119}, want: "CCL count -1 is negative"},
+		{name: "count past frame", code: []int16{4, 0, 20000, 119}, want: "CCL clears 20000 registers"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bytecode := &DecodedBytecode{Objects: []BytecodeObject{{MaxVariables: 2, Code: test.code}}}
+			_, err := bytecode.ExecuteLegacy(0, VoidValue)
+			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "ContinuousClear") {
+				t.Fatalf("CCL error = %v, want %q citing ContinuousClear", err, test.want)
+			}
+		})
+	}
+}
+
+func TestExecuteLegacyCCLZeroCountIsNoop(t *testing.T) {
+	bytecode := &DecodedBytecode{Objects: []BytecodeObject{{
+		ArgumentCount: 1,
+		MaxVariables:  2,
+		Code: []int16{
+			1, 0, 0, // CONST r0, "kept"
+			4, 0, 0, // CCL r0, 0 -- the reference loop clears nothing
+			118, 0, // SRV r0
+			119, // RET
+		},
+		Constants: []BytecodeConstant{{Value: StringValue("kept")}},
+	}}}
+	got, err := bytecode.ExecuteLegacy(0, VoidValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.StrictEqual(StringValue("kept")) {
+		t.Fatalf("CCL with zero count = %v, want kept", got)
+	}
+}

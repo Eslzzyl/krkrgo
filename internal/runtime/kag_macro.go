@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/eslzzyl/krkrgo/internal/core"
 	"github.com/eslzzyl/krkrgo/internal/kag"
 )
 
@@ -219,4 +220,124 @@ func (p *KAGParser) pushKAGMacro(tag *kag.Tag) error {
 	}
 	p.macroFrames = append(p.macroFrames, kagMacroFrame{name: name, tokens: body, arguments: macroArgumentMap(tag)})
 	return nil
+}
+
+// kagMacroDefinitionEnd returns the index of the endmacro token that closes the
+// macro definition beginning at start. Nested definitions increment the depth,
+// so a definition inside a recording body keeps its own terminator.
+func kagMacroDefinitionEnd(tokens []kag.Token, start int) (int, bool) {
+	if start < 0 || start >= len(tokens) {
+		return 0, false
+	}
+	opening := tokens[start]
+	if opening.Kind != kag.KindTag || opening.Tag == nil || opening.Tag.Name != "macro" {
+		return 0, false
+	}
+	depth := 1
+	for i := start + 1; i < len(tokens); i++ {
+		token := tokens[i]
+		if token.Kind != kag.KindTag || token.Tag == nil {
+			continue
+		}
+		switch token.Tag.Name {
+		case "macro":
+			depth++
+		case "endmacro":
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// defineKAGMacro registers a macro body. The reference parser stores macros in
+// a dictionary with TJS_MEMBERENSURE, so a later definition replaces an
+// earlier one without a duplicate-name error.
+func (p *KAGParser) defineKAGMacro(name string, body []kag.Token, location core.SourceLocation) error {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return kagLocationError(location, fmt.Errorf("KAG macro missing name"))
+	}
+	if p.macroDefs == nil {
+		p.macroDefs = make(map[string][]kag.Token)
+	}
+	p.macroDefs[name] = body
+	return nil
+}
+
+// kagMacroBodyText renders a tokenized macro body as canonical KAG text for
+// the native macros projection. Raw source spelling is not retained by the
+// tokenizer, and the reference [macropop] sentinel is omitted because this
+// executor pops macro frames structurally when the body is exhausted.
+func kagMacroBodyText(tokens []kag.Token) string {
+	var text strings.Builder
+	for i := range tokens {
+		token := tokens[i]
+		if token.InlineScript != nil {
+			text.WriteString("[iscript]\n")
+			text.WriteString(token.InlineScript.Source)
+			text.WriteString("[endscript]")
+			continue
+		}
+		switch token.Kind {
+		case kag.KindText:
+			text.WriteString(strings.ReplaceAll(token.Text, "[", "[["))
+		case kag.KindTag:
+			if token.Tag != nil {
+				text.WriteString(kagTagText(token.Tag))
+			}
+		case kag.KindLabel:
+			if token.Label != nil {
+				text.WriteByte('*')
+				text.WriteString(token.Label.Name)
+				if token.Label.Caption != nil {
+					text.WriteByte('|')
+					text.WriteString(*token.Label.Caption)
+				}
+			}
+		case kag.KindNewline:
+			text.WriteByte('\n')
+		}
+	}
+	return text.String()
+}
+
+// kagTagText renders one tag in canonical KAG bracket form, preserving entity
+// and macro-argument spellings that the projection must expose.
+func kagTagText(tag *kag.Tag) string {
+	var text strings.Builder
+	text.WriteByte('[')
+	text.WriteString(tag.Name)
+	for _, attribute := range tag.Attributes {
+		text.WriteByte(' ')
+		text.WriteString(attribute.Name)
+		text.WriteByte('=')
+		if attribute.Entity {
+			text.WriteByte('&')
+		}
+		text.WriteString(kagAttributeText(attribute.Value))
+	}
+	text.WriteByte(']')
+	return text.String()
+}
+
+func kagAttributeText(value string) string {
+	if value == "" {
+		return ""
+	}
+	if !strings.ContainsAny(value, " \t\r\n\"'`") {
+		return value
+	}
+	var text strings.Builder
+	text.WriteByte('"')
+	for _, r := range value {
+		if r == '"' || r == '`' {
+			text.WriteByte('`')
+		}
+		text.WriteRune(r)
+	}
+	text.WriteByte('"')
+	return text.String()
 }

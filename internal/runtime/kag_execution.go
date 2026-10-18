@@ -752,8 +752,32 @@ func (p *KAGParser) Step(budget *uint64) (KAGEvent, error) {
 				if !p.conditionActive() {
 					continue
 				}
+				macroName, ok := token.Tag.Get("name")
+				if !ok || strings.TrimSpace(macroName) == "" {
+					return KAGEvent{}, kagLocationError(token.Location, fmt.Errorf("KAG macro missing name"))
+				}
 				if len(p.macroFrames) != 0 {
-					return KAGEvent{}, kagLocationError(token.Location, fmt.Errorf("KAG nested macro definition is unsupported"))
+					// A definition inside an expanding macro body registers
+					// when its definition is reached, and its body is skipped
+					// instead of executed. This preserves the reference
+					// parser's scan-order semantics for a nested definition
+					// while removing its single-recording-slot limitation.
+					frame := &p.macroFrames[len(p.macroFrames)-1]
+					start := frame.position - 1
+					end, ok := kagMacroDefinitionEnd(frame.tokens, start)
+					if !ok {
+						return KAGEvent{}, kagLocationError(token.Location, fmt.Errorf("KAG macro %s missing endmacro", strings.ToLower(macroName)))
+					}
+					for range end - start {
+						if err := chargeKAG(budget); err != nil {
+							return KAGEvent{}, err
+						}
+					}
+					if err := p.defineKAGMacro(macroName, append([]kag.Token(nil), frame.tokens[start+1:end]...), token.Location); err != nil {
+						return KAGEvent{}, err
+					}
+					frame.position = end + 1
+					continue
 				}
 				start := p.parser.State().Position - 1
 				end, ok := p.macroRanges[start]
@@ -775,6 +799,24 @@ func (p *KAGParser) Step(budget *uint64) (KAGEvent, error) {
 				if !p.conditionActive() {
 					continue
 				}
+				if len(p.macroFrames) == 0 {
+					// Top-level definitions are indexed while loading.
+					continue
+				}
+				paramName, ok := token.Tag.Get("name")
+				if !ok || strings.TrimSpace(paramName) == "" {
+					return KAGEvent{}, kagLocationError(token.Location, fmt.Errorf("KAG parameter macro missing name"))
+				}
+				attributes := make([]kag.Attribute, 0, len(token.Tag.Attributes))
+				for _, attribute := range token.Tag.Attributes {
+					if attribute.Name != "name" {
+						attributes = append(attributes, attribute)
+					}
+				}
+				if p.paramMacroDefs == nil {
+					p.paramMacroDefs = make(map[string][]kag.Attribute)
+				}
+				p.paramMacroDefs[strings.ToLower(strings.TrimSpace(paramName))] = attributes
 				continue
 			case "erasemacro", "erasepmacro":
 				if !p.conditionActive() {

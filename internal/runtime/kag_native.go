@@ -192,6 +192,7 @@ func (s *Services) kagNativeCall(vm *tjs.VM, name string, context tjs.Value, arg
 		}
 		delete(s.KAGParsers, id)
 		delete(s.KAGMacroObjects, id)
+		delete(s.KAGParamMacroObjects, id)
 		return tjs.VoidValue, nil
 	}
 	p := s.KAGParsers[id]
@@ -643,21 +644,29 @@ func (s *Services) kagNativeCall(vm *tjs.VM, name string, context tjs.Value, arg
 		return kagMacroParametersValue(vm, p.macroFrames[len(p.macroFrames)-1].arguments, budget)
 	case "get:macros":
 		id := context.ObjectRef().Object
-		if value, ok := s.KAGMacroObjects[id]; ok {
-			return value, nil
-		}
-		value, err := vm.NewDictionary()
+		value, object, err := kagProjectionObject(vm, s.KAGMacroObjects, id)
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		s.KAGMacroObjects[id] = value
+		if err := syncKAGMacroProjection(object, p.macroDefs, budget); err != nil {
+			return tjs.VoidValue, err
+		}
 		return value, nil
 	case "set:macros":
-		if len(args) != 1 {
-			return tjs.VoidValue, fmt.Errorf("KAGParser.macros requires one value")
+		// The reference KAGParser marks the macros property read-only
+		// (TJS_DENY_NATIVE_PROP_SETTER in KAGParser.cpp); definitions change
+		// only through @macro, @erasemacro, assign, restore and loadScenario.
+		return tjs.VoidValue, fmt.Errorf("KAGParser.macros is read-only: the reference KAGParser denies the property setter, so define macros with @macro or remove them with @erasemacro")
+	case "get:paramMacros":
+		id := context.ObjectRef().Object
+		value, object, err := kagProjectionObject(vm, s.KAGParamMacroObjects, id)
+		if err != nil {
+			return tjs.VoidValue, err
 		}
-		s.KAGMacroObjects[context.ObjectRef().Object] = args[0]
-		return tjs.VoidValue, nil
+		if err := syncKAGParamMacroProjection(vm, object, p.paramMacroDefs, budget); err != nil {
+			return tjs.VoidValue, err
+		}
+		return value, nil
 	default:
 		return tjs.VoidValue, fmt.Errorf("unsupported KAGParser operation: %s", op)
 	}
@@ -673,6 +682,84 @@ func tjsDictionary(vm *tjs.VM) (*tjs.Object, error) {
 		return nil, fmt.Errorf("dictionary allocation lost")
 	}
 	return object, nil
+}
+
+// kagProjectionObject returns the stable dictionary object exposed by a
+// read-only projection property, creating it on first access. Keeping one
+// object per parser instance preserves the reference identity contract
+// (p.macros === p.macros).
+func kagProjectionObject(vm *tjs.VM, cache map[tjs.ObjectID]tjs.Value, id tjs.ObjectID) (tjs.Value, *tjs.Object, error) {
+	if value, ok := cache[id]; ok && value.Kind() == tjs.KindObject && !value.IsNull() {
+		if object, ok := vm.Objects.Lookup(value.ObjectRef().Object); ok {
+			return value, object, nil
+		}
+	}
+	value, err := vm.NewDictionary()
+	if err != nil {
+		return tjs.VoidValue, nil, err
+	}
+	object, ok := vm.Objects.Lookup(value.ObjectRef().Object)
+	if !ok {
+		return tjs.VoidValue, nil, fmt.Errorf("KAG projection dictionary allocation lost")
+	}
+	cache[id] = value
+	return value, object, nil
+}
+
+// syncKAGMacroProjection refreshes the macros projection from the live macro
+// definitions. The reference dictionary maps a macro name to its recorded body
+// text; this projection renders the tokenized body canonically and drops the
+// reference [macropop] sentinel because frames pop structurally here.
+func syncKAGMacroProjection(object *tjs.Object, definitions map[string][]kag.Token, budget *uint64) error {
+	values := make(map[string]tjs.Value, len(definitions))
+	for name, body := range definitions {
+		if err := chargeKAG(budget); err != nil {
+			return err
+		}
+		values[name] = tjs.StringValue(kagMacroBodyText(body))
+	}
+	return syncKAGProjectionValues(object, values)
+}
+
+// syncKAGParamMacroProjection refreshes the paramMacros projection. The
+// reference KAGParserEx dictionary stores each parameter macro as a flat array
+// of alternating attribute names and values.
+func syncKAGParamMacroProjection(vm *tjs.VM, object *tjs.Object, definitions map[string][]kag.Attribute, budget *uint64) error {
+	values := make(map[string]tjs.Value, len(definitions))
+	for name, attributes := range definitions {
+		items := make([]tjs.Value, 0, len(attributes)*2)
+		for _, attribute := range attributes {
+			if err := chargeKAG(budget); err != nil {
+				return err
+			}
+			value := attribute.Value
+			if attribute.Entity {
+				value = "&" + value
+			}
+			items = append(items, tjs.StringValue(attribute.Name), tjs.StringValue(value))
+		}
+		array, err := vm.NewArray(items)
+		if err != nil {
+			return err
+		}
+		values[name] = array
+	}
+	return syncKAGProjectionValues(object, values)
+}
+
+func syncKAGProjectionValues(object *tjs.Object, values map[string]tjs.Value) error {
+	for name, value := range values {
+		if err := object.Set(name, value); err != nil {
+			return fmt.Errorf("KAG macro projection %s: %w", name, err)
+		}
+	}
+	for _, name := range object.Keys() {
+		if _, ok := values[name]; ok {
+			continue
+		}
+		object.Delete(name)
+	}
+	return nil
 }
 
 func kagMacroParametersValue(vm *tjs.VM, parameters map[string]string, budget *uint64) (tjs.Value, error) {

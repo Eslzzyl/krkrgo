@@ -38,7 +38,7 @@ The official C++ runtime initializes the TJS preprocessor symbol `kirikiriz` to 
 
 ### Known TJS gaps
 
-- Session storage execution supports source TJS and the implemented compiled `TJS2` intercode subset, including `TYPEOF` (in-place conversion to the TJS type name), class-object constants, class-body initialization, deferred superclass getters, member methods, and VM construction. Unsupported bytecode instructions still return explicit errors.
+- Session storage execution supports source TJS and the implemented compiled `TJS2` intercode subset, including `TYPEOF` (in-place conversion to the TJS type name), class-object constants, class-body initialization, deferred superclass getters, member methods, and VM construction. The legacy dispatcher covers every opcode in `tjsInterCodeGen.h`'s `tTJSVMCodes`, including `CCL` (`ContinuousClear`: a start register plus a raw element count cleared to void, with the comparison flag untouched). A `CCL` operand that cannot be executed safely, such as a negative count or a range past the allocated register frame, returns an explicit error naming the opcode and the reference behavior instead of approximating it.
 - Registered `Scripts.compileStorage`, `Scripts.dump`, and object-valued `Scripts.setCallMissing` operations return unsupported errors: bytecode output, heap dumping, and missing-member dispatch are unavailable.
 - `Scripts.textEncoding` applies to `Scripts` storage execution; `Session.ExecuteStorage` retains its separate automatic-decoding behavior.
 - Class member modifiers such as `static`, `private`, and `protected` remain unsupported by the compiler.
@@ -58,15 +58,18 @@ An empty label passed to `Jump`/`goToLabel` is a no-op, matching C++ KAG behavio
 
 `KAGParser.callLabel` keeps its return frame independently of the active scenario cursor, so callers may load another storage and jump to its target before returning to the original storage.
 
+Macro definitions are indexed token-wise from the scenario and remain registered across `loadScenario`, `clear`, `store`, and `restore`. A `macro` tag encountered while a macro body is expanding registers a nested definition at that point and skips its body; a later occurrence of that name expands it, and a second expansion of the enclosing macro replaces the definition through the same member-ensure behavior as the reference macro dictionary. Nested definitions are lazy: they are not callable until the enclosing macro body reaches them, and definitions inside an inactive conditional branch are not registered. `@pmacro` definitions nested in a macro body register through the same path. Macro argument frames still stack in expansion order, so `%name|fallback` substitution sees the innermost frame.
+
+The native `macros` and `paramMacros` properties expose read-only projections of the live definitions. `macros` maps each name to canonical KAG text rendered from the tokenized body; the reference `[macropop]` sentinel is omitted because this executor pops macro frames structurally, and raw quoting or original `@tag` spelling is not retained by the tokenizer. `paramMacros` maps each parameter macro name to the flat `[name, value, ...]` array documented for KAGParserEx, with a leading `&` on entity-valued entries. Both projections return one stable dictionary per parser instance, refresh from the live definitions on every read, and drop entries removed by `erasemacro`/`erasepmacro`. The `macros` property itself is read-only, matching the reference `TJS_DENY_NATIVE_PROP_SETTER`; member writes to a projection dictionary are not consulted by the executor and are discarded on the next read.
+
 ### Compatibility exercised by the lovelyday replay
 
 The compatibility changes exercised this round cover KAG macro argument handling, structural line breaks and comments, and the pointer-to-script interaction chain. Macro argument frames expose the arguments expected by parameter macros and are popped on completion; structural newlines and comments are kept distinct from visible scenario text and tags. The replayed interaction proceeds from pointer hit testing through the layer event callback into KAG/TJS handlers. This is tested behavior for the exercised paths, not blanket support for all KAG macros, tags, or input semantics.
 
 ### Known KAG gaps
 
-- Nested macro definitions remain unsupported; the local Rust reference uses one active recording slot and the C++ checkout contains no KAGParser implementation.
 - Read-only `curLineStr` reports the last physical source line read, starting with the first line on load; labels and jumps leave it unchanged until the next line is read. Parsed scenarios carry optional source lines, checkpoints persist the current-line index, and new cross-scenario frames serialize their source lines. Legacy checkpoints remain loadable, but old local checkpoints omitted the current-line index, so it is inferred best-effort from the cursor; old cross-scenario frames omitted source lines and cannot recover exact physical text.
-- Native `macros` and `paramMacros` projections remain unavailable because macro bodies and parameter definitions are internal token/attribute collections.
+- `macros` projection values are canonical renderings of tokenized bodies rather than the reference's recorded source text, so exact quoting, `[macropop]`, and `@tag` spelling cannot be round-tripped. Projection dictionaries are read-only views: member writes are not used as macro definitions.
 - Broader C++ KAG tag behavior remains unimplemented; parser support does not imply full runtime tag execution.
 
 ## C++ comparison

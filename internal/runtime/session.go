@@ -555,7 +555,7 @@ func (s *Session) registerNatives() error {
 			return err
 		}
 	}
-	for _, property := range []string{"curLabel", "curLine", "curLineStr", "curPos", "curStorage", "callStackDepth", "mp", "macroParams", "macros", "ignoreCR", "processSpecialTags", "multiLineTagEnabled", "debugLevel"} {
+	for _, property := range []string{"curLabel", "curLine", "curLineStr", "curPos", "curStorage", "callStackDepth", "mp", "macroParams", "macros", "paramMacros", "ignoreCR", "processSpecialTags", "multiLineTagEnabled", "debugLevel"} {
 		setter := ""
 		switch property {
 		case "ignoreCR", "processSpecialTags", "multiLineTagEnabled", "debugLevel", "macros":
