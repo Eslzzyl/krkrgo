@@ -415,3 +415,34 @@ whole-project replay speedup.
 5. The focused TJS `VMRunPhases/repeated-run` fixture moved from 277.1 µs/op to 275.3 µs/op. It remains at 940,072 B/op and 2,518 allocs/op.
 6. XP3 cache hit 明显低于关闭缓存路径，存储缓存对重复读取有效。
 7. 无头结果可以作为 CPU、分配、资源和内存方向的主基线；窗口 Present、GPU queue、VSync 和显示延迟需要单独测量。
+
+### 2× 渲染与 host 上传优化
+
+本轮针对 2× 缓冲区增加的像素带宽，加入了以下路径：
+
+- `internal/runtime/parallel_rows.go` 按行带拆分 CPU 合成，调用方保证每个工作协程只读写自己的行；`drawLayerTo`、alpha 快速路径和 `copyRect` 行复制都使用该拆分。
+- `internal/simd` 提供架构专用实现：arm64 使用 NEON，amd64 使用 SSE2；其他架构使用纯 Go 回退。当前 SIMD 覆盖 alpha 全不透明行扫描、alpha-over 不透明目标行混合和 2× 行复制。`drawOpaqueAlphaLayer` 与 `drawOpaqueAlphaLayerNoProvince` 在目标行 alpha 全为 255 时调用 SIMD 混合，混合公式与标量路径使用同一整数舍入；全不透明源行走整行复制，province 平面单独更新；`scaleRGBA` 在 2× 时调用 SIMD 行复制，再复制到其余设备行；`fillLayerNeutral` 使用 32 位像素写入。
+- `internal/runtime/layer.go` 增加 dirty rect。`drawText`、`fillRect`/`colorRect`、`copyRect` 记录设备像素矩形，`CaptureRenderPlan` 将矩形带入 `RenderNode` 后清空。
+- `internal/host/gpu_compositor.go` 在纹理已上传且 dirty rect 小于整图时，只预乘并 `WritePixels` 变化子矩形；不透明层保持整层或局部上传语义。
+- GPU 纹理按尺寸进入有上限的池，渲染计划中未使用的图层纹理在动态合成结束时回收到池；不可见图层因此在隐藏后释放纹理。
+- 全屏 crossfade/universal transition 跳过 `copyFrontToBack`，由 shader 一次覆盖 back target；非全屏 transition 仍复制以保留目标区域。
+- GPU-native crossfade/universal 的 CPU `transitionPixels` 改为按需分配，shader 路径不再保存整帧 CPU 相位缓冲。
+
+Darwin/arm64、Apple M1 Pro 的包级结果：
+
+| Benchmark | 当前 |
+| --- | ---: |
+| `BenchmarkComposeFullFrame` | 0.88–0.90 ms/op |
+| `BenchmarkComposeFullFrameScale2` | 2.91–2.96 ms/op |
+| `BenchmarkGPUComposeNativeLayers/opaque/dynamic` | 3.66 µs/op，28 allocs/op |
+| `BenchmarkGPUComposeNativeLayers/alpha/dynamic` | 3.51 µs/op，28 allocs/op |
+| `BenchmarkAllAlphaOpaque` | 138–146 ns/op，35–37 GB/s |
+| `BenchmarkAllAlphaOpaqueScalar` | 414–437 ns/op，12 GB/s |
+| `BenchmarkScale2xRow` | 135–139 ns/op，37–38 GB/s |
+| `BenchmarkScale2xRowScalar` | 1.83–1.87 µs/op，2.8 GB/s |
+
+`BenchmarkComposeFullFrame` 的此前同机结果约为 3.0 ms/op；行带并行和字宽 alpha 检查把 1× 合成降到约 0.9 ms/op。2× 合成约为 1× 的 3.3 倍，低于纯像素量的 4 倍。GPU 动态合成 benchmark 不包含纹理上传、GPU 执行和 Present，上传收益需要用实窗 `KRKRGO_RENDER_STATS=1` 的 `upload_avg` 验证。
+
+SIMD 行扫描约比标量行扫描快 3 倍，alpha-over 不透明目标行混合约快 3 倍，2× 行复制约快 13 倍。1280×720 全屏半透明图层带 province 的合成从约 1.4 ms/op 降到约 0.68 ms/op。amd64 的 SSE2 路径已用 Rosetta 运行 `internal/simd`、`internal/runtime` 和 `internal/host` 测试；linux/windows amd64、linux/windows arm64、darwin amd64 均已交叉编译通过。非 SIMD 架构的纯 Go 回退也已通过 linux/386 编译。
+
+这些是孤立包级 benchmark；整项目回放和交互帧时间仍需单独测量。

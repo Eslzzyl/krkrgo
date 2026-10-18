@@ -229,7 +229,13 @@ func (s *Services) layerTransition(vm *tjs.VM, context tjs.Value, operation stri
 	}
 	layer.transitionDestImage = append(layer.transitionDestImage[:0], layer.RGBA...)
 	layer.transitionSourceImage = append(layer.transitionSourceImage[:0], source.RGBA...)
-	layer.transitionPixels = append(layer.transitionPixels[:0], layer.RGBA...)
+	if s.gpuCapture && (method == "crossfade" || method == "universal") {
+		// These methods are evaluated by the GPU shader from the endpoint
+		// textures; the CPU phase buffer is materialized only on demand.
+		layer.transitionPixels = nil
+	} else {
+		layer.transitionPixels = append(layer.transitionPixels[:0], layer.RGBA...)
+	}
 	layer.transitionDestHash = hashTransitionBytes(layer.transitionDestImage)
 	layer.transitionSourceHash = hashTransitionBytes(layer.transitionSourceImage)
 	layer.transitionRuleHash = hashTransitionBytes(rule)
@@ -358,6 +364,9 @@ func (s *Services) advanceLayerTransitionsDeferred(vm *tjs.VM, timeMS uint64, se
 		// GPU render plans carry transition endpoints and phase to the host;
 		// keep the CPU pixel buffer untouched for those two GPU-native methods.
 		if !(s.gpuCapture && (layer.transitionMethod == "crossfade" || layer.transitionMethod == "universal")) {
+			if len(layer.transitionPixels) == 0 {
+				layer.transitionPixels = make([]byte, len(layer.transitionDestImage))
+			}
 			if layer.transitionMethod == "spin" {
 				blendSpin(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage,
 					layer.deviceWidth(), layer.deviceHeight(), phase, layer.transitionType1, layer.transitionType2, layer.transitionAccel)

@@ -28,6 +28,8 @@ type RenderNode struct {
 	RGBA                                                    []byte
 	Motion                                                  *RenderMotion
 	ImageHash                                               uint64
+	ImageDirty                                              Rect
+	ImageDirtyValid                                         bool
 	GPUStretch                                              bool
 	GPUStretchSourceWidth, GPUStretchSourceHeight           int32
 	GPUStretchSourceX, GPUStretchSourceY                    int32
@@ -415,6 +417,10 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		p.Nodes[i].ChildCount = len(childIndices)
 		writeLayerState(l, visible, hashes)
 		writeNodeState(&p.Nodes[i])
+		dirty, dirtyValid := l.takeImageDirtyRect()
+		if p.Nodes[i].Transition == nil && !p.Nodes[i].GPUStretch && p.Nodes[i].Motion == nil {
+			p.Nodes[i].ImageDirty, p.Nodes[i].ImageDirtyValid = dirty, dirtyValid
+		}
 		return i, nil
 	}
 	if c.Root != nil {

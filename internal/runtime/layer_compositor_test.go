@@ -802,6 +802,123 @@ func BenchmarkComposeFullFrame(b *testing.B) {
 		}
 	}
 }
+func BenchmarkComposeAlphaOverOpaqueNoProvince(b *testing.B) {
+	const width, height = 1280, 720
+	root := NewRootLayer(1, width, height)
+	background, foreground := NewLayer(2), NewLayer(3)
+	for _, layer := range []*Layer{background, foreground} {
+		if err := layer.SetBounds(Rect{Width: width, Height: height}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	back := make([]byte, width*height*4)
+	front := make([]byte, width*height*4)
+	for pixel := range width * height {
+		back[pixel*4], back[pixel*4+1], back[pixel*4+2], back[pixel*4+3] = 30, 90, 160, 255
+		front[pixel*4], front[pixel*4+1], front[pixel*4+2], front[pixel*4+3] = 210, 120, 40, 127
+	}
+	if err := background.SetRGBA(width, height, back); err != nil {
+		b.Fatal(err)
+	}
+	if err := foreground.SetRGBA(width, height, front); err != nil {
+		b.Fatal(err)
+	}
+	if err := root.AddChild(background); err != nil {
+		b.Fatal(err)
+	}
+	if err := root.AddChild(foreground); err != nil {
+		b.Fatal(err)
+	}
+	compositor := NewCompositorWithRoot(root, width, height)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := compositor.Compose(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkComposeAlphaOverOpaqueWithProvince(b *testing.B) {
+	const width, height = 1280, 720
+	root := NewRootLayer(1, width, height)
+	background, foreground := NewLayer(2), NewLayer(3)
+	for _, layer := range []*Layer{background, foreground} {
+		if err := layer.SetBounds(Rect{Width: width, Height: height}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	back := make([]byte, width*height*4)
+	front := make([]byte, width*height*4)
+	province := make([]byte, width*height)
+	for pixel := range width * height {
+		back[pixel*4], back[pixel*4+1], back[pixel*4+2], back[pixel*4+3] = 30, 90, 160, 255
+		front[pixel*4], front[pixel*4+1], front[pixel*4+2], front[pixel*4+3] = 210, 120, 40, 127
+		province[pixel] = 1
+	}
+	if err := background.SetRGBA(width, height, back); err != nil {
+		b.Fatal(err)
+	}
+	if err := foreground.SetRGBA(width, height, front); err != nil {
+		b.Fatal(err)
+	}
+	if err := foreground.SetProvince(width, height, province); err != nil {
+		b.Fatal(err)
+	}
+	if err := root.AddChild(background); err != nil {
+		b.Fatal(err)
+	}
+	if err := root.AddChild(foreground); err != nil {
+		b.Fatal(err)
+	}
+	compositor := NewCompositorWithRoot(root, width, height)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := compositor.Compose(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkComposeFullFrameScale2(b *testing.B) {
+	const width, height = int32(1280), int32(720)
+	root := NewRootLayer(1, width, height)
+	root.SetScale(2)
+	layer := NewLayer(2)
+	layer.SetScale(2)
+	if err := layer.SetBounds(Rect{Width: width, Height: height}); err != nil {
+		b.Fatal(err)
+	}
+	rgba := make([]byte, int(width*height)*4)
+	for i := 0; i < len(rgba); i += 4 {
+		rgba[i], rgba[i+1], rgba[i+2], rgba[i+3] = 80, 120, 200, 180
+	}
+	if err := layer.SetRGBA(width, height, rgba); err != nil {
+		b.Fatal(err)
+	}
+	province := make([]byte, width*height)
+	for i := range province {
+		province[i] = byte(i%255 + 1)
+	}
+	if err := layer.SetProvince(width, height, province); err != nil {
+		b.Fatal(err)
+	}
+	if err := root.AddChild(layer); err != nil {
+		b.Fatal(err)
+	}
+	compositor := NewCompositorWithScale(width, height, 2)
+	compositor.SetRoot(root)
+	b.SetBytes(int64(width * height * 4 * 4))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := compositor.Compose(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkClearRGBA720p(b *testing.B) {
 	const width, height = int32(1280), int32(720)
 	color := [4]uint8{17, 83, 149, 211}
@@ -818,6 +935,169 @@ func TestClearRGBAZeroDimensions(t *testing.T) {
 	for _, dimensions := range [][2]int32{{0, 0}, {0, 2}, {3, 0}} {
 		if got := clearRGBA(dimensions[0], dimensions[1], color); len(got) != 0 {
 			t.Errorf("clearRGBA(%d, %d) returned %d bytes, want none", dimensions[0], dimensions[1], len(got))
+		}
+	}
+}
+
+func TestComposeAlphaOverOpaqueMatchesScalarFormula(t *testing.T) {
+	const width, height = int32(4), int32(2)
+	root := NewRootLayer(1, width, height)
+	background, foreground := NewLayer(2), NewLayer(3)
+	for _, layer := range []*Layer{background, foreground} {
+		if err := layer.SetBounds(Rect{Width: width, Height: height}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	back := make([]byte, width*height*4)
+	front := make([]byte, width*height*4)
+	for i := range width * height {
+		back[i*4], back[i*4+1], back[i*4+2], back[i*4+3] = 30, 90, 160, 255
+		front[i*4], front[i*4+1], front[i*4+2], front[i*4+3] = byte(10+i*20), byte(200-i*30), byte(80+i*7), byte(i*80%256)
+	}
+	if err := background.SetRGBA(width, height, back); err != nil {
+		t.Fatal(err)
+	}
+	if err := foreground.SetRGBA(width, height, front); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.AddChild(background); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.AddChild(foreground); err != nil {
+		t.Fatal(err)
+	}
+	frame, err := NewCompositorWithRoot(root, width, height).Compose()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range width * height {
+		want := append([]byte(nil), back[i*4:i*4+4]...)
+		alphaOverOpaquePixel(want, front[i*4:i*4+4])
+		if got := frame.RGBA[i*4 : i*4+4]; !bytes.Equal(got, want) {
+			t.Fatalf("pixel %d = %v, want %v", i, got, want)
+		}
+	}
+}
+
+func alphaOverOpaquePixel(dst, src []byte) {
+	alpha := int(src[3])
+	switch alpha {
+	case 0:
+		return
+	case 255:
+		dst[0], dst[1], dst[2], dst[3] = src[0], src[1], src[2], 255
+		return
+	}
+	inverse := 255 - alpha
+	for channel := 0; channel < 3; channel++ {
+		dst[channel] = byte((int(dst[channel])*inverse + int(src[channel])*alpha + 127) / 255)
+	}
+	dst[3] = 255
+}
+
+func TestComposeProvinceAlphaOverOpaqueMatchesScalar(t *testing.T) {
+	const width, height = int32(8), int32(2)
+	root := NewRootLayer(1, width, height)
+	background, foreground := NewLayer(2), NewLayer(3)
+	for _, layer := range []*Layer{background, foreground} {
+		if err := layer.SetBounds(Rect{Width: width, Height: height}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	back := make([]byte, width*height*4)
+	front := make([]byte, width*height*4)
+	backProvince := make([]byte, width*height)
+	frontProvince := make([]byte, width*height)
+	for i := range width * height {
+		back[i*4], back[i*4+1], back[i*4+2], back[i*4+3] = 30, 90, 160, 255
+		front[i*4], front[i*4+1], front[i*4+2], front[i*4+3] = byte(10+i*17), byte(200-i*13), byte(80+i*7), byte(i*37%256)
+		backProvince[i] = 7
+		frontProvince[i] = byte(100 + i)
+	}
+	if err := background.SetRGBA(width, height, back); err != nil {
+		t.Fatal(err)
+	}
+	if err := background.SetProvince(width, height, backProvince); err != nil {
+		t.Fatal(err)
+	}
+	if err := foreground.SetRGBA(width, height, front); err != nil {
+		t.Fatal(err)
+	}
+	if err := foreground.SetProvince(width, height, frontProvince); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.AddChild(background); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.AddChild(foreground); err != nil {
+		t.Fatal(err)
+	}
+	frame, err := NewCompositorWithRoot(root, width, height).Compose()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range width * height {
+		want := append([]byte(nil), back[i*4:i*4+4]...)
+		alphaOverOpaquePixel(want, front[i*4:i*4+4])
+		if got := frame.RGBA[i*4 : i*4+4]; !bytes.Equal(got, want) {
+			t.Fatalf("pixel %d = %v, want %v", i, got, want)
+		}
+		wantProvince := byte(7)
+		if front[i*4+3] != 0 {
+			wantProvince = frontProvince[i]
+		}
+		if got := frame.Province[i]; got != wantProvince {
+			t.Fatalf("province %d = %d, want %d", i, got, wantProvince)
+		}
+	}
+}
+
+func TestDrawScaledProvinceAlphaRowMatchesScalar(t *testing.T) {
+	const logicalWidth, logicalHeight = int32(4), int32(2)
+	layer := NewLayer(2)
+	layer.SetScale(2)
+	if err := layer.SetBounds(Rect{Width: logicalWidth, Height: logicalHeight}); err != nil {
+		t.Fatal(err)
+	}
+	source := []byte{
+		10, 20, 30, 0, 40, 50, 60, 64, 70, 80, 90, 128, 100, 110, 120, 255,
+		130, 140, 150, 255, 160, 170, 180, 255, 190, 200, 210, 255, 220, 230, 240, 255,
+	}
+	if err := layer.SetRGBA(logicalWidth, logicalHeight, source); err != nil {
+		t.Fatal(err)
+	}
+	province := []byte{11, 12, 13, 14, 15, 16, 17, 18}
+	if err := layer.SetProvince(logicalWidth, logicalHeight, province); err != nil {
+		t.Fatal(err)
+	}
+	const deviceWidth, deviceHeight = int32(8), int32(4)
+	got := make([]byte, deviceWidth*deviceHeight*4)
+	initial := make([]byte, len(got))
+	gotProvince := make([]byte, deviceWidth*deviceHeight)
+	for i := range deviceWidth * deviceHeight {
+		initial[i*4], initial[i*4+1], initial[i*4+2], initial[i*4+3] = 30, 90, 160, 255
+		gotProvince[i] = 9
+	}
+	copy(got, initial)
+	draw := drawContext{width: deviceWidth, height: deviceHeight, scale: 2, rgba: got, province: gotProvince}
+	if err := draw.drawLayerTo(layer, 0, 0, LayerAlpha); err != nil {
+		t.Fatal(err)
+	}
+	for y := range deviceHeight {
+		for x := range deviceWidth {
+			i := y*deviceWidth + x
+			want := append([]byte(nil), initial[i*4:i*4+4]...)
+			blendPixelForTarget(want, layer.RGBA[i*4:i*4+4], 255, LayerAlpha, LayerAlpha)
+			if got := got[i*4 : i*4+4]; !bytes.Equal(got, want) {
+				t.Fatalf("pixel (%d,%d) = %v, want %v", x, y, got, want)
+			}
+			wantProvince := byte(9)
+			if layer.RGBA[i*4+3] != 0 {
+				wantProvince = province[(int(y)/2)*int(logicalWidth)+int(x)/2]
+			}
+			if got := gotProvince[i]; got != wantProvince {
+				t.Fatalf("province (%d,%d) = %d, want %d", x, y, got, wantProvince)
+			}
 		}
 	}
 }

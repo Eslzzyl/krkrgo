@@ -474,6 +474,7 @@ func (l *Layer) copyRectPixels(source []byte, sourceWidth, sourceHeight int32, s
 				copy(l.Province[destOffset:destOffset+copyWidth], sourceProvince[sourceOffset:sourceOffset+copyWidth])
 			}
 		}
+		l.markImageDirty()
 		return nil
 	}
 
@@ -483,31 +484,43 @@ func (l *Layer) copyRectPixels(source []byte, sourceWidth, sourceHeight int32, s
 	copyAll := face == layerFaceAlpha || face == layerFaceAddAlpha || (face == layerFaceOpaque && !l.HoldAlpha)
 	rows := copyHeight * int64(scale)
 	columns := copyWidth * int64(scale)
-	for row := int64(0); row < rows; row++ {
-		sourceOffset := ((sourceY*int64(scale)+row)*int64(sourceDeviceWidth) + sourceX*int64(scale)) * 4
-		destOffset := ((destY*int64(scale)+row)*int64(destinationDeviceWidth) + destX*int64(scale)) * 4
-		if copyAll {
-			rowBytes := columns * 4
-			copy(l.RGBA[destOffset:destOffset+rowBytes], source[sourceOffset:sourceOffset+rowBytes])
-			continue
-		}
-		start, end, step := int64(0), columns, int64(1)
-		if samePixels && destX*int64(scale) > sourceX*int64(scale) {
-			start, end, step = columns-1, -1, -1
-		}
-		for column := start; column != end; column += step {
-			sourcePixel := sourceOffset + column*4
-			destPixel := destOffset + column*4
-			if face == layerFaceMask {
-				l.RGBA[destPixel+3] = source[sourcePixel+3]
-			} else {
-				l.RGBA[destPixel] = source[sourcePixel]
-				l.RGBA[destPixel+1] = source[sourcePixel+1]
-				l.RGBA[destPixel+2] = source[sourcePixel+2]
+	copyRows := func(rowStart, rowEnd int64) {
+		for row := rowStart; row < rowEnd; row++ {
+			sourceOffset := ((sourceY*int64(scale)+row)*int64(sourceDeviceWidth) + sourceX*int64(scale)) * 4
+			destOffset := ((destY*int64(scale)+row)*int64(destinationDeviceWidth) + destX*int64(scale)) * 4
+			if copyAll {
+				rowBytes := columns * 4
+				copy(l.RGBA[destOffset:destOffset+rowBytes], source[sourceOffset:sourceOffset+rowBytes])
+				continue
+			}
+			start, end, step := int64(0), columns, int64(1)
+			if samePixels && destX*int64(scale) > sourceX*int64(scale) {
+				start, end, step = columns-1, -1, -1
+			}
+			for column := start; column != end; column += step {
+				sourcePixel := sourceOffset + column*4
+				destPixel := destOffset + column*4
+				if face == layerFaceMask {
+					l.RGBA[destPixel+3] = source[sourcePixel+3]
+				} else {
+					l.RGBA[destPixel] = source[sourcePixel]
+					l.RGBA[destPixel+1] = source[sourcePixel+1]
+					l.RGBA[destPixel+2] = source[sourcePixel+2]
+				}
 			}
 		}
 	}
-	l.markImageDirty()
+	if samePixels || byteSlicesOverlap(source, l.RGBA) {
+		copyRows(0, rows)
+	} else {
+		parallelRows(int(rows), 64, func(start, end int) {
+			copyRows(int64(start), int64(end))
+		})
+	}
+	l.markImageDirtyRect(Rect{
+		X: int32(destX * int64(scale)), Y: int32(destY * int64(scale)),
+		Width: int32(copyWidth) * scale, Height: int32(copyHeight) * scale,
+	})
 	return nil
 }
 

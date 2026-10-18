@@ -443,7 +443,9 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		if err == nil {
 			s.mu.Lock()
 			l.imageModified = true
-			l.markImageDirty()
+			if operation != "copyRect" {
+				l.markImageDirty()
+			}
 			s.mu.Unlock()
 		}
 		return tjs.VoidValue, err
@@ -456,9 +458,6 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 	case "fillRect", "colorRect":
 		s.mu.Lock()
 		err := s.layerFillRect(l, operation, args, intArg)
-		if err == nil {
-			l.markImageDirty()
-		}
 		s.mu.Unlock()
 		return tjs.VoidValue, err
 	case "piledCopy", "pileRect":
@@ -476,11 +475,7 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		}
 		return tjs.VoidValue, s.syncLayerChildren(vm)
 	case "drawText":
-		err := s.layerDrawText(l, args, budget)
-		if err == nil {
-			l.markImageDirty()
-		}
-		return tjs.VoidValue, err
+		return tjs.VoidValue, s.layerDrawText(l, args, budget)
 	case "move":
 		if len(args) == 1 {
 			index, err := intArg(0)
@@ -1536,6 +1531,7 @@ func (s *Services) layerFillRect(l *Layer, operation string, args []tjs.Value, i
 				l.Province[py*l.ProvinceWidth+px] = c.b
 			}
 		}
+		l.markImageDirty()
 		return nil
 	}
 	if operation == "colorRect" && (face == layerFaceMask || face == layerFaceProvince) {
@@ -1607,6 +1603,10 @@ func (s *Services) layerFillRect(l *Layer, operation string, args []tjs.Value, i
 		}
 	}
 	l.imageModified = true
+	scale = l.RenderScale()
+	if r.Width > 0 && r.Height > 0 {
+		l.markImageDirtyRect(Rect{X: r.X * scale, Y: r.Y * scale, Width: r.Width * scale, Height: r.Height * scale})
+	}
 	return nil
 }
 
@@ -1720,6 +1720,7 @@ func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) err
 	}
 	clip, _ := l.Clip()
 	deviceWidth, deviceHeight := l.deviceWidth(), l.deviceHeight()
+	minX, minY, maxX, maxY := deviceWidth, deviceHeight, int32(-1), int32(-1)
 	for sy := range img.Rect.Dy() {
 		for sx := range img.Rect.Dx() {
 			dx, dy := int32(x)*scale+int32(sx), int32(y)*scale+int32(sy)
@@ -1728,11 +1729,29 @@ func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) err
 				continue
 			}
 			si := (sy*img.Rect.Dx() + sx) * 4
+			if img.Pix[si+3] == 0 {
+				continue
+			}
 			di := (int(dy)*int(deviceWidth) + int(dx)) * 4
 			layerDrawTextPixel(l.RGBA[di:di+4], img.Pix[si:si+4], face, holdAlpha)
+			if dx < minX {
+				minX = dx
+			}
+			if dy < minY {
+				minY = dy
+			}
+			if dx > maxX {
+				maxX = dx
+			}
+			if dy > maxY {
+				maxY = dy
+			}
 		}
 	}
 	s.mu.Unlock()
+	if maxX >= minX && maxY >= minY {
+		l.markImageDirtyRect(Rect{X: minX, Y: minY, Width: maxX - minX + 1, Height: maxY - minY + 1})
+	}
 	return nil
 }
 

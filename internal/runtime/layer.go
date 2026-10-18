@@ -1,10 +1,12 @@
 package runtime
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
+	"github.com/eslzzyl/krkrgo/internal/simd"
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
@@ -230,6 +232,8 @@ type Layer struct {
 	imageModified         bool
 	imageRevision         uint64
 	subtreeRevision       uint64
+	dirtyRect             Rect
+	dirtyRectValid        bool
 	windowID              uint64
 }
 
@@ -243,8 +247,61 @@ func (l *Layer) markImageDirty() {
 	if l == nil {
 		return
 	}
+	l.markImageDirtyRect(Rect{Width: l.deviceWidth(), Height: l.deviceHeight()})
+}
+
+// markImageDirtyRect records that the device-pixel rectangle changed. The
+// rectangle is intersected with the current image and cleared after the next
+// render-plan capture, when the host has consumed it.
+func (l *Layer) markImageDirtyRect(rect Rect) {
+	if l == nil {
+		return
+	}
 	l.imageRevision++
 	l.markRenderDirty()
+	width, height := l.deviceWidth(), l.deviceHeight()
+	if width <= 0 || height <= 0 {
+		l.dirtyRect = Rect{}
+		l.dirtyRectValid = false
+		return
+	}
+	rect = rect.Intersect(Rect{Width: width, Height: height})
+	if rect.Empty() {
+		return
+	}
+	if l.dirtyRectValid {
+		l.dirtyRect = unionRect(l.dirtyRect, rect)
+	} else {
+		l.dirtyRect = rect
+		l.dirtyRectValid = true
+	}
+}
+
+func (l *Layer) takeImageDirtyRect() (Rect, bool) {
+	if l == nil {
+		return Rect{}, false
+	}
+	rect, valid := l.dirtyRect, l.dirtyRectValid
+	l.dirtyRect, l.dirtyRectValid = Rect{}, false
+	return rect, valid
+}
+
+func unionRect(a, b Rect) Rect {
+	if a.Empty() {
+		return b
+	}
+	if b.Empty() {
+		return a
+	}
+	left, top := min(a.X, b.X), min(a.Y, b.Y)
+	right, bottom := a.Right(), a.Bottom()
+	if b.Right() > right {
+		right = b.Right()
+	}
+	if b.Bottom() > bottom {
+		bottom = b.Bottom()
+	}
+	return Rect{X: left, Y: top, Width: right - left, Height: bottom - top}
 }
 
 func (l *Layer) renderImageRevision() uint64 {
@@ -360,16 +417,25 @@ func scaleRGBA(source []byte, width, height, scale int32) []byte {
 	}
 	out := make([]byte, int(int64(width)*int64(height)*int64(scale)*int64(scale))*4)
 	destinationWidth := int(width * scale)
+	rowBytes := destinationWidth * 4
 	for y := int32(0); y < height; y++ {
-		for sy := int32(0); sy < scale; sy++ {
-			row := (int(y)*int(scale) + int(sy)) * destinationWidth
+		sourceRow := source[int(y)*int(width)*4 : int(y+1)*int(width)*4]
+		rowStart := int(y) * int(scale) * rowBytes
+		destinationRow := out[rowStart : rowStart+rowBytes]
+		if scale == 2 {
+			simd.Scale2xRow(destinationRow, sourceRow)
+		} else {
 			for x := int32(0); x < width; x++ {
-				si := (int(y)*int(width) + int(x)) * 4
+				pixel := binary.LittleEndian.Uint32(sourceRow[int(x)*4:])
+				base := int(x*scale) * 4
 				for sx := int32(0); sx < scale; sx++ {
-					di := (row + int(x*scale) + int(sx)) * 4
-					copy(out[di:di+4], source[si:si+4])
+					binary.LittleEndian.PutUint32(destinationRow[base+int(sx)*4:], pixel)
 				}
 			}
+		}
+		for sy := int32(1); sy < scale; sy++ {
+			next := out[rowStart+int(sy)*rowBytes : rowStart+int(sy+1)*rowBytes]
+			copy(next, destinationRow)
 		}
 	}
 	return out
@@ -394,7 +460,9 @@ func (l *Layer) SetScale(scale int32) {
 		sourceHeight := l.ImageHeight * oldScale
 		l.RGBA = resampleRGBA(l.RGBA, sourceWidth, sourceHeight, l.deviceWidth(), l.deviceHeight())
 		if l.inTransition {
-			l.transitionPixels = resampleRGBA(l.transitionPixels, sourceWidth, sourceHeight, l.deviceWidth(), l.deviceHeight())
+			if len(l.transitionPixels) != 0 {
+				l.transitionPixels = resampleRGBA(l.transitionPixels, sourceWidth, sourceHeight, l.deviceWidth(), l.deviceHeight())
+			}
 			l.transitionDestImage = resampleRGBA(l.transitionDestImage, sourceWidth, sourceHeight, l.deviceWidth(), l.deviceHeight())
 			l.transitionSourceImage = resampleRGBA(l.transitionSourceImage, sourceWidth, sourceHeight, l.deviceWidth(), l.deviceHeight())
 			l.transitionRule = resampleGray(l.transitionRule, sourceWidth, sourceHeight, l.deviceWidth(), l.deviceHeight())
@@ -404,6 +472,7 @@ func (l *Layer) SetScale(scale int32) {
 	l.gpuStretch = nil
 	l.gpuMotion = nil
 	l.imageRevision++
+	l.dirtyRect, l.dirtyRectValid = Rect{Width: l.deviceWidth(), Height: l.deviceHeight()}, l.deviceWidth() > 0 && l.deviceHeight() > 0
 	l.markRenderDirty()
 }
 
@@ -868,8 +937,9 @@ func layerNeutralColor(t LayerType) [4]byte {
 
 func fillLayerNeutral(rgba []byte, layerType LayerType) {
 	neutral := layerNeutralColor(layerType)
+	pixel := binary.LittleEndian.Uint32(neutral[:])
 	for i := 0; i+3 < len(rgba); i += 4 {
-		copy(rgba[i:i+4], neutral[:])
+		binary.LittleEndian.PutUint32(rgba[i:], pixel)
 	}
 }
 

@@ -177,3 +177,60 @@ func TestSetRenderScaleResamplesBitmaps(t *testing.T) {
 		t.Fatalf("device buffer length = %d, want %d", got, want)
 	}
 }
+
+func TestRenderPlanCarriesAndConsumesDirtyRect(t *testing.T) {
+	services := DefaultServices()
+	root := NewRootLayer(1, 4, 4)
+	child := NewLayer(2)
+	if err := child.SetRGBA(4, 4, make([]byte, 4*4*4)); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.AddChild(child); err != nil {
+		t.Fatal(err)
+	}
+	services.SetRoot(root)
+	if _, err := services.CaptureRenderPlan(); err != nil {
+		t.Fatal(err)
+	}
+	child.markImageDirtyRect(Rect{X: 1, Y: 2, Width: 2, Height: 1})
+	plan, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Nodes[1].ImageDirtyValid || plan.Nodes[1].ImageDirty != (Rect{X: 1, Y: 2, Width: 2, Height: 1}) {
+		t.Fatalf("dirty rect = %+v valid=%t", plan.Nodes[1].ImageDirty, plan.Nodes[1].ImageDirtyValid)
+	}
+	next, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Nodes[1].ImageDirtyValid {
+		t.Fatal("dirty rect was not consumed by the previous capture")
+	}
+}
+
+func TestParallelRowsCoversEveryRowOnce(t *testing.T) {
+	const rows = 97
+	seen := make([]int, rows)
+	parallelRows(rows, 1, func(start, end int) {
+		for row := start; row < end; row++ {
+			seen[row]++
+		}
+	})
+	for row, count := range seen {
+		if count != 1 {
+			t.Fatalf("row %d visited %d times", row, count)
+		}
+	}
+}
+
+func TestRowAllOpaqueHandlesWordAndTailPixels(t *testing.T) {
+	opaque := []byte{1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255}
+	if !rowAllOpaque(opaque) {
+		t.Fatal("opaque row rejected")
+	}
+	opaque[len(opaque)-1] = 254
+	if rowAllOpaque(opaque) {
+		t.Fatal("translucent tail pixel accepted")
+	}
+}

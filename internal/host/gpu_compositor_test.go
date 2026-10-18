@@ -220,3 +220,69 @@ func TestGPUSourceRectCropMapping(t *testing.T) {
 		t.Fatalf("zero-crop scale = %v,%v, want 1,1", scaleX, scaleY)
 	}
 }
+
+func TestGPUTexturePoolReusesReleasedImage(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	first := compositor.acquireTexture(4, 3)
+	compositor.releaseTexture(first, 4, 3)
+	second := compositor.acquireTexture(4, 3)
+	if second != first {
+		t.Fatal("texture pool did not reuse the released image")
+	}
+	if got := second.Bounds().Size(); got.X != 4 || got.Y != 3 {
+		t.Fatalf("pooled texture size = %v, want 4x3", got)
+	}
+	second.Deallocate()
+}
+
+func TestPremultipliedRegionOnlyConvertsDirtyRows(t *testing.T) {
+	source := []byte{
+		10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255,
+		11, 21, 31, 128, 41, 51, 61, 128, 71, 81, 91, 128,
+		12, 22, 32, 0, 42, 52, 62, 0, 72, 82, 92, 0,
+	}
+	dst := make([]byte, 2*1*4)
+	premultipliedRegion(source, 3, runtime.Rect{X: 1, Y: 1, Width: 2, Height: 1}, dst, false)
+	want := []byte{21, 26, 31, 128, 36, 41, 46, 128}
+	if string(dst) != string(want) {
+		t.Fatalf("premultiplied region = %v, want %v", dst, want)
+	}
+}
+
+func TestGPUCompositorReleasesInvisibleLayerTextures(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	node := runtime.RenderNode{
+		ID: 1, Bounds: runtime.Rect{Width: 2, Height: 2}, Type: runtime.LayerAlpha,
+		Visible: true, Opacity: 255, ImageWidth: 2, ImageHeight: 2,
+		RGBA: []byte{
+			1, 2, 3, 255, 4, 5, 6, 255,
+			7, 8, 9, 255, 10, 11, 12, 255,
+		},
+		ImageHash: 1,
+	}
+	plan := runtime.RenderPlan{Width: 2, Height: 2, Nodes: []runtime.RenderNode{node}}
+	if _, err := compositor.Compose(plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(compositor.textures) == 0 {
+		t.Fatal("visible layer did not allocate a texture")
+	}
+	plan.Nodes[0].Visible = false
+	if _, err := compositor.Compose(plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(compositor.textures) != 0 {
+		t.Fatalf("invisible layer retained %d textures", len(compositor.textures))
+	}
+	if compositor.pooledBytes == 0 {
+		t.Fatal("released texture was not returned to the pool")
+	}
+}

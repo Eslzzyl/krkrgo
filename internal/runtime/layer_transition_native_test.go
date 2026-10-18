@@ -792,3 +792,33 @@ func TestLayerSpinTransitionUsesTypesAndCompletes(t *testing.T) {
 		t.Fatalf("spin completion state: active=%t rgba=%v", destination.inTransition, destination.RGBA)
 	}
 }
+
+func TestGPUCaptureTransitionPhaseBufferIsLazy(t *testing.T) {
+	services := DefaultServices()
+	layer := NewLayer(1)
+	layer.ImageWidth, layer.ImageHeight = 1, 1
+	layer.RGBA = []byte{255, 255, 255, 255}
+	layer.inTransition = true
+	layer.transitionMethod = "crossfade"
+	layer.transitionDuration = 100
+	layer.transitionStart = 0
+	layer.transitionTick = 0
+	layer.transitionDestImage = []byte{255, 255, 255, 255}
+	layer.transitionSourceImage = []byte{0, 0, 0, 255}
+	services.Layers[1] = layer
+
+	services.gpuCapture = true
+	if _, err := services.advanceLayerTransitionsDeferred(nil, 50, false, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(layer.transitionPixels) != 0 {
+		t.Fatalf("GPU transition allocated %d phase bytes", len(layer.transitionPixels))
+	}
+	services.gpuCapture = false
+	if _, err := services.advanceLayerTransitionsDeferred(nil, 60, false, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(layer.transitionPixels) != 4 {
+		t.Fatalf("CPU transition phase buffer length = %d, want 4", len(layer.transitionPixels))
+	}
+}

@@ -36,7 +36,12 @@ The GPU compositor uploads direct (non-premultiplied) runtime RGBA into cached
 premultiplied textures. Uploads are selected by layer identity, dimensions, and the
 runtime content hash, so callers may mutate an image directly and the next plan
 observes the changed hash. Rule textures expand indexed rule bytes to RGBA with the
-rule value in red and opaque alpha.
+rule value in red and opaque alpha. Layer nodes carry the device-pixel dirty
+rectangle from the runtime; a changed texture with a smaller dirty rectangle is
+premultiplied and uploaded through a sub-image instead of replacing the whole
+texture. Textures for layers absent from the current plan are returned to a
+size-bucketed pool, which also releases textures for hidden layers until they are
+visible again.
 
 ## GPU composition contract
 
@@ -65,7 +70,9 @@ rule-reveal paths unpremultiply endpoint colors for the runtime's straight-alpha
 interpolation, then premultiply the shader result before replace blending.
 Universal transition shaders receive destination/source/rule textures, phase,
 vague, and the planned rule dimensions. Transitions are therefore presented
-without a per-frame CPU readback.
+without a per-frame CPU readback. A transition that covers the complete target
+writes the back target directly; partial transitions copy the front target first
+so pixels outside the transition region remain intact.
 
 ## Reference implementation facts
 
