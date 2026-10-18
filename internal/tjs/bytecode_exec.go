@@ -751,7 +751,7 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		}
 		handler := exceptionHandlers[len(exceptionHandlers)-1]
 		exceptionHandlers = exceptionHandlers[:len(exceptionHandlers)-1]
-		message := rootErrorMessage(err)
+		message := exceptionMessage(err)
 		if message == "" {
 			message = err.Error()
 		}

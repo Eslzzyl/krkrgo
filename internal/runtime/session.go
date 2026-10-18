@@ -1005,27 +1005,6 @@ func (s *Session) queueSoundEventsAfterMix() error {
 	return nil
 }
 
-// updateScriptWorld refreshes environment-backed script layers before capture.
-// The reference host performs this after dispatching the frame's script events.
-func (s *Session) updateScriptWorld() error {
-	world, err := s.VM.GetMember(tjs.ObjectValue(tjs.NewObjectRef(0, 0)), "world_object", s.Services, &s.Budget)
-	if err != nil {
-		return err
-	}
-	if world.Kind() != tjs.KindObject || world.IsNull() {
-		return nil
-	}
-	updateAll, err := s.VM.GetMember(world, "updateAll", s.Services, &s.Budget)
-	if err != nil {
-		return err
-	}
-	if updateAll.Kind() == tjs.KindVoid {
-		return nil
-	}
-	_, err = s.VM.CallFunction(updateAll, world, []tjs.Value{tjs.IntegerValue(1)}, s.Services, &s.Budget)
-	return err
-}
-
 func (s *Session) Tick(timeMS uint64) error { return s.TickWithFrameSink(timeMS, nil) }
 func (s *Session) TickWithFrameSink(timeMS uint64, sink func(uint64, FrameSnapshot)) error {
 	if err := s.checkOpen(); err != nil {
@@ -1059,10 +1038,6 @@ func (s *Session) TickWithFrameSink(timeMS uint64, sink func(uint64, FrameSnapsh
 		return err
 	}
 	if err := s.DispatchEvents(); err != nil {
-		restore()
-		return err
-	}
-	if err := s.updateScriptWorld(); err != nil {
 		restore()
 		return err
 	}
@@ -1160,13 +1135,6 @@ func (s *Session) tickForPresentation(timeMS uint64, audioMilliseconds *uint64) 
 		return FrameSnapshot{}, err
 	}
 	if err := s.DispatchEvents(); err != nil {
-		if profile {
-			dispatchTime = time.Since(stageStarted)
-		}
-		restore()
-		return FrameSnapshot{}, err
-	}
-	if err := s.updateScriptWorld(); err != nil {
 		if profile {
 			dispatchTime = time.Since(stageStarted)
 		}

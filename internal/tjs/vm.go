@@ -173,15 +173,14 @@ func (e *tjsThrown) Error() string {
 	return "TJS throw: " + e.value.Text()
 }
 
-func rootErrorMessage(err error) string {
-	for err != nil {
-		cause := errors.Unwrap(err)
-		if cause == nil {
-			return err.Error()
-		}
-		err = cause
+func exceptionMessage(err error) string {
+	if err == nil {
+		return ""
 	}
-	return ""
+	// Keep the full wrapped chain. The innermost sentinel alone (for example
+	// "unsupported media codec") discards the storage name and operation that
+	// identify which asset failed.
+	return err.Error()
 }
 
 func (v *VM) exceptionValue(message, trace string, h Host, b *uint64) (Value, error) {
@@ -3268,7 +3267,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 				return VoidValue, traceErr
 			}
 			if len(f.handlers) > 0 {
-				exception, exceptionErr := v.exceptionValue(rootErrorMessage(e), traceErr.Error(), h, b)
+				exception, exceptionErr := v.exceptionValue(exceptionMessage(e), traceErr.Error(), h, b)
 				if exceptionErr != nil {
 					return VoidValue, fmt.Errorf("%s:%d:%d at VM instruction %d: %w", ins.Location.Storage, ins.Location.Line, ins.Location.Column, at, exceptionErr)
 				}

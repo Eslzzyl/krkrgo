@@ -30,6 +30,9 @@ type RenderNode struct {
 	ImageHash                                               uint64
 	GPUStretch                                              bool
 	GPUStretchSourceWidth, GPUStretchSourceHeight           int32
+	GPUStretchSourceX, GPUStretchSourceY                    int32
+	GPUStretchCropWidth, GPUStretchCropHeight               int32
+	GPUStretchDestinationX, GPUStretchDestinationY          int32
 	GPUStretchDestinationWidth, GPUStretchDestinationHeight int32
 	gpuStretchSourceBitmap                                  *Bitmap
 	Clip                                                    Rect
@@ -77,14 +80,31 @@ func renderPlanImageRevision(layer *Layer) uint64 {
 		return 1
 	}
 	if pending := layer.gpuStretch; pending != nil {
+		var sourceRevision uint64
 		if pending.sourceLayer != nil {
-			return pending.sourceLayer.renderImageRevision()
+			sourceRevision = pending.sourceLayer.renderImageRevision()
 		}
 		if pending.sourceBitmap != nil {
-			return pending.sourceBitmap.imageRevision()
+			sourceRevision = pending.sourceBitmap.imageRevision()
 		}
+		return mixGPUStretchImageRevision(pending.sourceID, sourceRevision, pending.sourceWidth, pending.sourceHeight)
 	}
 	return layer.renderImageRevision()
+}
+
+func mixGPUStretchImageRevision(sourceID, revision uint64, width, height int32) uint64 {
+	value := sourceID ^ 0x9e3779b97f4a7c15
+	value ^= revision + 0x9e3779b97f4a7c15 + (value << 6) + (value >> 2)
+	value ^= uint64(uint32(width))<<32 | uint64(uint32(height))
+	value ^= value >> 30
+	value *= 0xbf58476d1ce4e5b9
+	value ^= value >> 27
+	value *= 0x94d049bb133111eb
+	value ^= value >> 31
+	if value == 0 {
+		return 1
+	}
+	return value
 }
 
 // CaptureRenderPlan returns a borrowed, backend-neutral view of the current tree.
@@ -153,7 +173,7 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		rgba, province, transition uint64
 	}
 	writeLayerState := func(layer *Layer, visible bool, hashes renderHashes) {
-		var values [34]uint64
+		var values [40]uint64
 		values[0] = 1
 		values[1] = uint64(uint32(layer.Bounds.X))
 		values[2] = uint64(uint32(layer.Bounds.Y))
@@ -186,10 +206,16 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 			values[28] = uint64(uint32(layer.gpuStretch.destinationWidth))
 			values[29] = uint64(uint32(layer.gpuStretch.destinationHeight))
 			values[30] = uint64(uint32(layer.gpuStretch.stretchType))
+			values[31] = uint64(uint32(layer.gpuStretch.sourceX))
+			values[32] = uint64(uint32(layer.gpuStretch.sourceY))
+			values[33] = uint64(uint32(layer.gpuStretch.cropWidth))
+			values[34] = uint64(uint32(layer.gpuStretch.cropHeight))
+			values[35] = uint64(uint32(layer.gpuStretch.destinationX))
+			values[36] = uint64(uint32(layer.gpuStretch.destinationY))
 		}
-		values[31] = layer.renderImageRevision()
-		values[32] = uint64(uint32(layer.Face))
-		values[33] = boolUint64(layer.HoldAlpha)
+		values[37] = layer.renderImageRevision()
+		values[38] = uint64(uint32(layer.Face))
+		values[39] = boolUint64(layer.HoldAlpha)
 		var encoded [len(values) * 8]byte
 		for i, value := range values {
 			binary.LittleEndian.PutUint64(encoded[i*8:], value)
@@ -250,12 +276,21 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		hashes := renderHashes{}
 		if l.gpuStretch != nil && len(l.transitionPixels) == 0 {
 			pending := l.gpuStretch
-			if len(pending.sourcePixels) != 0 &&
-				l.Bounds.Width == pending.destinationWidth &&
-				l.Bounds.Height == pending.destinationHeight {
+			fullDestination := pending.destinationX <= 0 && pending.destinationY <= 0 &&
+				pending.destinationX+pending.destinationWidth >= l.ImageWidth &&
+				pending.destinationY+pending.destinationHeight >= l.ImageHeight &&
+				(!l.clipSet || (l.clip.X <= 0 && l.clip.Y <= 0 &&
+					l.clip.Right() >= l.ImageWidth && l.clip.Bottom() >= l.ImageHeight))
+			if len(pending.sourcePixels) != 0 && fullDestination {
 				n.GPUStretch = true
 				n.GPUStretchSourceWidth = pending.sourceWidth
 				n.GPUStretchSourceHeight = pending.sourceHeight
+				n.GPUStretchSourceX = pending.sourceX
+				n.GPUStretchSourceY = pending.sourceY
+				n.GPUStretchCropWidth = pending.cropWidth
+				n.GPUStretchCropHeight = pending.cropHeight
+				n.GPUStretchDestinationX = pending.destinationX
+				n.GPUStretchDestinationY = pending.destinationY
 				n.GPUStretchDestinationWidth = pending.destinationWidth
 				n.GPUStretchDestinationHeight = pending.destinationHeight
 				n.RGBA = pending.sourcePixels

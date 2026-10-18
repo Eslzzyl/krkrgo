@@ -2,6 +2,7 @@ package tjs
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,25 @@ func TestVMNativeHostErrorsBecomeCatchableExceptions(t *testing.T) {
 		t.Fatalf("caught native error = %q, want %q", got.Text(), want)
 	}
 }
+func TestVMNativeHostErrorsKeepWrappedContext(t *testing.T) {
+	program, err := compile("native-error-context.tjs", `try { failNative(); } catch(e) { return e.message; } return "miss";`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm := NewVM()
+	if err := vm.RegisterNative("failNative"); err != nil {
+		t.Fatal(err)
+	}
+	budget := uint64(1000)
+	got, err := vm.Execute(&program, vmNativeErrorHost{err: fmt.Errorf("Layer.loadImages %q: %w", "空_昼.png", errors.New("unsupported media codec"))}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `Layer.loadImages "空_昼.png": unsupported media codec`; got.Text() != want {
+		t.Fatalf("caught native error = %q, want %q", got.Text(), want)
+	}
+}
+
 func TestVMUncaughtThrownObjectsUseScalarMessage(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -478,3 +478,39 @@ func BenchmarkCaptureRenderPlanUniversalTransition(b *testing.B) {
 		})
 	}
 }
+
+func TestGPUStretchPartialDestinationMaterializesAtPlanCapture(t *testing.T) {
+	root := NewRootLayer(1, 8, 4)
+	if err := root.SetRGBA(8, 4, make([]byte, 8*4*4)); err != nil {
+		t.Fatal(err)
+	}
+	source := NewLayer(2)
+	if err := source.SetRGBA(2, 1, []byte{
+		10, 20, 30, 255, 40, 50, 60, 255,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !root.deferGPUStretchCopyRect(nativeLayerImage{
+		layer: source, width: source.ImageWidth, height: source.ImageHeight, pixels: source.RGBA,
+	}, 0, 0, 4, 2, 0, 0, 2, 1, 1) {
+		t.Fatal("partial-destination GPU stretch was not deferred")
+	}
+	if root.gpuStretch == nil {
+		t.Fatal("partial-destination stretch is missing its pending copy")
+	}
+	services := DefaultServices()
+	services.Root = root
+	plan, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Nodes) != 1 || plan.Nodes[0].GPUStretch {
+		t.Fatalf("partial-destination plan = %+v, want CPU materialization", plan.Nodes)
+	}
+	if root.gpuStretch != nil {
+		t.Fatal("partial-destination pending copy was not materialized")
+	}
+	if !bytes.Equal(plan.Nodes[0].RGBA, root.RGBA) {
+		t.Fatal("partial-destination plan RGBA differs from the materialized layer")
+	}
+}

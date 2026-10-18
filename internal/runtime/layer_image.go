@@ -49,8 +49,8 @@ func (l *Layer) materializeGPUStretch() error {
 		return fmt.Errorf("%w: GPU stretch source is empty", ErrInvalidLayer)
 	}
 	return l.stretchCopyPixels(source, pending.sourceWidth, pending.sourceHeight,
-		0, 0, pending.destinationWidth, pending.destinationHeight, 0, 0,
-		pending.sourceWidth, pending.sourceHeight, pending.stretchType)
+		pending.destinationX, pending.destinationY, pending.destinationWidth, pending.destinationHeight,
+		pending.sourceX, pending.sourceY, pending.cropWidth, pending.cropHeight, pending.stretchType)
 }
 
 func validLayerPixels(l *Layer) error {
@@ -69,13 +69,18 @@ func validLayerPixels(l *Layer) error {
 	return nil
 }
 func (l *Layer) deferGPUStretchCopy(source nativeLayerImage, width, height, sourceWidth, sourceHeight, stretchType int32) bool {
+	return l.deferGPUStretchCopyRect(source, 0, 0, width, height, 0, 0,
+		sourceWidth, sourceHeight, stretchType)
+}
+
+func (l *Layer) deferGPUStretchCopyRect(source nativeLayerImage, dx, dy, width, height, sx, sy, cropWidth, cropHeight, stretchType int32) bool {
 	if l == nil || width <= 0 || height <= 0 ||
-		width > l.ImageWidth || height > l.ImageHeight ||
+		int64(dx) >= int64(l.ImageWidth) || int64(dy) >= int64(l.ImageHeight) ||
+		int64(dx)+int64(width) <= 0 || int64(dy)+int64(height) <= 0 ||
 		!validLayerImageSize(l.ImageWidth, l.ImageHeight, len(l.RGBA), 4) ||
-		sourceWidth != source.width || sourceHeight != source.height ||
-		source.layer == l || source.layer != nil && source.layer.gpuStretch != nil ||
-		l.clipSet && (l.clip.X > 0 || l.clip.Y > 0 ||
-			l.clip.Right() < width || l.clip.Bottom() < height) {
+		cropWidth <= 0 || cropHeight <= 0 || sx < 0 || sy < 0 ||
+		int64(sx)+int64(cropWidth) > int64(source.width) || int64(sy)+int64(cropHeight) > int64(source.height) ||
+		source.layer == l || source.layer != nil && source.layer.gpuStretch != nil {
 		return false
 	}
 	filter := stretchType & 0xffff
@@ -87,9 +92,17 @@ func (l *Layer) deferGPUStretchCopy(source nativeLayerImage, width, height, sour
 		(face != layerFaceOpaque || l.HoldAlpha) {
 		return false
 	}
+	if l.gpuMotion != nil {
+		if err := l.materializeGPUMotion(); err != nil {
+			return false
+		}
+	}
 	l.gpuStretch = &gpuStretchCopy{
 		sourceLayer: source.layer, sourceBitmap: source.bitmap, sourcePixels: source.pixels,
+		sourceID:    uint64(source.id),
 		sourceWidth: source.width, sourceHeight: source.height,
+		sourceX: sx, sourceY: sy, cropWidth: cropWidth, cropHeight: cropHeight,
+		destinationX: dx, destinationY: dy,
 		destinationWidth: width, destinationHeight: height,
 		stretchType: stretchType,
 	}
@@ -1616,7 +1629,7 @@ func (s *Services) layerImageNative(l *Layer, operation string, args []tjs.Value
 		if !s.nativeLayerImageStillValid(source) {
 			return fmt.Errorf("Layer.%s source was invalidated", operation)
 		}
-		if s.gpuCapture && l.deferGPUStretchCopy(source, width, height, sourceWidth, sourceHeight, stretchType) {
+		if s.gpuCapture && l.deferGPUStretchCopyRect(source, dx, dy, width, height, sx, sy, sourceWidth, sourceHeight, stretchType) {
 			return nil
 		}
 		return l.stretchCopyPixels(source.pixels, source.width, source.height, dx, dy, width, height, sx, sy, sourceWidth, sourceHeight, stretchType)

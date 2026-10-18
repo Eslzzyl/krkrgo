@@ -64,7 +64,9 @@ type GPUCompositor struct {
 	uniforms       map[string]any
 	sourceOrigin   [2]float32
 	sourceScale    [2]float32
-	sourceSize     [2]float32
+	sourceOffset   [2]float32
+	sourceMin      [2]float32
+	sourceMax      [2]float32
 	ruleOrigin     [2]float32
 	crossfade      *ebiten.Shader
 	universal      *ebiten.Shader
@@ -524,13 +526,24 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 						destinationWidth, destinationHeight = n.GPUStretchDestinationWidth, n.GPUStretchDestinationHeight
 					}
 					c.sourceScale[0], c.sourceScale[1] = 1, 1
-					if n.GPUStretch {
-						c.sourceScale[0] = float32(n.GPUStretchSourceWidth) / float32(destinationWidth)
-						c.sourceScale[1] = float32(n.GPUStretchSourceHeight) / float32(destinationHeight)
+					c.sourceOffset[0], c.sourceOffset[1] = 0, 0
+					c.sourceMin[0], c.sourceMin[1] = 0.5, 0.5
+					c.sourceMax[0], c.sourceMax[1] = float32(sourceWidth)-0.5, float32(sourceHeight)-0.5
+					if n.GPUStretch && n.GPUStretchCropWidth > 0 && n.GPUStretchCropHeight > 0 &&
+						destinationWidth > 0 && destinationHeight > 0 {
+						c.sourceScale[0] = float32(n.GPUStretchCropWidth) / float32(destinationWidth)
+						c.sourceScale[1] = float32(n.GPUStretchCropHeight) / float32(destinationHeight)
+						c.sourceOffset[0] = float32(n.GPUStretchSourceX) - float32(n.GPUStretchDestinationX)*c.sourceScale[0]
+						c.sourceOffset[1] = float32(n.GPUStretchSourceY) - float32(n.GPUStretchDestinationY)*c.sourceScale[1]
+						c.sourceMin[0] = float32(n.GPUStretchSourceX) + 0.5
+						c.sourceMin[1] = float32(n.GPUStretchSourceY) + 0.5
+						c.sourceMax[0] = float32(n.GPUStretchSourceX+n.GPUStretchCropWidth) - 0.5
+						c.sourceMax[1] = float32(n.GPUStretchSourceY+n.GPUStretchCropHeight) - 0.5
 					}
-					c.sourceSize[0], c.sourceSize[1] = float32(sourceWidth), float32(sourceHeight)
 					uniforms["SourceScale"] = c.sourceScale[:]
-					uniforms["SourceSize"] = c.sourceSize[:]
+					uniforms["SourceOffset"] = c.sourceOffset[:]
+					uniforms["SourceMin"] = c.sourceMin[:]
+					uniforms["SourceMax"] = c.sourceMax[:]
 					if n.GPUStretch || n.Motion != nil {
 						uniforms["SourceLinear"] = float32(1)
 					} else {
@@ -564,10 +577,24 @@ func gpuSourceRect(n runtime.RenderNode, x0, y0, x1, y1 int64) (image.Rectangle,
 	}
 	sourceWidth, sourceHeight := int64(n.GPUStretchSourceWidth), int64(n.GPUStretchSourceHeight)
 	destinationWidth, destinationHeight := int64(n.GPUStretchDestinationWidth), int64(n.GPUStretchDestinationHeight)
-	sourceX0 := x0 * sourceWidth / destinationWidth
-	sourceY0 := y0 * sourceHeight / destinationHeight
-	sourceX1 := x1 * sourceWidth / destinationWidth
-	sourceY1 := y1 * sourceHeight / destinationHeight
+	cropWidth, cropHeight := int64(n.GPUStretchCropWidth), int64(n.GPUStretchCropHeight)
+	sourceX := int64(n.GPUStretchSourceX)
+	sourceY := int64(n.GPUStretchSourceY)
+	destinationX := int64(n.GPUStretchDestinationX)
+	destinationY := int64(n.GPUStretchDestinationY)
+	if cropWidth <= 0 || cropHeight <= 0 || destinationWidth <= 0 || destinationHeight <= 0 {
+		return image.Rect(0, 0, int(sourceWidth), int(sourceHeight)), 1, 1
+	}
+	sourceX0 := sourceX + (x0-destinationX)*cropWidth/destinationWidth
+	sourceY0 := sourceY + (y0-destinationY)*cropHeight/destinationHeight
+	sourceX1 := sourceX + (x1-destinationX)*cropWidth/destinationWidth
+	sourceY1 := sourceY + (y1-destinationY)*cropHeight/destinationHeight
+	if sourceX0 < 0 {
+		sourceX0 = 0
+	}
+	if sourceY0 < 0 {
+		sourceY0 = 0
+	}
 	if sourceX1 <= sourceX0 {
 		sourceX1 = sourceX0 + 1
 	}
@@ -581,8 +608,8 @@ func gpuSourceRect(n runtime.RenderNode, x0, y0, x1, y1 int64) (image.Rectangle,
 		sourceY1 = sourceHeight
 	}
 	return image.Rect(int(sourceX0), int(sourceY0), int(sourceX1), int(sourceY1)),
-		float64(destinationWidth) / float64(sourceWidth),
-		float64(destinationHeight) / float64(sourceHeight)
+		float64(destinationWidth) / float64(cropWidth),
+		float64(destinationHeight) / float64(cropHeight)
 }
 
 func (c *GPUCompositor) drawOpaqueLayer(source *ebiten.Image, x0, y0, x1, y1 int64, ax, ay int32, n runtime.RenderNode) {

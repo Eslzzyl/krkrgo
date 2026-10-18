@@ -79,7 +79,7 @@ func (s *Services) loadTransitionRule(name string, width, height int32) ([]byte,
 	if err != nil {
 		return nil, err
 	}
-	image, err := assets.DecodeIndexedImage(data)
+	image, err := assets.DecodeTransitionRuleImage(data)
 	if err != nil {
 		return nil, fmt.Errorf("transition rule %q: %w", name, err)
 	}

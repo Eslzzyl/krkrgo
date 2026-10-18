@@ -1131,8 +1131,8 @@ func TestExecuteLegacyCALLDOperationErrorTransfersToEntryHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Kind() != KindString || got.Text() != "operation failed" {
-		t.Fatalf("caught operation error = %v (kind %v), want %q", got, got.Kind(), "operation failed")
+	if got.Kind() != KindString || !strings.Contains(got.Text(), "operation failed") {
+		t.Fatalf("caught operation error = %v (kind %v), want containing %q", got, got.Kind(), "operation failed")
 	}
 }
 

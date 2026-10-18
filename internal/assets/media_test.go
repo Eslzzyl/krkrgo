@@ -13,6 +13,26 @@ import (
 	"testing"
 )
 
+func TestDecodeTransitionRuleRGBA(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	img.SetRGBA(0, 0, color.RGBA{255, 255, 255, 255})
+	img.SetRGBA(1, 0, color.RGBA{0, 0, 0, 255})
+	img.SetRGBA(0, 1, color.RGBA{255, 0, 0, 255})
+	img.SetRGBA(1, 1, color.RGBA{0, 255, 0, 255})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, img); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeTransitionRuleImage(encoded.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{255, 0, 76, 150}
+	if got.Width != 2 || got.Height != 2 || !bytes.Equal(got.Pixels, want) {
+		t.Fatalf("transition rule = %dx%d %v, want 2x2 %v", got.Width, got.Height, got.Pixels, want)
+	}
+}
+
 func TestDecodeIndexedPNGAndBMP(t *testing.T) {
 	pal := color.Palette{color.RGBA{10, 20, 30, 255}, color.RGBA{200, 100, 50, 255}}
 	indexed := image.NewPaletted(image.Rect(0, 0, 3, 2), pal)

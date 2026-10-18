@@ -29,6 +29,24 @@ func DecodeIndexedImage(data []byte) (IndexedImage, error) {
 	return IndexedImage{}, unsupported("indexed image format")
 }
 
+// DecodeTransitionRuleImage converts a transition rule image into one byte per
+// pixel. KAG rule images are ordinary RGBA PNG/WebP files whose RGB luminance
+// selects the transition threshold; only palettized and grayscale PNG/BMP data
+// carry indices directly.
+func DecodeTransitionRuleImage(data []byte) (IndexedImage, error) {
+	image, err := DecodeImage(data)
+	if err != nil {
+		return IndexedImage{}, err
+	}
+	pixels := make([]byte, uint64(image.Width)*uint64(image.Height))
+	for i := range pixels {
+		offset := i * 4
+		luma := (299*uint32(image.RGBA[offset]) + 587*uint32(image.RGBA[offset+1]) + 114*uint32(image.RGBA[offset+2]) + 500) / 1000
+		pixels[i] = byte(luma)
+	}
+	return IndexedImage{Width: image.Width, Height: image.Height, Pixels: pixels}, nil
+}
+
 // DecodeIndexed is an alias for DecodeIndexedImage.
 func DecodeIndexed(data []byte) (IndexedImage, error) { return DecodeIndexedImage(data) }
 

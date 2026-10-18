@@ -180,3 +180,43 @@ func TestPremultipliedPixelsPreservesOpaqueRGB(t *testing.T) {
 		}
 	}
 }
+
+func TestGPUSourceRectCropMapping(t *testing.T) {
+	base := runtime.RenderNode{
+		GPUStretch:                  true,
+		GPUStretchSourceWidth:       4,
+		GPUStretchSourceHeight:      4,
+		GPUStretchCropWidth:         2,
+		GPUStretchCropHeight:        2,
+		GPUStretchSourceX:           1,
+		GPUStretchSourceY:           1,
+		GPUStretchDestinationWidth:  8,
+		GPUStretchDestinationHeight: 8,
+	}
+	rect, scaleX, scaleY := gpuSourceRect(base, 0, 0, 8, 8)
+	if rect.Min.X != 1 || rect.Min.Y != 1 || rect.Max.X != 3 || rect.Max.Y != 3 {
+		t.Fatalf("crop source rect = %v, want (1,1)-(3,3)", rect)
+	}
+	if scaleX != 4 || scaleY != 4 {
+		t.Fatalf("crop scale = %v,%v, want 4,4", scaleX, scaleY)
+	}
+
+	offset := base
+	offset.GPUStretchDestinationX = 2
+	offset.GPUStretchDestinationY = 2
+	rect, _, _ = gpuSourceRect(offset, 2, 2, 10, 10)
+	if rect.Min.X != 1 || rect.Min.Y != 1 || rect.Max.X != 3 || rect.Max.Y != 3 {
+		t.Fatalf("offset source rect = %v, want (1,1)-(3,3)", rect)
+	}
+
+	zeroCrop := base
+	zeroCrop.GPUStretchCropWidth = 0
+	zeroCrop.GPUStretchCropHeight = 0
+	rect, scaleX, scaleY = gpuSourceRect(zeroCrop, 0, 0, 8, 8)
+	if rect.Min.X != 0 || rect.Min.Y != 0 || rect.Max.X != 4 || rect.Max.Y != 4 {
+		t.Fatalf("zero-crop fallback rect = %v, want full source", rect)
+	}
+	if scaleX != 1 || scaleY != 1 {
+		t.Fatalf("zero-crop scale = %v,%v, want 1,1", scaleX, scaleY)
+	}
+}

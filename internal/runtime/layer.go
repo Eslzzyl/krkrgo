@@ -257,8 +257,15 @@ type gpuStretchCopy struct {
 	sourceLayer       *Layer
 	sourceBitmap      *Bitmap
 	sourcePixels      []byte
+	sourceID          uint64
 	sourceWidth       int32
 	sourceHeight      int32
+	sourceX           int32
+	sourceY           int32
+	cropWidth         int32
+	cropHeight        int32
+	destinationX      int32
+	destinationY      int32
 	destinationWidth  int32
 	destinationHeight int32
 	stretchType       int32
