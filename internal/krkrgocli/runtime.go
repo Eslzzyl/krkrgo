@@ -32,6 +32,8 @@ type LaunchOptions struct {
 	Budget      uint64
 	Renderer    string
 	RenderScale int
+	Upscaler    string
+	Anime4K     bool
 }
 
 const (
@@ -48,6 +50,8 @@ func ParseLaunchArgs(args []string) (LaunchOptions, error) {
 	fs.Uint64Var(&opts.Budget, "budget", unlimitedBudget, "diagnostic session instruction limit (default: unlimited)")
 	fs.StringVar(&opts.Renderer, "renderer", rendererGPU, "renderer backend: gpu or cpu (default: gpu)")
 	fs.IntVar(&opts.RenderScale, "render-scale", 0, "rendering pixel density: 1-4, or 0 for the monitor scale (default: 0)")
+	fs.StringVar(&opts.Upscaler, "upscaler", "off", "frame upscaler: off, bilinear, bicubic, anime4k (requires -render-scale 2)")
+	fs.BoolVar(&opts.Anime4K, "anime4k", false, "alias for -upscaler anime4k")
 	if err := fs.Parse(args); err != nil {
 		return LaunchOptions{}, err
 	}
@@ -56,6 +60,20 @@ func ParseLaunchArgs(args []string) (LaunchOptions, error) {
 	}
 	if opts.RenderScale < 0 || opts.RenderScale > 4 {
 		return LaunchOptions{}, fmt.Errorf("unsupported render scale %d; want 0 through 4", opts.RenderScale)
+	}
+	if opts.Upscaler == "off" {
+		opts.Upscaler = ""
+	}
+	if opts.Anime4K {
+		if opts.Upscaler != "" && opts.Upscaler != "anime4k" {
+			return LaunchOptions{}, fmt.Errorf("-anime4k conflicts with -upscaler %s", opts.Upscaler)
+		}
+		opts.Upscaler = "anime4k"
+	}
+	switch opts.Upscaler {
+	case "", "bilinear", "bicubic", "anime4k":
+	default:
+		return LaunchOptions{}, fmt.Errorf("unsupported upscaler %q; want off, bilinear, bicubic, or anime4k", opts.Upscaler)
 	}
 	if fs.NArg() != 0 {
 		return LaunchOptions{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
@@ -213,6 +231,16 @@ func RunGame(args []string) {
 	if scale == 0 {
 		scale = displayRenderScale()
 	}
+	if opts.Upscaler != "" {
+		if opts.Renderer != rendererGPU {
+			log.Fatalf("%s upscaling requires the gpu renderer", opts.Upscaler)
+		}
+		if scale != 2 {
+			log.Fatalf("%s upscaling requires -render-scale 2; resolved scale is %d", opts.Upscaler, scale)
+		}
+		// The frame post-processor consumes a 1x composition and produces 2x.
+		scale = 1
+	}
 	session, err := NewSessionWithScale(opts.Project, opts.SaveDir, opts.Budget, scale)
 	if err != nil {
 		log.Fatal(formatErrorChain(err))
@@ -231,6 +259,11 @@ func RunGame(args []string) {
 		game = host.NewCPUGameWithInitialWindowSize(session, defaultWidth, defaultHeight)
 	} else {
 		game = host.NewGameWithInitialWindowSize(session, defaultWidth, defaultHeight)
+	}
+	defer game.Deallocate()
+	if opts.Upscaler != "" {
+		game.EnableUpscaler(host.Upscaler(opts.Upscaler))
+		game.SetOutputScale(2)
 	}
 	audioDiagnostics := os.Getenv("KRKRGO_AUDIO_DIAGNOSTICS") == "1"
 	audioContext := audio.NewContext(runtime.OutputRate)

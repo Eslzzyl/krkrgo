@@ -446,3 +446,8 @@ Darwin/arm64、Apple M1 Pro 的包级结果：
 SIMD 行扫描约比标量行扫描快 3 倍，alpha-over 不透明目标行混合约快 3 倍，2× 行复制约快 13 倍。1280×720 全屏半透明图层带 province 的合成从约 1.4 ms/op 降到约 0.68 ms/op。amd64 的 SSE2 路径已用 Rosetta 运行 `internal/simd`、`internal/runtime` 和 `internal/host` 测试；linux/windows amd64、linux/windows arm64、darwin amd64 均已交叉编译通过。非 SIMD 架构的纯 Go 回退也已通过 linux/386 编译。
 
 这些是孤立包级 benchmark；整项目回放和交互帧时间仍需单独测量。
+
+
+### 帧超分后处理
+
+`bilinear`、`bicubic`、`anime4k` 三种帧后处理器的实现、缓存、限制和验证命令集中在 [Frame Upscaling](upscaling.md)。

@@ -62,6 +62,14 @@ type Game struct {
 	gpu                     *GPUCompositor
 	gpuImage                *ebiten.Image
 	gpuInitAttempted        bool
+
+	upscalerRequested     Upscaler
+	upscalerInitAttempted bool
+	postProcessor         PostProcessor
+	postOutput            *ebiten.Image
+	postStateHash         uint64
+	postStateValid        bool
+	outputScale           int
 }
 
 // renderStats is opt-in to keep clock reads and logging out of normal runs.
@@ -377,6 +385,19 @@ func (g *Game) Update() error {
 			log.Printf("krkrgo: GPU renderer unavailable, falling back to CPU: %v", err)
 			g.rendererMode = rendererCPU
 			g.gpu = nil
+			g.upscalerRequested = UpscalerOff
+			g.setOutputScale(1)
+		}
+	}
+	if g.rendererMode == rendererGPU && g.upscalerRequested != UpscalerOff && !g.upscalerInitAttempted {
+		g.upscalerInitAttempted = true
+		post, err := newPostProcessor(g.upscalerRequested)
+		if err != nil {
+			log.Printf("krkrgo: upscaler unavailable, using native scaling: %v", err)
+			g.upscalerRequested = UpscalerOff
+			g.setOutputScale(1)
+		} else {
+			g.postProcessor = post
 		}
 	}
 	realtimeAudio := g.audioOutput != nil
@@ -482,11 +503,77 @@ func (g *Game) Update() error {
 }
 
 func (g *Game) composeGPUPlan(plan runtime.RenderPlan) (*ebiten.Image, error) {
+	var base *ebiten.Image
+	var err error
 	if plan.StateHashStable && plan.StateHashValid {
-		return g.gpu.composeStable(plan)
+		base, err = g.gpu.composeStable(plan)
+	} else {
+		g.gpu.invalidateStateCache()
+		base, err = g.gpu.Compose(plan)
 	}
-	g.gpu.invalidateStateCache()
-	return g.gpu.Compose(plan)
+	if err != nil {
+		return nil, err
+	}
+	if g.upscalerRequested == UpscalerOff || g.postProcessor == nil {
+		return base, nil
+	}
+	baseWidth, baseHeight := base.Bounds().Dx(), base.Bounds().Dy()
+	if plan.StateHashValid && g.postStateValid && g.postStateHash == plan.StateHash &&
+		g.postOutput != nil && g.postOutput.Bounds().Dx() == baseWidth*2 && g.postOutput.Bounds().Dy() == baseHeight*2 {
+		return g.postOutput, nil
+	}
+	out, err := g.postProcessor.Process(base)
+	if err != nil {
+		log.Printf("krkrgo: post-processing failed, using native scaling: %v", err)
+		g.upscalerRequested = UpscalerOff
+		g.postStateValid = false
+		g.setOutputScale(1)
+		return base, nil
+	}
+	g.postOutput = out
+	g.postStateHash = plan.StateHash
+	g.postStateValid = plan.StateHashValid
+	return out, nil
+}
+
+// EnableUpscaler requests a frame post-processor. The GPU renderer falls back
+// to native scaling if shader compilation fails.
+func (g *Game) EnableUpscaler(mode Upscaler) {
+	if g != nil {
+		g.upscalerRequested = mode
+	}
+}
+
+// SetOutputScale sets the presentation scale used for window sizing. It is
+// separate from the runtime render scale when frame upscaling is active.
+func (g *Game) SetOutputScale(scale int) {
+	if g == nil || scale < 1 {
+		return
+	}
+	g.setOutputScale(scale)
+}
+
+func (g *Game) setOutputScale(scale int) {
+	if scale < 1 {
+		scale = 1
+	}
+	g.outputScale = scale
+	g.poller.scale = int32(scale)
+}
+
+// Deallocate releases GPU presentation resources owned by the game.
+func (g *Game) Deallocate() {
+	if g == nil {
+		return
+	}
+	if g.postProcessor != nil {
+		g.postProcessor.Deallocate()
+		g.postProcessor = nil
+	}
+	if g.gpu != nil {
+		g.gpu.Deallocate()
+		g.gpu = nil
+	}
 }
 
 func (g *Game) updateGPUPresentation(plan runtime.RenderPlan) error {
@@ -496,7 +583,7 @@ func (g *Game) updateGPUPresentation(plan runtime.RenderPlan) error {
 	if g.gpuImage == nil {
 		return fmt.Errorf("GPU compositor returned no image")
 	}
-	width, height := int(plan.Width), int(plan.Height)
+	width, height := g.gpuImage.Bounds().Dx(), g.gpuImage.Bounds().Dy()
 	changed := g.imageWidth != width || g.imageHeight != height
 	g.imageWidth, g.imageHeight = width, height
 	g.presentationChanges = 0
@@ -844,8 +931,14 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 
 func (g *Game) logicalWindowSize(width, height int) (int, int) {
 	scale := 1
-	if g != nil && g.session != nil && g.session.Services != nil && g.session.Services.RenderScale > 1 {
-		scale = int(g.session.Services.RenderScale)
+	if g != nil {
+		scale = g.outputScale
+		if scale < 1 && g.session != nil && g.session.Services != nil && g.session.Services.RenderScale > 1 {
+			scale = int(g.session.Services.RenderScale)
+		}
+	}
+	if scale < 1 {
+		scale = 1
 	}
 	return width / scale, height / scale
 }
