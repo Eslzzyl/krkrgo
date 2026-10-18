@@ -2409,6 +2409,11 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 				return tjs.VoidValue, e
 			}
 		}
+		if strings.HasSuffix(key, "psd.dll") {
+			if e := installPSDNative(vm, s); e != nil {
+				return tjs.VoidValue, e
+			}
+		}
 		if strings.HasSuffix(key, "getsample.dll") {
 			if s.samplePluginVMs == nil {
 				s.samplePluginVMs = make(map[*tjs.VM]struct{})

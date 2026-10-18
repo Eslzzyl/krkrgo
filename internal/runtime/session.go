@@ -339,7 +339,7 @@ func (s *Session) registerNatives() error {
 	if err := s.VM.RegisterNativeMethod(storages, "@initialize", "Storages.@initialize"); err != nil {
 		return err
 	}
-	for _, method := range []string{"addArchive", "addAutoPath", "removeAutoPath", "getFullPath", "getPlacedPath", "getLocalName", "isExistentStorage", "isExistentDirectory", "getListAt", "fstat", "dirlist", "dirlistEx", "extractStorageExt", "extractStorageName", "extractStoragePath", "chopStorageExt", "clearArchiveCache"} {
+	for _, method := range []string{"addArchive", "addAutoPath", "removeAutoPath", "getFullPath", "getPlacedPath", "getLocalName", "isExistentStorage", "isExistentDirectory", "getListAt", "fstat", "dirlist", "dirlistEx", "extractStorageExt", "extractStorageName", "extractStoragePath", "chopStorageExt", "clearArchiveCache", "clearStorageCaches", "getTime", "setTime", "getLastModifiedFileTime", "setLastModifiedFileTime", "exportFile", "deleteFile", "truncateFile", "moveFile", "dirtree", "removeDirectory", "createDirectory", "createDirectoryNoNormalize", "changeDirectory", "setFileAttributes", "resetFileAttributes", "getFileAttributes", "selectDirectory", "copyFile", "copyFileNoNormalize", "isExistentStorageNoSearchNoNormalize", "getDisplayName", "searchPath"} {
 		if err := s.VM.RegisterNativeStaticMethod(storages, method, "Storages."+method); err != nil {
 			return err
 		}
@@ -1993,6 +1993,7 @@ func (s *Session) Close() error {
 		s.Services.mu.Unlock()
 		s.AudioOutput = nil
 	}
+	clearPSDDocuments(s.VM)
 	s.VM = nil
 	return nil
 }

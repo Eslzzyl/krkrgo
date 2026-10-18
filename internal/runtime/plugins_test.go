@@ -45,6 +45,34 @@ func TestBuiltinPluginLinksNormalizePathsCaseAndExtensions(t *testing.T) {
 	}
 }
 
+func TestMigratedPluginLinksExposeTheirSurfaces(t *testing.T) {
+	services := DefaultServices()
+	session := NewSession(services, 100_000)
+	defer session.Close()
+
+	for _, link := range []string{
+		`Plugins.link("plugin/fstat.dll")`,
+		`Plugins.link("plugin/wutcwf.dll")`,
+		`Plugins.link("plugin/psd.dll")`,
+	} {
+		if _, err := session.Evaluate(link); err != nil {
+			t.Fatalf("%s: %v", link, err)
+		}
+	}
+	for _, source := range []string{
+		`typeof Storages.searchPath === "Object"`,
+		`typeof PSD === "Object"`,
+	} {
+		value, err := session.Evaluate(source)
+		if err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+		if ok, _ := value.Truth(); !ok {
+			t.Fatalf("%s = false", source)
+		}
+	}
+}
+
 func TestPackinOnePluginLinkIsIdempotentAndListed(t *testing.T) {
 	services := DefaultServices()
 	session := NewSession(services, 100_000)

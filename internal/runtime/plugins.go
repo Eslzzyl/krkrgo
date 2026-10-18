@@ -58,6 +58,7 @@ var nativePluginProviders = map[string]string{
 	"extnagano.dll":     "link-only: the module installs transition providers without TJS globals; Layer.beginTransition supports its spin provider alongside crossfade and universal",
 	"extrans.dll":       "link-only: the module installs transition providers without TJS globals; Layer.beginTransition keeps its built-in crossfade/universal providers and rejects the other extrans providers",
 	"fftgraph.dll":      "drawFFTGraph global; graph rendering reports an unsupported device (lightweight_plugins_native.go; cpp/plugins/fftgraph.cpp)",
+	"fstat.dll":         "Storages file metadata and mutation helpers (storages_native.go; cpp/plugins/fstat)",
 	"getabout.dll":      "System.getAboutString (system_native.go; cpp/plugins/getabout.cpp)",
 	"getsample.dll":     "WaveSoundBuffer sample extensions (sample_native.go; cpp/plugins/getSample.cpp)",
 	"kagparser.dll":     "built-in KAGParser; KAGParserEx.dll resolves here (kag_native.go; cpp/plugins/KAGParser/kagparserex.cpp)",
@@ -70,11 +71,13 @@ var nativePluginProviders = map[string]string{
 	"motionplayer.dll":  "Motion resource manager subset with layer/shape/play constants (motionplayer_native.go; cpp/plugins/motionplayer)",
 	"packinone.dll":     "component container for the ScriptsEx/saveStruct/csvParser/LayerExImage exports the runtime already provides (scripts_ex_native.go, tjs/serialization.go, csv_parser_native.go)",
 	"psbfile.dll":       "PSBFile (psbfile_native.go; cpp/plugins/psbfile)",
+	"psd.dll":           "PSD parser and portable PSD class (psd_native.go, assets/psd.go; cpp/plugins/psdfile)",
 	"scriptsex.dll":     "ScriptsEx helpers on the built-in Scripts class (scripts_ex_native.go; cpp/plugins/scriptsEx.cpp)",
 	"textrender.dll":    "TextRenderBase (text_render_native.go; cpp/plugins/TextRender.cpp)",
 	"varfile.dll":       "var:// storage subset (var_storage_native.go; cpp/plugins/varfile.cpp)",
 	"win32dialog.dll":   "portable WIN32Dialog with the host dialog handler (lightweight_plugins_native.go; cpp/plugins/win32dialog.cpp)",
 	"windowex.dll":      "MenuItem surface plus Window extension natives (menu_native.go, window_native.go; cpp/plugins/windowEx.cpp)",
+	"wutcwf.dll":        "TCWF0 ADPCM decoding in WaveSoundBuffer (assets/wutcwf.go; cpp/plugins/wutcwf.cpp)",
 	"wuvorbis.dll":      "link-only: Ogg Vorbis decoding is already in the core sound path (sound.go with the FFmpeg sidecar; cpp/core/sound/VorbisWaveDecoder.cpp)",
 }
 
