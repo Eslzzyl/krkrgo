@@ -393,7 +393,7 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 	}
 	layer.ImageLeft = maxInt32(layer.ImageLeft, layer.Bounds.Width-width)
 	layer.ImageTop = maxInt32(layer.ImageTop, layer.Bounds.Height-height)
-	layer.RGBA = decoded.RGBA
+	layer.RGBA = scaleRGBA(decoded.RGBA, width, height, layer.RenderScale())
 	layer.ImageWidth, layer.ImageHeight = width, height
 	layer.Province = append(layer.Province[:0], province...)
 	if len(province) == 0 {
@@ -424,7 +424,7 @@ func (s *Services) layerLoadProvinceImage(layer *Layer, id tjs.ObjectID, args []
 		s.mu.Unlock()
 		return fmt.Errorf("Layer.loadProvinceImage: context has no Layer native instance")
 	}
-	if !validLayerImageSize(layer.ImageWidth, layer.ImageHeight, len(layer.RGBA), 4) {
+	if !layer.validImage() {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: Layer.loadProvinceImage requires a main image", ErrInvalidLayer)
 	}
@@ -473,8 +473,8 @@ func (s *Services) layerLoadProvinceImage(layer *Layer, id tjs.ObjectID, args []
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.Layers[id] != layer || layer.ImageWidth != width || layer.ImageHeight != height ||
-		!validLayerImageSize(width, height, len(layer.RGBA), 4) {
+	if s.Layers[id] != layer || !layer.validImage() ||
+		layer.ImageWidth != width || layer.ImageHeight != height {
 		layer.Province = nil
 		layer.ProvinceWidth, layer.ProvinceHeight = 0, 0
 		return fmt.Errorf("%w: Layer.loadProvinceImage main image changed during load", ErrInvalidLayer)

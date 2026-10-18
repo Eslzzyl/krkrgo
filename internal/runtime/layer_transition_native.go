@@ -222,7 +222,7 @@ func (s *Services) layerTransition(vm *tjs.VM, context tjs.Value, operation stri
 		if !ok || ruleValue.IsVoid() || ruleValue.Text() == "" {
 			return tjs.VoidValue, fmt.Errorf("Layer.beginTransition: options.rule is required for universal transitions")
 		}
-		rule, err = s.loadTransitionRule(ruleValue.Text(), layer.ImageWidth, layer.ImageHeight)
+		rule, err = s.loadTransitionRule(ruleValue.Text(), layer.deviceWidth(), layer.deviceHeight())
 		if err != nil {
 			return tjs.VoidValue, fmt.Errorf("Layer.beginTransition rule: %w", err)
 		}
@@ -360,7 +360,7 @@ func (s *Services) advanceLayerTransitionsDeferred(vm *tjs.VM, timeMS uint64, se
 		if !(s.gpuCapture && (layer.transitionMethod == "crossfade" || layer.transitionMethod == "universal")) {
 			if layer.transitionMethod == "spin" {
 				blendSpin(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage,
-					layer.ImageWidth, layer.ImageHeight, phase, layer.transitionType1, layer.transitionType2, layer.transitionAccel)
+					layer.deviceWidth(), layer.deviceHeight(), phase, layer.transitionType1, layer.transitionType2, layer.transitionAccel)
 			} else if layer.transitionMethod == "universal" {
 				blendUniversal(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage,
 					layer.transitionRule, phase, layer.transitionVague)

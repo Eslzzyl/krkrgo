@@ -310,6 +310,7 @@ func newGameWithRenderer(session *runtime.Session, mode rendererMode) *Game {
 	game.renderStats.stallTrace = runtime.StallTraceEnabled()
 	if session != nil && session.Services != nil {
 		game.windowID = session.Services.MainWindow
+		game.poller.scale = session.Services.RenderScale
 	}
 	return game
 }
@@ -500,13 +501,14 @@ func (g *Game) updateGPUPresentation(plan runtime.RenderPlan) error {
 	g.imageWidth, g.imageHeight = width, height
 	g.presentationChanges = 0
 	if changed {
+		logicalWidth, logicalHeight := g.logicalWindowSize(width, height)
 		resizeWindow := true
 		if g.initialWindowSizeSet {
-			resizeWindow = width != g.initialWindowWidth || height != g.initialWindowHeight
+			resizeWindow = logicalWidth != g.initialWindowWidth || logicalHeight != g.initialWindowHeight
 			g.initialWindowSizeSet = false
 		}
 		if resizeWindow && g.resizeWindow != nil {
-			g.resizeWindow(width, height)
+			g.resizeWindow(logicalWidth, logicalHeight)
 		}
 	}
 	g.presentationChanges = 1
@@ -727,20 +729,20 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 		g.presentationOpaque = false
 		g.presentationInitialized = false
 		// Keep the presentation surface at the runtime's native pixel size.
-		// Otherwise Layout resamples a differently-sized game canvas into the
-		// launcher's fixed window, changing antialiased glyph coverage.
+		// The OS window uses logical dimensions so Retina backing pixels map 1:1.
+		logicalWidth, logicalHeight := g.logicalWindowSize(width, height)
 		resizeWindow := true
 		if g.initialWindowSizeSet {
-			resizeWindow = width != g.initialWindowWidth || height != g.initialWindowHeight
+			resizeWindow = logicalWidth != g.initialWindowWidth || logicalHeight != g.initialWindowHeight
 			g.initialWindowSizeSet = false
 		}
 		if resizeWindow && g.resizeWindow != nil {
 			if !surfaceStarted.IsZero() {
 				stageStarted := time.Now()
-				g.resizeWindow(width, height)
+				g.resizeWindow(logicalWidth, logicalHeight)
 				g.renderStats.firstResize = time.Since(stageStarted)
 			} else {
-				g.resizeWindow(width, height)
+				g.resizeWindow(logicalWidth, logicalHeight)
 			}
 		}
 		if !surfaceStarted.IsZero() {
@@ -838,6 +840,14 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 		return nil
 	}
 	return g.updateTransparentPresentation(frame, width, height, n)
+}
+
+func (g *Game) logicalWindowSize(width, height int) (int, int) {
+	scale := 1
+	if g != nil && g.session != nil && g.session.Services != nil && g.session.Services.RenderScale > 1 {
+		scale = int(g.session.Services.RenderScale)
+	}
+	return width / scale, height / scale
 }
 
 // Draw presents the latest runtime frame. Ebitengine applies Layout's logical

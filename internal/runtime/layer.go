@@ -169,6 +169,7 @@ type Layer struct {
 	ID               LayerID
 	Name             string
 	Bounds           Rect
+	Scale            int32
 	Opacity          uint8
 	Visible          bool
 	Enabled          bool
@@ -273,9 +274,158 @@ type gpuStretchCopy struct {
 
 // NewLayer constructs a layer with an immutable-by-convention stable ID.
 func NewLayer(id LayerID) *Layer {
-	return &Layer{ID: id, Opacity: 255, Visible: true, Enabled: true,
+	return &Layer{ID: id, Scale: 1, Opacity: 255, Visible: true, Enabled: true,
 		Type: LayerAlpha, Hit: HitMask, HitThreshold: 1, Face: 128,
 		imageRevision: 1, subtreeRevision: 1}
+}
+
+// RenderScale returns the layer's pixel density. Layers created outside
+// Services use the logical resolution.
+func (l *Layer) RenderScale() int32 {
+	if l == nil || l.Scale < 1 {
+		return 1
+	}
+	return l.Scale
+}
+
+func (l *Layer) deviceWidth() int32 {
+	if l == nil {
+		return 0
+	}
+	return l.ImageWidth * l.RenderScale()
+}
+
+func (l *Layer) deviceHeight() int32 {
+	if l == nil {
+		return 0
+	}
+	return l.ImageHeight * l.RenderScale()
+}
+
+func (l *Layer) devicePixelCount() int64 {
+	if l == nil {
+		return 0
+	}
+	return int64(l.deviceWidth()) * int64(l.deviceHeight())
+}
+
+func (l *Layer) validImage() bool {
+	if l == nil {
+		return false
+	}
+	w, h := l.deviceWidth(), l.deviceHeight()
+	return validLayerImageSize(w, h, len(l.RGBA), 4)
+}
+
+// resampleRGBA resizes a packed RGBA image with nearest-neighbor sampling.
+func resampleRGBA(source []byte, sourceWidth, sourceHeight, width, height int32) []byte {
+	if sourceWidth == width && sourceHeight == height {
+		return append([]byte(nil), source...)
+	}
+	out := make([]byte, int64(width)*int64(height)*4)
+	for y := int32(0); y < height; y++ {
+		sourceY := int64(y) * int64(sourceHeight) / int64(height)
+		for x := int32(0); x < width; x++ {
+			sourceX := int64(x) * int64(sourceWidth) / int64(width)
+			si := (sourceY*int64(sourceWidth) + sourceX) * 4
+			di := (int64(y)*int64(width) + int64(x)) * 4
+			copy(out[di:di+4], source[si:si+4])
+		}
+	}
+	return out
+}
+
+// downscaleRGBA converts a device-resolution RGBA image back to logical pixels
+// by sampling the top-left device pixel of each scale block.
+func downscaleRGBA(source []byte, deviceWidth, deviceHeight, scale int32) []byte {
+	if scale <= 1 {
+		return append([]byte(nil), source...)
+	}
+	width, height := deviceWidth/scale, deviceHeight/scale
+	out := make([]byte, int(width)*int(height)*4)
+	for y := int32(0); y < height; y++ {
+		for x := int32(0); x < width; x++ {
+			si := ((int64(y)*int64(scale))*int64(deviceWidth) + int64(x)*int64(scale)) * 4
+			di := (int64(y)*int64(width) + int64(x)) * 4
+			copy(out[di:di+4], source[si:si+4])
+		}
+	}
+	return out
+}
+
+// scaleRGBA resamples a packed RGBA image by nearest-neighbor replication.
+func scaleRGBA(source []byte, width, height, scale int32) []byte {
+	if scale <= 1 {
+		return append([]byte(nil), source...)
+	}
+	out := make([]byte, int(int64(width)*int64(height)*int64(scale)*int64(scale))*4)
+	destinationWidth := int(width * scale)
+	for y := int32(0); y < height; y++ {
+		for sy := int32(0); sy < scale; sy++ {
+			row := (int(y)*int(scale) + int(sy)) * destinationWidth
+			for x := int32(0); x < width; x++ {
+				si := (int(y)*int(width) + int(x)) * 4
+				for sx := int32(0); sx < scale; sx++ {
+					di := (row + int(x*scale) + int(sx)) * 4
+					copy(out[di:di+4], source[si:si+4])
+				}
+			}
+		}
+	}
+	return out
+}
+
+// SetScale changes the layer's pixel density and resamples its image buffers.
+// Logical dimensions and coordinates are unchanged.
+func (l *Layer) SetScale(scale int32) {
+	if l == nil {
+		return
+	}
+	if scale < 1 {
+		scale = 1
+	}
+	if l.Scale == scale {
+		return
+	}
+	oldScale := l.RenderScale()
+	l.Scale = scale
+	if len(l.RGBA) != 0 && l.ImageWidth > 0 && l.ImageHeight > 0 {
+		sourceWidth := l.ImageWidth * oldScale
+		sourceHeight := l.ImageHeight * oldScale
+		l.RGBA = resampleRGBA(l.RGBA, sourceWidth, sourceHeight, l.deviceWidth(), l.deviceHeight())
+		if l.inTransition {
+			l.transitionPixels = resampleRGBA(l.transitionPixels, sourceWidth, sourceHeight, l.deviceWidth(), l.deviceHeight())
+			l.transitionDestImage = resampleRGBA(l.transitionDestImage, sourceWidth, sourceHeight, l.deviceWidth(), l.deviceHeight())
+			l.transitionSourceImage = resampleRGBA(l.transitionSourceImage, sourceWidth, sourceHeight, l.deviceWidth(), l.deviceHeight())
+			l.transitionRule = resampleGray(l.transitionRule, sourceWidth, sourceHeight, l.deviceWidth(), l.deviceHeight())
+			l.transitionHashesValid = false
+		}
+	}
+	l.gpuStretch = nil
+	l.gpuMotion = nil
+	l.imageRevision++
+	l.markRenderDirty()
+}
+
+func resampleGray(pixels []byte, sourceWidth, sourceHeight, width, height int32) []byte {
+	if len(pixels) == 0 || sourceWidth <= 0 || sourceHeight <= 0 || width <= 0 || height <= 0 {
+		return nil
+	}
+	if sourceWidth == width && sourceHeight == height {
+		return pixels
+	}
+	if len(pixels) != int(sourceWidth)*int(sourceHeight) {
+		return nil
+	}
+	out := make([]byte, int(width)*int(height))
+	for y := range height {
+		sourceY := int64(y) * int64(sourceHeight) / int64(height)
+		for x := range width {
+			sourceX := int64(x) * int64(sourceWidth) / int64(width)
+			out[int(y)*int(width)+int(x)] = pixels[sourceY*int64(sourceWidth)+sourceX]
+		}
+	}
+	return out
 }
 
 func NewRootLayer(id LayerID, width, height int32) *Layer {
@@ -500,7 +650,7 @@ func (l *Layer) SetRGBA(width, height int32, rgba []byte) error {
 	}
 	l.gpuStretch = nil
 	l.gpuMotion = nil
-	l.RGBA = append(l.RGBA[:0], rgba...)
+	l.RGBA = scaleRGBA(rgba, width, height, l.RenderScale())
 	l.ImageWidth, l.ImageHeight = width, height
 	if l.Bounds.Width == 0 {
 		l.Bounds.Width = width
@@ -633,29 +783,31 @@ func resizeLayerImage(l *Layer, width, height int32) error {
 	if l == nil || width <= 0 || height <= 0 || uint64(width)*uint64(height) > maxLayerPixels {
 		return fmt.Errorf("%w: image dimensions exceed limit", ErrInvalidLayer)
 	}
-	pixels := uint64(width) * uint64(height)
-	oldRGBA, oldWidth, oldHeight := l.RGBA, l.ImageWidth, l.ImageHeight
+	scale := l.RenderScale()
+	deviceWidth, deviceHeight := width*scale, height*scale
+	pixels := uint64(deviceWidth) * uint64(deviceHeight)
+	oldRGBA, oldWidth, oldHeight := l.RGBA, l.deviceWidth(), l.deviceHeight()
 	if len(oldRGBA) != 0 && !validLayerImageSize(oldWidth, oldHeight, len(oldRGBA), 4) {
 		return fmt.Errorf("%w: invalid existing image dimensions", ErrInvalidLayer)
 	}
 	if len(l.Province) != 0 && (!validLayerImageSize(l.ProvinceWidth, l.ProvinceHeight, len(l.Province), 1) ||
-		(len(oldRGBA) != 0 && (l.ProvinceWidth != oldWidth || l.ProvinceHeight != oldHeight))) {
+		(len(oldRGBA) != 0 && (l.ProvinceWidth != l.ImageWidth || l.ProvinceHeight != l.ImageHeight))) {
 		return ErrProvinceSizeMismatch
 	}
 	rgba := make([]byte, int(pixels*4))
 	fillLayerNeutral(rgba, l.Type)
 	if len(oldRGBA) != 0 {
-		copyWidth, copyHeight := min(width, oldWidth), min(height, oldHeight)
+		copyWidth, copyHeight := min(deviceWidth, oldWidth), min(deviceHeight, oldHeight)
 		rowBytes := int(copyWidth) * 4
 		for y := range int(copyHeight) {
-			dst := y * int(width) * 4
+			dst := y * int(deviceWidth) * 4
 			src := y * int(oldWidth) * 4
 			copy(rgba[dst:dst+rowBytes], oldRGBA[src:src+rowBytes])
 		}
 	}
 	var province []byte
 	if len(l.Province) != 0 {
-		province = make([]byte, int(pixels))
+		province = make([]byte, int(uint64(width)*uint64(height)))
 		copyWidth, copyHeight := min(width, l.ProvinceWidth), min(height, l.ProvinceHeight)
 		for y := range int(copyHeight) {
 			dst := y * int(width)

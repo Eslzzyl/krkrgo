@@ -18,6 +18,7 @@ type nativeLayerImage struct {
 	province                      []byte
 	provinceWidth, provinceHeight int32
 	mode                          int32
+	scale                         int32
 }
 
 func (l *Layer) materializeGPUStretch() error {
@@ -63,7 +64,7 @@ func validLayerPixels(l *Layer) error {
 	if err := l.materializeGPUStretch(); err != nil {
 		return err
 	}
-	if !validLayerImageSize(l.ImageWidth, l.ImageHeight, len(l.RGBA), 4) {
+	if !l.validImage() {
 		return fmt.Errorf("%w: layer has no valid image", ErrInvalidLayer)
 	}
 	return nil
@@ -74,12 +75,14 @@ func (l *Layer) deferGPUStretchCopy(source nativeLayerImage, width, height, sour
 }
 
 func (l *Layer) deferGPUStretchCopyRect(source nativeLayerImage, dx, dy, width, height, sx, sy, cropWidth, cropHeight, stretchType int32) bool {
+	scale := l.RenderScale()
 	if l == nil || width <= 0 || height <= 0 ||
 		int64(dx) >= int64(l.ImageWidth) || int64(dy) >= int64(l.ImageHeight) ||
 		int64(dx)+int64(width) <= 0 || int64(dy)+int64(height) <= 0 ||
-		!validLayerImageSize(l.ImageWidth, l.ImageHeight, len(l.RGBA), 4) ||
+		!l.validImage() ||
 		cropWidth <= 0 || cropHeight <= 0 || sx < 0 || sy < 0 ||
-		int64(sx)+int64(cropWidth) > int64(source.width) || int64(sy)+int64(cropHeight) > int64(source.height) ||
+		(int64(sx)+int64(cropWidth))*int64(scale) > int64(source.width) ||
+		(int64(sy)+int64(cropHeight))*int64(scale) > int64(source.height) ||
 		source.layer == l || source.layer != nil && source.layer.gpuStretch != nil {
 		return false
 	}
@@ -375,7 +378,7 @@ func (l *Layer) OperateRect(source *Layer, dx, dy, sx, sy, width, height, mode, 
 	if mode == layerFaceAuto {
 		mode = operationModeForLayer(source)
 	}
-	return l.operateRectPixels(source.RGBA, source.ImageWidth, source.ImageHeight, dx, dy, sx, sy, width, height, mode, opacity)
+	return l.operateRectPixels(source.RGBA, source.deviceWidth(), source.deviceHeight(), dx, dy, sx, sy, width, height, mode, opacity)
 }
 
 // CopyRect copies a source image rectangle to this layer without blending.
@@ -385,7 +388,7 @@ func (l *Layer) CopyRect(source *Layer, dx, dy, sx, sy, width, height int32) err
 	if source == nil {
 		return fmt.Errorf("%w: copyRect source is nil", ErrInvalidLayer)
 	}
-	sourceWidth, sourceHeight := source.ImageWidth, source.ImageHeight
+	sourceWidth, sourceHeight := source.deviceWidth(), source.deviceHeight()
 	if sourceWidth <= 0 || sourceHeight <= 0 {
 		sourceWidth, sourceHeight = source.ProvinceWidth, source.ProvinceHeight
 	}
@@ -402,18 +405,23 @@ func (l *Layer) copyRectPixels(source []byte, sourceWidth, sourceHeight int32, s
 		return err
 	}
 
+	scale := l.RenderScale()
+	face := l.drawFace()
+	sourceLogicalWidth, sourceLogicalHeight := sourceWidth/scale, sourceHeight/scale
+	if face == layerFaceProvince {
+		sourceLogicalWidth, sourceLogicalHeight = sourceProvinceWidth, sourceProvinceHeight
+	}
 	left, top, right, bottom := layerImageClip(l)
 	blitLeft := max64(0, max64(-int64(sx), max64(-int64(dx), int64(left)-int64(dx))))
 	blitTop := max64(0, max64(-int64(sy), max64(-int64(dy), int64(top)-int64(dy))))
-	blitRight := min(int64(width), min(int64(sourceWidth)-int64(sx),
+	blitRight := min(int64(width), min(int64(sourceLogicalWidth)-int64(sx),
 		min(int64(l.ImageWidth)-int64(dx), int64(right)-int64(dx))))
-	blitBottom := min(int64(height), min(int64(sourceHeight)-int64(sy),
+	blitBottom := min(int64(height), min(int64(sourceLogicalHeight)-int64(sy),
 		min(int64(l.ImageHeight)-int64(dy), int64(bottom)-int64(dy))))
 	if blitRight <= blitLeft || blitBottom <= blitTop {
 		return nil
 	}
 
-	face := l.drawFace()
 	switch face {
 	case layerFaceAlpha, layerFaceOpaque, layerFaceMask, layerFaceAddAlpha:
 		if sourceWidth <= 0 || sourceHeight <= 0 ||
@@ -425,7 +433,7 @@ func (l *Layer) copyRectPixels(source []byte, sourceWidth, sourceHeight int32, s
 			if !validLayerImageSize(sourceProvinceWidth, sourceProvinceHeight, len(sourceProvince), 1) {
 				return ErrProvinceSizeMismatch
 			}
-			if sourceProvinceWidth != sourceWidth || sourceProvinceHeight != sourceHeight {
+			if sourceProvinceWidth != sourceLogicalWidth || sourceProvinceHeight != sourceLogicalHeight {
 				return ErrProvinceSizeMismatch
 			}
 		}
@@ -470,24 +478,22 @@ func (l *Layer) copyRectPixels(source []byte, sourceWidth, sourceHeight int32, s
 	}
 
 	samePixels := len(source) != 0 && &source[0] == &l.RGBA[0]
-	backwards := samePixels && destY > sourceY
+	sourceDeviceWidth := sourceWidth
+	destinationDeviceWidth := l.deviceWidth()
 	copyAll := face == layerFaceAlpha || face == layerFaceAddAlpha || (face == layerFaceOpaque && !l.HoldAlpha)
-	for row := int64(0); row < copyHeight; row++ {
-		sourceRow, destRow := row, row
-		if backwards {
-			sourceRow, destRow = copyHeight-1-row, copyHeight-1-row
-		}
-		sourceOffset := ((sourceY+sourceRow)*int64(sourceWidth) + sourceX) * 4
-		destOffset := ((destY+destRow)*int64(l.ImageWidth) + destX) * 4
+	rows := copyHeight * int64(scale)
+	columns := copyWidth * int64(scale)
+	for row := int64(0); row < rows; row++ {
+		sourceOffset := ((sourceY*int64(scale)+row)*int64(sourceDeviceWidth) + sourceX*int64(scale)) * 4
+		destOffset := ((destY*int64(scale)+row)*int64(destinationDeviceWidth) + destX*int64(scale)) * 4
 		if copyAll {
-			rowBytes := copyWidth * 4
+			rowBytes := columns * 4
 			copy(l.RGBA[destOffset:destOffset+rowBytes], source[sourceOffset:sourceOffset+rowBytes])
 			continue
 		}
-
-		start, end, step := int64(0), copyWidth, int64(1)
-		if samePixels && destX > sourceX {
-			start, end, step = copyWidth-1, -1, -1
+		start, end, step := int64(0), columns, int64(1)
+		if samePixels && destX*int64(scale) > sourceX*int64(scale) {
+			start, end, step = columns-1, -1, -1
 		}
 		for column := start; column != end; column += step {
 			sourcePixel := sourceOffset + column*4
@@ -515,15 +521,21 @@ func (l *Layer) operateRectPixels(source []byte, sourceWidth, sourceHeight, dx, 
 	if width <= 0 || height <= 0 {
 		return nil
 	}
+	scale := l.RenderScale()
+	if scale != 1 {
+		dx, dy, sx, sy = dx*scale, dy*scale, sx*scale, sy*scale
+		width, height = width*scale, height*scale
+	}
 	left, top, right, bottom := layerImageClip(l)
-	clipLeft := int64(left)
-	clipTop := int64(top)
-	clipRight := int64(right)
-	clipBottom := int64(bottom)
+	clipLeft := int64(left) * int64(scale)
+	clipTop := int64(top) * int64(scale)
+	clipRight := int64(right) * int64(scale)
+	clipBottom := int64(bottom) * int64(scale)
+	deviceWidth, deviceHeight := l.deviceWidth(), l.deviceHeight()
 	blitLeft := max64(int64(0), max64(-int64(sx), max64(-int64(dx), clipLeft-int64(dx))))
 	blitTop := max64(int64(0), max64(-int64(sy), max64(-int64(dy), clipTop-int64(dy))))
-	blitRight := min(int64(width), min(int64(sourceWidth)-int64(sx), min(int64(l.ImageWidth)-int64(dx), clipRight-int64(dx))))
-	blitBottom := min(int64(height), min(int64(sourceHeight)-int64(sy), min(int64(l.ImageHeight)-int64(dy), clipBottom-int64(dy))))
+	blitRight := min(int64(width), min(int64(sourceWidth)-int64(sx), min(int64(deviceWidth)-int64(dx), clipRight-int64(dx))))
+	blitBottom := min(int64(height), min(int64(sourceHeight)-int64(sy), min(int64(deviceHeight)-int64(dy), clipBottom-int64(dy))))
 	if blitRight <= blitLeft || blitBottom <= blitTop {
 		return nil
 	}
@@ -556,7 +568,7 @@ func (l *Layer) operateRectPixels(source []byte, sourceWidth, sourceHeight, dx, 
 	}
 	for y := int64(0); y < copyHeight; y++ {
 		for x := int64(0); x < copyWidth; x++ {
-			di := ((int64(dy)+blitTop+y)*int64(l.ImageWidth) + int64(dx) + blitLeft + x) * 4
+			di := ((int64(dy)+blitTop+y)*int64(deviceWidth) + int64(dx) + blitLeft + x) * 4
 			var si int64
 			if snapshot != nil {
 				si = (y*copyWidth + x) * 4
@@ -579,7 +591,7 @@ func (l *Layer) StretchCopy(source *Layer, dx, dy, width, height, sx, sy, source
 	if err := validLayerPixels(source); err != nil {
 		return err
 	}
-	return l.stretchCopyPixels(source.RGBA, source.ImageWidth, source.ImageHeight, dx, dy, width, height, sx, sy, sourceWidth, sourceHeight, stretchType)
+	return l.stretchCopyPixels(source.RGBA, source.deviceWidth(), source.deviceHeight(), dx, dy, width, height, sx, sy, sourceWidth, sourceHeight, stretchType)
 }
 
 func (l *Layer) stretchCopyPixels(source []byte, sourceWidth, sourceHeight, dx, dy, width, height, sx, sy, cropWidth, cropHeight, stretchType int32) error {
@@ -612,6 +624,12 @@ func (l *Layer) stretchCopyPixelsImpl(source []byte, sourceWidth, sourceHeight, 
 	if width < 0 || height < 0 || cropWidth < 0 || cropHeight < 0 {
 		return fmt.Errorf("%w: negative stretchCopy rectangle", ErrInvalidLayer)
 	}
+	scale := l.RenderScale()
+	if scale != 1 {
+		dx, dy, sx, sy = dx*scale, dy*scale, sx*scale, sy*scale
+		width, height = width*scale, height*scale
+		cropWidth, cropHeight = cropWidth*scale, cropHeight*scale
+	}
 	if sx < 0 || sy < 0 || int64(sx)+int64(cropWidth) > int64(sourceWidth) || int64(sy)+int64(cropHeight) > int64(sourceHeight) {
 		return fmt.Errorf("%w: stretchCopy source rectangle outside image", ErrInvalidLayer)
 	}
@@ -623,10 +641,10 @@ func (l *Layer) stretchCopyPixelsImpl(source []byte, sourceWidth, sourceHeight, 
 		filter = 0
 	}
 	left, top, right, bottom := layerImageClip(l)
-	outLeft := max64(int64(dx), int64(left))
-	outTop := max64(int64(dy), int64(top))
-	outRight := min(int64(dx)+int64(width), int64(right))
-	outBottom := min(int64(dy)+int64(height), int64(bottom))
+	outLeft := max64(int64(dx), int64(left)*int64(scale))
+	outTop := max64(int64(dy), int64(top)*int64(scale))
+	outRight := min(int64(dx)+int64(width), int64(right)*int64(scale))
+	outBottom := min(int64(dy)+int64(height), int64(bottom)*int64(scale))
 	if outRight <= outLeft || outBottom <= outTop {
 		return nil
 	}
@@ -641,7 +659,7 @@ func (l *Layer) stretchCopyPixelsImpl(source []byte, sourceWidth, sourceHeight, 
 	}
 	outWidthInt := int(outWidth)
 	sourceStride := int(sourceWidth)
-	directOutput := !byteSlicesOverlap(source, l.RGBA) && outLeft == 0 && outWidth == int64(l.ImageWidth) &&
+	directOutput := !byteSlicesOverlap(source, l.RGBA) && outLeft == 0 && outWidth == int64(l.deviceWidth()) &&
 		(face != layerFaceOpaque || !l.HoldAlpha)
 	var output []byte
 	if directOutput {
@@ -741,14 +759,14 @@ func (l *Layer) stretchCopyPixelsImpl(source []byte, sourceWidth, sourceHeight, 
 	if !directOutput && (face != layerFaceOpaque || !l.HoldAlpha) {
 		rowBytes := outWidthInt * 4
 		for y := int64(0); y < outHeight; y++ {
-			di := ((outTop+y)*int64(l.ImageWidth) + outLeft) * 4
+			di := ((outTop+y)*int64(l.deviceWidth()) + outLeft) * 4
 			si := y * int64(rowBytes)
 			copy(l.RGBA[di:di+int64(rowBytes)], output[si:si+int64(rowBytes)])
 		}
 	} else if !directOutput {
 		for y := int64(0); y < outHeight; y++ {
 			for x := int64(0); x < outWidth; x++ {
-				di := ((outTop+y)*int64(l.ImageWidth) + outLeft + x) * 4
+				di := ((outTop+y)*int64(l.deviceWidth()) + outLeft + x) * 4
 				si := (y*outWidth + x) * 4
 				copy(l.RGBA[di:di+3], output[si:si+3])
 			}
@@ -855,14 +873,21 @@ func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft
 	if !layerCopyFaceSupported(face) {
 		return fmt.Errorf("%w: affineCopy draw face %d", ErrUnsupportedNative, face)
 	}
+	scale := l.RenderScale()
+	deviceWidth, deviceHeight := l.deviceWidth(), l.deviceHeight()
+	if scale != 1 {
+		sleft, stop, swidth, sheight = sleft*scale, stop*scale, swidth*scale, sheight*scale
+		matrix[4], matrix[5] = matrix[4]*float64(scale), matrix[5]*float64(scale)
+	}
 	left, top, right, bottom := layerImageClip(l)
+	left, top, right, bottom = left*scale, top*scale, right*scale, bottom*scale
 	if swidth == 0 || sheight == 0 || left >= right || top >= bottom {
 		return nil
 	}
 	if clear {
 		neutral := layerNeutralColor(l.Type)
 		for y := int64(top); y < int64(bottom); y++ {
-			offset := (y*int64(l.ImageWidth) + int64(left)) * 4
+			offset := (y*int64(deviceWidth) + int64(left)) * 4
 			for x := range int64(right - left) {
 				copy(l.RGBA[offset+x*4:offset+4+x*4], neutral[:])
 			}
@@ -882,7 +907,7 @@ func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft
 	// covered rows preserves the result for every supported affine filter.
 	if swidth == sourceWidth && sheight == sourceHeight &&
 		sleft == 0 && stop == 0 &&
-		l.ImageWidth == sourceWidth &&
+		deviceWidth == sourceWidth &&
 		math.Abs(a-1) <= identityTolerance && math.Abs(b) <= identityTolerance &&
 		math.Abs(c) <= identityTolerance && math.Abs(d-1) <= identityTolerance &&
 		math.Abs(tx) <= identityTolerance && math.Abs(ty) <= identityTolerance {
@@ -890,8 +915,8 @@ func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft
 		copyBottom := min64(int64(bottom), int64(sheight))
 		for y := int64(top); y < copyBottom; y++ {
 			sourceOffset := y * int64(sourceWidth) * 4
-			destinationOffset := (y*int64(l.ImageWidth) + int64(left)) * 4
-			if !rgbOnly && left == 0 && right == l.ImageWidth {
+			destinationOffset := (y*int64(deviceWidth) + int64(left)) * 4
+			if !rgbOnly && left == 0 && right == deviceWidth {
 				copy(l.RGBA[destinationOffset:destinationOffset+int64(right-left)*4],
 					source[sourceOffset:sourceOffset+int64(right-left)*4])
 				continue
@@ -946,11 +971,11 @@ func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft
 	if outTop < 0 {
 		outTop = 0
 	}
-	if outRight > int64(l.ImageWidth) {
-		outRight = int64(l.ImageWidth)
+	if outRight > int64(deviceWidth) {
+		outRight = int64(deviceWidth)
 	}
-	if outBottom > int64(l.ImageHeight) {
-		outBottom = int64(l.ImageHeight)
+	if outBottom > int64(deviceHeight) {
+		outBottom = int64(deviceHeight)
 	}
 	if outRight <= outLeft || outBottom <= outTop {
 		return nil
@@ -974,7 +999,7 @@ func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft
 	lastColumn, lastRow := int64(sleft+swidth-1), int64(stop+sheight-1)
 	for y := outTop; y < outBottom; y++ {
 		dy := float64(y) - ty
-		rowOffset := (y*int64(l.ImageWidth) + outLeft) * 4
+		rowOffset := (y*int64(deviceWidth) + outLeft) * 4
 		for x := outLeft; x < outRight; x++ {
 			dx := float64(x) - tx
 			u := (dx*d - dy*c) / determinant
@@ -1055,10 +1080,12 @@ func (l *Layer) DoGrayScale() error {
 	if err := validLayerPixels(l); err != nil {
 		return err
 	}
+	scale := l.RenderScale()
 	left, top, right, bottom := layerImageClip(l)
+	left, top, right, bottom = left*scale, top*scale, right*scale, bottom*scale
 	for y := top; y < bottom; y++ {
 		for x := left; x < right; x++ {
-			i := (int(y)*int(l.ImageWidth) + int(x)) * 4
+			i := (int(y)*int(l.deviceWidth()) + int(x)) * 4
 			gray := byte((uint32(l.RGBA[i])*54 + uint32(l.RGBA[i+1])*183 + uint32(l.RGBA[i+2])*19) >> 8)
 			l.RGBA[i], l.RGBA[i+1], l.RGBA[i+2] = gray, gray, gray
 		}
@@ -1136,11 +1163,13 @@ func (l *Layer) Light(light, contrast int32) error {
 }
 
 func (l *Layer) applyRGBTables(tables [3][256]byte) error {
+	scale := l.RenderScale()
 	left, top, right, bottom := layerImageClip(l)
+	left, top, right, bottom = left*scale, top*scale, right*scale, bottom*scale
 	additive := l.drawFace() == layerFaceAddAlpha
 	for y := top; y < bottom; y++ {
 		for x := left; x < right; x++ {
-			i := (int(y)*int(l.ImageWidth) + int(x)) * 4
+			i := (int(y)*int(l.deviceWidth()) + int(x)) * 4
 			alpha := uint32(l.RGBA[i+3])
 			if additive && alpha < 255 {
 				adjusted := alpha + alpha>>7
@@ -1175,7 +1204,8 @@ func (l *Layer) DoBoxBlur(xRadius, yRadius int32) error {
 	if err := validLayerPixels(l); err != nil {
 		return err
 	}
-	rx, ry := int64(xRadius), int64(yRadius)
+	scale := l.RenderScale()
+	rx, ry := int64(xRadius)*int64(scale), int64(yRadius)*int64(scale)
 	if rx < 0 {
 		rx = -rx
 	}
@@ -1189,11 +1219,12 @@ func (l *Layer) DoBoxBlur(xRadius, yRadius int32) error {
 		return fmt.Errorf("%w: Layer.doBoxBlur kernel area exceeds limit", ErrInvalidLayer)
 	}
 	left, top, right, bottom := layerImageClip(l)
+	left, top, right, bottom = left*scale, top*scale, right*scale, bottom*scale
 	if right <= left || bottom <= top || rx == 0 && ry == 0 {
 		return nil
 	}
 	columnLeft := max64(int64(0), int64(left)-rx)
-	columnRight := min(int64(l.ImageWidth), int64(right)+rx)
+	columnRight := min(int64(l.deviceWidth()), int64(right)+rx)
 	columns := columnRight - columnLeft
 	pixels := uint64(right-left) * uint64(bottom-top)
 	if pixels > maxLayerPixels || pixels > uint64(maxIntValue()/4) || uint64(columns) > uint64(maxIntValue()/32) {
@@ -1207,11 +1238,11 @@ func (l *Layer) DoBoxBlur(xRadius, yRadius int32) error {
 	outputRow := int64(0)
 	for y := int64(top); y < int64(bottom); y++ {
 		wantTop := max64(int64(0), y-ry)
-		wantBottom := min(int64(l.ImageHeight), y+ry+1)
+		wantBottom := min(int64(l.deviceHeight()), y+ry+1)
 		for currentBottom < wantBottom {
 			row := currentBottom
 			for x := columnLeft; x < columnRight; x++ {
-				sourceOffset := (row*int64(l.ImageWidth) + x) * 4
+				sourceOffset := (row*int64(l.deviceWidth()) + x) * 4
 				columnOffset := int((x - columnLeft) * 4)
 				alpha := uint32(l.RGBA[sourceOffset+3])
 				for channel := 0; channel < 4; channel++ {
@@ -1227,7 +1258,7 @@ func (l *Layer) DoBoxBlur(xRadius, yRadius int32) error {
 		for currentTop < wantTop {
 			row := currentTop
 			for x := columnLeft; x < columnRight; x++ {
-				sourceOffset := (row*int64(l.ImageWidth) + x) * 4
+				sourceOffset := (row*int64(l.deviceWidth()) + x) * 4
 				columnOffset := int((x - columnLeft) * 4)
 				alpha := uint32(l.RGBA[sourceOffset+3])
 				for channel := 0; channel < 4; channel++ {
@@ -1241,7 +1272,7 @@ func (l *Layer) DoBoxBlur(xRadius, yRadius int32) error {
 			currentTop++
 		}
 		windowLeft := max64(int64(0), int64(left)-rx)
-		windowRight := min(int64(l.ImageWidth), int64(left)+rx+1)
+		windowRight := min(int64(l.deviceWidth()), int64(left)+rx+1)
 		var sums [4]int64
 		for x := windowLeft; x < windowRight; x++ {
 			columnOffset := int((x - columnLeft) * 4)
@@ -1250,7 +1281,7 @@ func (l *Layer) DoBoxBlur(xRadius, yRadius int32) error {
 			}
 		}
 		for x := int64(left); x < int64(right); x++ {
-			windowRight = min(int64(l.ImageWidth), x+rx+1)
+			windowRight = min(int64(l.deviceWidth()), x+rx+1)
 			count := (windowRight - windowLeft) * (wantBottom - wantTop)
 			outOffset := (outputRow*int64(right-left) + x - int64(left)) * 4
 			for channel := 0; channel < 4; channel++ {
@@ -1266,7 +1297,7 @@ func (l *Layer) DoBoxBlur(xRadius, yRadius int32) error {
 					}
 					windowLeft++
 				}
-				if enter < int64(l.ImageWidth) {
+				if enter < int64(l.deviceWidth()) {
 					columnOffset := int((enter - columnLeft) * 4)
 					for channel := 0; channel < 4; channel++ {
 						sums[channel] += vertical[columnOffset+channel]
@@ -1290,7 +1321,7 @@ func (l *Layer) DoBoxBlur(xRadius, yRadius int32) error {
 	}
 	rowBytes := int(right-left) * 4
 	for row := int32(0); row < bottom-top; row++ {
-		dst := (int(top+row)*int(l.ImageWidth) + int(left)) * 4
+		dst := (int(top+row)*int(l.deviceWidth()) + int(left)) * 4
 		src := int(row) * rowBytes
 		copy(l.RGBA[dst:dst+rowBytes], output[src:src+rowBytes])
 	}
@@ -1312,7 +1343,7 @@ func (s *Services) layerAffineCopy(l *Layer, args []tjs.Value) error {
 	if len(args) < 12 {
 		return fmt.Errorf("Layer.%s requires at least 12 arguments", operation)
 	}
-	source, err := s.nativeLayerImageSource(args[0], operation)
+	source, err := s.nativeLayerImageSource(args[0], operation, l.RenderScale())
 	if err != nil {
 		return err
 	}
@@ -1393,7 +1424,7 @@ func layerOptionalBool(args []tjs.Value, index int, defaultValue bool, operation
 	return value, nil
 }
 
-func (s *Services) nativeLayerImageSource(value tjs.Value, operation string) (nativeLayerImage, error) {
+func (s *Services) nativeLayerImageSource(value tjs.Value, operation string, scale int32) (nativeLayerImage, error) {
 	if value.Kind() != tjs.KindObject || value.IsNull() {
 		return nativeLayerImage{}, fmt.Errorf("Layer.%s requires a Layer or Bitmap source", operation)
 	}
@@ -1406,16 +1437,24 @@ func (s *Services) nativeLayerImageSource(value tjs.Value, operation string) (na
 			return nativeLayerImage{}, err
 		}
 		return nativeLayerImage{
-			layer: layer, id: id, width: layer.ImageWidth, height: layer.ImageHeight,
+			layer: layer, id: id, width: layer.deviceWidth(), height: layer.deviceHeight(),
 			pixels: layer.RGBA, province: layer.Province, provinceWidth: layer.ProvinceWidth,
 			provinceHeight: layer.ProvinceHeight, mode: operationModeForLayer(layer),
 		}, nil
 	}
 	if bitmap != nil {
+		if scale < 1 {
+			scale = 1
+		}
 		if bitmap.Width == 0 || bitmap.Height == 0 || uint64(bitmap.Width)*uint64(bitmap.Height)*4 != uint64(len(bitmap.RGBA)) || bitmap.Width > math.MaxInt32 || bitmap.Height > math.MaxInt32 {
 			return nativeLayerImage{}, fmt.Errorf("%w: invalid Bitmap source image", ErrInvalidLayer)
 		}
-		return nativeLayerImage{bitmap: bitmap, id: id, width: int32(bitmap.Width), height: int32(bitmap.Height), pixels: bitmap.RGBA, mode: int32(LayerAlpha)}, nil
+		pixels := bitmap.RGBA
+		if bitmap.renderScale() != scale {
+			pixels = resampleRGBA(bitmap.RGBA, int32(bitmap.deviceWidth()), int32(bitmap.deviceHeight()),
+				int32(bitmap.Width)*scale, int32(bitmap.Height)*scale)
+		}
+		return nativeLayerImage{bitmap: bitmap, id: id, width: int32(bitmap.Width) * scale, height: int32(bitmap.Height) * scale, pixels: pixels, mode: int32(LayerAlpha), scale: scale}, nil
 	}
 	return nativeLayerImage{}, fmt.Errorf("Layer.%s source is not a Layer or Bitmap", operation)
 }
@@ -1428,13 +1467,23 @@ func (s *Services) nativeLayerImageStillValid(source nativeLayerImage) bool {
 		if provinceCurrent && len(source.province) != 0 {
 			provinceCurrent = &layer.Province[0] == &source.province[0]
 		}
-		return s.Layers[source.id] == layer && layer.ImageWidth == source.width && layer.ImageHeight == source.height &&
+		return s.Layers[source.id] == layer && layer.deviceWidth() == source.width && layer.deviceHeight() == source.height &&
 			len(layer.RGBA) == len(source.pixels) && len(layer.RGBA) != 0 && &layer.RGBA[0] == &source.pixels[0] && provinceCurrent
 	}
 	if source.bitmap != nil {
 		bitmap := source.bitmap
-		return s.Bitmaps[source.id] == bitmap && int32(bitmap.Width) == source.width && int32(bitmap.Height) == source.height &&
-			len(bitmap.RGBA) == len(source.pixels) && len(bitmap.RGBA) != 0 && &bitmap.RGBA[0] == &source.pixels[0]
+		scale := source.scale
+		if scale < 1 {
+			scale = 1
+		}
+		if s.Bitmaps[source.id] != bitmap || int32(bitmap.Width)*scale != source.width ||
+			int32(bitmap.Height)*scale != source.height || len(bitmap.RGBA) == 0 {
+			return false
+		}
+		if bitmap.renderScale() == scale {
+			return len(bitmap.RGBA) == len(source.pixels) && &bitmap.RGBA[0] == &source.pixels[0]
+		}
+		return len(source.pixels) == int(bitmap.Width)*int(bitmap.Height)*int(scale)*int(scale)*4
 	}
 	return false
 }
@@ -1501,7 +1550,7 @@ func (s *Services) layerImageNative(l *Layer, operation string, args []tjs.Value
 		if err != nil {
 			return err
 		}
-		source, err := s.nativeLayerImageSource(args[2], operation)
+		source, err := s.nativeLayerImageSource(args[2], operation, l.RenderScale())
 		if err != nil {
 			return err
 		}
@@ -1540,7 +1589,7 @@ func (s *Services) layerImageNative(l *Layer, operation string, args []tjs.Value
 		if err != nil {
 			return err
 		}
-		source, err := s.nativeLayerImageSource(args[2], operation)
+		source, err := s.nativeLayerImageSource(args[2], operation, l.RenderScale())
 		if err != nil {
 			return err
 		}
@@ -1597,7 +1646,7 @@ func (s *Services) layerImageNative(l *Layer, operation string, args []tjs.Value
 		if err != nil {
 			return err
 		}
-		source, err := s.nativeLayerImageSource(args[4], operation)
+		source, err := s.nativeLayerImageSource(args[4], operation, l.RenderScale())
 		if err != nil {
 			return err
 		}

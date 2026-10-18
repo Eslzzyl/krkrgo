@@ -26,10 +26,37 @@ const (
 // expose alpha, matching Kirikiri's Bitmap API).
 type Bitmap struct {
 	Width, Height uint32
+	Scale         int32
 	RGBA          []byte
 	font          FontState
 	loading       bool
 	revision      uint64
+}
+
+func (b *Bitmap) renderScale() int32 {
+	if b == nil || b.Scale < 1 {
+		return 1
+	}
+	return b.Scale
+}
+
+func (b *Bitmap) deviceWidth() uint32  { return b.Width * uint32(b.renderScale()) }
+func (b *Bitmap) deviceHeight() uint32 { return b.Height * uint32(b.renderScale()) }
+
+func (b *Bitmap) blockAt(x, y int64) []byte {
+	scale := int64(b.renderScale())
+	i := ((y*scale)*int64(b.deviceWidth()) + x*scale) * 4
+	return b.RGBA[i : i+4]
+}
+
+func (b *Bitmap) setBlock(x, y int64, pixel []byte) {
+	scale := b.renderScale()
+	for sy := int32(0); sy < scale; sy++ {
+		for sx := int32(0); sx < scale; sx++ {
+			i := ((y*int64(scale)+int64(sy))*int64(b.deviceWidth()) + x*int64(scale) + int64(sx)) * 4
+			copy(b.RGBA[i:i+4], pixel)
+		}
+	}
 }
 
 func (b *Bitmap) markDirty() {
@@ -56,10 +83,21 @@ type bitmapAsyncResult struct {
 }
 
 func newBitmap(width, height uint32) (*Bitmap, error) {
+	return newBitmapScaled(width, height, 1)
+}
+
+func newBitmapScaled(width, height uint32, scale int32) (*Bitmap, error) {
+	if scale < 1 {
+		scale = 1
+	}
 	if width == 0 || height == 0 || width > bitmapMaxDimension || height > bitmapMaxDimension || uint64(width)*uint64(height) > bitmapMaxPixels {
 		return nil, fmt.Errorf("Bitmap: invalid dimensions %dx%d", width, height)
 	}
-	return &Bitmap{Width: width, Height: height, RGBA: make([]byte, uint64(width)*uint64(height)*4), font: *newFontState(), revision: 1}, nil
+	deviceWidth, deviceHeight := uint64(width)*uint64(scale), uint64(height)*uint64(scale)
+	if deviceWidth > uint64(bitmapMaxDimension) || deviceHeight > uint64(bitmapMaxDimension) || deviceWidth*deviceHeight > bitmapMaxPixels {
+		return nil, fmt.Errorf("Bitmap: invalid scaled dimensions %dx%d", deviceWidth, deviceHeight)
+	}
+	return &Bitmap{Width: width, Height: height, Scale: scale, RGBA: make([]byte, deviceWidth*deviceHeight*4), font: *newFontState(), revision: 1}, nil
 }
 
 func (b *Bitmap) pixel(x, y int64) ([]byte, error) {
@@ -69,7 +107,8 @@ func (b *Bitmap) pixel(x, y int64) ([]byte, error) {
 	if x < 0 || y < 0 || x >= int64(b.Width) || y >= int64(b.Height) {
 		return nil, fmt.Errorf("Bitmap: pixel outside image")
 	}
-	i := (uint64(y)*uint64(b.Width) + uint64(x)) * 4
+	scale := int64(b.renderScale())
+	i := ((uint64(y)*uint64(scale))*uint64(b.deviceWidth()) + uint64(x)*uint64(scale)) * 4
 	return b.RGBA[i : i+4], nil
 }
 
@@ -77,11 +116,12 @@ func (b *Bitmap) resize(width, height uint32, keep bool) error {
 	if width == b.Width && height == b.Height {
 		return nil
 	}
-	next, err := newBitmap(width, height)
+	next, err := newBitmapScaled(width, height, b.renderScale())
 	if err != nil {
 		return err
 	}
 	if keep && b != nil && len(b.RGBA) != 0 {
+		scale := b.renderScale()
 		copyWidth, copyHeight := b.Width, b.Height
 		if width < copyWidth {
 			copyWidth = width
@@ -89,10 +129,10 @@ func (b *Bitmap) resize(width, height uint32, keep bool) error {
 		if height < copyHeight {
 			copyHeight = height
 		}
-		for y := uint32(0); y < copyHeight; y++ {
-			src := uint64(y) * uint64(b.Width) * 4
-			dst := uint64(y) * uint64(width) * 4
-			copy(next.RGBA[dst:dst+uint64(copyWidth)*4], b.RGBA[src:src+uint64(copyWidth)*4])
+		for y := uint32(0); y < copyHeight*uint32(scale); y++ {
+			src := uint64(y) * uint64(b.deviceWidth()) * 4
+			dst := uint64(y) * uint64(next.deviceWidth()) * 4
+			copy(next.RGBA[dst:dst+uint64(copyWidth)*uint64(scale)*4], b.RGBA[src:src+uint64(copyWidth)*uint64(scale)*4])
 		}
 	}
 	font := b.font
@@ -239,7 +279,7 @@ func (s *Services) takeBitmapAsyncResult(id tjs.ObjectID) (bitmapAsyncResult, bo
 		if result.err == nil {
 			commitStarted := time.Now()
 			b.Width, b.Height = result.image.Width, result.image.Height
-			b.RGBA = result.image.RGBA
+			b.RGBA = scaleRGBA(result.image.RGBA, int32(result.image.Width), int32(result.image.Height), b.renderScale())
 			b.markDirty()
 			commitTime = time.Since(commitStarted)
 		}
@@ -287,7 +327,7 @@ func (s *Services) bitmapLoad(vm *tjs.VM, b *Bitmap, name string) (tjs.Value, er
 		return tjs.VoidValue, fmt.Errorf("Bitmap: image dimensions exceed limits")
 	}
 	b.Width, b.Height = im.Width, im.Height
-	b.RGBA = append(b.RGBA[:0], im.RGBA...)
+	b.RGBA = scaleRGBA(im.RGBA, int32(im.Width), int32(im.Height), b.renderScale())
 	b.markDirty()
 	b.loading = false
 	return bitmapMetadata(vm, data, im.Width, im.Height)
@@ -603,9 +643,9 @@ func (s *Services) bitmapNative(vm *tjs.VM, context tjs.Value, operation string,
 		}
 		var b *Bitmap
 		if len(args) == 0 {
-			b, err = newBitmap(bitmapDefaultDimension, bitmapDefaultDimension)
+			b, err = newBitmapScaled(bitmapDefaultDimension, bitmapDefaultDimension, s.RenderScale)
 		} else if args[0].Kind() == tjs.KindString {
-			b, err = newBitmap(bitmapDefaultDimension, bitmapDefaultDimension)
+			b, err = newBitmapScaled(bitmapDefaultDimension, bitmapDefaultDimension, s.RenderScale)
 		} else if len(args) < 2 {
 			err = fmt.Errorf("Bitmap.Bitmap requires width and height")
 		} else {
@@ -625,10 +665,10 @@ func (s *Services) bitmapNative(vm *tjs.VM, context tjs.Value, operation string,
 					} else if bpp != 32 {
 						err = fmt.Errorf("%w: Bitmap bpp %d", ErrUnsupportedDevice, bpp)
 					} else {
-						b, err = newBitmap(uint32(width), uint32(height))
+						b, err = newBitmapScaled(uint32(width), uint32(height), s.RenderScale)
 					}
 				} else {
-					b, err = newBitmap(uint32(width), uint32(height))
+					b, err = newBitmapScaled(uint32(width), uint32(height), s.RenderScale)
 				}
 			}
 		}
@@ -747,10 +787,18 @@ func (s *Services) bitmapNative(vm *tjs.VM, context tjs.Value, operation string,
 		s.mu.Lock()
 		p, err := b.pixel(x, y)
 		if err == nil {
+			pixel := [4]byte{p[0], p[1], p[2], p[3]}
 			if operation == "setMaskPixel" {
-				p[3] = uint8(value)
+				pixel[3] = uint8(value)
 			} else {
-				p[0], p[1], p[2] = uint8(uint64(value)>>16), uint8(uint64(value)>>8), uint8(value)
+				pixel[0], pixel[1], pixel[2] = uint8(uint64(value)>>16), uint8(uint64(value)>>8), uint8(value)
+			}
+			scale := b.renderScale()
+			for sy := uint32(0); sy < uint32(scale); sy++ {
+				for sx := uint32(0); sx < uint32(scale); sx++ {
+					di := ((uint32(y)*uint32(scale)+sy)*b.deviceWidth() + uint32(x)*uint32(scale) + sx) * 4
+					copy(b.RGBA[di:di+4], pixel[:])
+				}
 			}
 			b.markDirty()
 		}
@@ -807,6 +855,7 @@ func (s *Services) bitmapNative(vm *tjs.VM, context tjs.Value, operation string,
 		}
 		s.mu.Lock()
 		b.Width, b.Height = src.Width, src.Height
+		b.Scale = src.renderScale()
 		b.RGBA = append(b.RGBA[:0], src.RGBA...)
 		b.font = src.font
 		b.markDirty()
@@ -870,7 +919,7 @@ func (s *Services) bitmapNative(vm *tjs.VM, context tjs.Value, operation string,
 		}
 		s.mu.RLock()
 		width, height := b.Width, b.Height
-		pixels := append([]byte(nil), b.RGBA...)
+		pixels := downscaleRGBA(b.RGBA, int32(b.deviceWidth()), int32(b.deviceHeight()), b.renderScale())
 		s.mu.RUnlock()
 		if isPNG {
 			encoded := &image.RGBA{Pix: pixels, Stride: int(width) * 4, Rect: image.Rect(0, 0, int(width), int(height))}

@@ -14,7 +14,7 @@ no arguments (or launcher options) open the GUI, while `run` starts a game.
 Direct runtime and tool commands are:
 
 ```text
-krkrgo run -project <directory> [-save-dir <directory>] [-budget <instructions>] [-renderer gpu|cpu]
+krkrgo run -project <directory> [-save-dir <directory>] [-budget <instructions>] [-renderer gpu|cpu] [-render-scale 1-4]
 krkrgo-tool replay|extract ...
 ```
 
@@ -33,7 +33,7 @@ launcher process (cmd/krkrgo, MyGo native UI)
   - monitors the child process and its log
 
 game process (cmd/krkrgo run)
-  - parses -project, -save-dir, -budget, and -renderer
+  - parses -project, -save-dir, -budget, -renderer, and -render-scale
   - creates the runtime Session
   - creates the Ebitengine host
   - runs ebiten.RunGame

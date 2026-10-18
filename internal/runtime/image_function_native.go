@@ -280,11 +280,12 @@ func (s *Services) imageOperateRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, er
 		for x := dr.left; x < dr.right; x++ {
 			sx := sr.left + (x - dr.left)
 			sy := sr.top + (y - dr.top)
-			di := (int(y)*int(dst.Width) + int(x)) * 4
-			si := (int(sy)*int(src.Width) + int(sx)) * 4
-			if err := imageBlend(dst.RGBA[di:di+4], source[si:si+4], mode, face, opa); err != nil {
+			si := (int(sy)*int(src.deviceWidth()) + int(sx)*int(src.renderScale())) * 4
+			dstPixel := append([]byte(nil), dst.blockAt(int64(x), int64(y))...)
+			if err := imageBlend(dstPixel, source[si:si+4], mode, face, opa); err != nil {
 				return tjs.VoidValue, err
 			}
+			dst.setBlock(int64(x), int64(y), dstPixel)
 		}
 	}
 	dst.markDirty()
@@ -340,11 +341,12 @@ func (s *Services) imageStretch(dst, src *Bitmap, dstID, srcID tjs.ObjectID, dr,
 			if sy >= sr.bottom {
 				sy = sr.bottom - 1
 			}
-			di := (int(y)*int(dst.Width) + int(x)) * 4
-			si := (int(sy)*int(src.Width) + int(sx)) * 4
-			if err := imageBlend(dst.RGBA[di:di+4], source[si:si+4], mode, face, opa); err != nil {
+			si := (int(sy)*int(src.deviceWidth()) + int(sx)*int(src.renderScale())) * 4
+			dstPixel := append([]byte(nil), dst.blockAt(int64(x), int64(y))...)
+			if err := imageBlend(dstPixel, source[si:si+4], mode, face, opa); err != nil {
 				return err
 			}
+			dst.setBlock(int64(x), int64(y), dstPixel)
 		}
 	}
 	dst.markDirty()
@@ -445,9 +447,10 @@ func (s *Services) imageAffine(dst, src *Bitmap, dstID, srcID tjs.ObjectID, matr
 			}
 			sourceX := sr.left + int32(math.Floor(sx+0.5))
 			sourceY := sr.top + int32(math.Floor(sy+0.5))
-			di := (int(y)*int(dst.Width) + int(x)) * 4
-			si := (int(sourceY)*int(src.Width) + int(sourceX)) * 4
-			blendPixelForTarget(dst.RGBA[di:di+4], source[si:si+4], uint8(opa), blendType, target)
+			si := (int(sourceY)*int(src.deviceWidth()) + int(sourceX)*int(src.renderScale())) * 4
+			dstPixel := append([]byte(nil), dst.blockAt(int64(x), int64(y))...)
+			blendPixelForTarget(dstPixel, source[si:si+4], uint8(opa), blendType, target)
+			dst.setBlock(int64(x), int64(y), dstPixel)
 		}
 	}
 	dst.markDirty()
@@ -611,13 +614,15 @@ func (s *Services) imageFlip(vm *tjs.VM, args []tjs.Value, horizontal bool) (tjs
 	if !ok {
 		return tjs.VoidValue, nil
 	}
+	scale := b.renderScale()
+	rect.left, rect.top, rect.right, rect.bottom = rect.left*scale, rect.top*scale, rect.right*scale, rect.bottom*scale
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if horizontal {
 		for y := rect.top; y < rect.bottom; y++ {
 			for left, right := rect.left, rect.right-1; left < right; left, right = left+1, right-1 {
-				li := (int(y)*int(b.Width) + int(left)) * 4
-				ri := (int(y)*int(b.Width) + int(right)) * 4
+				li := (int(y)*int(b.deviceWidth()) + int(left)) * 4
+				ri := (int(y)*int(b.deviceWidth()) + int(right)) * 4
 				for c := 0; c < 4; c++ {
 					b.RGBA[li+c], b.RGBA[ri+c] = b.RGBA[ri+c], b.RGBA[li+c]
 				}
@@ -626,8 +631,8 @@ func (s *Services) imageFlip(vm *tjs.VM, args []tjs.Value, horizontal bool) (tjs
 	} else {
 		for top, bottom := rect.top, rect.bottom-1; top < bottom; top, bottom = top+1, bottom-1 {
 			for x := rect.left; x < rect.right; x++ {
-				ti := (int(top)*int(b.Width) + int(x)) * 4
-				bi := (int(bottom)*int(b.Width) + int(x)) * 4
+				ti := (int(top)*int(b.deviceWidth()) + int(x)) * 4
+				bi := (int(bottom)*int(b.deviceWidth()) + int(x)) * 4
 				for c := 0; c < 4; c++ {
 					b.RGBA[ti+c], b.RGBA[bi+c] = b.RGBA[bi+c], b.RGBA[ti+c]
 				}
@@ -706,11 +711,13 @@ func (s *Services) imageAdjustGamma(vm *tjs.VM, args []tjs.Value) (tjs.Value, er
 		}
 		return uint8(math.Round(result))
 	}
+	scale := b.renderScale()
+	clip.left, clip.top, clip.right, clip.bottom = clip.left*scale, clip.top*scale, clip.right*scale, clip.bottom*scale
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for y := clip.top; y < clip.bottom; y++ {
 		for x := clip.left; x < clip.right; x++ {
-			i := (int(y)*int(b.Width) + int(x)) * 4
+			i := (int(y)*int(b.deviceWidth()) + int(x)) * 4
 			b.RGBA[i], b.RGBA[i+1], b.RGBA[i+2] = transform(b.RGBA[i], rg, rf, rc), transform(b.RGBA[i+1], gg, gf, gc), transform(b.RGBA[i+2], bg, bf, bc)
 		}
 	}
@@ -734,11 +741,13 @@ func (s *Services) imageGrayScale(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 	if !ok {
 		return tjs.VoidValue, nil
 	}
+	scale := b.renderScale()
+	clip.left, clip.top, clip.right, clip.bottom = clip.left*scale, clip.top*scale, clip.right*scale, clip.bottom*scale
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for y := clip.top; y < clip.bottom; y++ {
 		for x := clip.left; x < clip.right; x++ {
-			i := (int(y)*int(b.Width) + int(x)) * 4
+			i := (int(y)*int(b.deviceWidth()) + int(x)) * 4
 			gray := uint8((77*int(b.RGBA[i]) + 150*int(b.RGBA[i+1]) + 29*int(b.RGBA[i+2]) + 128) >> 8)
 			b.RGBA[i], b.RGBA[i+1], b.RGBA[i+2] = gray, gray, gray
 		}
@@ -784,11 +793,11 @@ func (s *Services) imageFillRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, error
 	defer s.mu.Unlock()
 	for y := rect.top; y < rect.bottom; y++ {
 		for x := rect.left; x < rect.right; x++ {
-			i := (int(y)*int(b.Width) + int(x)) * 4
-			b.RGBA[i], b.RGBA[i+1], b.RGBA[i+2] = r, g, bl
+			pixel := [4]byte{r, g, bl, 0}
 			if isAlpha {
-				b.RGBA[i+3] = a
+				pixel[3] = a
 			}
+			b.setBlock(int64(x), int64(y), pixel[:])
 		}
 	}
 	b.markDirty()
@@ -845,23 +854,23 @@ func (s *Services) imageColorRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 	defer s.mu.Unlock()
 	for y := rect.top; y < rect.bottom; y++ {
 		for x := rect.left; x < rect.right; x++ {
-			i := (int(y)*int(b.Width) + int(x)) * 4
+			dstPixel := append([]byte(nil), b.blockAt(int64(x), int64(y))...)
 			switch face {
 			case 1:
 				if opa <= 0 {
 					continue
 				}
 				for c := 0; c < 3; c++ {
-					b.RGBA[i+c] = byte((int(b.RGBA[i+c])*(255-int(opa)) + int(src[c])*int(opa) + 127) / 255)
+					dstPixel[c] = byte((int(dstPixel[c])*(255-int(opa)) + int(src[c])*int(opa) + 127) / 255)
 				}
 			case 0:
 				if opa < 0 {
 					level := -opa
-					b.RGBA[i+3] = byte(int(b.RGBA[i+3]) * (255 - int(level)) / 255)
-					continue
+					dstPixel[3] = byte(int(dstPixel[3]) * (255 - int(level)) / 255)
+					break
 				}
 				src[3] = uint8(int(a) * int(opa) / 255)
-				if err := imageBlend(b.RGBA[i:i+4], src[:], int64(LayerAlpha), face, 255); err != nil {
+				if err := imageBlend(dstPixel, src[:], int64(LayerAlpha), face, 255); err != nil {
 					return tjs.VoidValue, err
 				}
 			case 4:
@@ -869,10 +878,11 @@ func (s *Services) imageColorRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 					continue
 				}
 				src[3] = uint8(int(a) * int(opa) / 255)
-				if err := imageBlend(b.RGBA[i:i+4], src[:], int64(LayerAddAlpha), face, 255); err != nil {
+				if err := imageBlend(dstPixel, src[:], int64(LayerAddAlpha), face, 255); err != nil {
 					return tjs.VoidValue, err
 				}
 			}
+			b.setBlock(int64(x), int64(y), dstPixel)
 		}
 	}
 	b.markDirty()
@@ -913,6 +923,9 @@ func (s *Services) imageBoxBlur(vm *tjs.VM, args []tjs.Value) (tjs.Value, error)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	source := append([]byte(nil), b.RGBA...)
+	scale := b.renderScale()
+	xblur, yblur = xblur*int64(scale), yblur*int64(scale)
+	clip.left, clip.top, clip.right, clip.bottom = clip.left*scale, clip.top*scale, clip.right*scale, clip.bottom*scale
 	for y := clip.top; y < clip.bottom; y++ {
 		for x := clip.left; x < clip.right; x++ {
 			minX, maxX := int64(x)-xblur, int64(x)+xblur
@@ -923,24 +936,24 @@ func (s *Services) imageBoxBlur(vm *tjs.VM, args []tjs.Value) (tjs.Value, error)
 			if minY < 0 {
 				minY = 0
 			}
-			if maxX >= int64(b.Width) {
-				maxX = int64(b.Width) - 1
+			if maxX >= int64(b.deviceWidth()) {
+				maxX = int64(b.deviceWidth()) - 1
 			}
-			if maxY >= int64(b.Height) {
-				maxY = int64(b.Height) - 1
+			if maxY >= int64(b.deviceHeight()) {
+				maxY = int64(b.deviceHeight()) - 1
 			}
 			count := int64(0)
 			sums := [4]int64{}
 			for sy := minY; sy <= maxY; sy++ {
 				for sx := minX; sx <= maxX; sx++ {
-					i := (sy*int64(b.Width) + sx) * 4
+					i := (sy*int64(b.deviceWidth()) + sx) * 4
 					for c := 0; c < 4; c++ {
 						sums[c] += int64(source[i+int64(c)])
 					}
 					count++
 				}
 			}
-			i := (int64(y)*int64(b.Width) + int64(x)) * 4
+			i := (int64(y)*int64(b.deviceWidth()) + int64(x)) * 4
 			for c := 0; c < 4; c++ {
 				if isAlpha && c != 3 {
 					continue
@@ -1050,29 +1063,34 @@ func (s *Services) imageDrawClip(vm *tjs.VM, args []tjs.Value, b *Bitmap, clipIn
 	return clip, nil
 }
 
-func imageDrawMaskLocked(b *Bitmap, mask []byte, maskWidth, maskHeight, maskStride, pixelStride, alphaOffset int, x, y int64, clip scriptRect, config imageDrawConfig) {
+func imageDrawMaskLocked(b *Bitmap, mask []byte, maskWidth, maskHeight, maskStride, pixelStride, alphaOffset int, maskScale int32, x, y int64, clip scriptRect, config imageDrawConfig) {
+	scale := b.renderScale()
+	if maskScale < 1 {
+		maskScale = 1
+	}
 	clip, ok := imageIntersect(clip, imageBounds(b))
 	if !ok || config.opacity == 0 || maskWidth <= 0 || maskHeight <= 0 {
 		return
 	}
-	left := max64(int64(clip.left), x)
-	top := max64(int64(clip.top), y)
-	right := min64(int64(clip.right), x+int64(maskWidth))
-	bottom := min64(int64(clip.bottom), y+int64(maskHeight))
+	originX, originY := x*int64(scale), y*int64(scale)
+	left := max64(int64(clip.left)*int64(scale), originX)
+	top := max64(int64(clip.top)*int64(scale), originY)
+	right := min64(int64(clip.right)*int64(scale), originX+int64(maskWidth)*int64(maskScale))
+	bottom := min64(int64(clip.bottom)*int64(scale), originY+int64(maskHeight)*int64(maskScale))
 	if right <= left || bottom <= top {
 		return
 	}
 	for dy := top; dy < bottom; dy++ {
-		sy := int(dy - y)
+		sy := int((dy - originY) / int64(maskScale))
 		for dx := left; dx < right; dx++ {
-			sx := int(dx - x)
+			sx := int((dx - originX) / int64(maskScale))
 			coverage := mask[sy*maskStride+sx*pixelStride+alphaOffset]
 			opacity := uint8(int(coverage) * int(config.opacity) / 255)
 			if opacity == 0 {
 				continue
 			}
 			source := [4]byte{config.color[0], config.color[1], config.color[2], 255}
-			destinationIndex := (int(dy)*int(b.Width) + int(dx)) * 4
+			destinationIndex := (int(dy)*int(b.deviceWidth()) + int(dx)) * 4
 			blendPixelForTarget(b.RGBA[destinationIndex:destinationIndex+4], source[:], opacity, config.mode, config.target)
 		}
 	}
@@ -1117,7 +1135,7 @@ func (s *Services) imageDrawText(vm *tjs.VM, args []tjs.Value) (tjs.Value, error
 		if state.Angle != 0 {
 			return tjs.VoidValue, imageFunctionUnsupported("rotated text")
 		}
-		face, faceErr := s.fontFace(&state)
+		face, faceErr := s.fontFaceScaled(&state, b.renderScale())
 		if faceErr != nil {
 			return tjs.VoidValue, faceErr
 		}
@@ -1129,7 +1147,7 @@ func (s *Services) imageDrawText(vm *tjs.VM, args []tjs.Value) (tjs.Value, error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if rasterized != nil {
-		imageDrawMaskLocked(b, rasterized.Pix, rasterized.Rect.Dx(), rasterized.Rect.Dy(), rasterized.Stride, 4, 3, config.x, config.y, config.clip, config)
+		imageDrawMaskLocked(b, rasterized.Pix, rasterized.Rect.Dx(), rasterized.Rect.Dy(), rasterized.Stride, 4, 3, b.renderScale(), config.x, config.y, config.clip, config)
 		b.markDirty()
 	}
 	return tjs.VoidValue, nil
@@ -1265,7 +1283,7 @@ func (s *Services) imageDrawGlyph(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 	y := config.y - glyph.originY + offsetY
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	imageDrawMaskLocked(b, glyph.mask, glyph.width, glyph.height, glyph.width, 1, 0, x, y, config.clip, config)
+	imageDrawMaskLocked(b, glyph.mask, glyph.width, glyph.height, glyph.width, 1, 0, 1, x, y, config.clip, config)
 	b.markDirty()
 	return tjs.VoidValue, nil
 }

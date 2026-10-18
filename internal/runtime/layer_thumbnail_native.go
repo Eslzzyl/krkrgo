@@ -98,6 +98,9 @@ func (s *Services) layerPiledCopy(dst *Layer, dstID tjs.ObjectID, args []tjs.Val
 	if width < 0 || height < 0 {
 		return fmt.Errorf("Layer.%s: negative source rectangle", operation)
 	}
+	scale := dst.RenderScale()
+	dx, dy, sx, sy = dx*scale, dy*scale, sx*scale, sy*scale
+	width, height = width*scale, height*scale
 	if err := validLayerPixels(dst); err != nil {
 		return err
 	}
@@ -108,13 +111,13 @@ func (s *Services) layerPiledCopy(dst *Layer, dstID tjs.ObjectID, args []tjs.Val
 	left, top := int64(0), int64(0)
 	left = max64(max64(left, -int64(sx)), -int64(dx))
 	top = max64(max64(top, -int64(sy)), -int64(dy))
-	right := min64(min64(int64(width), int64(src.Bounds.Width)-int64(sx)), int64(dst.ImageWidth)-int64(dx))
-	bottom := min64(min64(int64(height), int64(src.Bounds.Height)-int64(sy)), int64(dst.ImageHeight)-int64(dy))
+	right := min64(min64(int64(width), int64(src.Bounds.Width*scale)-int64(sx)), int64(dst.deviceWidth())-int64(dx))
+	bottom := min64(min64(int64(height), int64(src.Bounds.Height*scale)-int64(sy)), int64(dst.deviceHeight())-int64(dy))
 	if dst.clipSet {
-		clipRight := int64(dst.clip.X) + int64(dst.clip.Width)
-		clipBottom := int64(dst.clip.Y) + int64(dst.clip.Height)
-		left = max64(left, int64(dst.clip.X)-int64(dx))
-		top = max64(top, int64(dst.clip.Y)-int64(dy))
+		clipRight := int64(dst.clip.X)*int64(scale) + int64(dst.clip.Width)*int64(scale)
+		clipBottom := int64(dst.clip.Y)*int64(scale) + int64(dst.clip.Height)*int64(scale)
+		left = max64(left, int64(dst.clip.X)*int64(scale)-int64(dx))
+		top = max64(top, int64(dst.clip.Y)*int64(scale)-int64(dy))
 		right = min64(right, clipRight-int64(dx))
 		bottom = min64(bottom, clipBottom-int64(dy))
 	}
@@ -134,7 +137,7 @@ func (s *Services) layerPiledCopy(dst *Layer, dstID tjs.ObjectID, args []tjs.Val
 		}
 	}
 	if src != dst && !visibleChild && src.ImageLeft == 0 && src.ImageTop == 0 &&
-		src.ImageWidth == src.Bounds.Width && src.ImageHeight == src.Bounds.Height {
+		src.deviceWidth() == src.Bounds.Width*scale && src.deviceHeight() == src.Bounds.Height*scale {
 		if err := chargeLayerPixels(budget, pixels); err != nil {
 			return err
 		}
@@ -142,8 +145,8 @@ func (s *Services) layerPiledCopy(dst *Layer, dstID tjs.ObjectID, args []tjs.Val
 		destX, destY := int64(dx)+left, int64(dy)+top
 		rowBytes := int(copyWidth) * 4
 		for row := int64(0); row < copyHeight; row++ {
-			sourceStart := (int(sourceY+row)*int(src.ImageWidth) + int(sourceX)) * 4
-			destStart := (int(destY+row)*int(dst.ImageWidth) + int(destX)) * 4
+			sourceStart := (int(sourceY+row)*int(src.deviceWidth()) + int(sourceX)) * 4
+			destStart := (int(destY+row)*int(dst.deviceWidth()) + int(destX)) * 4
 			copy(dst.RGBA[destStart:destStart+rowBytes], src.RGBA[sourceStart:sourceStart+rowBytes])
 		}
 		return nil
@@ -163,7 +166,7 @@ func (s *Services) layerPiledCopy(dst *Layer, dstID tjs.ObjectID, args []tjs.Val
 	rowBytes := int(copyWidth) * 4
 	for row := int64(0); row < copyHeight; row++ {
 		sourceStart := int(row) * rowBytes
-		destStart := (int(destY+row)*int(dst.ImageWidth) + int(destX)) * 4
+		destStart := (int(destY+row)*int(dst.deviceWidth()) + int(destX)) * 4
 		copy(dst.RGBA[destStart:destStart+rowBytes], pixelsRGBA[sourceStart:sourceStart+rowBytes])
 	}
 	return nil
@@ -196,17 +199,18 @@ func layerCompleteRegion(layer *Layer, rect Rect, depth int, livePixels uint64, 
 		return nil, err
 	}
 	out := make([]byte, int(pixels)*4)
+	scale := layer.RenderScale()
 
 	// The main image is copied without applying this layer's visibility,
 	// opacity, face, or clip. ImageLeft/ImageTop position it in layer space.
-	left := max64(int64(rect.X), int64(layer.ImageLeft))
-	top := max64(int64(rect.Y), int64(layer.ImageTop))
-	right := min64(int64(rect.X)+int64(rect.Width), int64(layer.ImageLeft)+int64(layer.ImageWidth))
-	bottom := min64(int64(rect.Y)+int64(rect.Height), int64(layer.ImageTop)+int64(layer.ImageHeight))
+	left := max64(int64(rect.X), int64(layer.ImageLeft)*int64(scale))
+	top := max64(int64(rect.Y), int64(layer.ImageTop)*int64(scale))
+	right := min64(int64(rect.X)+int64(rect.Width), int64(layer.ImageLeft)*int64(scale)+int64(layer.deviceWidth()))
+	bottom := min64(int64(rect.Y)+int64(rect.Height), int64(layer.ImageTop)*int64(scale)+int64(layer.deviceHeight()))
 	if right > left && bottom > top {
 		rowBytes := int(right-left) * 4
 		for y := top; y < bottom; y++ {
-			sourceStart := (int(y-int64(layer.ImageTop))*int(layer.ImageWidth) + int(left-int64(layer.ImageLeft))) * 4
+			sourceStart := (int(y-int64(layer.ImageTop)*int64(scale))*int(layer.deviceWidth()) + int(left-int64(layer.ImageLeft)*int64(scale))) * 4
 			destStart := (int(y-int64(rect.Y))*int(rect.Width) + int(left-int64(rect.X))) * 4
 			copy(out[destStart:destStart+rowBytes], layer.RGBA[sourceStart:sourceStart+rowBytes])
 		}
@@ -216,21 +220,21 @@ func layerCompleteRegion(layer *Layer, rect Rect, depth int, livePixels uint64, 
 		if child == nil || !child.Visible || child.Opacity == 0 {
 			continue
 		}
-		left := max64(int64(rect.X), int64(child.Bounds.X))
-		top := max64(int64(rect.Y), int64(child.Bounds.Y))
-		right := min64(int64(rect.X)+int64(rect.Width), int64(child.Bounds.X)+int64(child.Bounds.Width))
-		bottom := min64(int64(rect.Y)+int64(rect.Height), int64(child.Bounds.Y)+int64(child.Bounds.Height))
+		left := max64(int64(rect.X), int64(child.Bounds.X)*int64(scale))
+		top := max64(int64(rect.Y), int64(child.Bounds.Y)*int64(scale))
+		right := min64(int64(rect.X)+int64(rect.Width), int64(child.Bounds.X)*int64(scale)+int64(child.Bounds.Width)*int64(scale))
+		bottom := min64(int64(rect.Y)+int64(rect.Height), int64(child.Bounds.Y)*int64(scale)+int64(child.Bounds.Height)*int64(scale))
 		if right <= left || bottom <= top {
 			continue
 		}
 		if child.Type == LayerBinder {
 			clipped := Rect{X: int32(left), Y: int32(top), Width: int32(right - left), Height: int32(bottom - top)}
-			if err := layerCompositeBinderChildren(out, rect, layer.Type, child, int64(child.Bounds.X), int64(child.Bounds.Y), clipped, depth+1, livePixels+pixels, budget); err != nil {
+			if err := layerCompositeBinderChildren(out, rect, layer.Type, child, int64(child.Bounds.X)*int64(scale), int64(child.Bounds.Y)*int64(scale), clipped, depth+1, livePixels+pixels, budget); err != nil {
 				return nil, err
 			}
 			continue
 		}
-		childRect := Rect{X: int32(left - int64(child.Bounds.X)), Y: int32(top - int64(child.Bounds.Y)), Width: int32(right - left), Height: int32(bottom - top)}
+		childRect := Rect{X: int32(left - int64(child.Bounds.X)*int64(scale)), Y: int32(top - int64(child.Bounds.Y)*int64(scale)), Width: int32(right - left), Height: int32(bottom - top)}
 		piece, err := layerCompleteRegion(child, childRect, depth+1, livePixels+pixels, budget)
 		if err != nil {
 			return nil, err
@@ -248,12 +252,13 @@ func layerCompositeBinderChildren(target []byte, targetRect Rect, targetType Lay
 		if child == nil || !child.Visible || child.Opacity == 0 {
 			continue
 		}
-		childX := binderX + int64(child.Bounds.X)
-		childY := binderY + int64(child.Bounds.Y)
+		scale := binder.RenderScale()
+		childX := binderX + int64(child.Bounds.X)*int64(scale)
+		childY := binderY + int64(child.Bounds.Y)*int64(scale)
 		left := max64(int64(clip.X), childX)
 		top := max64(int64(clip.Y), childY)
-		right := min64(int64(clip.X)+int64(clip.Width), childX+int64(child.Bounds.Width))
-		bottom := min64(int64(clip.Y)+int64(clip.Height), childY+int64(child.Bounds.Height))
+		right := min64(int64(clip.X)+int64(clip.Width), childX+int64(child.Bounds.Width)*int64(scale))
+		bottom := min64(int64(clip.Y)+int64(clip.Height), childY+int64(child.Bounds.Height)*int64(scale))
 		if right <= left || bottom <= top {
 			continue
 		}
@@ -319,7 +324,7 @@ func (s *Services) layerSaveImage(layer *Layer, layerID tjs.ObjectID, args []tjs
 		s.mu.RUnlock()
 		return err
 	}
-	pixels := append([]byte(nil), layer.RGBA...)
+	pixels := downscaleRGBA(layer.RGBA, layer.deviceWidth(), layer.deviceHeight(), layer.RenderScale())
 	s.mu.RUnlock()
 
 	var (

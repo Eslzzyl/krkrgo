@@ -36,6 +36,17 @@ type InputPoller struct {
 	touchIDs    []ebiten.TouchID
 	touchPoints []touchPoint
 	touch       touchMouseState
+	scale       int32
+}
+
+// logical converts an Ebitengine screen coordinate to the runtime's logical
+// resolution. The game screen is rendered at device pixels.
+func (p *InputPoller) logical(value int) int32 {
+	scale := p.scale
+	if scale < 1 {
+		scale = 1
+	}
+	return int32(value / int(scale))
 }
 
 type touchPoint struct {
@@ -150,7 +161,7 @@ func (p *InputPoller) Poll(dst []core.InputEvent, timeMS uint64) []core.InputEve
 		pointerPressed = pointerPressed || pressed
 	}
 	if pointerChanged {
-		dst = append(dst, core.InputEvent{TimeMS: timeMS, Action: core.NewPointerAction(int32(x), int32(y), pointerPressed)})
+		dst = append(dst, core.InputEvent{TimeMS: timeMS, Action: core.NewPointerAction(p.logical(x), p.logical(y), pointerPressed)})
 		p.x, p.y, p.havePointer = x, y, true
 	}
 	return append(dst, core.InputEvent{TimeMS: timeMS, Action: core.NewAdvanceAction()})
@@ -178,12 +189,12 @@ func (p *InputPoller) PollRuntime(dst []runtime.InputEvent) []runtime.InputEvent
 			}
 			for i, pressed := range p.buttons {
 				if pressed {
-					dst = append(dst, runtime.InputEvent{Kind: runtime.InputPointerUp, X: int32(x), Y: int32(y), Button: int32(i), Shift: shift | buttonShift(i)})
+					dst = append(dst, runtime.InputEvent{Kind: runtime.InputPointerUp, X: p.logical(x), Y: p.logical(y), Button: int32(i), Shift: shift | buttonShift(i)})
 				}
 			}
 			if p.touch.active {
 				dst = append(dst, runtime.InputEvent{
-					Kind: runtime.InputPointerUp, X: int32(p.touch.x), Y: int32(p.touch.y),
+					Kind: runtime.InputPointerUp, X: p.logical(p.touch.x), Y: p.logical(p.touch.y),
 					Button: 0, Shift: shift | buttonShift(0),
 				})
 			}
@@ -213,7 +224,7 @@ func (p *InputPoller) PollRuntime(dst []runtime.InputEvent) []runtime.InputEvent
 	}
 	pointerMoved := !p.havePointer || p.x != x || p.y != y
 	if pointerMoved {
-		dst = append(dst, runtime.InputEvent{Kind: runtime.InputPointerMove, X: int32(x), Y: int32(y), Shift: p.shiftState() | p.mouseState()})
+		dst = append(dst, runtime.InputEvent{Kind: runtime.InputPointerMove, X: p.logical(x), Y: p.logical(y), Shift: p.shiftState() | p.mouseState()})
 	}
 	for i, button := range trackedButtons {
 		pressed := ebiten.IsMouseButtonPressed(button)
@@ -222,9 +233,9 @@ func (p *InputPoller) PollRuntime(dst []runtime.InputEvent) []runtime.InputEvent
 			if pressed {
 				kind = runtime.InputPointerDown
 			} else if i == 0 {
-				dst = append(dst, runtime.InputEvent{Kind: runtime.InputClick, X: int32(x), Y: int32(y), Shift: p.shiftState()})
+				dst = append(dst, runtime.InputEvent{Kind: runtime.InputClick, X: p.logical(x), Y: p.logical(y), Shift: p.shiftState()})
 			}
-			dst = append(dst, runtime.InputEvent{Kind: kind, X: int32(x), Y: int32(y), Button: int32(i), Shift: p.shiftState() | p.mouseStateWith(i, pressed)})
+			dst = append(dst, runtime.InputEvent{Kind: kind, X: p.logical(x), Y: p.logical(y), Button: int32(i), Shift: p.shiftState() | p.mouseStateWith(i, pressed)})
 		}
 		p.buttons[i] = pressed
 	}
@@ -237,9 +248,9 @@ func (p *InputPoller) PollRuntime(dst []runtime.InputEvent) []runtime.InputEvent
 	// motion when both axes are present; use horizontal motion as a fallback.
 	xoff, yoff := ebiten.Wheel()
 	if yoff != 0 {
-		dst = append(dst, runtime.InputEvent{Kind: runtime.InputWheel, X: int32(x), Y: int32(y), Delta: wheelDelta(yoff), Shift: p.shiftState() | p.mouseState()})
+		dst = append(dst, runtime.InputEvent{Kind: runtime.InputWheel, X: p.logical(x), Y: p.logical(y), Delta: wheelDelta(yoff), Shift: p.shiftState() | p.mouseState()})
 	} else if xoff != 0 {
-		dst = append(dst, runtime.InputEvent{Kind: runtime.InputWheel, X: int32(x), Y: int32(y), Delta: wheelDelta(xoff), Shift: p.shiftState() | p.mouseState()})
+		dst = append(dst, runtime.InputEvent{Kind: runtime.InputWheel, X: p.logical(x), Y: p.logical(y), Delta: wheelDelta(xoff), Shift: p.shiftState() | p.mouseState()})
 	}
 	chars := ebiten.AppendInputChars(nil)
 	if len(chars) != 0 {
@@ -293,12 +304,12 @@ func (p *InputPoller) appendTouchEvents(dst []runtime.InputEvent, points []touch
 	}
 
 	dst = append(dst, runtime.InputEvent{
-		Kind: runtime.InputPointerUp, X: int32(p.touch.x), Y: int32(p.touch.y),
+		Kind: runtime.InputPointerUp, X: p.logical(p.touch.x), Y: p.logical(p.touch.y),
 		Button: 0, Shift: p.shiftState() | p.mouseState(),
 	})
 	if !p.touch.moved {
 		dst = append(dst, runtime.InputEvent{
-			Kind: runtime.InputClick, X: int32(p.touch.x), Y: int32(p.touch.y),
+			Kind: runtime.InputClick, X: p.logical(p.touch.x), Y: p.logical(p.touch.y),
 		})
 	}
 	p.touch = touchMouseState{}

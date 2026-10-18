@@ -68,6 +68,7 @@ type motionPlayerGPUKey struct {
 	tick          float64
 	filter        int64
 	matrix        motionDrawMatrix
+	scale         int32
 }
 
 func (s *Services) loadMotionResource(path string) (*motionResource, error) {
@@ -470,11 +471,12 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 		key := motionPlayerGPUKey{
 			resource: resource, chara: state.chara, motion: state.motion,
 			tick: state.frameTick, filter: state.completionType, matrix: state.drawMatrix,
+			scale: layer.RenderScale(),
 		}
 		motion := state.gpuMotion
 		if !state.gpuMotionValid || state.gpuMotionKey != key {
 			var err error
-			motion, err = buildGPUMotion(resource, state.chara, state.motion, state.frameTick, state.completionType, state.drawMatrix)
+			motion, err = buildGPUMotion(resource, state.chara, state.motion, state.frameTick, state.completionType, state.drawMatrix, layer.RenderScale())
 			if err != nil {
 				return err
 			}
@@ -524,10 +526,7 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 }
 
 func layerHasCanvas(layer *Layer) bool {
-	if layer.ImageWidth <= 0 || layer.ImageHeight <= 0 {
-		return false
-	}
-	return len(layer.RGBA) >= int(layer.ImageWidth)*int(layer.ImageHeight)*4
+	return layer.validImage()
 }
 func (s *Services) motionSeparateLayerAdaptorNative(context tjs.Value, operation string, args []tjs.Value) (tjs.Value, error) {
 	id := context.ObjectRef().Object

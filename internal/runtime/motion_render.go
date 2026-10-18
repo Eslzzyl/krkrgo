@@ -33,7 +33,7 @@ func (l *Layer) materializeGPUMotion() error {
 	if l.ImageWidth <= 0 || l.ImageHeight <= 0 {
 		return fmt.Errorf("%w: deferred motion has invalid layer size", ErrInvalidLayer)
 	}
-	want := int(l.ImageWidth) * int(l.ImageHeight) * 4
+	want := int(l.deviceWidth()) * int(l.deviceHeight()) * 4
 	if len(l.RGBA) != want {
 		l.RGBA = make([]byte, want)
 	}
@@ -45,13 +45,13 @@ func (l *Layer) materializeGPUMotion() error {
 			return fmt.Errorf("%w: deferred motion source has invalid size", ErrInvalidLayer)
 		}
 		ctx := motionRenderContext{
-			x:       draw.TX - float64(l.ImageWidth)/2,
-			y:       draw.TY - float64(l.ImageHeight)/2,
+			x:       draw.TX - float64(l.deviceWidth())/2,
+			y:       draw.TY - float64(l.deviceHeight())/2,
 			opacity: draw.Opacity,
 			matrix:  motionMatrix{a: draw.A, b: draw.B, c: draw.C, d: draw.D},
 		}
 		source := &assets.Image{Width: uint32(draw.Width), Height: uint32(draw.Height), RGBA: draw.RGBA}
-		if err := blendMotionImage(l.RGBA, int(l.ImageWidth), int(l.ImageHeight), source, 0, 0, motion.Filter, nil, false, ctx); err != nil {
+		if err := blendMotionImage(l.RGBA, int(l.deviceWidth()), int(l.deviceHeight()), source, 0, 0, motion.Filter, nil, false, ctx); err != nil {
 			return err
 		}
 	}
@@ -161,7 +161,7 @@ func renderMotionValue(resource *motionResource, root map[string]assets.Value, v
 	}
 	return nil
 }
-func buildGPUMotion(resource *motionResource, chara, motion string, tick float64, filter int64, drawMatrix motionDrawMatrix) (*RenderMotion, error) {
+func buildGPUMotion(resource *motionResource, chara, motion string, tick float64, filter int64, drawMatrix motionDrawMatrix, scale int32) (*RenderMotion, error) {
 	if resource == nil || resource.doc == nil {
 		return nil, fmt.Errorf("motion resource is unavailable")
 	}
@@ -169,7 +169,10 @@ func buildGPUMotion(resource *motionResource, chara, motion string, tick float64
 	if !ok {
 		return nil, fmt.Errorf("motion PSB root is not a dictionary")
 	}
-	result := &RenderMotion{Filter: filter, Draws: make([]RenderMotionDraw, 0, 8)}
+	if scale < 1 {
+		scale = 1
+	}
+	result := &RenderMotion{Filter: filter, Scale: scale, Draws: make([]RenderMotionDraw, 0, 8)}
 	determinant := drawMatrix.a*drawMatrix.d - drawMatrix.b*drawMatrix.c
 	if math.Abs(determinant) < 1e-9 || math.IsNaN(determinant) || math.IsInf(determinant, 0) {
 		return result, nil
@@ -244,17 +247,18 @@ func collectGPUMotionFrame(resource *motionResource, root map[string]assets.Valu
 		if resource.path != "" {
 			key = resource.path + "\x00" + source
 		}
+		scale := result.Scale
 		result.Draws = append(result.Draws, RenderMotionDraw{
 			SourceKey: key,
-			RGBA:      image.RGBA,
-			Width:     int32(image.Width),
-			Height:    int32(image.Height),
+			RGBA:      scaleRGBA(image.RGBA, int32(image.Width), int32(image.Height), scale),
+			Width:     int32(image.Width) * scale,
+			Height:    int32(image.Height) * scale,
 			A:         transform.a,
 			B:         transform.b,
 			C:         transform.c,
 			D:         transform.d,
-			TX:        tx,
-			TY:        ty,
+			TX:        tx * float64(scale),
+			TY:        ty * float64(scale),
 			Opacity:   ctx.opacity,
 		})
 		return nil
@@ -1113,7 +1117,17 @@ func identityMotionDrawMatrix() motionDrawMatrix { return motionDrawMatrix{a: 1,
 // layer bitmap. Destination pixels sample the source, so scaled transforms stay
 // gap-free; rotation and shearing are supported through the inverse transform.
 func drawMotionCanvasInto(layer *Layer, frame *assets.Image, matrix motionDrawMatrix, filter int64) {
-	width, height := int(layer.ImageWidth), int(layer.ImageHeight)
+	scale := layer.RenderScale()
+	if scale > 1 {
+		frame = &assets.Image{
+			Width:  frame.Width * uint32(scale),
+			Height: frame.Height * uint32(scale),
+			RGBA:   scaleRGBA(frame.RGBA, int32(frame.Width), int32(frame.Height), scale),
+		}
+		matrix.tx *= float64(scale)
+		matrix.ty *= float64(scale)
+	}
+	width, height := int(layer.deviceWidth()), int(layer.deviceHeight())
 	canvasWidth, canvasHeight := int(frame.Width), int(frame.Height)
 	if width <= 0 || height <= 0 || canvasWidth <= 0 || canvasHeight <= 0 {
 		return

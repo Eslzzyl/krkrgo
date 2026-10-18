@@ -7,7 +7,15 @@ import "fmt"
 // so repeated renders produce identical bytes on every host.
 type drawContext struct {
 	width, height  int32
+	scale          int32
 	rgba, province []byte
+}
+
+func (d *drawContext) renderScale() int32 {
+	if d == nil || d.scale < 1 {
+		return 1
+	}
+	return d.scale
 }
 
 func (d *drawContext) drawLayer(l *Layer, parentX, parentY int32) error {
@@ -24,12 +32,14 @@ func (d *drawContext) drawLayerTo(l *Layer, parentX, parentY int32, targetType L
 	if l.Type == LayerEffect || l.Type == LayerFilter {
 		return unsupportedLayerType(l)
 	}
-	ax, ay := parentX+l.Bounds.X, parentY+l.Bounds.Y
+	scale := d.renderScale()
+	ax, ay := parentX+l.Bounds.X*scale, parentY+l.Bounds.Y*scale
 	pixels := l.RGBA
 	if l.inTransition && len(l.transitionPixels) != 0 {
 		pixels = l.transitionPixels
 	}
 	if len(pixels) != 0 && l.ImageWidth > 0 && l.ImageHeight > 0 {
+		deviceWidth, deviceHeight := l.deviceWidth(), l.deviceHeight()
 		drawW, drawH := l.Bounds.Width, l.Bounds.Height
 		if drawW == 0 {
 			drawW = l.ImageWidth
@@ -45,21 +55,22 @@ func (d *drawContext) drawLayerTo(l *Layer, parentX, parentY int32, targetType L
 		// Intersect in source-local coordinates before entering the pixel loops.
 		// This matches the DrawDevice cliprect path: off-screen and clipped
 		// pixels do not incur per-pixel bounds branches.
-		x0 := maxInt64(int64(localClip.X), -int64(ax)) - int64(l.ImageLeft)
-		y0 := maxInt64(int64(localClip.Y), -int64(ay)) - int64(l.ImageTop)
-		x1 := minInt64(int64(localClip.Right()), int64(d.width)-int64(ax)) - int64(l.ImageLeft)
-		y1 := minInt64(int64(localClip.Bottom()), int64(d.height)-int64(ay)) - int64(l.ImageTop)
+		imageLeft, imageTop := l.ImageLeft*scale, l.ImageTop*scale
+		x0 := maxInt64(int64(localClip.X)*int64(scale), -int64(ax)) - int64(imageLeft)
+		y0 := maxInt64(int64(localClip.Y)*int64(scale), -int64(ay)) - int64(imageTop)
+		x1 := minInt64(int64(localClip.Right())*int64(scale), int64(d.width)-int64(ax)) - int64(imageLeft)
+		y1 := minInt64(int64(localClip.Bottom())*int64(scale), int64(d.height)-int64(ay)) - int64(imageTop)
 		x0 = maxInt64(x0, 0)
 		y0 = maxInt64(y0, 0)
-		x1 = minInt64(x1, int64(l.ImageWidth))
-		y1 = minInt64(y1, int64(l.ImageHeight))
+		x1 = minInt64(x1, int64(deviceWidth))
+		y1 = minInt64(y1, int64(deviceHeight))
 		rowBytes := int(x1-x0) * 4
 		opaqueCopy := l.Opacity == 255 && !provinceMatchesImage && (l.Type == LayerOpaque || l.Type == LayerAlpha)
 		if l.inTransition && l.transitionOpaque && l.Type == LayerAlpha &&
 			l.Opacity == 255 && !provinceMatchesImage && !l.clipSet &&
-			ax+int32(l.ImageLeft) == 0 && ay+int32(l.ImageTop) == 0 &&
-			l.ImageWidth == d.width && l.ImageHeight == d.height &&
-			drawW == d.width && drawH == d.height &&
+			ax+imageLeft == 0 && ay+imageTop == 0 &&
+			deviceWidth == d.width && deviceHeight == d.height &&
+			drawW*scale == d.width && drawH*scale == d.height &&
 			x0 == 0 && y0 == 0 && x1 == int64(d.width) && y1 == int64(d.height) &&
 			len(pixels) == len(d.rgba) {
 			copy(d.rgba, pixels)
@@ -71,14 +82,13 @@ func (d *drawContext) drawLayerTo(l *Layer, parentX, parentY int32, targetType L
 			}
 		} else {
 			for sy := int32(y0); int64(sy) < y1; sy++ {
-				localY := l.ImageTop + sy
+				localY := imageTop + sy
 				dy := ay + localY
-				sourceRowOffset := int(sy) * int(l.ImageWidth) * 4
-				sourceProvinceRowOffset := int(sy) * int(l.ImageWidth)
+				sourceRowOffset := int(sy) * int(deviceWidth) * 4
 				destinationRowOffset := int(dy) * int(d.width)
 				if opaqueCopy && x0 < x1 {
 					sourceStart := sourceRowOffset + int(x0)*4
-					destinationX := int(ax) + int(l.ImageLeft) + int(x0)
+					destinationX := int(ax) + int(imageLeft) + int(x0)
 					destinationStart := (destinationRowOffset + destinationX) * 4
 					sourceEnd := sourceStart + rowBytes
 					allAlphaOpaque := l.Type == LayerOpaque
@@ -108,13 +118,13 @@ func (d *drawContext) drawLayerTo(l *Layer, parentX, parentY int32, targetType L
 					}
 				}
 				for sx := int32(x0); int64(sx) < x1; sx++ {
-					localX := l.ImageLeft + sx
+					localX := imageLeft + sx
 					dx := ax + localX
 					si := sourceRowOffset + int(sx)*4
 					di := (destinationRowOffset + int(dx)) * 4
 					blendPixelForTarget(d.rgba[di:di+4], pixels[si:si+4], l.Opacity, l.Type, targetType)
 					if provinceMatchesImage {
-						provinceID := l.Province[sourceProvinceRowOffset+int(sx)]
+						provinceID := l.Province[(int(l.ImageTop)+int(sy)/int(scale))*int(l.ImageWidth)+int(l.ImageLeft)+int(sx)/int(scale)]
 						if provinceID != 0 && pixels[si+3] != 0 {
 							d.province[destinationRowOffset+int(dx)] = provinceID
 						}
@@ -141,15 +151,17 @@ func (d *drawContext) drawOpaqueAlphaLayer(pixels []byte, l *Layer, targetType L
 	if startX >= endX || startY >= endY {
 		return
 	}
-	imageWidth := int(l.ImageWidth)
+	scale := d.renderScale()
+	imageWidth := int(l.deviceWidth())
+	logicalWidth := int(l.ImageWidth)
 	destinationWidth := int(d.width)
 	sourceLeft := startX * 4
-	destinationX := int(ax) + int(l.ImageLeft) + startX
+	destinationX := int(ax) + int(l.ImageLeft)*int(scale) + startX
 	for sy := startY; sy < endY; sy++ {
 		source := sy*imageWidth*4 + sourceLeft
-		destinationY := int(ay) + int(l.ImageTop) + sy
+		destinationY := int(ay) + int(l.ImageTop)*int(scale) + sy
 		destination := (destinationY*destinationWidth + destinationX) * 4
-		province := sy * imageWidth
+		provinceRow := (int(l.ImageTop) + sy/int(scale)) * logicalWidth
 		for offset, sx := 0, startX; sx < endX; offset, sx = offset+1, sx+1 {
 			si := source + offset*4
 			di := destination + offset*4
@@ -183,7 +195,7 @@ func (d *drawContext) drawOpaqueAlphaLayer(pixels []byte, l *Layer, targetType L
 						}
 					}
 				}
-				provinceID := l.Province[province+sx]
+				provinceID := l.Province[provinceRow+(int(l.ImageLeft)+sx/int(scale))]
 				if provinceID != 0 {
 					d.province[destinationY*destinationWidth+destinationX+offset] = provinceID
 				}
@@ -198,14 +210,15 @@ func (d *drawContext) drawOpaqueAlphaLayerNoProvince(pixels []byte, l *Layer, ta
 	if startX >= endX || startY >= endY {
 		return
 	}
-	imageWidth := int(l.ImageWidth)
+	scale := d.renderScale()
+	imageWidth := int(l.deviceWidth())
 	destinationWidth := int(d.width)
 	rowBytes := (endX - startX) * 4
 	sourceLeft := startX * 4
-	destinationX := int(ax) + int(l.ImageLeft) + startX
+	destinationX := int(ax) + int(l.ImageLeft)*int(scale) + startX
 	for sy := startY; sy < endY; sy++ {
 		source := sy*imageWidth*4 + sourceLeft
-		destinationY := int(ay) + int(l.ImageTop) + sy
+		destinationY := int(ay) + int(l.ImageTop)*int(scale) + sy
 		destination := (destinationY*destinationWidth + destinationX) * 4
 		allAlphaOpaque := true
 		for alpha := source + 3; alpha < source+rowBytes; alpha += 4 {
@@ -511,12 +524,15 @@ func layerHitAt(l *Layer, x, y, absoluteX, absoluteY int32) bool {
 	if sx < 0 || sy < 0 || sx >= l.ImageWidth || sy >= l.ImageHeight || len(l.RGBA) == 0 {
 		return false
 	}
-	idx := int(sy*l.ImageWidth + sx)
+	scale := l.RenderScale()
+	px, py := sx*scale, sy*scale
+	pixelIndex := int(py*l.deviceWidth() + px)
 	if l.Hit == HitProvince {
+		idx := int(sy*l.ImageWidth + sx)
 		return l.ProvinceWidth == l.ImageWidth && l.ProvinceHeight == l.ImageHeight &&
 			idx < len(l.Province) && l.Province[idx] != 0
 	}
-	return int(l.RGBA[idx*4+3])*int(l.Opacity)/255 >= l.HitThreshold
+	return int(l.RGBA[pixelIndex*4+3])*int(l.Opacity)/255 >= l.HitThreshold
 }
 
 // HitTest performs the same foremost-child search as Compositor.HitTest, but

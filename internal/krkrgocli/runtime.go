@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"runtime/pprof"
 	"strings"
@@ -26,10 +27,11 @@ const (
 )
 
 type LaunchOptions struct {
-	Project  string
-	SaveDir  string
-	Budget   uint64
-	Renderer string
+	Project     string
+	SaveDir     string
+	Budget      uint64
+	Renderer    string
+	RenderScale int
 }
 
 const (
@@ -38,18 +40,22 @@ const (
 )
 
 func ParseLaunchArgs(args []string) (LaunchOptions, error) {
-	opts := LaunchOptions{Budget: unlimitedBudget, Renderer: rendererGPU}
+	opts := LaunchOptions{Budget: unlimitedBudget, Renderer: rendererGPU, RenderScale: 0}
 	fs := flag.NewFlagSet("krkrgo run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&opts.Project, "project", "", "project root or data directory")
 	fs.StringVar(&opts.SaveDir, "save-dir", "", "save-data directory")
 	fs.Uint64Var(&opts.Budget, "budget", unlimitedBudget, "diagnostic session instruction limit (default: unlimited)")
 	fs.StringVar(&opts.Renderer, "renderer", rendererGPU, "renderer backend: gpu or cpu (default: gpu)")
+	fs.IntVar(&opts.RenderScale, "render-scale", 0, "rendering pixel density: 1-4, or 0 for the monitor scale (default: 0)")
 	if err := fs.Parse(args); err != nil {
 		return LaunchOptions{}, err
 	}
 	if opts.Renderer != rendererGPU && opts.Renderer != rendererCPU {
 		return LaunchOptions{}, fmt.Errorf("unsupported renderer %q; want gpu or cpu", opts.Renderer)
+	}
+	if opts.RenderScale < 0 || opts.RenderScale > 4 {
+		return LaunchOptions{}, fmt.Errorf("unsupported render scale %d; want 0 through 4", opts.RenderScale)
 	}
 	if fs.NArg() != 0 {
 		return LaunchOptions{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
@@ -58,6 +64,10 @@ func ParseLaunchArgs(args []string) (LaunchOptions, error) {
 }
 
 func NewSession(project, saveDir string, budget uint64) (*runtime.Session, error) {
+	return NewSessionWithScale(project, saveDir, budget, 1)
+}
+
+func NewSessionWithScale(project, saveDir string, budget uint64, scale int32) (*runtime.Session, error) {
 	var (
 		session *runtime.Session
 		err     error
@@ -70,6 +80,7 @@ func NewSession(project, saveDir string, budget uint64) (*runtime.Session, error
 			return nil, fmt.Errorf("open project: %w", err)
 		}
 	}
+	session.Services.SetRenderScale(scale)
 
 	if project == "" {
 		// Keep an empty host scene for non-project launches. Project startup
@@ -198,7 +209,11 @@ func RunGame(args []string) {
 		log.Fatal(formatErrorChain(err))
 	}
 	log.Printf("krkrgo: opening project %q", opts.Project)
-	session, err := NewSession(opts.Project, opts.SaveDir, opts.Budget)
+	scale := int32(opts.RenderScale)
+	if scale == 0 {
+		scale = displayRenderScale()
+	}
+	session, err := NewSessionWithScale(opts.Project, opts.SaveDir, opts.Budget, scale)
 	if err != nil {
 		log.Fatal(formatErrorChain(err))
 	}
@@ -253,4 +268,17 @@ func RunGame(args []string) {
 	if audioDiagnostics {
 		logAudioOutput()
 	}
+}
+
+// displayRenderScale rounds the monitor's device scale factor to an integer
+// render density. Retina displays report 2; conventional displays report 1.
+func displayRenderScale() int32 {
+	scale := ebiten.Monitor().DeviceScaleFactor()
+	if scale < 1 {
+		return 1
+	}
+	if scale > 4 {
+		scale = 4
+	}
+	return int32(math.Round(scale))
 }
