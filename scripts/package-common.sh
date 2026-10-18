@@ -2,7 +2,7 @@
 # Shared helpers for the platform packaging scripts.
 
 PKG_REPO="Eslzzyl/krkrgo"
-PKG_DEFAULT_TAG="ffmpeg-sidecar-v9.0.2-r3"
+PKG_DEFAULT_TAG=${PKG_TAG:-}
 
 die() {
     printf 'package: %s\n' "$*" >&2
@@ -12,6 +12,18 @@ die() {
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "required command is missing: $1"
 }
+
+latest_sidecar_tag() {
+    require_cmd gh
+    local tag
+    tag=$(gh release list --repo "$PKG_REPO" --limit 100 --json tagName --jq '.[].tagName' | grep -m1 '^ffmpeg-sidecar-')
+    [[ -n "$tag" ]] || die "no ffmpeg-sidecar release found"
+    printf '%s\n' "$tag"
+}
+
+if [[ -z "$PKG_DEFAULT_TAG" ]]; then
+    PKG_DEFAULT_TAG=$(latest_sidecar_tag)
+fi
 
 sidecar_arch() {
     local platform=$1

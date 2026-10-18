@@ -5,7 +5,7 @@ param(
 
     [string]$Out = '',
 
-    [string]$Tag = 'ffmpeg-sidecar-v9.0.2-r3',
+    [string]$Tag = '',
 
     [string]$Sidecar = ''
 )
@@ -21,6 +21,26 @@ function Fail {
     param([string]$Message)
     Write-Error "package: $Message" -ErrorAction Stop
 }
+
+function Resolve-SidecarTag {
+    param([string]$Requested)
+
+    if ([string]::IsNullOrWhiteSpace($Requested)) {
+        $Requested = $env:PKG_TAG
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Requested)) {
+        return $Requested
+    }
+    $tag = gh release list --repo $Repo --limit 100 --json tagName --jq '.[].tagName' |
+        Where-Object { $_ -like 'ffmpeg-sidecar-*' } |
+        Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($tag)) {
+        Fail 'no ffmpeg-sidecar release found'
+    }
+    return $tag
+}
+
+$Tag = Resolve-SidecarTag -Requested $Tag
 
 function Resolve-OutputDirectory {
     param([string]$Path)
