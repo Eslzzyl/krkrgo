@@ -399,8 +399,14 @@ func (p *KAGParser) RestoreObject(value any) error {
 			}
 		}
 	} else if p.callbacks != nil && p.callbacks.OnScenarioLoad != nil {
-		if err := p.LoadScenario(state.Storage, ""); err != nil {
-			return fmt.Errorf("load KAG restore scenario %q: %w", state.Storage, err)
+		// Reload only when the current scenario no longer matches the saved
+		// one. An inline scenario with the same storage name and fingerprint
+		// is already loaded, so restore works without a storage device.
+		current := p.parser.Scenario()
+		if p.StorageName() != state.Storage || len(current.Tokens) == 0 || scenarioFingerprint(current) != state.Fingerprint {
+			if err := p.LoadScenario(state.Storage, ""); err != nil {
+				return fmt.Errorf("load KAG restore scenario %q: %w", state.Storage, err)
+			}
 		}
 	}
 	return p.RestoreState(state)
