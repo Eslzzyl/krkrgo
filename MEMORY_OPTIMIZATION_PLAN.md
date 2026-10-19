@@ -44,7 +44,46 @@ Completed:
 Remaining: `VM.MemoryStats()` and `Session.MemoryStats()` counters; islanddiary and
 lovelyday baselines; process working-set sampling.
 
-### Measured results
+### Post-merge baseline (`a12e95b`)
+
+The merge brought external launcher, upscaler, composition, and compatibility
+changes. Its replay output differs from the pre-merge tree, so the older numbers
+below are historical and not directly comparable.
+
+Method: amairo, 10,000 ms, 16 ms step, budget `1<<30`, three runs, statistics
+after `runtime.GC()` and before `Session.Close`. Replay SHA:
+`6d295e88252e10e2ca61468517b1301f5676a38219e89ab4c52ee7528da37d30`.
+
+| Metric | `a12e95b` |
+| --- | ---: |
+| HeapAlloc | 304.10 MB |
+| HeapSys | 627.30 MB |
+| TotalAlloc | 3,050.20 MB |
+| HeapObjects | 468,784 |
+| Mallocs | 5,211,540 |
+
+Current retained profile:
+
+| Flat | Allocation |
+| ---: | --- |
+| 101.56 MB | `compiler.emit` |
+| 51.50 MB | `resizeLayerImage` |
+| 15.19 MB | `Object.SetUnits` |
+| 14.06 MB | `Services.layerTransition` |
+| 13.52 MB | `VM.alloc` |
+| 12.39 MB | `assets.cloneImage` |
+
+Warm startup, three runs, startup-only replay:
+
+| Tree | Runs | Median |
+| --- | --- | ---: |
+| pre-merge baseline `2ff712c` | 4.57 s, 4.14 s, 4.34 s | 4.34 s |
+| merged `a12e95b` | 7.70 s, 5.18 s, 4.56 s | 5.18 s |
+
+The merged tree is slower in this sample. A startup CPU profile is still needed
+to attribute the difference.
+
+### Pre-merge measured results
 
 Method: amairo, deterministic replay at 10,000 ms, 16 ms step, budget `1<<30`,
 three runs per revision. Statistics are taken after `runtime.GC()` and before
@@ -263,3 +302,4 @@ go test ./... -run '^$' -bench 'BenchmarkVM|BenchmarkLayer' -benchmem
 | 58972fd | Out-of-line instruction operands |
 | ca44b5e | Deferred font parsing test |
 | 40643b9 | Program constant pool |
+| a12e95b | Merge external launcher, upscaler, and composition work |
