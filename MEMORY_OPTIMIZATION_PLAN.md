@@ -30,7 +30,7 @@ ordering.
 
 ## Phase 0: measurement baseline
 
-Status: pending.
+Status: in progress (`--memprofile` implemented; stats and baselines pending).
 
 - Add `--memprofile` and `--stats` to `krkrgo-tool replay`.
 - Add `VM.MemoryStats()` for object, member, key, UTF-16, octet, array, metadata,
@@ -47,17 +47,16 @@ execution instruction.
 
 ## Phase 1: registry and VM lifetime
 
-Status: pending.
+Status: done.
 
-- Attach an owner scope to callable, class, instance, and property registry entries.
-- Drop registry entries when VM GC removes object IDs.
-- Add `VM.Release()`; call it from `Session.Close()` before clearing the VM.
-- Remove the unused `programClasses` name lookup and the mismatched
-  `Class.Name`/`Program.Storage` key path.
-- Keep `NewClassWithBases` as the explicit base-class API.
-- Clear `ObjectTable.instanceClasses` on object removal.
-- Verify repeated session creation and close leaves registry counts at baseline.
-- Verify two VMs with the same class name remain isolated.
+Completed:
+
+- Registry entries carry an owning object table; GC removal drops matching entries.
+- `VM.Release()` drops VM script state and registry entries; `Session.Close()` calls it.
+- The mismatched `programClasses` name lookup was removed; `NewClassWithBases` is the explicit base API.
+- `ObjectTable.Remove` clears instance-class bookkeeping.
+
+Remaining: retention tests for repeated session creation and cross-VM class isolation.
 
 ## Phase 2: runtime resource reclamation
 
@@ -72,14 +71,18 @@ Status: pending.
 
 ## Phase 3: GPU and image memory
 
-Status: pending.
+Status: in progress.
 
-- Remove the per-texture upload buffer; reuse one compositor scratch buffer.
-- Keep motion atlas uploads until the atlas growth path copies existing views on
-  the GPU instead of rebuilding from retained CPU pixels.
-- Add ownership-transfer APIs for layer images and provinces; copy only when
-  render scale is greater than one.
-- Borrow immutable motion source pixels when `scale == 1`.
+Completed:
+
+- Per-texture upload buffers were removed; one compositor scratch buffer serves all uploads.
+- `GPUCompositor.Stats()` reports logical texture, atlas, upload-scratch, and target bytes.
+- Layer image and province ownership-transfer APIs adopt decoded buffers at scale 1.
+- Motion draw plans borrow immutable source pixels at scale 1.
+
+Remaining:
+
+- Replace motion atlas upload retention with GPU-side view copying.
 - Evaluate transition buffer ownership after profiling.
 - Verify upload bytes stay bounded and texture counts follow released layers.
 
@@ -88,11 +91,13 @@ timing, and interactive GPU frame time. Recorded, not started.
 
 ## Phase 4: TJS object and member layout
 
-Status: pending.
+Status: in progress.
 
-- Remove the duplicate UTF-16 key from `member`; derive enumeration keys from the
-  binary map key.
-- Lazily allocate member maps for objects without members.
+Completed:
+
+- `member` no longer stores a second UTF-16 key; enumeration derives keys from the binary map key.
+- Member maps allocate lazily on first insertion.
+
 - Evaluate a split `vmObject` core/ext representation only after stats confirm
   simple-object overhead dominates.
 - Defer shape/slot class representation until workload data supports it.
@@ -111,10 +116,13 @@ Status: pending.
 
 ## Phase 6: decoded and compiled metadata
 
-Status: pending.
+Status: in progress.
 
-- Release numeric decode pools after constant materialization.
-- Reconcile string and octet pool storage with constant values.
+Completed:
+
+- Numeric and octet decode pools are released after constant materialization.
+
+- Reconcile string pool storage with constant values.
 - Replace per-object `offsetToIP` maps with sorted offsets and binary search when
   profiling shows a meaningful share.
 - Add a runtime-only source compilation mode that retains trace data when trace is
@@ -122,9 +130,12 @@ Status: pending.
 
 ## Phase 7: GC and arrays
 
-Status: pending.
+Status: in progress.
 
-- Maintain an append-only object ID order and drop the per-collection sort.
+Completed:
+
+- VM allocation order is maintained directly; GC no longer sorts all object IDs.
+
 - Report reclaimed bytes per collection.
 - Evaluate sparse and numeric array representations from workload statistics.
 - Defer generational collection until lifetime data supports it.
@@ -155,4 +166,11 @@ go test ./... -run '^$' -bench 'BenchmarkVM|BenchmarkLayer' -benchmem
 
 | Commit | Scope |
 | --- | --- |
-| pending | Plan document |
+| 2ff712c | Plan document |
+| 3573662 | Registry scope and VM release |
+| 8861e2c | GPU upload scratch |
+| 4d3034f | Replay heap profile flag |
+| 50b9e4b | Member key and lazy map |
+| 5a6c021 | Image buffer ownership |
+| 822b9e8 | Decoded pool release |
+| 7044208 | Allocation-order GC |
