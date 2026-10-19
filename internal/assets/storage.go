@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/eslzzyl/krkrgo/internal/core"
 )
@@ -201,9 +203,16 @@ func (s *Storage) Mount(path string, limits core.Limits) error {
 			return nil
 		}
 	}
+	archiveStarted := time.Now()
 	a, err := OpenArchive(canonical, limits)
 	if err != nil {
+		if os.Getenv("KRKRGO_STARTUP_TIMING") == "1" {
+			log.Printf("krkrgo-startup phase=archive-index path=%q elapsed=%s error=%v", canonical, time.Since(archiveStarted), err)
+		}
 		return err
+	}
+	if os.Getenv("KRKRGO_STARTUP_TIMING") == "1" {
+		log.Printf("krkrgo-startup phase=archive-index path=%q elapsed=%s entries=%d", canonical, time.Since(archiveStarted), len(a.Entries))
 	}
 	s.filterMu.Lock()
 	a.SetExtractionFilter(s.extractionFilter)

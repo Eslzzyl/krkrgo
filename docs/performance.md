@@ -77,6 +77,26 @@ The host uses a fixed 16 ms runtime tick. `ActualFPS` and `ActualTPS` come
 from Ebitengine and are included as the closest available real-window timing
 signals.
 
+`KRKRGO_STARTUP_TIMING=1` emits opt-in startup phase records. The records
+include project storage opening, each XP3 archive index parse, session creation,
+session startup, event-loop setup, first `Update`, and first `Draw`. Ebitengine
+does not expose a native window visibility callback; first `Update` and first
+`Draw` are the available host milestones after window creation.
+
+```sh
+KRKRGO_STARTUP_TIMING=1 \
+go run ./cmd/krkrgo/main.go run -project /path/to/project 2>temp/startup-timing.log
+```
+
+Archive records include the path, elapsed time, and parsed entry count. The
+records use structured key-value fields and go through the normal Go logger.
+
+During session startup, the same switch also records script storage read,
+script decoding, TJS compilation, TJS execution, startup filter setup, native
+setup, and startup image storage/decode records. Script records include the
+storage name, source byte count, decoded byte count when applicable, elapsed
+time, and any error.
+
 ## Single-stall trace
 
 `KRKRGO_STALL_TRACE=1` enables thresholded frame, Draw, `Layer.loadImages`,

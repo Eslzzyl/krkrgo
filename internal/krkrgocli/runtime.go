@@ -131,9 +131,13 @@ func NewSessionWithScale(project, saveDir string, budget uint64, scale int32) (*
 
 	if project != "" {
 		log.Printf("krkrgo: starting project startup: %s", project)
+		startupPhaseStarted := time.Now()
 		if _, err := session.Startup(); err != nil {
 			_ = session.Close()
 			return nil, fmt.Errorf("startup: %w", err)
+		}
+		if os.Getenv("KRKRGO_STARTUP_TIMING") == "1" {
+			log.Printf("krkrgo-startup phase=session-startup elapsed=%s", time.Since(startupPhaseStarted))
 		}
 		log.Printf("krkrgo: project startup completed")
 	}
@@ -219,6 +223,11 @@ func formatErrorChain(err error) string {
 }
 
 func RunGame(args []string) {
+	startupStarted := time.Now()
+	startupTiming := os.Getenv("KRKRGO_STARTUP_TIMING") == "1"
+	if startupTiming {
+		log.Printf("krkrgo-startup phase=run-start")
+	}
 	opts, err := ParseLaunchArgs(args)
 	if err == flag.ErrHelp {
 		return
@@ -245,8 +254,10 @@ func RunGame(args []string) {
 	if err != nil {
 		log.Fatal(formatErrorChain(err))
 	}
+	if startupTiming {
+		log.Printf("krkrgo-startup phase=session-open elapsed=%s", time.Since(startupStarted))
+	}
 	log.Printf("krkrgo: creating presentation window")
-	defer func() { _ = session.Close() }()
 
 	ebiten.SetWindowSize(defaultWidth, defaultHeight)
 	ebiten.SetWindowTitle("krkrgo")
@@ -260,6 +271,7 @@ func RunGame(args []string) {
 	} else {
 		game = host.NewGameWithInitialWindowSize(session, defaultWidth, defaultHeight)
 	}
+	game.SetStartupTiming(startupStarted)
 	defer game.Deallocate()
 	if opts.Upscaler != "" {
 		game.EnableUpscaler(host.Upscaler(opts.Upscaler))
@@ -275,6 +287,9 @@ func RunGame(args []string) {
 		_ = audioOutput.Close()
 		log.Fatal(err)
 	}
+	if startupTiming {
+		log.Printf("krkrgo-startup phase=event-loop-ready elapsed=%s", time.Since(startupStarted))
+	}
 	logAudioOutput := func() {
 		stats := audioOutput.Diagnostics()
 		log.Printf("audio output state: ready=%t pending_frames=%d accepted_blocks=%d accepted_frames=%d nonzero_samples=%d peak=%g queue_waits=%d queue_wait_ms=%g queue_max_wait_ms=%g",
@@ -283,6 +298,9 @@ func RunGame(args []string) {
 	}
 	if audioDiagnostics {
 		log.Printf("audio output attached: sample_rate=%d ready=%t", audioContext.SampleRate(), audioContext.IsReady())
+	}
+	if startupTiming {
+		log.Printf("krkrgo-startup phase=event-loop-enter elapsed=%s", time.Since(startupStarted))
 	}
 	log.Printf("krkrgo: entering Ebitengine event loop")
 	if err := ebiten.RunGame(game); err != nil {

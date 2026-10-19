@@ -45,6 +45,10 @@ type Game struct {
 	initialWindowSizeSet bool
 	initialWindowWidth   int
 	initialWindowHeight  int
+	startupTiming        bool
+	startupStarted       time.Time
+	startupFirstUpdate   bool
+	startupFirstDraw     bool
 
 	image                   *ebiten.Image
 	imageWidth              int
@@ -340,6 +344,26 @@ func (g *Game) SetWindowID(id uint64) {
 	}
 }
 
+// SetStartupTiming enables command-start-relative phase records for the first
+// host callbacks. Ebitengine does not expose its native window visibility
+// callback; first Update and first Draw are the available host milestones.
+func (g *Game) SetStartupTiming(started time.Time) {
+	if g == nil || started.IsZero() {
+		return
+	}
+	g.startupTiming = os.Getenv("KRKRGO_STARTUP_TIMING") == "1"
+	if g.startupTiming {
+		g.startupStarted = started
+	}
+}
+
+func (g *Game) logStartupPhase(phase string) {
+	if g == nil || !g.startupTiming || g.startupStarted.IsZero() {
+		return
+	}
+	log.Printf("krkrgo-startup phase=%s since-run-start=%s", phase, time.Since(g.startupStarted))
+}
+
 // Update polls device state, dispatches transitions to the runtime, and then
 // advances the runtime by one fixed deterministic tick. GPU mode consumes a
 // borrowed RenderPlan synchronously; CPU mode retains the RGBA presentation path.
@@ -364,6 +388,10 @@ func (g *Game) Update() error {
 		if statsEnabled {
 			g.renderStats.recordFirstUpdate(updateStarted)
 		}
+	}
+	if !g.startupFirstUpdate {
+		g.startupFirstUpdate = true
+		g.logStartupPhase("first-update")
 	}
 	g.runtimeEvents = g.poller.PollRuntime(g.runtimeEvents[:0])
 	if g.windowID == 0 {
@@ -948,6 +976,10 @@ func (g *Game) logicalWindowSize(width, height int) (int, int) {
 func (g *Game) Draw(screen *ebiten.Image) {
 	if g == nil {
 		return
+	}
+	if !g.startupFirstDraw {
+		g.startupFirstDraw = true
+		g.logStartupPhase("first-draw")
 	}
 	if g.renderStats.enabled {
 		g.renderStats.recordDrawEntry(time.Now())

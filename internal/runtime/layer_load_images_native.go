@@ -240,7 +240,7 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 		return tjs.VoidValue, fmt.Errorf("%w: layer type cannot have an image", ErrInvalidLayer)
 	}
 
-	profile := os.Getenv("KRKRGO_RENDER_STATS") != ""
+	profile := os.Getenv("KRKRGO_RENDER_STATS") != "" || os.Getenv("KRKRGO_STARTUP_TIMING") == "1"
 	stallTrace := StallTraceEnabled()
 	var colorKeyTime, maskTime, provinceTime, metadataTime, commitTime time.Duration
 	readStarted := time.Now()

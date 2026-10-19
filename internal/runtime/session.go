@@ -68,6 +68,7 @@ type Session struct {
 	Budget                       uint64
 	AudioOutput                  []float32
 	preprocessor                 *tjs.Preprocessor
+	startupTiming                bool
 	initErr                      error
 	closed                       bool
 	mu                           sync.Mutex
@@ -107,12 +108,24 @@ func Open(project, saveDir string, budget uint64) (*Session, error) {
 	return OpenSession(project, saveDir, budget)
 }
 func OpenSession(project, saveDir string, budget uint64) (*Session, error) {
+	storageStarted := time.Now()
 	limits := core.DefaultLimits()
 	storage, defaultSaveDir, err := openProjectStorage(project, limits)
 	if err != nil {
 		return nil, err
 	}
-	return fromStorage(storage, saveDir, defaultSaveDir, budget)
+	if os.Getenv("KRKRGO_STARTUP_TIMING") == "1" {
+		log.Printf("krkrgo-startup phase=storage-open elapsed=%s project=%q archives=%d", time.Since(storageStarted), project, len(storage.Archives))
+	}
+	sessionStarted := time.Now()
+	session, err := fromStorage(storage, saveDir, defaultSaveDir, budget)
+	if err != nil {
+		return nil, err
+	}
+	if os.Getenv("KRKRGO_STARTUP_TIMING") == "1" {
+		log.Printf("krkrgo-startup phase=session-create elapsed=%s", time.Since(sessionStarted))
+	}
+	return session, nil
 }
 
 // openProjectStorage returns project-root storage and its project-level default save path.
@@ -653,15 +666,31 @@ func (s *Session) consume(n uint64) error {
 	return nil
 }
 
+func (s *Session) logStartupElapsed(phase string, started time.Time) {
+	if s == nil || !s.startupTiming {
+		return
+	}
+	log.Printf("krkrgo-startup phase=%s elapsed=%s", phase, time.Since(started))
+}
+
 func (s *Session) executeSource(name, source string, expression bool) (tjs.Value, error) {
 	if err := s.checkOpen(); err != nil {
 		return tjs.VoidValue, err
 	}
+	compileStarted := time.Now()
 	p, err := tjs.CompileWithPreprocessor(name, source, expression, s.preprocessor)
+	if s.startupTiming {
+		log.Printf("krkrgo-startup phase=script-compile name=%q elapsed=%s bytes=%d error=%v", name, time.Since(compileStarted), len(source), err)
+	}
 	if err != nil {
 		return tjs.VoidValue, err
 	}
-	return s.VM.Execute(&p, s.Services, &s.Budget)
+	executeStarted := time.Now()
+	value, err := s.VM.Execute(&p, s.Services, &s.Budget)
+	if s.startupTiming {
+		log.Printf("krkrgo-startup phase=script-execute name=%q elapsed=%s error=%v", name, time.Since(executeStarted), err)
+	}
+	return value, err
 }
 func (s *Session) ExecuteStorage(name string) (tjs.Value, error) {
 	return s.executeStorage(name, false)
@@ -671,18 +700,31 @@ func (s *Session) executeStorage(name string, useConfiguredEncoding bool) (tjs.V
 	if err := s.checkOpen(); err != nil {
 		return tjs.VoidValue, err
 	}
+	readStarted := time.Now()
 	b, err := s.Services.readStorage(name)
+	if s.startupTiming {
+		log.Printf("krkrgo-startup phase=script-read name=%q elapsed=%s bytes=%d error=%v", name, time.Since(readStarted), len(b), err)
+	}
 	if err != nil {
 		return tjs.VoidValue, err
 	}
 	if len(b) >= 4 && string(b[:4]) == "TJS2" {
-		return executeTJS2Bytecode(s.VM, b, tjs.ObjectValue(tjs.NewObjectRef(0, 0)), s.Services, &s.Budget, name)
+		executeStarted := time.Now()
+		value, err := executeTJS2Bytecode(s.VM, b, tjs.ObjectValue(tjs.NewObjectRef(0, 0)), s.Services, &s.Budget, name)
+		if s.startupTiming {
+			log.Printf("krkrgo-startup phase=script-bytecode-execute name=%q elapsed=%s bytes=%d error=%v", name, time.Since(executeStarted), len(b), err)
+		}
+		return value, err
 	}
+	decodeStarted := time.Now()
 	var src string
 	if useConfiguredEncoding {
 		src, err = s.Services.decodeScriptStorage(b)
 	} else {
 		src, err = decodeScriptStorageDefault(b)
+	}
+	if s.startupTiming {
+		log.Printf("krkrgo-startup phase=script-decode name=%q elapsed=%s bytes=%d decoded_bytes=%d error=%v", name, time.Since(decodeStarted), len(b), len(src), err)
 	}
 	if err != nil {
 		return tjs.VoidValue, err
@@ -700,24 +742,38 @@ func (s *Session) loadXP3ArchiveExtractionFilter() error {
 	} else if err != nil {
 		return fmt.Errorf("stat XP3 extraction filter %q: %w", path, err)
 	}
+	readStarted := time.Now()
 	sourceBytes, err := storage.Read("xp3filter.tjs")
+	if s.startupTiming {
+		log.Printf("krkrgo-startup phase=script-read name=%q elapsed=%s bytes=%d error=%v", "xp3filter.tjs", time.Since(readStarted), len(sourceBytes), err)
+	}
 	if err != nil {
 		return fmt.Errorf("read XP3 extraction filter: %w", err)
 	}
+	decodeStarted := time.Now()
 	source, err := decodeScriptStorageDefault(sourceBytes)
+	if s.startupTiming {
+		log.Printf("krkrgo-startup phase=script-decode name=%q elapsed=%s bytes=%d decoded_bytes=%d error=%v", "xp3filter.tjs", time.Since(decodeStarted), len(sourceBytes), len(source), err)
+	}
 	if err != nil {
 		return fmt.Errorf("decode XP3 extraction filter: %w", err)
-	}
-	if _, err := s.executeSource("xp3filter.tjs", source, false); err != nil {
-		return fmt.Errorf("execute XP3 extraction filter: %w", err)
 	}
 	return nil
 }
 
 func (s *Session) Startup() (tjs.Value, error) {
+	timing := os.Getenv("KRKRGO_STARTUP_TIMING") == "1"
+	previousTiming := s.startupTiming
+	s.startupTiming = timing
+	defer func() {
+		s.startupTiming = previousTiming
+	}()
+	filterStarted := time.Now()
 	if err := s.loadXP3ArchiveExtractionFilter(); err != nil {
 		return tjs.VoidValue, err
 	}
+	s.logStartupElapsed("startup-filter", filterStarted)
+	nativeStarted := time.Now()
 	if _, installed := s.VM.Globals["exists"]; !installed {
 		if err := s.VM.RegisterNative("exists"); err != nil {
 			return tjs.VoidValue, err
@@ -856,6 +912,7 @@ func (s *Session) Startup() (tjs.Value, error) {
 			return tjs.VoidValue, err
 		}
 	}
+	s.logStartupElapsed("startup-native-setup", nativeStarted)
 	return s.executeStorage("startup.tjs", true)
 }
 func (s *Session) Evaluate(source string) (tjs.Value, error) {

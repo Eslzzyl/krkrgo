@@ -39,6 +39,21 @@ func TestSessionEvaluateAndBudget(t *testing.T) {
 		t.Fatalf("backwards tick=%v", err)
 	}
 }
+
+func TestStartupTimingIsScopedToStartup(t *testing.T) {
+	t.Setenv("KRKRGO_STARTUP_TIMING", "1")
+	session := newScriptsTestSession(t, map[string][]byte{
+		"startup.tjs": []byte("global.startup_timing_test = true;"),
+	})
+	defer session.Close()
+
+	if _, err := session.Startup(); err != nil {
+		t.Fatal(err)
+	}
+	if session.startupTiming {
+		t.Fatal("startup timing remained enabled after Startup returned")
+	}
+}
 func TestTickForPresentationWithAudioDeltaKeepsLogicalClock(t *testing.T) {
 	services := DefaultServices()
 	services.SetRoot(NewRootLayer(1, 1, 1))

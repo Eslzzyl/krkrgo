@@ -300,6 +300,22 @@ func TestRenderStatsRecordFirstLifecycleAndUploadRequests(t *testing.T) {
 	}
 }
 
+func TestStartupTimingRequiresOptIn(t *testing.T) {
+	t.Setenv("KRKRGO_STARTUP_TIMING", "")
+	game := &Game{}
+	game.SetStartupTiming(time.Now())
+	if game.startupTiming || !game.startupStarted.IsZero() {
+		t.Fatalf("startup timing enabled without opt-in: enabled=%t started=%v", game.startupTiming, game.startupStarted)
+	}
+
+	t.Setenv("KRKRGO_STARTUP_TIMING", "1")
+	started := time.Now()
+	game.SetStartupTiming(started)
+	if !game.startupTiming || game.startupStarted != started {
+		t.Fatalf("startup timing state = enabled:%t started:%v, want enabled:true started:%v", game.startupTiming, game.startupStarted, started)
+	}
+}
+
 func BenchmarkUpdatePresentation720pOpaque(b *testing.B) {
 	frame := runtime.FrameSnapshot{Width: 1280, Height: 720, RGBA: make([]byte, 1280*720*4)}
 	for i := 0; i < len(frame.RGBA); i += 4 {
