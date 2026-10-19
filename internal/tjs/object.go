@@ -574,6 +574,7 @@ func (t *ObjectTable) Remove(id ObjectID) bool {
 	delete(t.objects, id)
 	delete(t.classInstanceNames, id)
 	delete(t.registeredClassInfo, id)
+	delete(t.instanceClasses, id)
 	return true
 }
 func (t *ObjectTable) Ref(id ObjectID, context ...ObjectID) (ObjectRef, bool) {

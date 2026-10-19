@@ -276,6 +276,7 @@ type VM struct {
 	gcPending          []ObjectID
 	gcHosts            []Host
 	gcIDs              []ObjectID
+	gcRemoved          []ObjectID
 }
 
 func NewVM() *VM {

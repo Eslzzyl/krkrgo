@@ -1961,8 +1961,11 @@ func (s *Session) Close() error {
 		s.Services.mu.Unlock()
 		s.AudioOutput = nil
 	}
-	clearPSDDocuments(s.VM)
-	s.VM = nil
+	if s.VM != nil {
+		clearPSDDocuments(s.VM)
+		_ = s.VM.Release()
+		s.VM = nil
+	}
 	return nil
 }
 
