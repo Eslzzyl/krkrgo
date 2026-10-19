@@ -382,3 +382,21 @@ func TestOpenTypeFactoriesKeepAntialiasingWithFullHinting(t *testing.T) {
 		t.Fatal("full hinting produced the same softened pixels as no hinting")
 	}
 }
+
+func TestScanSystemFontsFactoryReadsOnDemand(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "lazy.ttf")
+	if err := os.WriteFile(path, goregular.TTF, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fonts, errs := ScanSystemFonts(root)
+	if len(errs) != 0 || len(fonts) != 1 {
+		t.Fatalf("scan: fonts=%v errs=%v", fonts, errs)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fonts[0].Factory(12); err == nil {
+		t.Fatal("factory succeeded after the source file was removed")
+	}
+}
