@@ -336,6 +336,38 @@ func TestReadFirstExistingPreservesLooseAndArchiveResolution(t *testing.T) {
 	}
 }
 
+func TestReadNoSearchIgnoresSearchPathsAndArchives(t *testing.T) {
+	project := t.TempDir()
+	archivePath := filepath.Join(project, "data.xp3")
+	if err := os.WriteFile(archivePath, xp3TestArchive("patch.tjs", []byte("archive")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeArchivesOnCleanup(t, storage)
+	if err := storage.AddSearchPath("data/"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(project, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "data", "patch.tjs"), []byte("search"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.ReadNoSearch("patch.tjs"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("search-free read = %v, want ErrNotFound", err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "patch.tjs"), []byte("root"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := storage.ReadNoSearch("patch.tjs")
+	if err != nil || string(data) != "root" {
+		t.Fatalf("search-free root read = %q, %v, want root,nil", data, err)
+	}
+}
+
 func TestReadFirstExistingSearchPathUsesLooseOverlayOrder(t *testing.T) {
 	project := t.TempDir()
 	dataDir := filepath.Join(project, "data")

@@ -84,6 +84,29 @@ func writeProvincePatternPNG(t *testing.T, path string, width, height int) {
 	}
 }
 
+func TestNativeLayerLoadImagesUsesReferenceExtensionOrder(t *testing.T) {
+	project := t.TempDir()
+	writeLayerImagePNG(t, filepath.Join(project, "art", "sprite.bmp"))
+	writeLayerImagePNGSize(t, filepath.Join(project, "art", "sprite.png"), 2, 1)
+	storage, err := assets.OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	services := NewServices(storage, t.TempDir(), core.DefaultLimits())
+	session := NewSession(services, 20_000)
+	defer session.Close()
+	if _, err := session.Evaluate(`l = new Layer(); l.loadImages('art/sprite')`); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("l.getMainPixel(0,0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := value.IntegerValue(), int64(0x010203); got != want {
+		t.Fatalf("extensionless image = %#x, want %#x from .bmp", got, want)
+	}
+}
+
 func TestNativeLayerLoadImagesReadsStorageAndReturnsTags(t *testing.T) {
 	project := t.TempDir()
 	writeLayerImagePNG(t, filepath.Join(project, "art", "sprite.png"))

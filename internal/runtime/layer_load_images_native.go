@@ -21,10 +21,10 @@ const (
 	layerLoadImagesMatteKey   uint32 = 0x04000000
 )
 
-// This follows the native graphic handler order. JXR is recognized as a
-// graphic extension but has no decoder in the Go assets package.
+// The order follows krkr2's core graphic-handler registration. Extensions
+// without a Go decoder remain candidates and report their decoder status.
 var layerGraphicExtensions = []string{
-	".jxr", ".tlg6", ".tlg5", ".tlg", ".png", ".jif", ".jpg", ".jpeg", ".dib", ".bmp", ".gif",
+	".pvr", ".jxr", ".bpg", ".webp", ".bmp", ".dib", ".jpeg", ".jpg", ".jif", ".png", ".tlg", ".tlg5", ".tlg6", ".gif",
 }
 
 func supportedLayerImageExtension(ext string) bool {

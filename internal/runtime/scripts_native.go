@@ -108,6 +108,52 @@ func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Ho
 	}
 	return value, nil
 }
+
+type scriptStorageTimings struct {
+	bytecode     bool
+	decodeTime   time.Duration
+	decodedBytes int
+	executeTime  time.Duration
+}
+
+func executeScriptStorageData(vm *tjs.VM, host tjs.Host, budget *uint64, operation, storageName string, data []byte, offset uint64, context tjs.Value, expression bool, decode func([]byte) (string, error), executeSource func(string, bool, tjs.Value) (tjs.Value, error)) (tjs.Value, error, scriptStorageTimings) {
+	var timings scriptStorageTimings
+	if offset > uint64(len(data)) {
+		if operation == "" {
+			return tjs.VoidValue, fmt.Errorf("binary offset %d exceeds storage size %d", offset, len(data)), timings
+		}
+		return tjs.VoidValue, fmt.Errorf("Scripts.%s: binary offset %d exceeds storage size %d", operation, offset, len(data)), timings
+	}
+	data = data[offset:]
+	if len(data) >= 4 && string(data[:4]) == "TJS2" {
+		timings.bytecode = true
+		started := time.Now()
+		value, err := executeTJS2Bytecode(vm, data, context, host, budget, storageName)
+		timings.executeTime = time.Since(started)
+		if err != nil {
+			if operation == "" {
+				return tjs.VoidValue, err, timings
+			}
+			return tjs.VoidValue, fmt.Errorf("Scripts.%s storage %q: %w", operation, storageName, err), timings
+		}
+		return value, nil, timings
+	}
+	decodeStarted := time.Now()
+	source, err := decode(data)
+	timings.decodeTime = time.Since(decodeStarted)
+	timings.decodedBytes = len(source)
+	if err != nil {
+		return tjs.VoidValue, err, timings
+	}
+	if expression {
+		source = stripEvalStorageConstDictionary(source)
+	}
+	executeStarted := time.Now()
+	value, err := executeSource(source, expression, context)
+	timings.executeTime = time.Since(executeStarted)
+	return value, err, timings
+}
+
 func (s *Services) executePluginScript(vm *tjs.VM, name string, budget *uint64) error {
 	if s == nil || s.Storage == nil {
 		return nil
@@ -119,15 +165,10 @@ func (s *Services) executePluginScript(vm *tjs.VM, name string, budget *uint64) 
 		}
 		return err
 	}
-	if len(data) >= 4 && string(data[:4]) == "TJS2" {
-		_, err = executeTJS2Bytecode(vm, data, tjs.ObjectValue(tjs.NewObjectRef(0, 0)), s, budget, name)
-		return err
+	executeSource := func(source string, expression bool, context tjs.Value) (tjs.Value, error) {
+		return executeScriptSource(vm, s, budget, s.preprocessorFor(vm), name, source, expression, 0, context)
 	}
-	source, err := s.decodeScriptStorage(data)
-	if err != nil {
-		return err
-	}
-	_, err = executeScriptSource(vm, s, budget, s.preprocessorFor(vm), name, source, false, 0, tjs.VoidValue)
+	_, err, _ = executeScriptStorageData(vm, s, budget, "", name, data, 0, tjs.VoidValue, false, s.decodeScriptStorage, executeSource)
 	return err
 }
 
@@ -850,31 +891,12 @@ func (s *Services) scriptsNative(vm *tjs.VM, operation string, args []tjs.Value,
 		if err != nil {
 			return tjs.VoidValue, fmt.Errorf("Scripts.%s: %w", operation, err)
 		}
-		if offset > uint64(len(data)) {
-			return tjs.VoidValue, fmt.Errorf("Scripts.%s: binary offset %d exceeds storage size %d", operation, offset, len(data))
+		executeSource := func(source string, expression bool, context tjs.Value) (tjs.Value, error) {
+			return executeScriptSource(vm, s, budget, preprocessor, scriptStorageName(storageName), source, expression, 0, context)
 		}
-		data = data[offset:]
-		if len(data) >= 4 && string(data[:4]) == "TJS2" {
-			value, err := executeTJS2Bytecode(vm, data, context, s, budget, storageName)
-			if err != nil {
-				return tjs.VoidValue, fmt.Errorf("Scripts.%s storage %q: %w", operation, storageName, err)
-			}
-			return finish(value, nil)
-		}
-		decodeStarted := time.Now()
-		source, err := s.decodeScriptStorage(data)
-		decodeTime := time.Since(decodeStarted)
-		if err != nil {
-			return tjs.VoidValue, err
-		}
-		if operation == "evalStorage" {
-			source = stripEvalStorageConstDictionary(source)
-		}
-		executeStarted := time.Now()
-		value, err := executeScriptSource(vm, s, budget, preprocessor, scriptStorageName(storageName), source, operation == "evalStorage", 0, context)
-		executeTime := time.Since(executeStarted)
+		value, err, timings := executeScriptStorageData(vm, s, budget, operation, storageName, data, offset, context, operation == "evalStorage", s.decodeScriptStorage, executeSource)
 		if profile {
-			log.Printf("krkrgo startup-script op=%s storage=%q bytes=%d read=%s decode=%s compile_execute=%s error=%t", operation, storageName, len(data), readTime, decodeTime, executeTime, err != nil)
+			log.Printf("krkrgo startup-script op=%s storage=%q bytes=%d read=%s decode=%s compile_execute=%s error=%t", operation, storageName, len(data), readTime, timings.decodeTime, timings.executeTime, err != nil)
 		}
 		return finish(value, err)
 	case "exec", "eval":

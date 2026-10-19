@@ -68,7 +68,7 @@ type Session struct {
 	Budget                       uint64
 	AudioOutput                  []float32
 	preprocessor                 *tjs.Preprocessor
-	startupTiming                 bool
+	startupTiming                bool
 	startupProfile               *tjs.ExecutionProfile
 	initErr                      error
 	closed                       bool
@@ -723,35 +723,30 @@ func (s *Session) executeStorage(name string, useConfiguredEncoding bool) (tjs.V
 		return tjs.VoidValue, err
 	}
 	readStarted := time.Now()
-	b, err := s.Services.readStorage(name)
+	data, err := s.Services.readStorage(name)
+	readTime := time.Since(readStarted)
 	if s.startupTiming {
-		log.Printf("krkrgo-startup phase=script-read name=%q elapsed=%s bytes=%d error=%v", name, time.Since(readStarted), len(b), err)
+		log.Printf("krkrgo-startup phase=script-read name=%q elapsed=%s bytes=%d error=%v", name, readTime, len(data), err)
 	}
 	if err != nil {
 		return tjs.VoidValue, err
 	}
-	if len(b) >= 4 && string(b[:4]) == "TJS2" {
-		executeStarted := time.Now()
-		value, err := executeTJS2Bytecode(s.VM, b, tjs.ObjectValue(tjs.NewObjectRef(0, 0)), s.Services, &s.Budget, name)
-		if s.startupTiming {
-			log.Printf("krkrgo-startup phase=script-bytecode-execute name=%q elapsed=%s bytes=%d error=%v", name, time.Since(executeStarted), len(b), err)
-		}
-		return value, err
-	}
-	decodeStarted := time.Now()
-	var src string
+	decode := decodeScriptStorageDefault
 	if useConfiguredEncoding {
-		src, err = s.Services.decodeScriptStorage(b)
-	} else {
-		src, err = decodeScriptStorageDefault(b)
+		decode = s.Services.decodeScriptStorage
 	}
+	executeSource := func(source string, expression bool, context tjs.Value) (tjs.Value, error) {
+		return s.executeSource(name, source, expression)
+	}
+	value, err, timings := executeScriptStorageData(s.VM, s.Services, &s.Budget, "", name, data, 0, tjs.VoidValue, false, decode, executeSource)
 	if s.startupTiming {
-		log.Printf("krkrgo-startup phase=script-decode name=%q elapsed=%s bytes=%d decoded_bytes=%d error=%v", name, time.Since(decodeStarted), len(b), len(src), err)
+		if timings.bytecode {
+			log.Printf("krkrgo-startup phase=script-bytecode-execute name=%q elapsed=%s bytes=%d error=%v", name, timings.executeTime, len(data), err)
+		} else {
+			log.Printf("krkrgo-startup phase=script-decode name=%q elapsed=%s bytes=%d decoded_bytes=%d error=%v", name, timings.decodeTime, len(data), timings.decodedBytes, err)
+		}
 	}
-	if err != nil {
-		return tjs.VoidValue, err
-	}
-	return s.executeSource(name, src, false)
+	return value, err
 }
 func (s *Session) loadXP3ArchiveExtractionFilter() error {
 	if s.Services == nil || s.Services.Storage == nil {
@@ -781,6 +776,47 @@ func (s *Session) loadXP3ArchiveExtractionFilter() error {
 		return fmt.Errorf("decode XP3 extraction filter: %w", err)
 	}
 	return nil
+}
+
+func (s *Session) executeNoSearchScript(name string) (tjs.Value, bool, error) {
+	if s.Services == nil || s.Services.Storage == nil {
+		return tjs.VoidValue, false, nil
+	}
+	path := filepath.Join(s.Services.Storage.Project, filepath.FromSlash(name))
+	data, err := s.Services.Storage.ReadNoSearch(path)
+	if errors.Is(err, assets.ErrNotFound) {
+		return tjs.VoidValue, false, nil
+	}
+	if err != nil {
+		return tjs.VoidValue, true, err
+	}
+	executeSource := func(source string, expression bool, context tjs.Value) (tjs.Value, error) {
+		return s.executeSource(name, source, expression)
+	}
+	value, err, _ := executeScriptStorageData(s.VM, s.Services, &s.Budget, "", name, data, 0, tjs.VoidValue, false, decodeScriptStorageDefault, executeSource)
+	return value, true, err
+}
+
+func (s *Session) executeStartupScripts() (tjs.Value, error) {
+	if _, _, err := s.executeNoSearchScript("patch.tjs"); err != nil {
+		if s.Services != nil && s.Services.Dialogs != nil {
+			_, _ = s.Services.Dialogs.ShowMessage("Startup patch failed", err.Error())
+		}
+	}
+
+	startupValue, startupErr := s.executeStorage("startup.tjs", true)
+	if startupErr != nil {
+		if _, err := s.Services.Storage.Resolve("system/Initialize.tjs"); err != nil {
+			return tjs.VoidValue, startupErr
+		}
+		startupValue, startupErr = s.executeStorage("system/Initialize.tjs", true)
+		if startupErr != nil {
+			return tjs.VoidValue, startupErr
+		}
+	}
+
+	_, _, _ = s.executeNoSearchScript("AfterStartup.tjs")
+	return startupValue, nil
 }
 
 func (s *Session) Startup() (tjs.Value, error) {
@@ -944,7 +980,7 @@ func (s *Session) Startup() (tjs.Value, error) {
 		}
 	}
 	s.logStartupElapsed("startup-native-setup", nativeStarted)
-	return s.executeStorage("startup.tjs", true)
+	return s.executeStartupScripts()
 }
 func (s *Session) Evaluate(source string) (tjs.Value, error) {
 	if err := s.checkOpen(); err != nil {

@@ -54,6 +54,59 @@ func TestStartupTimingIsScopedToStartup(t *testing.T) {
 		t.Fatal("startup timing remained enabled after Startup returned")
 	}
 }
+
+func TestStartupExecutesReferenceScriptOrder(t *testing.T) {
+	session := newScriptsTestSession(t, map[string][]byte{
+		"patch.tjs":        []byte(`global.startup_order = "patch,";`),
+		"startup.tjs":      []byte(`global.startup_order += "startup,";`),
+		"AfterStartup.tjs": []byte(`global.startup_order += "after,";`),
+	})
+	if _, err := session.Startup(); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("global.startup_order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := value.Text(), "patch,startup,after,"; got != want {
+		t.Fatalf("startup order = %q, want %q", got, want)
+	}
+}
+
+func TestStartupFallsBackToInitializeStorage(t *testing.T) {
+	session := newScriptsTestSession(t, map[string][]byte{
+		"system/Initialize.tjs": []byte(`global.startup_fallback = "initialize";`),
+		"AfterStartup.tjs":      []byte(`global.startup_fallback += ",after";`),
+	})
+	if _, err := session.Startup(); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("global.startup_fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := value.Text(), "initialize,after"; got != want {
+		t.Fatalf("startup fallback = %q, want %q", got, want)
+	}
+}
+
+func TestStartupContinuesAfterOptionalScriptErrors(t *testing.T) {
+	session := newScriptsTestSession(t, map[string][]byte{
+		"patch.tjs":        []byte(`this is invalid;`),
+		"startup.tjs":      []byte(`global.startup_optional_error = "startup";`),
+		"AfterStartup.tjs": []byte(`this is invalid;`),
+	})
+	if _, err := session.Startup(); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("global.startup_optional_error")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := value.Text(), "startup"; got != want {
+		t.Fatalf("startup after optional errors = %q, want %q", got, want)
+	}
+}
 func TestTickForPresentationWithAudioDeltaKeepsLogicalClock(t *testing.T) {
 	services := DefaultServices()
 	services.SetRoot(NewRootLayer(1, 1, 1))

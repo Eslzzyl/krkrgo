@@ -785,6 +785,28 @@ func (s *Storage) Read(name string) ([]byte, error) {
 	return s.Archives[idx].Read(member)
 }
 
+// ReadNoSearch reads a loose project file without consulting search paths or archives.
+func (s *Storage) ReadNoSearch(name string) ([]byte, error) {
+	if s == nil {
+		return nil, fmt.Errorf("nil storage")
+	}
+	normalized, err := s.normalize(name, false)
+	if err != nil {
+		return nil, err
+	}
+	if strings.ContainsRune(normalized, '>') {
+		return nil, fmt.Errorf("%w: search-free storage requires a loose file", ErrUnsupportedStorageMedia)
+	}
+	path, err := s.loosePath(normalized)
+	if err != nil {
+		return nil, err
+	}
+	if path == "" {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, normalized)
+	}
+	return s.readLoosePath(path)
+}
+
 // ReadFirstExisting returns the first readable candidate in names. For a
 // project-backed storage without search paths, loose candidates are resolved
 // from one cached directory index before archive fallback.
