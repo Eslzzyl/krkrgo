@@ -36,7 +36,6 @@ type gpuMotionAtlasEntry struct {
 	width  int32
 	height int32
 	hash   uint64
-	upload []byte
 }
 
 // gpuMotionAtlas keeps all source views for one motion node on one backing
@@ -49,8 +48,8 @@ type gpuMotionAtlas struct {
 }
 
 // GPUCompositor consumes the borrowed runtime RenderPlan synchronously. The
-// plan's pixel slices are never retained; gpuTexture.upload owns only the
-// premultiplied copy required by Ebitengine.
+// plan's pixel slices are never retained; one shared scratch buffer carries
+// premultiplied pixels into Ebitengine and is reused across uploads.
 type GPUCompositor struct {
 	width, height  int
 	front, back    *ebiten.Image
@@ -112,7 +111,6 @@ type GPUStats struct {
 	TextureBytes       int64
 	MotionAtlases      int
 	MotionAtlasBytes   int64
-	MotionUploadBytes  int64
 	UploadScratchBytes int64
 	TargetBytes        int64
 }
@@ -138,11 +136,6 @@ func (c *GPUCompositor) Stats() GPUStats {
 		stats.MotionAtlases++
 		if atlas.texture != nil {
 			stats.MotionAtlasBytes += int64(atlas.width) * int64(atlas.height) * 4
-		}
-		for _, entry := range atlas.entries {
-			if entry != nil {
-				stats.MotionUploadBytes += int64(len(entry.upload))
-			}
 		}
 	}
 	stats.UploadScratchBytes = int64(cap(c.uploadScratch))
@@ -342,8 +335,14 @@ func (c *GPUCompositor) rebuildMotionAtlas(atlas *gpuMotionAtlas) {
 	for _, key := range keys {
 		entry := atlas.entries[key]
 		entry.rect = image.Rect(0, nextY, int(entry.width), nextY+int(entry.height))
-		entry.view = texture.SubImage(entry.rect).(*ebiten.Image)
-		entry.view.WritePixels(entry.upload)
+		if entry.view != nil {
+			op := &ebiten.DrawImageOptions{Blend: gpuReplaceBlend}
+			op.GeoM.Translate(0, float64(nextY))
+			texture.DrawImage(entry.view, op)
+			entry.view = texture.SubImage(entry.rect).(*ebiten.Image)
+		} else {
+			entry.view = nil
+		}
 		nextY += int(entry.height)
 	}
 	if atlas.texture != nil {
@@ -380,16 +379,14 @@ func (c *GPUCompositor) motionAtlasSource(nodeID runtime.LayerID, draw runtime.R
 	if entry != nil && entry.width == draw.Width && entry.height == draw.Height && entry.hash == hash && entry.view != nil {
 		return entry.view, nil
 	}
-	upload := make([]byte, len(draw.RGBA))
+	upload := c.scratch(len(draw.RGBA))
 	premultipliedPixels(draw.RGBA, upload, false)
 	if entry != nil && entry.width == draw.Width && entry.height == draw.Height && entry.view != nil {
-		entry.hash, entry.upload = hash, upload
+		entry.hash = hash
 		entry.view.WritePixels(upload)
 		return entry.view, nil
 	}
-	entry = &gpuMotionAtlasEntry{
-		width: draw.Width, height: draw.Height, hash: hash, upload: upload,
-	}
+	entry = &gpuMotionAtlasEntry{width: draw.Width, height: draw.Height, hash: hash}
 	atlas.entries[sourceKey] = entry
 	if atlas.texture != nil && int(draw.Width) <= atlas.width &&
 		atlas.usedHeight+int(draw.Height) <= atlas.capacityHeight {
@@ -400,6 +397,10 @@ func (c *GPUCompositor) motionAtlasSource(nodeID runtime.LayerID, draw runtime.R
 		return entry.view, nil
 	}
 	c.rebuildMotionAtlas(atlas)
+	if entry.view == nil {
+		entry.view = atlas.texture.SubImage(entry.rect).(*ebiten.Image)
+		entry.view.WritePixels(upload)
+	}
 	return entry.view, nil
 }
 
