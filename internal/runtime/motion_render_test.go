@@ -109,3 +109,142 @@ func TestMaterializeGPUMotionUsesDeferredSourceTransform(t *testing.T) {
 		t.Fatalf("materialized translated pixel = %v, want opaque red", got)
 	}
 }
+
+func motionTestIdle(resource *motionResource) map[string]assets.Value {
+	root := resource.doc.Root.(map[string]assets.Value)
+	objects := root["object"].(map[string]assets.Value)
+	character := objects["chara"].(map[string]assets.Value)
+	motions := character["motion"].(map[string]assets.Value)
+	return motions["idle"].(map[string]assets.Value)
+}
+
+func motionTestSpriteLayer(source string) assets.Value {
+	return map[string]assets.Value{
+		"type": int64(0),
+		"frameList": []assets.Value{
+			map[string]assets.Value{
+				"time":    float64(0),
+				"content": map[string]assets.Value{"src": source},
+			},
+		},
+	}
+}
+
+// A masked container (type 2) produces no draw item of its own, but the
+// reference keeps its children as separate items in the flattened node list.
+func TestMotionDrawsChildrenOfMaskedContainer(t *testing.T) {
+	resource := emotePlayerTestResource("container.psb")
+	motionTestIdle(resource)["layer"] = []assets.Value{
+		map[string]assets.Value{
+			"type":     int64(2),
+			"label":    "slide",
+			"children": []assets.Value{motionTestSpriteLayer("src/chara/mouth0")},
+		},
+	}
+	frame, err := renderPSBMotionOptions(resource, "chara", "idle", 0, 0, nil, false, 0, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := frame.RGBA[(4*8+4)*4:]; got[0] != 255 || got[3] != 255 {
+		t.Fatalf("masked container child pixel = %v, want opaque red", got[:4])
+	}
+}
+
+// A type-3 node expands its child motion before the node type mask applies.
+func TestMotionDrawsNestedMotionUnderChildPlayerNode(t *testing.T) {
+	resource := emotePlayerTestResource("nested.psb")
+	root := resource.doc.Root.(map[string]assets.Value)
+	objects := root["object"].(map[string]assets.Value)
+	motions := objects["chara"].(map[string]assets.Value)["motion"].(map[string]assets.Value)
+	motions["nested"] = map[string]assets.Value{
+		"layer": []assets.Value{motionTestSpriteLayer("src/chara/mouth1")},
+	}
+	motions["idle"].(map[string]assets.Value)["layer"] = []assets.Value{
+		map[string]assets.Value{
+			"type": int64(3),
+			"frameList": []assets.Value{
+				map[string]assets.Value{
+					"time":    float64(0),
+					"content": map[string]assets.Value{"src": "motion/chara/nested"},
+				},
+			},
+		},
+	}
+	frame, err := renderPSBMotionOptions(resource, "chara", "idle", 0, 0, nil, false, 0, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := frame.RGBA[(4*8+4)*4:]; got[2] != 255 || got[3] != 255 {
+		t.Fatalf("nested motion pixel = %v, want opaque blue", got[:4])
+	}
+}
+
+// The GPU atlas keys uploads by source identity, so a tinted frame needs a key
+// distinct from the untinted source and from other tints.
+func TestGPUMotionSourceKeySeparatesTints(t *testing.T) {
+	resource := emotePlayerTestResource("tintkey.psb")
+	motionTestIdle(resource)["layer"] = []assets.Value{
+		map[string]assets.Value{
+			"type": int64(0),
+			"frameList": []assets.Value{
+				map[string]assets.Value{
+					"time": float64(0),
+					"content": map[string]assets.Value{
+						"src": "src/chara/mouth0", "color": int64(0xff0000ff),
+					},
+				},
+				map[string]assets.Value{
+					"time": float64(1),
+					"content": map[string]assets.Value{
+						"src": "src/chara/mouth0", "color": int64(0xff000000),
+					},
+				},
+				map[string]assets.Value{
+					"time": float64(2),
+					"content": map[string]assets.Value{
+						"src": "src/chara/mouth0", "color": int64(0xffffffff),
+					},
+				},
+			},
+		},
+	}
+	build := func(tick float64) RenderMotionDraw {
+		motion, err := buildGPUMotionVariables(resource, "chara", "idle", tick, 0,
+			identityMotionDrawMatrix(), 1, nil, false, 0, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(motion.Draws) != 1 {
+			t.Fatalf("draws at tick %v = %d, want 1", tick, len(motion.Draws))
+		}
+		return motion.Draws[0]
+	}
+	red, black := build(0), build(1)
+	if red.SourceKey == black.SourceKey {
+		t.Fatalf("tinted keys collide: %q", red.SourceKey)
+	}
+	if bytes.Equal(red.RGBA, black.RGBA) {
+		t.Fatalf("tint variants produced identical pixels: key=%q rgba=%v / key=%q rgba=%v", red.SourceKey, red.RGBA[:4], black.SourceKey, black.RGBA[:4])
+	}
+}
+
+// Stencil groups and meshes bake the frame for each tick; the host streams
+// those draws instead of caching them by source identity.
+func TestGPUMotionMarksBakedFramesForStreaming(t *testing.T) {
+	resource := emotePlayerTestResource("baked.psb")
+	motionTestIdle(resource)["layer"] = []assets.Value{
+		map[string]assets.Value{
+			"type":        int64(12),
+			"stencilType": int64(4),
+			"children":    []assets.Value{motionTestSpriteLayer("src/chara/mouth0")},
+		},
+	}
+	motion, err := buildGPUMotionVariables(resource, "chara", "idle", 0, 0,
+		identityMotionDrawMatrix(), 1, nil, false, 0, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(motion.Draws) != 1 || !motion.Draws[0].Baked {
+		t.Fatalf("baked draws = %+v, want one streamed draw", motion.Draws)
+	}
+}

@@ -331,3 +331,94 @@ func TestGPUCompositorStatsTrackUploadScratch(t *testing.T) {
 		t.Fatalf("compose changed storage: first=%+v second=%+v", stats, got)
 	}
 }
+
+func TestGPUCompositorStreamsBakedMotionDraws(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	plan := func(red byte) runtime.RenderPlan {
+		return runtime.RenderPlan{
+			Width:  1,
+			Height: 1,
+			Nodes: []runtime.RenderNode{{
+				ID:          9,
+				Bounds:      runtime.Rect{Width: 1, Height: 1},
+				Type:        runtime.LayerAlpha,
+				Visible:     true,
+				Opacity:     255,
+				ImageWidth:  1,
+				ImageHeight: 1,
+				Motion: &runtime.RenderMotion{
+					Draws: []runtime.RenderMotionDraw{{
+						SourceKey: "baked/tick-0",
+						RGBA:      []byte{red, 0, 0, 255},
+						Width:     1,
+						Height:    1,
+						A:         1,
+						D:         1,
+						Opacity:   255,
+						Baked:     true,
+					}},
+				},
+			}},
+		}
+	}
+	if _, err := compositor.Compose(plan(255)); err != nil {
+		t.Fatal(err)
+	}
+	stream := compositor.motionStreams[9]
+	if stream == nil || stream.image == nil {
+		t.Fatal("baked motion draw did not allocate a stream texture")
+	}
+	if atlas := compositor.motionAtlases[9]; atlas != nil && len(atlas.entries) != 0 {
+		t.Fatalf("baked draw entered the source atlas: %d entries", len(atlas.entries))
+	}
+	image := stream.image
+	if _, err := compositor.Compose(plan(0)); err != nil {
+		t.Fatal(err)
+	}
+	if compositor.motionStreams[9].image != image {
+		t.Fatal("baked motion draw reallocated the stream texture")
+	}
+}
+
+func TestGPUCompositorEvictsStaleMotionSources(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	node := func(draws ...runtime.RenderMotionDraw) runtime.RenderPlan {
+		return runtime.RenderPlan{
+			Width:  1,
+			Height: 1,
+			Nodes: []runtime.RenderNode{{
+				ID:          11,
+				Bounds:      runtime.Rect{Width: 1, Height: 1},
+				Type:        runtime.LayerAlpha,
+				Visible:     true,
+				Opacity:     255,
+				ImageWidth:  1,
+				ImageHeight: 1,
+				Motion:      &runtime.RenderMotion{Draws: draws},
+			}},
+		}
+	}
+	a := runtime.RenderMotionDraw{SourceKey: "motion/a", RGBA: []byte{255, 0, 0, 255}, Width: 1, Height: 1, A: 1, D: 1, Opacity: 255}
+	b := runtime.RenderMotionDraw{SourceKey: "motion/b", RGBA: []byte{0, 255, 0, 255}, Width: 1, Height: 1, A: 1, D: 1, Opacity: 255}
+	if _, err := compositor.Compose(node(a, b)); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(compositor.motionAtlases[11].entries); got != 2 {
+		t.Fatalf("atlas entries = %d, want 2", got)
+	}
+	if _, err := compositor.Compose(node(a)); err != nil {
+		t.Fatal(err)
+	}
+	atlas := compositor.motionAtlases[11]
+	if len(atlas.entries) != 1 || atlas.entries["motion/a"] == nil {
+		t.Fatalf("atlas entries after eviction = %v, want only motion/a", len(atlas.entries))
+	}
+}

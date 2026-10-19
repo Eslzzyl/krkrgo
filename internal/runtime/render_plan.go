@@ -59,6 +59,10 @@ type RenderMotionDraw struct {
 	A, B, C, D    float64
 	TX, TY        float64
 	Opacity       uint8
+	// Baked marks a canvas-sized frame produced for one motion tick (mesh or
+	// stencil composition). The pixels change every frame and have no reusable
+	// source identity, so the host streams them into one texture per layer.
+	Baked bool
 }
 
 type RenderTransition struct {

@@ -211,18 +211,22 @@ func renderMotionValue(resource *motionResource, root map[string]assets.Value, v
 		}
 		return nil
 	case map[string]assets.Value:
-		if !motionNodeAllowed(node, eval.completion) {
-			return nil
-		}
+		// The reference evaluates the node type mask while deciding whether a
+		// node contributes its own draw item; child nodes are separate items in
+		// the flattened node list (PlayerRenderItems.cpp:430-533), so a masked
+		// container keeps its children. Gate only this node's frame here.
+		drawFrame := motionNodeAllowed(node, eval.completion)
 		ctx := parent
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
 			content, visible := psbMotionResolvedContent(frameList, motionNodeTick(node, tick, eval))
 			if visible {
 				ctx = psbMotionContext(parent, content, node)
-				if err := renderMotionFrame(resource, root, content, node, eval, ctx, pixels, width, height, stack); err != nil {
-					return err
+				if drawFrame || motionNestedMotionSource(content) {
+					if err := renderMotionFrame(resource, root, content, node, eval, ctx, pixels, width, height, stack); err != nil {
+						return err
+					}
+					ctx = motionMeshAncestorContext(resource, root, node, content, eval, ctx, width, height)
 				}
-				ctx = motionMeshAncestorContext(resource, root, node, content, eval, ctx, width, height)
 			}
 		}
 		if maskGroup := motionStencilGroup(node); maskGroup {
@@ -277,9 +281,13 @@ func renderMotionValueFiltered(resource *motionResource, root map[string]assets.
 	return nil
 }
 
-// motionNodeAllowed mirrors the reference completionType visibility gate
+// motionNodeAllowed mirrors the reference completionType gate
 // (PlayerRenderItems.cpp:129-132): 0x1441 allows node types
 // 0/6/10/12 and a non-zero completionType additionally allows type 3.
+//
+// The mask selects whether a node contributes its own draw item. It says
+// nothing about the node's children, which the reference keeps in its
+// flattened node list, so callers walk children unconditionally.
 func motionNodeAllowed(node map[string]assets.Value, completion int64) bool {
 	value, ok := psbNumber(node["type"])
 	if !ok {
@@ -294,6 +302,15 @@ func motionNodeAllowed(node map[string]assets.Value, completion int64) bool {
 		bitmask = 0x1449
 	}
 	return bitmask&(int64(1)<<nodeType) != 0
+}
+
+// motionNestedMotionSource reports whether a resolved frame expands a child
+// motion instead of drawing a source image. The reference expands those nodes
+// into the child player's render items (PlayerRenderItems.cpp:514-525) before
+// the node type mask applies, so their draw stays enabled for every node type.
+func motionNestedMotionSource(content map[string]assets.Value) bool {
+	source, _ := content["src"].(string)
+	return strings.HasPrefix(source, "motion/")
 }
 
 // motionStencilGroup reports whether the node is the reference's special
@@ -422,15 +439,15 @@ func motionValueBounds(resource *motionResource, root map[string]assets.Value, v
 			motionValueBounds(resource, root, child, tick, eval, parent, width, height, bounds, stack)
 		}
 	case map[string]assets.Value:
-		if !motionNodeAllowed(node, eval.completion) {
-			return
-		}
+		drawFrame := motionNodeAllowed(node, eval.completion)
 		ctx := parent
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
 			content, visible := psbMotionResolvedContent(frameList, motionNodeTick(node, tick, eval))
 			if visible {
 				ctx = psbMotionContext(parent, content, node)
-				motionFrameBounds(resource, root, content, ctx, eval, width, height, bounds, stack)
+				if drawFrame || motionNestedMotionSource(content) {
+					motionFrameBounds(resource, root, content, ctx, eval, width, height, bounds, stack)
+				}
 			}
 		}
 		for _, key := range []string{"children", "layer"} {
@@ -584,6 +601,7 @@ func buildGPUMotionVariables(resource *motionResource, chara, motion string, tic
 			TX:        drawMatrix.tx * float64(scale),
 			TY:        drawMatrix.ty * float64(scale),
 			Opacity:   255,
+			Baked:     true,
 		})
 		return result, nil
 	}
@@ -665,16 +683,16 @@ func collectGPUMotionValue(resource *motionResource, root map[string]assets.Valu
 			}
 		}
 	case map[string]assets.Value:
-		if !motionNodeAllowed(node, eval.completion) {
-			return nil
-		}
+		drawFrame := motionNodeAllowed(node, eval.completion)
 		ctx := parent
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
 			content, visible := psbMotionResolvedContent(frameList, motionNodeTick(node, tick, eval))
 			if visible {
 				ctx = psbMotionContext(parent, content, node)
-				if err := collectGPUMotionFrame(resource, root, content, ctx, eval, drawMatrix, result, stack); err != nil {
-					return err
+				if drawFrame || motionNestedMotionSource(content) {
+					if err := collectGPUMotionFrame(resource, root, content, ctx, eval, drawMatrix, result, stack); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -709,7 +727,9 @@ func collectGPUMotionFrame(resource *motionResource, root map[string]assets.Valu
 		if owner.path != "" {
 			key = owner.path + "\x00" + source
 		}
-		pixels := motionFrameImage(owner, source, image, content, ctx.blendMode).RGBA
+		frame, tintKey := motionFrameImageTinted(owner, source, image, content, ctx.blendMode)
+		key += tintKey
+		pixels := frame.RGBA
 		scale := result.Scale
 		rgba := pixels
 		drawWidth, drawHeight := int32(image.Width), int32(image.Height)
@@ -1142,24 +1162,33 @@ func motionFrameColors(content map[string]assets.Value) ([4]uint32, bool) {
 }
 
 func motionFrameImage(resource *motionResource, source string, image *assets.Image, content map[string]assets.Value, blendMode int64) *assets.Image {
+	tinted, _ := motionFrameImageTinted(resource, source, image, content, blendMode)
+	return tinted
+}
+
+// motionFrameImageTinted returns the tinted frame and the identity that
+// separates it from other tints of the same source. The GPU motion atlas keys
+// uploads by source identity, so it appends this identity to its source key.
+func motionFrameImageTinted(resource *motionResource, source string, image *assets.Image, content map[string]assets.Value, blendMode int64) (*assets.Image, string) {
 	colors, colored := motionFrameColors(content)
 	if !colored || image == nil {
-		return image
+		return image, ""
 	}
 	if resource.colored == nil {
 		resource.colored = make(map[string]*assets.Image)
 	}
-	key := fmt.Sprintf("%s\x00%08x%08x%08x%08x/%d", source, colors[0], colors[1], colors[2], colors[3], blendMode)
-	if cached := resource.colored[key]; cached != nil && len(cached.RGBA) == len(image.RGBA) {
-		return cached
+	key := fmt.Sprintf("\x00%08x%08x%08x%08x/%d", colors[0], colors[1], colors[2], colors[3], blendMode)
+	if cached := resource.colored[source+key]; cached != nil && len(cached.RGBA) == len(image.RGBA) {
+		return cached, key
 	}
 	divisor := 255
 	if blendMode&0xF0 == 0x10 {
 		divisor = 128
 	}
 	pixels := motionCornerTint(image, colors, divisor)
-	resource.colored[key] = &assets.Image{Width: image.Width, Height: image.Height, RGBA: pixels}
-	return resource.colored[key]
+	tinted := &assets.Image{Width: image.Width, Height: image.Height, RGBA: pixels}
+	resource.colored[source+key] = tinted
+	return tinted, key
 }
 
 // motionCornerTint mirrors applyPackedCornerTintLike_0x6A7518: bilinear corner

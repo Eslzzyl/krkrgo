@@ -52,6 +52,14 @@ type gpuMotionAtlas struct {
 	entries                    map[string]*gpuMotionAtlasEntry
 }
 
+// gpuMotionStream holds the canvas a mesh or stencil motion bakes for one tick.
+// Those pixels have no reusable source identity, so they replace the previous
+// frame in one texture instead of entering the source atlas.
+type gpuMotionStream struct {
+	image         *ebiten.Image
+	width, height int32
+}
+
 // GPUCompositor consumes the borrowed runtime RenderPlan synchronously. The
 // plan's pixel slices are never retained; one shared scratch buffer carries
 // premultiplied pixels into Ebitengine and is reused across uploads.
@@ -64,6 +72,7 @@ type GPUCompositor struct {
 	pooledBytes    int64
 	motionTargets  map[runtime.LayerID]*ebiten.Image
 	motionAtlases  map[runtime.LayerID]*gpuMotionAtlas
+	motionStreams  map[runtime.LayerID]*gpuMotionStream
 	shaders        map[gpuMethodKey]*ebiten.Shader
 	vertices       []ebiten.Vertex
 	indices        []uint16
@@ -108,6 +117,7 @@ func NewGPUCompositor() (*GPUCompositor, error) {
 		texturePool:   make(map[gpuTextureSize][]*ebiten.Image),
 		motionTargets: make(map[runtime.LayerID]*ebiten.Image),
 		motionAtlases: make(map[runtime.LayerID]*gpuMotionAtlas),
+		motionStreams: make(map[runtime.LayerID]*gpuMotionStream),
 		shaders:       methods,
 		crossfade:     crossfade,
 		universal:     universal,
@@ -209,6 +219,12 @@ func (c *GPUCompositor) Deallocate() {
 			atlas.texture.Deallocate()
 		}
 		delete(c.motionAtlases, id)
+	}
+	for id, stream := range c.motionStreams {
+		if stream != nil && stream.image != nil {
+			stream.image.Deallocate()
+		}
+		delete(c.motionStreams, id)
 	}
 	c.shaders = nil
 	c.crossfade, c.universal = nil, nil
@@ -514,13 +530,39 @@ func (c *GPUCompositor) composeMotion(node runtime.RenderNode) (*ebiten.Image, e
 	if motion.Filter != 0 {
 		filter = ebiten.FilterLinear
 	}
+	// Drop sources this frame no longer uses before uploading the new ones.
+	// Baked frames never enter the atlas; their key changes every tick.
+	c.evictMotionAtlasEntries(node.ID, motion.Draws)
 	for _, draw := range motion.Draws {
+		if draw.Baked {
+			continue
+		}
 		if _, err := c.motionAtlasSource(node.ID, draw); err != nil {
 			return nil, err
 		}
 	}
-	for _, draw := range motion.Draws {
-		source := c.motionAtlases[node.ID].entries[motionSourceKey(draw)].view
+	streamed := make([]*ebiten.Image, len(motion.Draws))
+	for index, draw := range motion.Draws {
+		if !draw.Baked {
+			continue
+		}
+		image, err := c.motionStreamSource(node.ID, draw)
+		if err != nil {
+			return nil, err
+		}
+		streamed[index] = image
+	}
+	for index, draw := range motion.Draws {
+		var source *ebiten.Image
+		if draw.Baked {
+			source = streamed[index]
+		} else {
+			entry := c.motionAtlases[node.ID].entries[motionSourceKey(draw)]
+			if entry == nil || entry.view == nil {
+				return nil, fmt.Errorf("motion source %q missing from atlas for layer %d", motionSourceKey(draw), node.ID)
+			}
+			source = entry.view
+		}
 		var geo ebiten.GeoM
 		geo.SetElement(0, 0, draw.A)
 		geo.SetElement(0, 1, draw.B)
@@ -538,6 +580,61 @@ func (c *GPUCompositor) composeMotion(node runtime.RenderNode) (*ebiten.Image, e
 		target.DrawImage(source, options)
 	}
 	return target, nil
+}
+
+// evictMotionAtlasEntries removes sources the current frame does not draw and
+// repacks the atlas, so switching motions on one layer cannot accumulate
+// canvases or retired source images.
+func (c *GPUCompositor) evictMotionAtlasEntries(nodeID runtime.LayerID, draws []runtime.RenderMotionDraw) {
+	atlas := c.motionAtlases[nodeID]
+	if atlas == nil || len(atlas.entries) == 0 {
+		return
+	}
+	live := make(map[string]struct{}, len(draws))
+	for _, draw := range draws {
+		if draw.Baked {
+			continue
+		}
+		live[motionSourceKey(draw)] = struct{}{}
+	}
+	removed := false
+	for key := range atlas.entries {
+		if _, ok := live[key]; !ok {
+			delete(atlas.entries, key)
+			removed = true
+		}
+	}
+	if removed {
+		c.rebuildMotionAtlas(atlas)
+	}
+}
+
+// motionStreamSource uploads one baked frame into a per-layer texture that is
+// replaced on every tick.
+func (c *GPUCompositor) motionStreamSource(nodeID runtime.LayerID, draw runtime.RenderMotionDraw) (*ebiten.Image, error) {
+	if draw.Width <= 0 || draw.Height <= 0 ||
+		uint64(draw.Width)*uint64(draw.Height)*4 != uint64(len(draw.RGBA)) {
+		return nil, fmt.Errorf("invalid streamed motion source for layer %d", nodeID)
+	}
+	if c.motionStreams == nil {
+		c.motionStreams = make(map[runtime.LayerID]*gpuMotionStream)
+	}
+	stream := c.motionStreams[nodeID]
+	if stream == nil || stream.width != draw.Width || stream.height != draw.Height {
+		if stream != nil && stream.image != nil {
+			stream.image.Deallocate()
+		}
+		stream = &gpuMotionStream{
+			image:  newGPUImage(int(draw.Width), int(draw.Height)),
+			width:  draw.Width,
+			height: draw.Height,
+		}
+		c.motionStreams[nodeID] = stream
+	}
+	upload := c.scratch(len(draw.RGBA))
+	premultipliedPixels(draw.RGBA, upload, false)
+	stream.image.WritePixels(upload)
+	return stream.image, nil
 }
 
 func (c *GPUCompositor) transitionCoversTarget(ax, ay, imageLeft, imageTop, x0, y0, x1, y1 int32) bool {

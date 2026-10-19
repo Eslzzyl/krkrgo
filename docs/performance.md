@@ -200,9 +200,12 @@ device-side queue starvation during a long runtime or presentation stage.
   layer types retain the CPU compositor. CPU frame capture materializes the
   same descriptor through the existing compositor.
 - `internal/runtime/motionplayer_runtime.go` reuses the GPU Motion pose descriptor
-  while its resource, tick, filter, and transform are unchanged. The host GPU
-  compositor packs all source views for one Motion node into a reusable atlas,
-  so successive transformed draws share one backing texture.
+  while its resource, tick, parameters, and transform are unchanged. The host GPU
+  compositor packs all source views for one Motion node into a reusable atlas and
+  keys tinted variants by their tint, so animated colors upload as separate
+  entries. Mesh and stencil motions bake one canvas per tick; those frames stream
+  through a single per-layer texture instead of entering the atlas, and sources a
+  frame no longer draws are evicted before the next upload.
 - `internal/runtime/layer_image.go` recognizes pixel-aligned identity affine
   copies, including a taller destination canvas, and copies rows directly
   instead of running the bilinear sampler. The amairo pre-title path had been
