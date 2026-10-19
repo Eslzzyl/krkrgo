@@ -50,13 +50,13 @@ Method: amairo, deterministic replay at 10,000 ms, 16 ms step, budget `1<<30`,
 three runs per revision. Statistics are taken after `runtime.GC()` and before
 `Session.Close`. All runs produced the same replay JSON SHA-256.
 
-| Metric | Baseline `2ff712c` | Current `ca44b5e` | Change |
+| Metric | Baseline `2ff712c` | Current `40643b9` | Change |
 | --- | ---: | ---: | ---: |
-| HeapAlloc | 743.86 MB | 329.87 MB | -413.99 MB (-55.65%) |
-| HeapObjects | 505,485 | 454,971 | -50,514 (-9.99%) |
-| TotalAlloc | 4,308.35 MB | 4,043.58 MB | -264.77 MB (-6.15%) |
-| Mallocs | 5,352,160 | 5,180,697 | -171,463 (-3.20%) |
-| HeapSys | 1,658.16 MB | 749.67 MB | -908.49 MB (-54.79%) |
+| HeapAlloc | 743.86 MB | 298.92 MB | -444.94 MB (-59.82%) |
+| HeapObjects | 505,485 | 462,055 | -43,430 (-8.59%) |
+| TotalAlloc | 4,308.35 MB | 3,979.67 MB | -328.68 MB (-7.63%) |
+| Mallocs | 5,352,160 | 5,204,274 | -147,886 (-2.76%) |
+| HeapSys | 1,658.16 MB | 690.73 MB | -967.43 MB (-58.34%) |
 
 Stage attribution, three-run averages where available:
 
@@ -72,6 +72,7 @@ Stage attribution, three-run averages where available:
 | `9d110f2` | 737.81 MB | 436,482 | VM-owned Object helper callables: within noise |
 | `ff15e02` | 428.08 MB | 435,849 | lazy system font parsing: -309.7 MB |
 | `58972fd` | 329.87 MB | 454,971 | instruction layout: -98.2 MB; TotalAlloc -230 MB |
+| `40643b9` | 298.92 MB | 462,055 | program constant pool: -30.95 MB; compiler metadata 130 to 93 MB |
 
 The `58972fd` object count rises relative to the previous stage because out-of-line
 operands allocate one small side record for instructions that carry descriptors,
@@ -97,10 +98,9 @@ Dominant retained allocations after the current changes:
 
 | Flat | Allocation | Note |
 | ---: | --- | --- |
-| 130.46 MB | source compiler instruction emission (`compiler.emit`) | reduced from 217 MB |
-| 54.63 MB | `runtime.resizeLayerImage` | live layer image pixels |
-| 18.16 MB | `Object.SetUnits` | member maps and values |
-| 14.06 MB | `Services.layerTransition` | live transition buffers |
+| 93.26 MB | source compiler instruction emission (`compiler.emit`) | reduced from 217 MB |
+| 50.78 MB | `runtime.resizeLayerImage` | live layer image pixels |
+| 17.53 MB | `VM.alloc` | script objects and metadata |
 
 System font discovery no longer appears in the retained profile. The remaining
 compiler metadata and transition buffers are the next measurement-backed targets.
@@ -208,14 +208,14 @@ Completed:
 
 - System fonts are parsed on first selection. Retained system font data dropped
   from about 286 MB to zero in the 10-second profile.
-- Instruction literals and rare operands moved out of line. `Instruction` dropped
-  from 576 to 328 bytes; retained compiler metadata dropped from 217 MB to
-  130 MB.
+- Instruction literals, rare operands, and constants moved out of line.
+  `Instruction` dropped from 576 to 240 bytes; retained compiler metadata
+  dropped from 217 MB to 93 MB.
 
 Remaining:
 
-- Reduce source compiler metadata further. `Instruction` still carries a 96-byte
-  `Value` and a 120-byte integer block inline.
+- Reduce source compiler metadata further. `Instruction` still carries a 120-byte
+  integer block and 32 bytes of name/operator strings inline.
 - Inspect transition buffers (`Services.layerTransition`, about 14 MB live) and
   the transition ownership design.
 - Confirm `resizeLayerImage` bytes correspond to live layer images; they are not
@@ -262,3 +262,4 @@ go test ./... -run '^$' -bench 'BenchmarkVM|BenchmarkLayer' -benchmem
 | ff15e02 | Deferred system font parsing |
 | 58972fd | Out-of-line instruction operands |
 | ca44b5e | Deferred font parsing test |
+| 40643b9 | Program constant pool |
