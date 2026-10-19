@@ -56,26 +56,41 @@ func (s *Services) readLayerImageResolved(name string) (string, []byte, error) {
 		return name, data, nil
 	}
 
-	var lastErr error
+	candidates := make([]string, 0, len(layerGraphicExtensions))
 	for _, ext := range layerGraphicExtensions {
-		resolved := name + ext
-		data, err := s.readStorage(resolved)
-		if errors.Is(err, assets.ErrNotFound) {
-			lastErr = err
-			continue
-		}
-		if err != nil {
-			return "", nil, err
-		}
-		if !supportedLayerImageExtension(ext) {
-			return "", nil, fmt.Errorf("%w: Layer.loadImages extension %q", assets.ErrUnsupported, ext)
-		}
-		return resolved, data, nil
+		candidates = append(candidates, name+ext)
 	}
-	if lastErr != nil {
-		return "", nil, fmt.Errorf("Layer.loadImages graphic %q: %w", name, lastErr)
+	resolved, data, err := s.readFirstLayerImage(candidates)
+	if err != nil {
+		return "", nil, fmt.Errorf("Layer.loadImages graphic %q: %w", name, err)
 	}
-	return "", nil, fmt.Errorf("Layer.loadImages graphic %q not found", name)
+	extension := strings.ToLower(extractStorageExt(resolved))
+	if !supportedLayerImageExtension(extension) {
+		return "", nil, fmt.Errorf("%w: Layer.loadImages extension %q", assets.ErrUnsupported, extension)
+	}
+	return resolved, data, nil
+}
+
+func (s *Services) readFirstLayerImage(candidates []string) (string, []byte, error) {
+	if len(candidates) == 0 {
+		return "", nil, assets.ErrNotFound
+	}
+	if s.SaveDir != "" {
+		save := SaveStorage{Root: s.SaveDir, Project: serviceProjectPath(s)}
+		for _, candidate := range candidates {
+			data, err := save.Read(candidate)
+			if err == nil {
+				return candidate, data, nil
+			}
+			if !errors.Is(err, ErrSaveNotFound) && !errors.Is(err, ErrInvalidSaveName) {
+				return "", nil, err
+			}
+		}
+	}
+	if s.Storage == nil {
+		return "", nil, fmt.Errorf("%w: no storage", ErrUnsupportedDevice)
+	}
+	return s.Storage.ReadFirstExisting(candidates)
 }
 
 func (s *Services) readLayerImageSidecar(name, suffix string) (string, []byte, error) {
@@ -91,7 +106,7 @@ func (s *Services) readLayerImageSidecar(name, suffix string) (string, []byte, e
 			candidates = append(candidates, candidate)
 		}
 	}
-	resolved, data, err := s.Storage.ReadFirstExisting(candidates)
+	resolved, data, err := s.readFirstLayerImage(candidates)
 	if err != nil {
 		return "", nil, err
 	}

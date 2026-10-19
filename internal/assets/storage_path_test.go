@@ -336,6 +336,26 @@ func TestReadFirstExistingPreservesLooseAndArchiveResolution(t *testing.T) {
 	}
 }
 
+func TestReadFirstExistingSearchPathFindsArchiveMember(t *testing.T) {
+	project := t.TempDir()
+	archivePath := filepath.Join(project, "data.xp3")
+	if err := os.WriteFile(archivePath, xp3TestArchive("uipsd/image.png", []byte("archive")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeArchivesOnCleanup(t, storage)
+	if err := storage.AddSearchPath("uipsd/"); err != nil {
+		t.Fatal(err)
+	}
+	name, data, err := storage.ReadFirstExisting([]string{"image.png"})
+	if err != nil || name != "image.png" || string(data) != "archive" {
+		t.Fatalf("search archive candidate = %q,%q,%v, want image.png,archive,nil", name, data, err)
+	}
+}
+
 func TestReadNoSearchIgnoresSearchPathsAndArchives(t *testing.T) {
 	project := t.TempDir()
 	archivePath := filepath.Join(project, "data.xp3")

@@ -126,6 +126,30 @@ func TestNativeLayerLoadImagesUsesReferenceExtensionOrder(t *testing.T) {
 	}
 }
 
+func TestNativeLayerLoadImagesUsesSaveOverlayForExtensionlessImage(t *testing.T) {
+	project := t.TempDir()
+	saveDir := t.TempDir()
+	writeLayerImageSolidPNG(t, filepath.Join(project, "art", "sprite.png"), color.NRGBA{R: 1, G: 2, B: 3, A: 255})
+	writeLayerImageSolidPNG(t, filepath.Join(saveDir, "art", "sprite.png"), color.NRGBA{R: 9, G: 8, B: 7, A: 255})
+	storage, err := assets.OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	services := NewServices(storage, saveDir, core.DefaultLimits())
+	session := NewSession(services, 20_000)
+	defer session.Close()
+	if _, err := session.Evaluate(`l = new Layer(); l.loadImages('art/sprite')`); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("l.getMainPixel(0,0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := value.IntegerValue(), int64(0x090807); got != want {
+		t.Fatalf("save overlay image = %#x, want %#x", got, want)
+	}
+}
+
 func TestNativeLayerLoadImagesCacheReusesAndClears(t *testing.T) {
 	project := t.TempDir()
 	imagePath := filepath.Join(project, "art", "sprite.png")

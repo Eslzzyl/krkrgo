@@ -641,6 +641,9 @@ func (s *Storage) Resolve(name string) (string, error) {
 }
 
 func (s *Storage) contains(name string) (bool, error) {
+	if _, _, ok := s.archiveLocation(name); ok {
+		return true, nil
+	}
 	path, err := s.loosePath(name)
 	if err != nil {
 		return false, err
@@ -648,8 +651,7 @@ func (s *Storage) contains(name string) (bool, error) {
 	if path != "" {
 		return true, nil
 	}
-	_, _, ok := s.archiveLocation(name)
-	return ok, nil
+	return false, nil
 }
 
 // exactLoosePath accepts only canonical storage names. Failed lookups,
@@ -926,15 +928,17 @@ func (s *Storage) readFirstLooseExistingWithSearchPaths(names []string) (string,
 				}
 				continue
 			}
-			if root.name == "" {
-				if index, member, ok := s.archiveLocation(candidate.normalized); ok {
-					data, err := s.Archives[index].Read(member)
-					if err == nil {
-						return candidate.normalized, data, true, fallback, nil
-					}
-					if !errors.Is(err, ErrNotFound) {
-						return "", nil, false, fallback, err
-					}
+			archiveName := candidate.normalized
+			if root.name != "" {
+				archiveName = strings.TrimSuffix(root.name, "/") + "/" + candidate.normalized
+			}
+			if index, member, ok := s.archiveLocation(archiveName); ok {
+				data, err := s.Archives[index].Read(member)
+				if err == nil {
+					return candidate.normalized, data, true, fallback, nil
+				}
+				if !errors.Is(err, ErrNotFound) {
+					return "", nil, false, fallback, err
 				}
 			}
 			directoryName := candidate.directory
