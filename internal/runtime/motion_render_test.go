@@ -374,6 +374,14 @@ func TestMotionNestedMotionAdvancesWithParentTime(t *testing.T) {
 }
 
 func TestMotionParticlesEmitAndExpire(t *testing.T) {
+	resource := emotePlayerTestResource("particles.psb")
+	root := resource.doc.Root.(map[string]assets.Value)
+	objects := root["object"].(map[string]assets.Value)
+	motions := objects["chara"].(map[string]assets.Value)["motion"].(map[string]assets.Value)
+	motions["nested"] = map[string]assets.Value{
+		"lastTime": int64(10),
+		"layer":    []assets.Value{motionTestSpriteLayer("src/chara/mouth0")},
+	}
 	layer := map[string]assets.Value{
 		"label":              "flower",
 		"type":               int64(4),
@@ -386,19 +394,20 @@ func TestMotionParticlesEmitAndExpire(t *testing.T) {
 		"prt": map[string]assets.Value{
 			"amin": float64(0), "amax": float64(0),
 			"vmin": float64(0), "vmax": float64(0),
-			"fmin": float64(10), "fmax": float64(10),
+			"fmin": float64(2), "fmax": float64(2),
 			"zmin": float64(1), "zmax": float64(1),
 			"trigger": int64(1),
 		},
 	}
-	if got := len(motionParticles(layer, content, 5)); got != 6 {
-		t.Fatalf("particles at tick 5 = %d, want 6", got)
-	}
-	if got := len(motionParticles(layer, content, 30)); got != 8 {
-		t.Fatalf("particles at tick 30 = %d, want the 8-particle cap", got)
-	}
-	if got := len(motionParticles(layer, content, 0)); got != 1 {
+	ctx := motionRenderContext{opacity: 255, matrix: identityMotionMatrix}
+	if got := len(motionParticles(resource, nil, layer, content, ctx, 0, 0, 0)); got != 1 {
 		t.Fatalf("particles at tick 0 = %d, want 1", got)
+	}
+	if got := len(motionParticles(resource, nil, layer, content, ctx, 5, 0, 0)); got != 2 {
+		t.Fatalf("particles at tick 5 = %d, want the 2-particle burst", got)
+	}
+	if got := len(motionParticles(resource, nil, layer, content, ctx, 20, 0, 0)); got != 0 {
+		t.Fatalf("particles at tick 20 = %d, want 0 after the template ends", got)
 	}
 }
 

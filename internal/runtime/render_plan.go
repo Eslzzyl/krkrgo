@@ -49,7 +49,10 @@ type RenderNode struct {
 type RenderMotion struct {
 	Filter int64
 	Scale  int32
-	Draws  []RenderMotionDraw
+	// Width and Height are the owning layer's canvas dimensions in device
+	// pixels; particle emitters use them for off-screen culling.
+	Width, Height int
+	Draws         []RenderMotionDraw
 }
 
 // MotionBlendMode is the Photoshop blend operation a motion frame applies when

@@ -622,7 +622,9 @@ func buildGPUMotionVariables(resource *motionResource, chara, motion string, tic
 	if scale < 1 {
 		scale = 1
 	}
-	result := &RenderMotion{Filter: filter, Scale: scale, Draws: make([]RenderMotionDraw, 0, 8)}
+	width := psbMotionInt(root["screenSize"], "width", 0) * int(scale)
+	height := psbMotionInt(root["screenSize"], "height", 0) * int(scale)
+	result := &RenderMotion{Filter: filter, Scale: scale, Width: width, Height: height, Draws: make([]RenderMotionDraw, 0, 8)}
 	determinant := drawMatrix.a*drawMatrix.d - drawMatrix.b*drawMatrix.c
 	if math.Abs(determinant) < 1e-9 || math.IsNaN(determinant) || math.IsInf(determinant, 0) {
 		return result, nil
