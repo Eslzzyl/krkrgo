@@ -228,7 +228,7 @@ func ScanSystemFonts(roots ...string) ([]SystemFont, []error) {
 				continue
 			}
 			seen[key] = struct{}{}
-			fonts = append(fonts, SystemFont{Family: family, Path: path, Factory: fontFactoryFor(parsed)})
+			fonts = append(fonts, SystemFont{Family: family, Path: path, Factory: fontFactoryForPath(path, index)})
 		}
 	}
 	return fonts, errs
@@ -280,6 +280,43 @@ func fontFactoryFor(parsed *sfnt.Font) FontFactory {
 	return func(size float64) (FontFace, error) {
 		if size <= 0 {
 			return nil, fmt.Errorf("font size must be positive")
+		}
+		return opentype.NewFace(parsed, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
+	}
+}
+
+// fontFactoryForPath defers reading and parsing a system font until a face is
+// requested. ScanSystemFonts keeps only path and face index, so unused system
+// font data is released after discovery.
+func fontFactoryForPath(path string, index int) FontFactory {
+	var (
+		once   sync.Once
+		parsed *sfnt.Font
+		err    error
+	)
+	return func(size float64) (FontFace, error) {
+		if size <= 0 {
+			return nil, fmt.Errorf("font size must be positive")
+		}
+		once.Do(func() {
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				err = readErr
+				return
+			}
+			collection, parseErr := sfnt.ParseCollection(data)
+			if parseErr != nil {
+				err = parseErr
+				return
+			}
+			if index < 0 || index >= collection.NumFonts() {
+				err = fmt.Errorf("%w: %s face %d is out of range", ErrInvalidFont, path, index)
+				return
+			}
+			parsed, err = collection.Font(index)
+		})
+		if err != nil {
+			return nil, err
 		}
 		return opentype.NewFace(parsed, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
 	}
