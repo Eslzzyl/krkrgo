@@ -84,8 +84,12 @@ type motionRenderContext struct {
 	childTick float64
 	// z accumulates the frame coordinate's third component; the reference sorts
 	// prepared items by it (PlayerRenderItems.cpp:980-989).
-	z      float64
-	matrix motionMatrix
+	z float64
+	// coordinateMode selects the reference's 3D placement for this node's
+	// children: a parent in mode 1 mixes child x into z instead of y
+	// (PlayerUpdateLayerEval.cpp:905-925).
+	coordinateMode int
+	matrix         motionMatrix
 	// meshAncestors carries the control nets of every visible mesh ancestor
 	// whose meshSyncChildMask combines with children, nearest ancestor last.
 	// Descendant mesh points are evaluated through this chain
@@ -212,11 +216,53 @@ func renderPSBMotionOptions(resource *motionResource, chara, motion string, tick
 	return canvas, nil
 }
 
+// motionDrawList is the CPU counterpart of the reference's prepared render
+// item list. Every draw is collected first and stable-sorted by the node's
+// accumulated z (PlayerRenderItems.cpp:594-606, 983-988); equal keys keep
+// collection order, matching std::stable_sort.
+type motionDrawList struct {
+	items []motionDrawItem
+}
+
+// motionDrawItem is one deferred CPU draw. The closure receives the target
+// buffer at execution time so group buffers stay private to their group.
+type motionDrawItem struct {
+	z    float64
+	draw func(dst []byte) error
+}
+
+func (list *motionDrawList) add(z float64, draw func(dst []byte) error) {
+	list.items = append(list.items, motionDrawItem{z: z, draw: draw})
+}
+
+// draw rasterizes the collected items in sort-key order.
+func (list *motionDrawList) draw(pixels []byte) error {
+	if len(list.items) == 0 {
+		return nil
+	}
+	sort.SliceStable(list.items, func(i, j int) bool { return list.items[i].z < list.items[j].z })
+	for _, item := range list.items {
+		if err := item.draw(pixels); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// renderMotionValue renders one player frame into pixels.
 func renderMotionValue(resource *motionResource, root map[string]assets.Value, value assets.Value, tick float64, eval motionRenderEval, parent motionRenderContext, pixels []byte, width, height int, stack map[string]bool) error {
+	var list motionDrawList
+	if err := collectMotionValue(resource, root, value, tick, eval, parent, &list, width, height, stack); err != nil {
+		return err
+	}
+	return list.draw(pixels)
+}
+
+func collectMotionValue(resource *motionResource, root map[string]assets.Value, value assets.Value, tick float64, eval motionRenderEval, parent motionRenderContext, list *motionDrawList, width, height int, stack map[string]bool) error {
 	switch node := value.(type) {
 	case []assets.Value:
 		for _, child := range node {
-			if err := renderMotionValue(resource, root, child, tick, eval, parent, pixels, width, height, stack); err != nil {
+			if err := collectMotionValue(resource, root, child, tick, eval, parent, list, width, height, stack); err != nil {
 				return err
 			}
 		}
@@ -237,7 +283,7 @@ func renderMotionValue(resource *motionResource, root map[string]assets.Value, v
 					ctx.childTick = motionNestedTick(node, content, tick)
 				}
 				if drawFrame || motionNestedMotionSource(content) || motionParticleSource(content) {
-					if err := renderMotionFrame(resource, root, content, node, eval, ctx, nodeTick, pixels, width, height, stack); err != nil {
+					if err := collectMotionFrame(resource, root, content, node, eval, ctx, nodeTick, list, width, height, stack); err != nil {
 						return err
 					}
 					ctx = motionMeshAncestorContext(resource, root, node, content, eval, ctx, width, height)
@@ -248,48 +294,56 @@ func renderMotionValue(resource *motionResource, root map[string]assets.Value, v
 			// A type-12 node with stencil bit 4 composites its subtree into a
 			// private buffer and applies its stencil children's alpha before
 			// the group reaches the parent (PlayerRenderExecute.cpp:760-870).
-			group := make([]byte, len(pixels))
-			if err := renderMotionChildren(resource, root, node, tick, eval, ctx, group, width, height, stack, true); err != nil {
+			var inner motionDrawList
+			if err := collectMotionChildren(resource, root, node, tick, eval, ctx, &inner, width, height, stack, true); err != nil {
 				return err
 			}
-			if err := applyMotionMaskChildren(resource, root, node, tick, eval, ctx, group, width, height, stack); err != nil {
-				return err
-			}
-			blendMotionBuffer(pixels, group)
+			groupCtx := ctx
+			list.add(ctx.z, func(dst []byte) error {
+				group := make([]byte, len(dst))
+				if err := inner.draw(group); err != nil {
+					return err
+				}
+				if err := applyMotionMaskChildren(resource, root, node, tick, eval, groupCtx, group, width, height, stack); err != nil {
+					return err
+				}
+				blendMotionBuffer(dst, group)
+				return nil
+			})
 			return nil
 		}
-		return renderMotionChildren(resource, root, node, tick, eval, ctx, pixels, width, height, stack, false)
+		return collectMotionChildren(resource, root, node, tick, eval, ctx, list, width, height, stack, false)
 	}
 	return nil
 }
 
-func renderMotionChildren(resource *motionResource, root map[string]assets.Value, node map[string]assets.Value, tick float64, eval motionRenderEval, ctx motionRenderContext, pixels []byte, width, height int, stack map[string]bool, skipMaskChildren bool) error {
+func collectMotionChildren(resource *motionResource, root map[string]assets.Value, node map[string]assets.Value, tick float64, eval motionRenderEval, ctx motionRenderContext, list *motionDrawList, width, height int, stack map[string]bool, skipMaskChildren bool) error {
 	if children, ok := node["children"]; ok {
-		if err := renderMotionValueFiltered(resource, root, children, tick, eval, ctx, pixels, width, height, stack, skipMaskChildren); err != nil {
+		if err := collectMotionValueFiltered(resource, root, children, tick, eval, ctx, list, width, height, stack, skipMaskChildren); err != nil {
 			return err
 		}
 	}
 	if layers, ok := node["layer"]; ok {
-		if err := renderMotionValueFiltered(resource, root, layers, tick, eval, ctx, pixels, width, height, stack, skipMaskChildren); err != nil {
+		if err := collectMotionValueFiltered(resource, root, layers, tick, eval, ctx, list, width, height, stack, skipMaskChildren); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func renderMotionValueFiltered(resource *motionResource, root map[string]assets.Value, value assets.Value, tick float64, eval motionRenderEval, parent motionRenderContext, pixels []byte, width, height int, stack map[string]bool, skipMaskChildren bool) error {
+func collectMotionValueFiltered(resource *motionResource, root map[string]assets.Value, value assets.Value, tick float64, eval motionRenderEval, parent motionRenderContext, list *motionDrawList, width, height int, stack map[string]bool, skipMaskChildren bool) error {
 	if !skipMaskChildren {
-		return renderMotionValue(resource, root, value, tick, eval, parent, pixels, width, height, stack)
+		return collectMotionValue(resource, root, value, tick, eval, parent, list, width, height, stack)
 	}
 	children, ok := value.([]assets.Value)
 	if !ok {
-		return renderMotionValue(resource, root, value, tick, eval, parent, pixels, width, height, stack)
+		return collectMotionValue(resource, root, value, tick, eval, parent, list, width, height, stack)
 	}
 	for _, child := range children {
 		if node, ok := child.(map[string]assets.Value); ok && motionStencilMask(node) {
 			continue
 		}
-		if err := renderMotionValue(resource, root, child, tick, eval, parent, pixels, width, height, stack); err != nil {
+		if err := collectMotionValue(resource, root, child, tick, eval, parent, list, width, height, stack); err != nil {
 			return err
 		}
 	}
@@ -829,6 +883,11 @@ func collectGPUMotionFrame(resource *motionResource, root map[string]assets.Valu
 			drawWidth *= scale
 			drawHeight *= scale
 		}
+		blend := motionBlendMode(ctx.blendMode)
+		if blend == MotionBlendSubtractive {
+			rgba = subtractiveMotionRGBA(rgba)
+			key += "|subtractive"
+		}
 		result.Draws = append(result.Draws, RenderMotionDraw{
 			SourceKey: key,
 			RGBA:      rgba,
@@ -841,7 +900,7 @@ func collectGPUMotionFrame(resource *motionResource, root map[string]assets.Valu
 			TX:        tx * float64(scale),
 			TY:        ty * float64(scale),
 			Opacity:   ctx.opacity,
-			Blend:     motionBlendMode(ctx.blendMode),
+			Blend:     blend,
 			SortKey:   ctx.z,
 		})
 		return nil
@@ -865,6 +924,28 @@ func collectGPUMotionFrame(resource *motionResource, root map[string]assets.Valu
 	return nil
 }
 
+// subtractiveMotionRGBA rewrites a premultiplied sprite into the complement
+// the reversed-subtraction blend consumes: RGB' = alpha - RGB. PsSubBlend
+// wants dst - alpha*(1-src), and alpha - RGB is alpha*(1-src) in premultiplied
+// form (RenderManager_ogl.cpp:3725-3731).
+func subtractiveMotionRGBA(pixels []byte) []byte {
+	out := make([]byte, len(pixels))
+	for offset := 0; offset+3 < len(pixels); offset += 4 {
+		alpha := uint32(pixels[offset+3])
+		complement := func(value byte) byte {
+			if uint32(value) >= alpha {
+				return 0
+			}
+			return byte(alpha - uint32(value))
+		}
+		out[offset+0] = complement(pixels[offset+0])
+		out[offset+1] = complement(pixels[offset+1])
+		out[offset+2] = complement(pixels[offset+2])
+		out[offset+3] = pixels[offset+3]
+	}
+	return out
+}
+
 func motionGPUTransform(drawMatrix motionDrawMatrix, ctx motionRenderContext, originX, originY float64) (motionMatrix, float64, float64) {
 	transform := motionMatrix{
 		a: drawMatrix.a*ctx.matrix.a + drawMatrix.b*ctx.matrix.c,
@@ -877,35 +958,23 @@ func motionGPUTransform(drawMatrix motionDrawMatrix, ctx motionRenderContext, or
 	return transform, tx, ty
 }
 
-func renderMotionFrame(resource *motionResource, root map[string]assets.Value, content map[string]assets.Value, layer map[string]assets.Value, eval motionRenderEval, ctx motionRenderContext, tick float64, pixels []byte, width, height int, stack map[string]bool) error {
+// collectMotionFrame defers a node frame's draw. Source sprites and meshes
+// become one draw item keyed by the node's accumulated z; particles and nested
+// motions expand into the same list, matching the reference's flattened item
+// list (PlayerRenderItems.cpp:500-530).
+func collectMotionFrame(resource *motionResource, root map[string]assets.Value, content map[string]assets.Value, layer map[string]assets.Value, eval motionRenderEval, ctx motionRenderContext, tick float64, list *motionDrawList, width, height int, stack map[string]bool) error {
 	source, _ := content["src"].(string)
 	if source == "" {
 		return nil
 	}
 	if strings.HasPrefix(source, "particle/") {
-		return renderMotionParticles(resource, layer, content, ctx, eval, tick, pixels, width, height, stack)
+		return collectMotionParticles(resource, layer, content, ctx, eval, tick, list, width, height, stack)
 	}
 	if strings.HasPrefix(source, "src/") {
-		owner, image, originX, originY, err := motionSourceImageAny(resource, eval.attached, root, source)
-		if err != nil {
-			return err
-		}
-		opaque := motionSourceOpaque(owner, source, image)
-		var premultiplied []byte
-		if eval.filter != 0 {
-			premultiplied = motionPremultipliedImage(owner, source, image)
-		}
-		imageOut := motionFrameImage(owner, source, image, content, ctx.blendMode)
-		if imageOut != image {
-			// The cached premultiplied copy belongs to the untinted source;
-			// let the bilinear sampler premultiply the colored pixels instead.
-			premultiplied = nil
-		}
-		if psbMotionInt(layer, "meshTransform", 0) != 0 {
-			renderMotionMeshFrame(layer, content, ctx, imageOut, originX+psbMotionFloat(content, "ox", 0), originY+psbMotionFloat(content, "oy", 0), pixels, width, height)
-			return nil
-		}
-		return blendMotionImage(pixels, width, height, imageOut, originX+psbMotionFloat(content, "ox", 0), originY+psbMotionFloat(content, "oy", 0), eval.filter, premultiplied, opaque, ctx)
+		list.add(ctx.z, func(dst []byte) error {
+			return drawMotionSourceFrame(resource, root, content, layer, eval, ctx, dst, width, height)
+		})
+		return nil
 	}
 	if strings.HasPrefix(source, "motion/") {
 		parts := strings.Split(strings.TrimPrefix(source, "motion/"), "/")
@@ -915,23 +984,40 @@ func renderMotionFrame(resource *motionResource, root map[string]assets.Value, c
 				stack[key] = true
 				owner, ownerRoot, nested := motionLookupMotion(resource, eval.attached, parts[0], parts[1])
 				if nestedLayers, ok := nested["layer"]; ok {
-					if err := renderMotionValue(owner, ownerRoot, nestedLayers, ctx.childTick, eval, ctx, pixels, width, height, stack); err != nil {
+					if err := collectMotionValue(owner, ownerRoot, nestedLayers, ctx.childTick, eval, ctx, list, width, height, stack); err != nil {
 						return err
 					}
 				}
 				delete(stack, key)
 			}
 		}
-		return nil
-	}
-	icon, _ := content["icon"].(string)
-	if icon == "" {
-		icon = source
-	}
-	if icon == "" {
-		return nil
 	}
 	return nil
+}
+
+// drawMotionSourceFrame rasterizes one source sprite or mesh frame.
+func drawMotionSourceFrame(resource *motionResource, root map[string]assets.Value, content map[string]assets.Value, layer map[string]assets.Value, eval motionRenderEval, ctx motionRenderContext, pixels []byte, width, height int) error {
+	source, _ := content["src"].(string)
+	owner, image, originX, originY, err := motionSourceImageAny(resource, eval.attached, root, source)
+	if err != nil {
+		return err
+	}
+	opaque := motionSourceOpaque(owner, source, image)
+	var premultiplied []byte
+	if eval.filter != 0 {
+		premultiplied = motionPremultipliedImage(owner, source, image)
+	}
+	imageOut := motionFrameImage(owner, source, image, content, ctx.blendMode)
+	if imageOut != image {
+		// The cached premultiplied copy belongs to the untinted source;
+		// let the bilinear sampler premultiply the colored pixels instead.
+		premultiplied = nil
+	}
+	if psbMotionInt(layer, "meshTransform", 0) != 0 {
+		renderMotionMeshFrame(layer, content, ctx, imageOut, originX+psbMotionFloat(content, "ox", 0), originY+psbMotionFloat(content, "oy", 0), pixels, width, height)
+		return nil
+	}
+	return blendMotionImage(pixels, width, height, imageOut, originX+psbMotionFloat(content, "ox", 0), originY+psbMotionFloat(content, "oy", 0), eval.filter, premultiplied, opaque, ctx)
 }
 
 // motionMeshControlNet is the world-space 4x4 Bezier control net a
@@ -1513,17 +1599,40 @@ func psbMotionContext(parent motionRenderContext, content map[string]assets.Valu
 	if len(coord) > 2 {
 		coordZ = coord[2]
 	}
-	transformedX := parent.matrix.a*x + parent.matrix.b*y
-	transformedY := parent.matrix.c*x + parent.matrix.d*y
 	ctx := motionRenderContext{
-		x:             parent.x + transformedX,
-		y:             parent.y + transformedY,
-		opacity:       parent.opacity,
-		blendMode:     parent.blendMode,
-		childTick:     parent.childTick,
-		z:             parent.z + coordZ,
-		matrix:        multiplyMotionMatrix(parent.matrix, psbMotionLocalMatrix(layer, content)),
-		meshAncestors: parent.meshAncestors,
+		opacity:        parent.opacity,
+		blendMode:      parent.blendMode,
+		childTick:      parent.childTick,
+		coordinateMode: psbMotionInt(layer, "coordinate", 0),
+		matrix:         multiplyMotionMatrix(parent.matrix, psbMotionLocalMatrix(layer, content)),
+		meshAncestors:  parent.meshAncestors,
+	}
+	// A sync node copies the parent's state and contributes no transform of
+	// its own (PlayerUpdateLayerEval.cpp:856-881).
+	sync := false
+	if value, ok := psbNumber(content["sync"]); ok && value != 0 {
+		sync = true
+		ctx.x, ctx.y, ctx.z = parent.x, parent.y, parent.z
+		ctx.matrix = parent.matrix
+	}
+	if sync {
+		ctx.meshAncestors = parent.meshAncestors
+		return ctx
+	}
+	if parent.coordinateMode != 0 {
+		// 3D placement: child x and z pass through the parent matrix and y
+		// stays literal (PlayerUpdateLayerEval.cpp:912-920).
+		worldX := parent.matrix.a*x + parent.matrix.b*coordZ
+		worldZ := parent.matrix.c*x + parent.matrix.d*coordZ
+		ctx.x = worldX + parent.x
+		ctx.y = y + parent.y
+		ctx.z = worldZ + parent.z
+	} else {
+		worldX := parent.matrix.a*x + parent.matrix.b*y
+		worldY := parent.matrix.c*x + parent.matrix.d*y
+		ctx.x = worldX + parent.x
+		ctx.y = worldY + parent.y
+		ctx.z = parent.z + coordZ
 	}
 	if opacity, ok := content["opa"]; ok {
 		value := psbMotionFloatValue(opacity, 255)

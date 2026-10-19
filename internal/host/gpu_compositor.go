@@ -673,15 +673,17 @@ func gpuMotionBlend(mode runtime.MotionBlendMode) ebiten.Blend {
 			BlendOperationAlpha:         ebiten.BlendOperationAdd,
 		}
 	case runtime.MotionBlendSubtractive:
-		// The reference subtracts (1 - src) scaled by alpha; fixed-function
-		// factors cannot express the constant term, so the host approximates it
-		// with plain source subtraction.
+		// PsSubBlend is mix(dst, clamp(dst + src - 1), srcAlpha) in straight
+		// alpha (RenderManager_ogl.cpp:3725-3731), i.e. dst - srcAlpha*(1-src)
+		// before the clamp. The motion draw layer uploads premultiplied
+		// complements (alpha - color) for this mode, so a reversed subtraction
+		// against the destination reproduces the unclamped part exactly.
 		return ebiten.Blend{
 			BlendFactorSourceRGB:        ebiten.BlendFactorOne,
 			BlendFactorDestinationRGB:   ebiten.BlendFactorOne,
 			BlendFactorSourceAlpha:      ebiten.BlendFactorZero,
 			BlendFactorDestinationAlpha: ebiten.BlendFactorOne,
-			BlendOperationRGB:           ebiten.BlendOperationSubtract,
+			BlendOperationRGB:           ebiten.BlendOperationReverseSubtract,
 			BlendOperationAlpha:         ebiten.BlendOperationAdd,
 		}
 	}

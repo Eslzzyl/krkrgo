@@ -446,7 +446,12 @@ func TestGPUMotionBlendFactors(t *testing.T) {
 		t.Fatalf("screen blend = %+v", screen)
 	}
 	sub := gpuMotionBlend(runtime.MotionBlendSubtractive)
-	if sub.BlendOperationRGB != ebiten.BlendOperationSubtract {
+	if sub.BlendOperationRGB != ebiten.BlendOperationReverseSubtract ||
+		sub.BlendFactorSourceRGB != ebiten.BlendFactorOne ||
+		sub.BlendFactorDestinationRGB != ebiten.BlendFactorOne ||
+		sub.BlendFactorSourceAlpha != ebiten.BlendFactorZero ||
+		sub.BlendFactorDestinationAlpha != ebiten.BlendFactorOne ||
+		sub.BlendOperationAlpha != ebiten.BlendOperationAdd {
 		t.Fatalf("subtractive blend = %+v", sub)
 	}
 }

@@ -11,7 +11,7 @@ import (
 // motionParticle is one live emitter particle. Positions are relative to the
 // emitter node in canvas pixels.
 type motionParticle struct {
-	x, y     float64
+	x, y, z  float64
 	angle    float64
 	scale    float64
 	age      float64
@@ -37,7 +37,7 @@ func motionStringList(value assets.Value) []string {
 // reference draws from the player's TJS random generator
 // (PlayerUpdateParticles.cpp:660-770); a per-emission hash keeps CPU, GPU, and
 // replay renders identical.
-func motionParticleRandoms(label string, index int) [6]float64 {
+func motionParticleRandoms(label string, index int) [12]float64 {
 	hash := fnv.New64a()
 	_, _ = hash.Write([]byte(label))
 	var buffer [8]byte
@@ -52,11 +52,28 @@ func motionParticleRandoms(label string, index int) [6]float64 {
 		value ^= value >> 31
 		return float64(value>>11) / float64(1<<53)
 	}
-	var result [6]float64
+	var result [12]float64
 	for index := range result {
 		result[index] = next()
 	}
 	return result
+}
+
+// motionParticleRandom hands out one emission's draws in the reference order:
+// template index, spawn offset, speed, spread, angle, zoom
+// (PlayerUpdateParticles.cpp:523-860).
+type motionParticleRandom struct {
+	values [12]float64
+	next   int
+}
+
+func (random *motionParticleRandom) value() float64 {
+	if random.next >= len(random.values) {
+		return 0
+	}
+	value := random.values[random.next]
+	random.next++
+	return value
 }
 
 // motionParticleLifetime returns the template motion duration in frames. A
@@ -76,9 +93,9 @@ func motionParticleLifetime(resource *motionResource, attached []*motionResource
 }
 
 // motionParticles simulates the live particles of a type-4 emitter node at
-// tick. Emission intervals come from the frame's "prt" table, spawn offsets,
-// direction, spread, angle, and zoom follow PlayerUpdateParticles.cpp:640-860,
-// and the lifetime is the template motion's total frame count.
+// tick. Emission, spawn offsets, direction, spread, angle, zoom, and the
+// emitter's own velocity inheritance follow PlayerUpdateParticles.cpp:440-880;
+// lifetimes come from the template motion's total frame count.
 func motionParticles(resource *motionResource, attached []*motionResource, node map[string]assets.Value, content map[string]assets.Value, ctx motionRenderContext, tick float64, width, height int) []motionParticle {
 	templates := motionStringList(node["particleMotionList"])
 	if len(templates) == 0 {
@@ -105,32 +122,29 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 	zmax := psbMotionFloat(parameters, "zmax", zmin)
 	spread := psbMotionFloat(parameters, "range", 0)
 	trigger := psbMotionInt(parameters, "trigger", 0)
-	if fmin <= 0 && fmax <= 0 && vmin <= 0 && vmax <= 0 {
-		return nil
-	}
 	label := psbLabel(node)
 	if label == "" {
 		label = "particle"
 	}
 	// trigger 1 counts the burst the emitter spawns, one particle per frame
 	// (PlayerUpdateParticles.cpp:515-520); trigger 0 spaces emissions by
-	// 60/frequency frames.
+	// 60/frequency frames (PlayerUpdateParticles.cpp:448-480).
 	count := -1
-	interval := 1
-	switch trigger {
-	case 1:
+	if trigger == 0 {
+		if fmin <= 0 {
+			return nil
+		}
+	} else if trigger == 1 {
 		seed := motionParticleRandoms(label, -1)
 		count = int(math.Round(fmin + (fmax-fmin)*seed[0]))
-		if count < 0 {
-			count = 0
+		if count <= 0 {
+			return nil
 		}
-	case 0:
-		if fmin > 0 {
-			interval = int(math.Round(60 / fmin))
-			if interval < 1 {
-				interval = 1
-			}
-		}
+	} else {
+		// Only the frequency and count trigger types emit; the reference's
+		// switch leaves every other type with an empty emission count
+		// (PlayerUpdateParticles.cpp:444-490).
+		return nil
 	}
 	accel := psbMotionFloat(node, "particleAccelRatio", 1)
 	if accel <= 0 {
@@ -138,66 +152,164 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 	}
 	flyDirection := psbMotionInt(node, "particleFlyDirection", 0)
 	flyType := psbMotionInt(node, "particle", 0)
+	triVolume := psbMotionInt(node, "particleTriVolume", 0) != 0
+	inheritVelocity := psbMotionInt(node, "particleInheritVelocity", 0)
 	applyZoom := psbMotionInt(node, "particleApplyZoomToVelocity", 0)
 	inheritAngle := psbMotionInt(node, "particleInheritAngle", 0) != 0
 	deleteOutside := psbMotionInt(node, "particleDeleteOutsideScreen", 0) != 0
-	baseAngle := math.Atan2(ctx.matrix.b, ctx.matrix.a)
+	coordinateMode := psbMotionInt(node, "coordinate", 0)
+	matrix := ctx.matrix
+	det := matrix.a*matrix.d - matrix.b*matrix.c
+	baseAngle := math.Atan2(matrix.b, matrix.a)
+
+	// inheritVelocity 1 adds the emitter's per-frame displacement to each
+	// child (PlayerUpdateParticles.cpp:870-880). The emitter's own frame
+	// content supplies the local delta; the parent matrix maps it into canvas
+	// space.
+	var deltaX, deltaY, deltaZ float64
+	if inheritVelocity == 1 {
+		localX, localY, localZ := motionNodeLocalDelta(node, tick)
+		if coordinateMode == 1 {
+			deltaX = matrix.a*localX + matrix.b*localZ
+			deltaZ = matrix.c*localX + matrix.d*localZ
+			deltaY = localY
+		} else {
+			deltaX = matrix.a*localX + matrix.b*localY
+			deltaY = matrix.c*localX + matrix.d*localY
+			deltaZ = localZ
+		}
+	}
 
 	lifetimes := make(map[string]float64, len(templates))
 	last := math.Floor(tick)
 	particles := make([]motionParticle, 0, maxNum)
-	for emitted, birth := 0, 0.0; birth <= last; emitted++ {
+	// Frequency mode primes its timer on activation and emits when the timer
+	// reaches zero (PlayerUpdateParticles.cpp:452-466), so the first burst
+	// lands one interval after activation.
+	birth := 0.0
+	if trigger == 0 {
+		seed := motionParticleRandoms(label, -1)
+		birth = 60.0 / fmin
+		if fmax > 0 && fmax != fmin {
+			birth = 60/fmin + (60/fmax-60/fmin)*seed[0]
+		}
+	}
+	for emitted := 0; birth <= last; emitted++ {
 		if count >= 0 && emitted >= count {
 			break
 		}
-		if trigger == 0 && int(birth)%interval != 0 {
-			birth++
-			continue
-		}
 		values := motionParticleRandoms(label, emitted)
-		template := templates[int(values[5]*float64(len(templates)))%len(templates)]
+		random := motionParticleRandom{values: values}
+		interval := 1.0
+		if trigger == 0 {
+			// The timer draw precedes creation, so it consumes the first value
+			// (PlayerUpdateParticles.cpp:457-466).
+			interval = 60.0 / fmin
+			if fmax > 0 && fmax != fmin {
+				interval = 60/fmin + (60/fmax-60/fmin)*random.value()
+			}
+			if interval < 1 {
+				interval = 1
+			}
+		}
+		template := templates[int(random.value()*float64(len(templates)))%len(templates)]
 		lifetime, known := lifetimes[template]
 		if !known {
 			lifetime = motionParticleLifetime(resource, attached, template)
 			lifetimes[template] = lifetime
 		}
 		if lifetime <= 0 {
-			lifetime = last - birth
+			lifetime = 1
 		}
 		age := tick - birth
-		if age < 0 {
-			break
-		}
-		if age <= lifetime {
-			offsetX, offsetY := motionParticleOffset(flyType, values[0])
-			speed := vmin + (vmax-vmin)*values[1]
+		if age >= 0 && age <= lifetime {
+			offsetX, offsetY, offsetZ := motionParticleOffset(flyType, triVolume, &random)
+			if offsetZ != 0 {
+				offsetZ *= math.Sqrt(det)
+			}
+			txOff := matrix.a*offsetX + matrix.b*offsetY
+			tyOff := matrix.c*offsetX + matrix.d*offsetY
+
+			speed := vmin
+			if vmin != vmax {
+				speed = vmin + (vmax-vmin)*random.value()
+			}
 			direction := baseAngle
 			switch flyDirection {
-			case 1:
-				direction = math.Atan2(offsetY, offsetX) + math.Pi
 			case 2:
-				distance := math.Hypot(offsetX, offsetY)
-				decay := accel
+				// Exponential decay toward the spawn offset
+				// (PlayerUpdateParticles.cpp:690-706).
+				distance := math.Sqrt(txOff*txOff + tyOff*tyOff + offsetZ*offsetZ)
 				normalized := lifetime / 60
-				switch {
-				case decay == 1:
+				if accel == 1 {
 					if normalized > 0 {
 						speed = distance / normalized
 					}
-				case decay > 0 && normalized > 0:
-					speed = distance * math.Log(decay) / (math.Pow(decay, normalized) - 1)
+				} else if normalized > 0 {
+					speed = distance * math.Log(accel) / (math.Pow(accel, normalized) - 1)
 				}
-				direction = math.Atan2(offsetY, offsetX) + math.Pi
+				direction = math.Atan2(tyOff, txOff) + math.Pi
 				speed /= 60
+			case 1:
+				direction = math.Atan2(tyOff, txOff) + math.Pi
 			}
-			totalAngle := direction + (values[2]*2-1)*spread*math.Pi/180
-			angle := amin + (amax-amin)*values[3]
-			zoom := zmin + (zmax-zmin)*values[4]
-			if applyZoom == 1 {
-				speed *= zoom
-			} else if applyZoom == 2 && zoom != 0 {
-				speed /= zoom
+			totalAngle := direction
+			if spread != 0 {
+				totalAngle += (spread*2*random.value() - spread) * math.Pi / 180
 			}
+			// Depth scale for 3D spawns (PlayerUpdateParticles.cpp:712-724).
+			zoomScale := 1.0
+			if (flyDirection == 1 || flyDirection == 2) && (txOff != 0 || tyOff != 0) && offsetZ != 0 {
+				xyLength := math.Hypot(txOff, tyOff)
+				zoomScale = xyLength / math.Hypot(xyLength, offsetZ)
+			}
+			var velocityX, velocityY, velocityZ float64
+			var spawnX, spawnY, spawnZ float64
+			if coordinateMode == 1 {
+				// 3D placement puts the spawn height in y and the ground offset
+				// in z (PlayerUpdateParticles.cpp:755-765).
+				spawnX, spawnY, spawnZ = txOff, offsetZ, tyOff
+				velocityX = zoomScale * speed * math.Cos(totalAngle)
+				velocityZ = zoomScale * speed * math.Sin(totalAngle)
+			} else {
+				spawnX, spawnY, spawnZ = txOff, tyOff, offsetZ
+				velocityX = zoomScale * speed * math.Cos(totalAngle)
+				velocityY = zoomScale * speed * math.Sin(totalAngle)
+			}
+			angle := amin
+			if amin != amax {
+				angle = amin + (amax-amin)*random.value()
+			}
+			if inheritAngle {
+				angle += totalAngle * 180 / math.Pi
+			}
+			angle = math.Mod(angle, 360)
+			if angle < 0 {
+				angle += 360
+			}
+			zoom := zmin
+			if zmin != zmax {
+				zoom = zmin + (zmax-zmin)*random.value()
+			}
+			// applyZoomToVelocity is gated off in decay mode
+			// (PlayerUpdateParticles.cpp:848-862).
+			if flyDirection != 2 {
+				if applyZoom == 1 {
+					velocityX *= zoom
+					velocityY *= zoom
+					velocityZ *= zoom
+				} else if applyZoom == 2 && zoom != 0 {
+					velocityX /= zoom
+					velocityY /= zoom
+					velocityZ /= zoom
+				}
+			}
+			if inheritVelocity == 1 {
+				velocityX += deltaX
+				velocityY += deltaY
+				velocityZ += deltaZ
+			}
+
 			travel := age
 			if accel != 1 {
 				rate := math.Pow(accel, 1.0/60)
@@ -205,11 +317,9 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 					travel = (1 - math.Pow(rate, age)) / (1 - rate)
 				}
 			}
-			x := offsetX + math.Cos(totalAngle)*speed*travel
-			y := offsetY + math.Sin(totalAngle)*speed*travel
-			if inheritAngle {
-				angle += math.Mod(totalAngle*180/math.Pi+180, 360)
-			}
+			x := spawnX + velocityX*travel
+			y := spawnY + velocityY*travel
+			z := spawnZ + velocityZ*travel
 			if deleteOutside && width > 0 && height > 0 {
 				if x < -float64(width) || x > 2*float64(width) || y < -float64(height) || y > 2*float64(height) {
 					goto next
@@ -218,6 +328,7 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 			particles = append(particles, motionParticle{
 				x:        x,
 				y:        y,
+				z:        z,
 				angle:    angle,
 				scale:    zoom,
 				age:      age,
@@ -228,23 +339,63 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 			}
 		}
 	next:
-		birth++
+		if trigger == 0 {
+			birth += interval
+		} else {
+			birth++
+		}
 	}
 	return particles
 }
 
-// motionParticleOffset mirrors the fly-direction spawn offsets
-// (PlayerUpdateParticles.cpp:640-655): 1 is a 16px disk, 2 a 16px box.
-func motionParticleOffset(flyType int, random float64) (float64, float64) {
+// motionNodeLocalDelta returns a node's local position change over one tick,
+// the displacement the reference stores as deltaPosX/Y/Z.
+func motionNodeLocalDelta(node map[string]assets.Value, tick float64) (float64, float64, float64) {
+	frames, ok := node["frameList"].([]assets.Value)
+	if !ok || len(frames) == 0 {
+		return 0, 0, 0
+	}
+	now, nowVisible := psbMotionResolvedContent(frames, tick)
+	previous, previousVisible := psbMotionResolvedContent(frames, tick-1)
+	if !nowVisible || !previousVisible {
+		return 0, 0, 0
+	}
+	x0, y0, z0 := motionNodeCoord(previous)
+	x1, y1, z1 := motionNodeCoord(now)
+	return x1 - x0, y1 - y0, z1 - z0
+}
+
+// motionParticleOffset mirrors the spawn offsets
+// (PlayerUpdateParticles.cpp:612-650): 1 is a 16px disk (sphere when
+// particleTriVolume is set), 2 a 16px box.
+func motionParticleOffset(flyType int, triVolume bool, random *motionParticleRandom) (float64, float64, float64) {
 	switch flyType {
 	case 1:
-		angle := random * 2 * math.Pi
-		radius := math.Sqrt(random) * 16
-		return math.Cos(angle) * radius, math.Sin(angle) * radius
+		if triVolume {
+			r1 := random.value()
+			r2 := random.value()
+			r3 := random.value()
+			phi := r2 * 2 * math.Pi
+			theta := r1 * 2 * math.Pi
+			radius := math.Cbrt(r3) * 16
+			cosPhi := math.Cos(phi)
+			return cosPhi * radius * math.Cos(theta),
+				radius * cosPhi * math.Sin(theta),
+				radius * math.Sin(phi)
+		}
+		angle := random.value() * 2 * math.Pi
+		radius := math.Sqrt(random.value()) * 16
+		return math.Cos(angle) * radius, math.Sin(angle) * radius, 0
 	case 2:
-		return random*32 - 16, random*32 - 16
+		x := random.value()*32 - 16
+		y := random.value()*32 - 16
+		var z float64
+		if triVolume {
+			z = random.value()*32 - 16
+		}
+		return x, y, z
 	}
-	return 0, 0
+	return 0, 0, 0
 }
 
 // motionParticleTransform composes the emitter context with one particle's
@@ -252,16 +403,19 @@ func motionParticleOffset(flyType int, random float64) (float64, float64) {
 func motionParticleTransform(ctx motionRenderContext, particle motionParticle) motionRenderContext {
 	ctx.x += particle.x
 	ctx.y += particle.y
+	ctx.z += particle.z
 	ctx.childTick = 0
+	// A particle child is a separate player: the spawn writes only its root
+	// position, angle, and zoom, so the emitter's own matrix does not carry
+	// into the template (PlayerUpdateParticles.cpp:740-850).
 	radians := particle.angle * math.Pi / 180
 	cosine, sine := math.Cos(radians), math.Sin(radians)
-	local := motionMatrix{
+	ctx.matrix = motionMatrix{
 		a: cosine * particle.scale,
 		b: -sine * particle.scale,
 		c: sine * particle.scale,
 		d: cosine * particle.scale,
 	}
-	ctx.matrix = multiplyMotionMatrix(ctx.matrix, local)
 	return ctx
 }
 
@@ -293,9 +447,9 @@ func splitMotionPath(path string) []string {
 	return parts
 }
 
-// renderMotionParticles draws a type-4 emitter's live particles into the CPU
-// motion canvas.
-func renderMotionParticles(resource *motionResource, layer map[string]assets.Value, content map[string]assets.Value, ctx motionRenderContext, eval motionRenderEval, tick float64, pixels []byte, width, height int, stack map[string]bool) error {
+// collectMotionParticles appends a type-4 emitter's live particles to the CPU
+// draw list, one deferred subtree per particle.
+func collectMotionParticles(resource *motionResource, layer map[string]assets.Value, content map[string]assets.Value, ctx motionRenderContext, eval motionRenderEval, tick float64, list *motionDrawList, width, height int, stack map[string]bool) error {
 	if eval.inParticle {
 		return nil
 	}
@@ -310,7 +464,7 @@ func renderMotionParticles(resource *motionResource, layer map[string]assets.Val
 			continue
 		}
 		particleCtx := motionParticleTransform(ctx, particle)
-		if err := renderMotionValue(owner, ownerRoot, layers, particle.age, eval, particleCtx, pixels, width, height, stack); err != nil {
+		if err := collectMotionValue(owner, ownerRoot, layers, particle.age, eval, particleCtx, list, width, height, stack); err != nil {
 			return err
 		}
 	}

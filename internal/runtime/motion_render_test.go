@@ -411,6 +411,94 @@ func TestMotionParticlesEmitAndExpire(t *testing.T) {
 	}
 }
 
+// The reference stable-sorts prepared items by accumulated z, so a later
+// sibling with a lower z paints first.
+func TestMotionSortsDrawsByAccumulatedZ(t *testing.T) {
+	resource := emotePlayerTestResource("zorder.psb")
+	sprite := func(source string, z float64) assets.Value {
+		return map[string]assets.Value{
+			"type": int64(0),
+			"frameList": []assets.Value{map[string]assets.Value{
+				"time": float64(0),
+				"content": map[string]assets.Value{
+					"src":   source,
+					"coord": []assets.Value{float64(0), float64(0), z},
+				},
+			}},
+		}
+	}
+	motionTestIdle(resource)["layer"] = []assets.Value{
+		sprite("src/chara/mouth1", 1),
+		sprite("src/chara/mouth0", 0),
+	}
+	frame, err := renderPSBMotionOptions(resource, "chara", "idle", 0, 0, nil, false, 0, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The 4x4 sprite lands at canvas (4,4) in the 8x8 test screen.
+	if got := frame.RGBA[(4*8+4)*4:]; got[2] != 255 || got[0] != 0 {
+		t.Fatalf("pixel = %v, want the z=1 blue sprite on top", got[:4])
+	}
+}
+
+// A parent in coordinateMode 1 places children through the parent matrix in
+// the x/z plane, leaving y literal (PlayerUpdateLayerEval.cpp:912-920). The
+// same tree in mode 0 puts the child at y = 10, outside the 8px canvas.
+func TestMotionCoordinateModePlacesChildrenInXZ(t *testing.T) {
+	render := func(coordinate int64) []byte {
+		resource := emotePlayerTestResource("coordinate.psb")
+		child := map[string]assets.Value{
+			"type": int64(0),
+			"frameList": []assets.Value{map[string]assets.Value{
+				"time": float64(0),
+				"content": map[string]assets.Value{
+					"src":   "src/chara/mouth0",
+					"coord": []assets.Value{float64(10), float64(0), float64(0)},
+				},
+			}},
+		}
+		motionTestIdle(resource)["layer"] = []assets.Value{
+			map[string]assets.Value{
+				"type":       int64(3),
+				"coordinate": coordinate,
+				"frameList": []assets.Value{map[string]assets.Value{
+					"time":    float64(0),
+					"content": map[string]assets.Value{"angle": float64(90)},
+				}},
+				"children": []assets.Value{child},
+			},
+		}
+		frame, err := renderPSBMotionOptions(resource, "chara", "idle", 0, 0, nil, false, 0, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return frame.RGBA
+	}
+	opaque := func(pixels []byte) int {
+		count := 0
+		for offset := 3; offset < len(pixels); offset += 4 {
+			if pixels[offset] != 0 {
+				count++
+			}
+		}
+		return count
+	}
+	if got := opaque(render(1)); got == 0 {
+		t.Fatal("coordinate mode 1 drew no pixels for a child on the x/z plane")
+	}
+	if got := opaque(render(0)); got != 0 {
+		t.Fatalf("coordinate mode 0 drew %d pixels, want the child off-canvas at y = 10", got)
+	}
+}
+
+func TestSubtractiveMotionRGBAComplementsPremultipliedPixels(t *testing.T) {
+	got := subtractiveMotionRGBA([]byte{100, 50, 200, 128})
+	want := []byte{28, 78, 0, 128}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("complement = %v, want %v", got, want)
+	}
+}
+
 func TestMotionParticleEmitterDrawsTemplate(t *testing.T) {
 	resource := emotePlayerTestResource("particle.psb")
 	root := resource.doc.Root.(map[string]assets.Value)
