@@ -162,6 +162,7 @@ func runReplay(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	advanceMS := fs.Uint64("advance-ms", 0, "optional final clock time")
 	budget := fs.Uint64("budget", 1<<20, "session instruction budget")
 	memProfile := fs.String("memprofile", "", "write an in-use heap profile after the replay")
+	statsPath := fs.String("stats", "", "write exact runtime memory statistics after the replay")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -197,6 +198,13 @@ func runReplay(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		defer func() {
 			if err := writeHeapProfile(*memProfile); err != nil {
 				fmt.Fprintf(stderr, "write memory profile: %v\n", err)
+			}
+		}()
+	}
+	if *statsPath != "" {
+		defer func() {
+			if err := writeMemoryStats(*statsPath); err != nil {
+				fmt.Fprintf(stderr, "write memory stats: %v\n", err)
 			}
 		}()
 	}
@@ -241,6 +249,45 @@ func writeHeapProfile(path string) error {
 	}
 	goruntime.GC()
 	if err := pprof.WriteHeapProfile(file); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+type replayMemoryStats struct {
+	HeapAlloc    uint64 `json:"heap_alloc"`
+	HeapInuse    uint64 `json:"heap_inuse"`
+	HeapObjects  uint64 `json:"heap_objects"`
+	HeapSys      uint64 `json:"heap_sys"`
+	TotalAlloc   uint64 `json:"total_alloc"`
+	Mallocs      uint64 `json:"mallocs"`
+	Frees        uint64 `json:"frees"`
+	NumGC        uint32 `json:"num_gc"`
+	PauseTotalNS uint64 `json:"pause_total_ns"`
+}
+
+func writeMemoryStats(path string) error {
+	goruntime.GC()
+	var stats goruntime.MemStats
+	goruntime.ReadMemStats(&stats)
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(replayMemoryStats{
+		HeapAlloc:    stats.HeapAlloc,
+		HeapInuse:    stats.HeapInuse,
+		HeapObjects:  stats.HeapObjects,
+		HeapSys:      stats.HeapSys,
+		TotalAlloc:   stats.TotalAlloc,
+		Mallocs:      stats.Mallocs,
+		Frees:        stats.Frees,
+		NumGC:        stats.NumGC,
+		PauseTotalNS: stats.PauseTotalNs,
+	}); err != nil {
 		_ = file.Close()
 		return err
 	}
