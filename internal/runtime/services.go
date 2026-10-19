@@ -2163,7 +2163,7 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		add := tjs.NewNativeFunction(vm.Objects, "Object.add", func(context tjs.ObjectRef, args []tjs.Value) (tjs.Value, error) {
+		add := tjs.NewNativeFunctionForVM(vm, "Object.add", func(context tjs.ObjectRef, args []tjs.Value) (tjs.Value, error) {
 			target, ok := vm.Objects.Lookup(context.Object)
 			if !ok {
 				return tjs.VoidValue, fmt.Errorf("Object.add target is unavailable")
@@ -2183,7 +2183,7 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 			}
 			return tjs.VoidValue, nil
 		})
-		set := tjs.NewNativeFunction(vm.Objects, "Object.set", func(context tjs.ObjectRef, args []tjs.Value) (tjs.Value, error) {
+		set := tjs.NewNativeFunctionForVM(vm, "Object.set", func(context tjs.ObjectRef, args []tjs.Value) (tjs.Value, error) {
 			if len(args) < 2 {
 				return tjs.VoidValue, fmt.Errorf("Object.set requires key and value")
 			}

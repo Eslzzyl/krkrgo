@@ -75,6 +75,38 @@ func (r *dispatchRegistry) dropIDs(scope *ObjectTable, ids []ObjectID) {
 	}
 }
 
+// scopeCount reports the number of registry entries owned by scope. It is used
+// by lifetime tests and diagnostics.
+func (r *dispatchRegistry) scopeCount(scope *ObjectTable) int {
+	if scope == nil {
+		return 0
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	count := 0
+	for _, meta := range r.callable {
+		if meta != nil && meta.scope == scope {
+			count++
+		}
+	}
+	for _, meta := range r.classes {
+		if meta != nil && meta.scope == scope {
+			count++
+		}
+	}
+	for _, meta := range r.objects {
+		if meta != nil && (meta.scope == scope || (meta.class != nil && meta.class.scope == scope)) {
+			count++
+		}
+	}
+	for _, meta := range r.props {
+		if meta != nil && meta.scope == scope {
+			count++
+		}
+	}
+	return count
+}
+
 // dropScope releases every registry entry owned by scope.
 func (r *dispatchRegistry) dropScope(scope *ObjectTable) {
 	if scope == nil {
@@ -130,6 +162,26 @@ func FunctionValue(fn Function) Value {
 func NewNativeFunction(table *ObjectTable, name string, fn NativeFunc) Value {
 	o := newFunctionObject(table, Function{Name: name}, fn, nil, ObjectRef{}, nil)
 	return ObjectValue(o.Ref())
+}
+
+// NewNativeFunctionForVM allocates a host callable in the VM heap so normal
+// collection removes both the object and its dispatch entry.
+func NewNativeFunctionForVM(vm *VM, name string, fn NativeFunc) Value {
+	if vm == nil || vm.Objects == nil {
+		return VoidValue
+	}
+	value, id, err := vm.alloc(CategoryFunction)
+	if err != nil {
+		return VoidValue
+	}
+	registry.mu.Lock()
+	registry.callable[id] = &callableMeta{fn: Function{Name: name}, call: fn, scope: vm.Objects}
+	registry.mu.Unlock()
+	if object, ok := vm.Objects.Lookup(id); ok {
+		_ = object.Set("name", StringValue(name))
+		_ = object.SetFlags("name", MemberReadOnly)
+	}
+	return value
 }
 
 // Bind returns a closure with the supplied object as its this context.

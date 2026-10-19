@@ -220,3 +220,48 @@ func TestGPUSourceRectCropMapping(t *testing.T) {
 		t.Fatalf("zero-crop scale = %v,%v, want 1,1", scaleX, scaleY)
 	}
 }
+
+func TestGPUCompositorStatsTrackUploadScratch(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	rgba := []byte{
+		1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255,
+		13, 14, 15, 255, 16, 17, 18, 255, 19, 20, 21, 255, 22, 23, 24, 255,
+		25, 26, 27, 255, 28, 29, 30, 255, 31, 32, 33, 255, 34, 35, 36, 255,
+		37, 38, 39, 255, 40, 41, 42, 255, 43, 44, 45, 255, 46, 47, 48, 255,
+	}
+	plan := runtime.RenderPlan{
+		Width:  4,
+		Height: 4,
+		Nodes: []runtime.RenderNode{{
+			ID:          1,
+			Bounds:      runtime.Rect{Width: 4, Height: 4},
+			Type:        runtime.LayerOpaque,
+			Visible:     true,
+			Opacity:     255,
+			ImageWidth:  4,
+			ImageHeight: 4,
+			RGBA:        rgba,
+			ImageHash:   1,
+		}},
+	}
+	if _, err := compositor.Compose(plan); err != nil {
+		t.Fatal(err)
+	}
+	stats := compositor.Stats()
+	if stats.TextureBytes < int64(len(rgba)) {
+		t.Fatalf("texture bytes = %d, want at least %d", stats.TextureBytes, len(rgba))
+	}
+	if stats.UploadScratchBytes != int64(len(rgba)) {
+		t.Fatalf("upload scratch bytes = %d, want %d", stats.UploadScratchBytes, len(rgba))
+	}
+	if _, err := compositor.Compose(plan); err != nil {
+		t.Fatal(err)
+	}
+	if got := compositor.Stats(); got.UploadScratchBytes != stats.UploadScratchBytes || got.Textures != stats.Textures {
+		t.Fatalf("compose changed storage: first=%+v second=%+v", stats, got)
+	}
+}
