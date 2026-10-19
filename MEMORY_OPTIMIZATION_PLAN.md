@@ -50,26 +50,32 @@ Method: amairo, deterministic replay at 10,000 ms, 16 ms step, budget `1<<30`,
 three runs per revision. Statistics are taken after `runtime.GC()` and before
 `Session.Close`. All runs produced the same replay JSON SHA-256.
 
-| Metric | Baseline `2ff712c` | Current `9d110f2` | Change |
+| Metric | Baseline `2ff712c` | Current `ca44b5e` | Change |
 | --- | ---: | ---: | ---: |
-| HeapAlloc | 743.86 MB | 737.81 MB | -6.05 MB (-0.81%) |
-| HeapObjects | 505,485 | 436,482 | -69,003 (-13.65%) |
-| TotalAlloc | 4,308.35 MB | 4,273.61 MB | -34.75 MB (-0.81%) |
-| Mallocs | 5,352,160 | 5,156,097 | -196,063 (-3.66%) |
-| HeapSys | 1,658.16 MB | 1,610.87 MB | -47.28 MB (-2.85%) |
+| HeapAlloc | 743.86 MB | 329.87 MB | -413.99 MB (-55.65%) |
+| HeapObjects | 505,485 | 454,971 | -50,514 (-9.99%) |
+| TotalAlloc | 4,308.35 MB | 4,043.58 MB | -264.77 MB (-6.15%) |
+| Mallocs | 5,352,160 | 5,180,697 | -171,463 (-3.20%) |
+| HeapSys | 1,658.16 MB | 749.67 MB | -908.49 MB (-54.79%) |
 
-Per-commit attribution, single run each:
+Stage attribution, three-run averages where available:
 
-| Revision | HeapAlloc | HeapObjects | Note |
+| Revision / stage | HeapAlloc | HeapObjects | Note |
 | --- | ---: | ---: | --- |
 | `2ff712c` | 743.86 MB | 505,485 | baseline |
-| `3573662` | 744.03 MB | 505,560 | registry lifetime; no measured heap delta in this replay |
-| `50b9e4b` | 737.66 MB | 436,437 | member key removal and lazy maps: dominant saving |
+| `3573662` | 744.03 MB | 505,560 | registry lifetime; no measurable delta in this replay |
+| `50b9e4b` | 737.66 MB | 436,437 | member key removal and lazy maps: -6.4 MB |
 | `5a6c021` | 737.59 MB | 436,563 | image ownership: TotalAlloc -21.4 MB |
 | `822b9e8` | 737.58 MB | 436,537 | decoded pools: within noise |
 | `7044208` | 737.85 MB | 436,533 | GC order: within noise |
 | `04c0b38` | 737.86 MB | 436,503 | bitmap ownership: within noise |
 | `9d110f2` | 737.81 MB | 436,482 | VM-owned Object helper callables: within noise |
+| `ff15e02` | 428.08 MB | 435,849 | lazy system font parsing: -309.7 MB |
+| `58972fd` | 329.87 MB | 454,971 | instruction layout: -98.2 MB; TotalAlloc -230 MB |
+
+The `58972fd` object count rises relative to the previous stage because out-of-line
+operands allocate one small side record for instructions that carry descriptors,
+argument lists, or collection operands. Live bytes still drop by 98 MB.
 
 Benchmarks:
 
@@ -87,16 +93,17 @@ Structural tests added and passing:
 - `TestVMReleaseDropsDispatchRegistry`
 - `TestGPUCompositorStatsTrackUploadScratch`
 
-Dominant retained allocations in the 10-second profile, outside the completed
-items:
+Dominant retained allocations after the current changes:
 
-| Flat | Allocation |
-| ---: | --- |
-| 286.24 MB | system font discovery (`os.readFileContents`, `ScanSystemFonts`) |
-| 209.88 MB | source compiler instruction emission (`compiler.emit`) |
-| 53.24 MB | `runtime.resizeLayerImage` |
+| Flat | Allocation | Note |
+| ---: | --- | --- |
+| 130.46 MB | source compiler instruction emission (`compiler.emit`) | reduced from 217 MB |
+| 54.63 MB | `runtime.resizeLayerImage` | live layer image pixels |
+| 18.16 MB | `Object.SetUnits` | member maps and values |
+| 14.06 MB | `Services.layerTransition` | live transition buffers |
 
-These are recorded as the next measurement-backed targets.
+System font discovery no longer appears in the retained profile. The remaining
+compiler metadata and transition buffers are the next measurement-backed targets.
 
 ## Phase 1: registry and VM lifetime
 
@@ -195,14 +202,24 @@ Completed:
 
 ## Phase 8: measurement-backed follow-ups
 
-Status: pending.
+Status: in progress.
 
-- Load system fonts lazily. `NewServices` calls `DiscoverSystemFonts`, which reads
-  and parses every font file; the 10-second profile retains about 286 MB.
-- Reduce `compiler.emit` metadata. The profile retains about 210 MB across script
-  compilation; this exceeds all completed TJS layout savings.
-- Inspect `resizeLayerImage` retained bytes (about 53 MB) and its relation to
-  layer attachment and render scale.
+Completed:
+
+- System fonts are parsed on first selection. Retained system font data dropped
+  from about 286 MB to zero in the 10-second profile.
+- Instruction literals and rare operands moved out of line. `Instruction` dropped
+  from 576 to 328 bytes; retained compiler metadata dropped from 217 MB to
+  130 MB.
+
+Remaining:
+
+- Reduce source compiler metadata further. `Instruction` still carries a 96-byte
+  `Value` and a 120-byte integer block inline.
+- Inspect transition buffers (`Services.layerTransition`, about 14 MB live) and
+  the transition ownership design.
+- Confirm `resizeLayerImage` bytes correspond to live layer images; they are not
+  waste by inspection.
 
 ## Headless verification matrix
 
@@ -242,3 +259,6 @@ go test ./... -run '^$' -bench 'BenchmarkVM|BenchmarkLayer' -benchmem
 | 04c0b38 | Bitmap buffer ownership |
 | 0468944 | Exact replay memory statistics |
 | 9d110f2 | VM-owned Object helper callables |
+| ff15e02 | Deferred system font parsing |
+| 58972fd | Out-of-line instruction operands |
+| ca44b5e | Deferred font parsing test |
