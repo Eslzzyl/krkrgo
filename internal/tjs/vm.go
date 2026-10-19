@@ -2501,6 +2501,13 @@ func (v *VM) Run(program *Program, host Host, budget *uint64) (Value, error) {
 	return v.Execute(program, host, budget)
 }
 
+func programConstant(p *Program, index int32) Value {
+	if p == nil || index < 0 || int(index) >= len(p.Constants) {
+		return VoidValue
+	}
+	return p.Constants[index]
+}
+
 func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 	if p == nil {
 		return VoidValue, vmAbortError(errors.New("nil TJS program"))
@@ -2683,7 +2690,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 				}
 			}
 		case OpConstant:
-			r[op.Out] = op.Value
+			r[op.Out] = programConstant(p, op.Const)
 		case OpLoad:
 			var x Value
 			x, e = v.loadName(&f, op.Name, op.Optional, op.Raw, h, b)
@@ -2707,7 +2714,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			} else {
 				key := reg(op.Key)
 				if op.StaticKey {
-					key = op.Value
+					key = programConstant(p, op.Const)
 				}
 				_, exists, er := v.getMemberWithRuntime(id, key, h, b)
 				if er != nil {
@@ -2722,7 +2729,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			if e == nil {
 				key := reg(op.Key)
 				if op.StaticKey {
-					key = op.Value
+					key = programConstant(p, op.Const)
 				}
 				var ok bool
 				ok, e = v.deleteMember(id, key)
@@ -2783,7 +2790,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			receiver := r[op.Object]
 			key := r[op.Key]
 			if op.StaticKey {
-				key = op.Value
+				key = programConstant(p, op.Const)
 			}
 			if receiver.Kind() == KindString {
 				if property, ok := vmStringProperty(receiver, key); ok {
@@ -2863,7 +2870,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			receiver := reg(op.Object)
 			key := reg(op.Key)
 			if op.StaticKey {
-				key = op.Value
+				key = programConstant(p, op.Const)
 			}
 			if receiver.Kind() == KindString {
 				var x Value
@@ -2924,7 +2931,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			receiver := r[op.Object]
 			key := r[op.Key]
 			if op.StaticKey {
-				key = op.Value
+				key = programConstant(p, op.Const)
 			}
 			value := r[op.Input]
 			id, er := v.handle(receiver)

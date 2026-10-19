@@ -105,7 +105,7 @@ type Op struct {
 	ResultNeeded bool   `json:"result_needed,omitempty"`
 	Rest         bool   `json:"rest,omitempty"`
 	Index        int    `json:"index,omitempty"`
-	Value        Value  `json:"value,omitempty"`
+	Const        int32  `json:"const,omitempty"`
 	extra        *opExtra
 }
 
@@ -173,6 +173,7 @@ type Instruction struct {
 type Program struct {
 	Storage   string        `json:"storage"`
 	Registers int           `json:"registers"`
+	Constants []Value       `json:"constants,omitempty"`
 	Code      []Instruction `json:"code"`
 }
 
@@ -1082,7 +1083,7 @@ func (p *cparser) functionDescriptor(name string) (*Function, error) {
 			parameter := sub.reg()
 			sub.emit(def.loc, Op{Code: OpLoad, Out: parameter, Name: n})
 			voidValue := sub.reg()
-			sub.emit(def.loc, Op{Code: OpConstant, Out: voidValue, Value: VoidValue})
+			sub.emitValue(def.loc, Op{Code: OpConstant, Out: voidValue}, VoidValue)
 			missing := sub.reg()
 			sub.emit(def.loc, Op{Code: OpBinary, Out: missing, Operator: "===", Left: parameter, Right: voidValue})
 			skipDefault := sub.emit(def.loc, Op{Code: OpJumpUnless, Input: missing})
@@ -1610,6 +1611,17 @@ func (c *compiler) emit(loc core.SourceLocation, op Op) int {
 	return i
 }
 
+func (c *compiler) constant(value Value) int32 {
+	index := int32(len(c.program.Constants))
+	c.program.Constants = append(c.program.Constants, value)
+	return index
+}
+
+func (c *compiler) emitValue(loc core.SourceLocation, op Op, value Value) int {
+	op.Const = c.constant(value)
+	return c.emit(loc, op)
+}
+
 type swapTarget struct {
 	kind         string
 	value        int
@@ -1633,7 +1645,7 @@ func (c *compiler) compileSwapTarget(expression *cexpr) (swapTarget, error) {
 		}
 		value := c.reg()
 		if staticKey, ok := staticMemberKey(expression.right); ok {
-			c.emit(expression.loc, Op{Code: OpGet, Out: value, Object: object, StaticKey: true, Value: staticKey})
+			c.emitValue(expression.loc, Op{Code: OpGet, Out: value, Object: object, StaticKey: true}, staticKey)
 			return swapTarget{kind: "member", value: value, object: object, staticKey: staticKey, staticKeySet: true}, nil
 		}
 		key, err := c.compile(expression.right)
@@ -1662,7 +1674,7 @@ func (c *compiler) writeSwapTarget(target swapTarget, value int, loc core.Source
 	case "member":
 		op := Op{Code: OpSet, Object: target.object, Input: value}
 		if target.staticKeySet {
-			op.StaticKey, op.Value = true, target.staticKey
+			op.StaticKey, op.Const = true, c.constant(target.staticKey)
 		} else {
 			op.Key = target.key
 		}
@@ -1702,7 +1714,7 @@ func (c *compiler) compileRawProperty(e *cexpr) (int, error) {
 			return 0, err
 		}
 		if key, ok := staticMemberKey(e.right); ok {
-			c.emit(e.loc, Op{Code: OpGet, Out: out, Object: object, StaticKey: true, Value: key, Raw: true})
+			c.emitValue(e.loc, Op{Code: OpGet, Out: out, Object: object, StaticKey: true, Raw: true}, key)
 			break
 		}
 		key, err := c.compile(e.right)
@@ -1726,7 +1738,7 @@ func (c *compiler) writeRawProperty(e *cexpr, input int) error {
 			return err
 		}
 		if key, ok := staticMemberKey(e.right); ok {
-			c.emit(e.loc, Op{Code: OpSet, Object: object, StaticKey: true, Value: key, Input: input, Raw: true})
+			c.emitValue(e.loc, Op{Code: OpSet, Object: object, StaticKey: true, Input: input, Raw: true}, key)
 			break
 		}
 		key, err := c.compile(e.right)
@@ -1754,7 +1766,7 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 	}
 	switch e.kind {
 	case "value":
-		c.emit(e.loc, Op{Code: OpConstant, Out: out, Value: e.value})
+		c.emitValue(e.loc, Op{Code: OpConstant, Out: out}, e.value)
 	case "function":
 		if e.fn == nil {
 			return 0, fmt.Errorf("nil function descriptor")
@@ -1770,7 +1782,7 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 			return 0, err
 		}
 		if key, ok := staticMemberKey(e.right); ok {
-			c.emit(e.loc, Op{Code: OpGet, Out: out, Object: o, StaticKey: true, Value: key})
+			c.emitValue(e.loc, Op{Code: OpGet, Out: out, Object: o, StaticKey: true}, key)
 			break
 		}
 		k, err := c.compile(e.right)
@@ -1840,7 +1852,7 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 					return 0, err
 				}
 				if key, ok := staticMemberKey(e.left.right); ok {
-					c.emit(e.loc, Op{Code: OpDeleteMember, Out: out, Object: o, StaticKey: true, Value: key})
+					c.emitValue(e.loc, Op{Code: OpDeleteMember, Out: out, Object: o, StaticKey: true}, key)
 					break
 				}
 				k, err := c.compile(e.left.right)
@@ -1859,7 +1871,7 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 				return 0, err
 			}
 			if key, ok := staticMemberKey(e.left.right); ok {
-				c.emit(e.loc, Op{Code: OpTypeOfMember, Out: out, Object: o, StaticKey: true, Value: key})
+				c.emitValue(e.loc, Op{Code: OpTypeOfMember, Out: out, Object: o, StaticKey: true}, key)
 				break
 			}
 			k, err := c.compile(e.left.right)
@@ -2056,7 +2068,7 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 				}
 				old = c.reg()
 				if key, ok := staticMemberKey(e.left.right); ok {
-					c.emit(e.loc, Op{Code: OpGet, Out: old, Object: o, StaticKey: true, Value: key})
+					c.emitValue(e.loc, Op{Code: OpGet, Out: old, Object: o, StaticKey: true}, key)
 					break
 				}
 				k, x := c.compile(e.left.right)
@@ -2080,7 +2092,7 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 				return 0, x
 			}
 			if key, ok := staticMemberKey(e.left.right); ok {
-				c.emit(e.loc, Op{Code: OpSet, Object: o, StaticKey: true, Value: key, Input: out})
+				c.emitValue(e.loc, Op{Code: OpSet, Object: o, StaticKey: true, Input: out}, key)
 				break
 			}
 			k, x := c.compile(e.left.right)
@@ -2101,7 +2113,7 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 			}
 			callee = c.reg()
 			if key, ok := staticMemberKey(e.left.right); ok {
-				c.emit(e.loc, Op{Code: OpGet, Out: callee, Object: o, StaticKey: true, Value: key})
+				c.emitValue(e.loc, Op{Code: OpGet, Out: callee, Object: o, StaticKey: true}, key)
 			} else {
 				k, err := c.compile(e.left.right)
 				if err != nil {
@@ -2194,7 +2206,7 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 				return 0, err
 			}
 			if staticKey, staticKeySet = staticMemberKey(e.left.right); staticKeySet {
-				c.emit(e.loc, Op{Code: OpGet, Out: old, Object: object, StaticKey: true, Value: staticKey})
+				c.emitValue(e.loc, Op{Code: OpGet, Out: old, Object: object, StaticKey: true}, staticKey)
 			} else {
 				key, err = c.compile(e.left.right)
 				if err != nil {
@@ -2204,7 +2216,7 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 			}
 		}
 		one := c.reg()
-		c.emit(e.loc, Op{Code: OpConstant, Out: one, Value: IntegerValue(1)})
+		c.emitValue(e.loc, Op{Code: OpConstant, Out: one}, IntegerValue(1))
 		next := c.reg()
 		operator := "+"
 		if e.text == "--" {
@@ -2216,7 +2228,7 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 		} else {
 			op := Op{Code: OpSet, Object: object, Input: next}
 			if staticKeySet {
-				op.StaticKey, op.Value = true, staticKey
+				op.StaticKey, op.Const = true, c.constant(staticKey)
 			} else {
 				op.Key = key
 			}
@@ -2774,7 +2786,7 @@ func (c *compiler) forStatement(loc core.SourceLocation) error {
 	var condJump int
 	if c.p.is(";") {
 		r := c.reg()
-		c.emit(loc, Op{Code: OpConstant, Out: r, Value: IntegerValue(1)})
+		c.emitValue(loc, Op{Code: OpConstant, Out: r}, IntegerValue(1))
 		condJump = c.emit(loc, Op{Code: OpJumpUnless, Input: r})
 	} else {
 		x, e := c.p.full()
@@ -2954,7 +2966,7 @@ func compile_with_preprocessor(storage, source string, expression bool, state *P
 	if expression {
 		if p.at().kind == "eof" {
 			r := c.reg()
-			c.emit(p.at().loc, Op{Code: OpConstant, Out: r, Value: VoidValue})
+			c.emitValue(p.at().loc, Op{Code: OpConstant, Out: r}, VoidValue)
 			c.emit(p.at().loc, Op{Code: OpReturn, Input: r})
 		} else {
 			if p.at().kind == "name" {
