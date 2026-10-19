@@ -89,6 +89,25 @@ func motionParticleLifetime(resource *motionResource, attached []*motionResource
 		return 0
 	}
 	_, _, nested := motionLookupMotion(resource, attached, parts[0], parts[1])
+	// A looping template never stops playing, so its child is never erased.
+	if psbMotionInt(nested, "loopTime", -1) >= 0 {
+		return math.Inf(1)
+	}
+	return float64(psbMotionInt(nested, "lastTime", 0))
+}
+
+// motionParticleDuration returns the template motion's total frame count,
+// which drives the decay-direction speed even when the template loops.
+func motionParticleDuration(resource *motionResource, attached []*motionResource, template string) float64 {
+	path := template
+	if index := len("motion/"); len(path) > index && path[:index] == "motion/" {
+		path = path[index:]
+	}
+	parts := splitMotionPath(path)
+	if len(parts) < 2 {
+		return 0
+	}
+	_, _, nested := motionLookupMotion(resource, attached, parts[0], parts[1])
 	return float64(psbMotionInt(nested, "lastTime", 0))
 }
 
@@ -190,6 +209,7 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 	}
 
 	lifetimes := make(map[string]float64, len(templates))
+	durations := make(map[string]float64, len(templates))
 	last := math.Floor(tick)
 	particles := make([]motionParticle, 0, maxNum)
 	// Frequency mode primes its timer on activation and emits when the timer
@@ -229,6 +249,11 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 		}
 		if lifetime <= 0 {
 			lifetime = 1
+		}
+		duration, knownDuration := durations[template]
+		if !knownDuration {
+			duration = motionParticleDuration(resource, attached, template)
+			durations[template] = duration
 		}
 		age := tick - birth
 		if age >= 0 && age <= lifetime {
@@ -274,7 +299,7 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 				// Exponential decay toward the spawn offset
 				// (PlayerUpdateParticles.cpp:690-706).
 				distance := math.Sqrt(txOff*txOff + tyOff*tyOff + offsetZ*offsetZ)
-				normalized := lifetime / 60
+				normalized := duration / 60
 				if accel == 1 {
 					if normalized > 0 {
 						speed = distance / normalized
