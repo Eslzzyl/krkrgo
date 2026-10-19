@@ -97,6 +97,11 @@ setup, and startup image storage/decode records. Script records include the
 storage name, source byte count, decoded byte count when applicable, elapsed
 time, and any error.
 
+Startup profiling also emits `script-profile` with total TJS instruction count
+and native-call totals, followed by one `script-native` record per native name.
+Each native record contains call count and accumulated elapsed time, sorted by
+elapsed time in descending order.
+
 ## Single-stall trace
 
 `KRKRGO_STALL_TRACE=1` enables thresholded frame, Draw, `Layer.loadImages`,

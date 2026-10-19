@@ -68,7 +68,8 @@ type Session struct {
 	Budget                       uint64
 	AudioOutput                  []float32
 	preprocessor                 *tjs.Preprocessor
-	startupTiming                bool
+	startupTiming                 bool
+	startupProfile               *tjs.ExecutionProfile
 	initErr                      error
 	closed                       bool
 	mu                           sync.Mutex
@@ -673,6 +674,27 @@ func (s *Session) logStartupElapsed(phase string, started time.Time) {
 	log.Printf("krkrgo-startup phase=%s elapsed=%s", phase, time.Since(started))
 }
 
+func (s *Session) logStartupProfile(profile *tjs.ExecutionProfile) {
+	if s == nil || !s.startupTiming || profile == nil {
+		return
+	}
+	instructions, nativeCalls := profile.Snapshot()
+	sort.Slice(nativeCalls, func(i, j int) bool {
+		if nativeCalls[i].Elapsed != nativeCalls[j].Elapsed {
+			return nativeCalls[i].Elapsed > nativeCalls[j].Elapsed
+		}
+		return nativeCalls[i].Name < nativeCalls[j].Name
+	})
+	var totalCalls uint64
+	for _, stats := range nativeCalls {
+		totalCalls += stats.Calls
+	}
+	log.Printf("krkrgo-startup phase=script-profile instructions=%d native_calls=%d native_functions=%d", instructions, totalCalls, len(nativeCalls))
+	for _, stats := range nativeCalls {
+		log.Printf("krkrgo-startup phase=script-native name=%q calls=%d elapsed=%s", stats.Name, stats.Calls, stats.Elapsed)
+	}
+}
+
 func (s *Session) executeSource(name, source string, expression bool) (tjs.Value, error) {
 	if err := s.checkOpen(); err != nil {
 		return tjs.VoidValue, err
@@ -768,6 +790,15 @@ func (s *Session) Startup() (tjs.Value, error) {
 	defer func() {
 		s.startupTiming = previousTiming
 	}()
+	if timing {
+		s.startupProfile = &tjs.ExecutionProfile{}
+		s.VM.SetExecutionProfile(s.startupProfile)
+		defer func() {
+			s.VM.SetExecutionProfile(nil)
+			s.logStartupProfile(s.startupProfile)
+			s.startupProfile = nil
+		}()
+	}
 	filterStarted := time.Now()
 	if err := s.loadXP3ArchiveExtractionFilter(); err != nil {
 		return tjs.VoidValue, err

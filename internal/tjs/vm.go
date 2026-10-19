@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 )
 
@@ -277,6 +278,7 @@ type VM struct {
 	gcHosts            []Host
 	gcIDs              []ObjectID
 	gcRemoved          []ObjectID
+	executionProfile   *ExecutionProfile
 }
 
 func NewVM() *VM {
@@ -306,6 +308,14 @@ func NewVM() *VM {
 	_, _ = vm.RegisterNativeClass("Exception")
 	_ = vm.RegisterSerialization(false)
 	return vm
+}
+
+// SetExecutionProfile installs an optional diagnostic profile for VM execution.
+// Profiling is disabled when profile is nil.
+func (v *VM) SetExecutionProfile(profile *ExecutionProfile) {
+	if v != nil {
+		v.executionProfile = profile
+	}
 }
 func NewVm() *VM                 { return NewVM() }
 func (v *VM) globalValue() Value { return ObjectValue(NewObjectRef(0, 0)) }
@@ -2568,7 +2578,9 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			return VoidValue, vmAbortError(fmt.Errorf("%s:%d:%d: execution budget exhausted after %d instructions", ins.Location.Storage, ins.Location.Line, ins.Location.Column, v.Executed))
 		}
 		*b--
-		v.Executed++
+		if v.executionProfile != nil {
+			v.executionProfile.Instructions++
+		}
 		if tracing {
 			if e := traceHost.Trace(ins); e != nil {
 				return VoidValue, vmAbortError(e)
@@ -4047,6 +4059,14 @@ func (v *VM) newRegexp(args []Value) (Value, error) {
 }
 
 func (v *VM) nativeCall(name string, context Value, args []Value, h Host, b *uint64, needed bool) (Value, error) {
+	profile := v.executionProfile
+	var profileStarted time.Time
+	if profile != nil {
+		profileStarted = time.Now()
+		defer func() {
+			profile.recordNative(name, time.Since(profileStarted))
+		}()
+	}
 	if strings.HasPrefix(name, "Serialization.") {
 		return v.serializationCall(strings.TrimPrefix(name, "Serialization."), context, args, h, b, needed)
 	}

@@ -54,6 +54,35 @@ func (h *vmRecordingTraceHost) Call(_ *VM, _ string, _ []Value, _ *uint64) (Valu
 	return VoidValue, nil
 }
 
+func TestExecutionProfileRecordsInstructionsAndNativeCalls(t *testing.T) {
+	vm := NewVM()
+	if err := vm.RegisterNative("profileNative"); err != nil {
+		t.Fatal(err)
+	}
+	program, err := compile("execution-profile.tjs", "profileNative(); profileNative(); return 7;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := &ExecutionProfile{}
+	vm.SetExecutionProfile(profile)
+	budget := uint64(1000)
+	got, err := vm.Execute(&program, vmTestHost{}, &budget)
+	vm.SetExecutionProfile(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, err := got.Int(); err != nil || value != 7 {
+		t.Fatalf("result = %v, err = %v; want 7", got, err)
+	}
+	instructions, nativeCalls := profile.Snapshot()
+	if instructions == 0 {
+		t.Fatal("profile recorded no instructions")
+	}
+	if len(nativeCalls) != 1 || nativeCalls[0].Name != "profileNative" || nativeCalls[0].Calls != 2 {
+		t.Fatalf("native profile = %#v; want profileNative called twice", nativeCalls)
+	}
+}
+
 func TestLegacyClassCallDispatchesBodyWithCurrentContext(t *testing.T) {
 	vm := NewVM()
 	class, err := vm.RegisterLegacyClass("LegacyClassCallTest")
