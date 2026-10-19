@@ -411,6 +411,63 @@ func TestMotionParticlesEmitAndExpire(t *testing.T) {
 	}
 }
 
+// A particle is spawned at the emitter's accumulated position for its birth
+// frame. Emitters with inheritVelocity 0 leave it there while the emitter
+// moves; mode 2 carries it along.
+func TestMotionParticlesAnchorAtBirthPosition(t *testing.T) {
+	resource := emotePlayerTestResource("anchor.psb")
+	root := resource.doc.Root.(map[string]assets.Value)
+	motions := root["object"].(map[string]assets.Value)["chara"].(map[string]assets.Value)["motion"].(map[string]assets.Value)
+	motions["nested"] = map[string]assets.Value{
+		"lastTime": int64(20),
+		"layer":    []assets.Value{motionTestSpriteLayer("src/chara/mouth0")},
+	}
+	content := func(x float64) map[string]assets.Value {
+		return map[string]assets.Value{
+			"src":   "particle/point",
+			"coord": []assets.Value{x, float64(0)},
+			"prt": map[string]assets.Value{
+				"amin": float64(0), "amax": float64(0),
+				"vmin": float64(0), "vmax": float64(0),
+				"fmin": float64(1), "fmax": float64(1),
+				"zmin": float64(1), "zmax": float64(1),
+				"range":   float64(0),
+				"trigger": int64(1),
+			},
+		}
+	}
+	layer := func(inheritVelocity int64) map[string]assets.Value {
+		return map[string]assets.Value{
+			"label":                   "anchor",
+			"type":                    int64(4),
+			"particleMaxNum":          int64(4),
+			"particleInheritVelocity": inheritVelocity,
+			"particleMotionList":      []assets.Value{"motion/chara/nested"},
+			"frameList": []assets.Value{
+				map[string]assets.Value{"time": float64(0), "content": content(0)},
+				map[string]assets.Value{"time": float64(10), "content": content(10)},
+				map[string]assets.Value{"time": float64(20), "content": content(20)},
+			},
+		}
+	}
+	// The caller's context is the emitter at tick 10 (x = 10).
+	ctx := motionRenderContext{opacity: 255, matrix: identityMotionMatrix, x: 10}
+	static := motionParticles(resource, nil, layer(0), content(10), ctx, 10, 0, 0)
+	if len(static) != 1 {
+		t.Fatalf("particles = %d, want 1", len(static))
+	}
+	if static[0].x != -10 {
+		t.Fatalf("inheritVelocity 0 particle x = %.1f, want -10 relative to the moved emitter", static[0].x)
+	}
+	carried := motionParticles(resource, nil, layer(2), content(10), ctx, 10, 0, 0)
+	if len(carried) != 1 {
+		t.Fatalf("particles = %d, want 1", len(carried))
+	}
+	if carried[0].x != 0 {
+		t.Fatalf("inheritVelocity 2 particle x = %.1f, want 0 following the emitter", carried[0].x)
+	}
+}
+
 // The reference stable-sorts prepared items by accumulated z, so a later
 // sibling with a lower z paints first.
 func TestMotionSortsDrawsByAccumulatedZ(t *testing.T) {

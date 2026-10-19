@@ -158,24 +158,33 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 	inheritAngle := psbMotionInt(node, "particleInheritAngle", 0) != 0
 	deleteOutside := psbMotionInt(node, "particleDeleteOutsideScreen", 0) != 0
 	coordinateMode := psbMotionInt(node, "coordinate", 0)
-	matrix := ctx.matrix
-	det := matrix.a*matrix.d - matrix.b*matrix.c
-	baseAngle := math.Atan2(matrix.b, matrix.a)
+	// Each particle keeps the transform it had at birth, so the emitter's own
+	// timeline supplies a per-birth matrix and position. The parent chain is
+	// held at the current frame; that is exact for a static parent and matches
+	// the static emitters the shipped data uses.
+	frames, _ := node["frameList"].([]assets.Value)
+	currentLocal := identityMotionMatrix
+	currentX, currentY, currentZ := 0.0, 0.0, 0.0
+	if len(frames) > 0 {
+		if content, visible := psbMotionResolvedContent(frames, tick); visible {
+			currentX, currentY, currentZ = motionNodeCoord(content)
+			currentLocal = psbMotionLocalMatrix(node, content)
+		}
+	}
+	parentMatrix := multiplyMotionMatrix(ctx.matrix, invertMotionMatrix(currentLocal))
 
 	// inheritVelocity 1 adds the emitter's per-frame displacement to each
-	// child (PlayerUpdateParticles.cpp:870-880). The emitter's own frame
-	// content supplies the local delta; the parent matrix maps it into canvas
-	// space.
+	// child (PlayerUpdateParticles.cpp:870-880).
 	var deltaX, deltaY, deltaZ float64
 	if inheritVelocity == 1 {
 		localX, localY, localZ := motionNodeLocalDelta(node, tick)
 		if coordinateMode == 1 {
-			deltaX = matrix.a*localX + matrix.b*localZ
-			deltaZ = matrix.c*localX + matrix.d*localZ
+			deltaX = parentMatrix.a*localX + parentMatrix.b*localZ
+			deltaZ = parentMatrix.c*localX + parentMatrix.d*localZ
 			deltaY = localY
 		} else {
-			deltaX = matrix.a*localX + matrix.b*localY
-			deltaY = matrix.c*localX + matrix.d*localY
+			deltaX = parentMatrix.a*localX + parentMatrix.b*localY
+			deltaY = parentMatrix.c*localX + parentMatrix.d*localY
 			deltaZ = localZ
 		}
 	}
@@ -223,18 +232,43 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 		}
 		age := tick - birth
 		if age >= 0 && age <= lifetime {
+			birthLocal := currentLocal
+			birthX, birthY, birthZ := currentX, currentY, currentZ
+			if len(frames) > 0 {
+				if content, visible := psbMotionResolvedContent(frames, birth); visible {
+					birthX, birthY, birthZ = motionNodeCoord(content)
+					birthLocal = psbMotionLocalMatrix(node, content)
+				}
+			}
+			emitMatrix := multiplyMotionMatrix(parentMatrix, birthLocal)
+			// The reference spawns the child at the emitter's accumulated
+			// position for that frame, so the delta back to the birth position
+			// stays fixed in canvas space for inheritVelocity modes other
+			// than 2.
+			var baseX, baseY, baseZ float64
+			if coordinateMode == 1 {
+				baseX = parentMatrix.a*(birthX-currentX) + parentMatrix.b*(birthZ-currentZ)
+				baseZ = parentMatrix.c*(birthX-currentX) + parentMatrix.d*(birthZ-currentZ)
+				baseY = birthY - currentY
+			} else {
+				baseX = parentMatrix.a*(birthX-currentX) + parentMatrix.b*(birthY-currentY)
+				baseY = parentMatrix.c*(birthX-currentX) + parentMatrix.d*(birthY-currentY)
+				baseZ = birthZ - currentZ
+			}
 			offsetX, offsetY, offsetZ := motionParticleOffset(flyType, triVolume, &random)
 			if offsetZ != 0 {
-				offsetZ *= math.Sqrt(det)
+				// The reference scales the depth offset by sqrt(det) of the
+				// emitter matrix (PlayerUpdateParticles.cpp:652-657).
+				offsetZ *= math.Sqrt(emitMatrix.a*emitMatrix.d - emitMatrix.b*emitMatrix.c)
 			}
-			txOff := matrix.a*offsetX + matrix.b*offsetY
-			tyOff := matrix.c*offsetX + matrix.d*offsetY
+			txOff := emitMatrix.a*offsetX + emitMatrix.b*offsetY
+			tyOff := emitMatrix.c*offsetX + emitMatrix.d*offsetY
 
 			speed := vmin
 			if vmin != vmax {
 				speed = vmin + (vmax-vmin)*random.value()
 			}
-			direction := baseAngle
+			direction := math.Atan2(emitMatrix.b, emitMatrix.a)
 			switch flyDirection {
 			case 2:
 				// Exponential decay toward the spawn offset
@@ -320,6 +354,20 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 			x := spawnX + velocityX*travel
 			y := spawnY + velocityY*travel
 			z := spawnZ + velocityZ*travel
+			if inheritVelocity == 2 {
+				// Mode 2 accumulates each frame's transform delta into the
+				// existing children; over the lifetime the product reduces to
+				// inv(birth) * current around the emitter
+				// (PlayerUpdateParticles.cpp:250-330).
+				rotate := multiplyMotionMatrix(invertMotionMatrix(birthLocal), currentLocal)
+				rotatedX := rotate.a*x + rotate.b*y
+				rotatedY := rotate.c*x + rotate.d*y
+				x, y = rotatedX, rotatedY
+				baseX, baseY, baseZ = 0, 0, 0
+			}
+			x += baseX
+			y += baseY
+			z += baseZ
 			if deleteOutside && width > 0 && height > 0 {
 				if x < -float64(width) || x > 2*float64(width) || y < -float64(height) || y > 2*float64(height) {
 					goto next

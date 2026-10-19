@@ -913,7 +913,8 @@ func collectGPUMotionFrame(resource *motionResource, root map[string]assets.Valu
 				stack[key] = true
 				owner, ownerRoot, nested := motionLookupMotion(resource, eval.attached, parts[0], parts[1])
 				if nestedLayers, ok := nested["layer"]; ok {
-					if err := collectGPUMotionValue(owner, ownerRoot, nestedLayers, ctx.childTick, eval, ctx, drawMatrix, result, stack); err != nil {
+					childCtx := motionChildOriginContext(ctx, content)
+					if err := collectGPUMotionValue(owner, ownerRoot, nestedLayers, ctx.childTick, eval, childCtx, drawMatrix, result, stack); err != nil {
 						return err
 					}
 				}
@@ -984,7 +985,8 @@ func collectMotionFrame(resource *motionResource, root map[string]assets.Value, 
 				stack[key] = true
 				owner, ownerRoot, nested := motionLookupMotion(resource, eval.attached, parts[0], parts[1])
 				if nestedLayers, ok := nested["layer"]; ok {
-					if err := collectMotionValue(owner, ownerRoot, nestedLayers, ctx.childTick, eval, ctx, list, width, height, stack); err != nil {
+					childCtx := motionChildOriginContext(ctx, content)
+					if err := collectMotionValue(owner, ownerRoot, nestedLayers, ctx.childTick, eval, childCtx, list, width, height, stack); err != nil {
 						return err
 					}
 				}
@@ -993,6 +995,26 @@ func collectMotionFrame(resource *motionResource, root map[string]assets.Value, 
 		}
 	}
 	return nil
+}
+
+// motionChildOriginContext shifts a child motion's root by the node's origin
+// offset, which the reference applies to the child player rather than to each
+// of its layers (PlayerUpdateChildMotion.cpp:454-470).
+func motionChildOriginContext(ctx motionRenderContext, content map[string]assets.Value) motionRenderContext {
+	originX := psbMotionFloat(content, "ox", 0)
+	originY := psbMotionFloat(content, "oy", 0)
+	if originX == 0 && originY == 0 {
+		return ctx
+	}
+	shiftX := -(ctx.matrix.a*originX + ctx.matrix.b*originY)
+	shiftY := -(ctx.matrix.c*originX + ctx.matrix.d*originY)
+	ctx.x += shiftX
+	if ctx.coordinateMode != 0 {
+		ctx.z += shiftY
+	} else {
+		ctx.y += shiftY
+	}
+	return ctx
 }
 
 // drawMotionSourceFrame rasterizes one source sprite or mesh frame.
@@ -1834,6 +1856,22 @@ func multiplyMotionMatrix(a, b motionMatrix) motionMatrix {
 		b: a.a*b.b + a.b*b.d,
 		c: a.c*b.a + a.d*b.c,
 		d: a.c*b.b + a.d*b.d,
+	}
+}
+
+// invertMotionMatrix returns the 2x2 inverse, or the identity for a
+// degenerate matrix.
+func invertMotionMatrix(matrix motionMatrix) motionMatrix {
+	det := matrix.a*matrix.d - matrix.b*matrix.c
+	if math.Abs(det) < 1e-12 {
+		return identityMotionMatrix
+	}
+	inverse := 1 / det
+	return motionMatrix{
+		a: matrix.d * inverse,
+		b: -matrix.b * inverse,
+		c: -matrix.c * inverse,
+		d: matrix.a * inverse,
 	}
 }
 
