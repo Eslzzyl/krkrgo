@@ -1545,6 +1545,7 @@ func (v *VM) RegisterNativeProperty(receiver Value, name string, getter, setter 
 		p.Setter = &Function{Name: setter}
 	}
 	v.meta[id].property = p
+	v.meta[id].owner = receiver.ObjectRef().Object
 	if object, ok := v.Objects.Lookup(id); ok {
 		if err := object.Set("name", StringValue(name)); err != nil {
 			return err
@@ -3482,10 +3483,27 @@ func (v *VM) forwardClassMethodReceiver(callee, context Value) Value {
 	}
 	instanceID := v.traceStack[len(v.traceStack)-1].context
 	instance := v.meta[instanceID]
-	if instance == nil || instance.category != CategoryInstance || !v.classHasBase(instance.classObject, classID, 0) {
+	if instance == nil || instance.category != CategoryInstance {
+		return context
+	}
+	if !v.classHasBase(instance.classObject, classID, 0) && !v.classOwnsInstanceMethod(instance.classObject, method) {
 		return context
 	}
 	return ObjectValue(NewObjectRef(instanceID, instanceID))
+}
+
+func (v *VM) classOwnsInstanceMethod(classID ObjectID, method *vmObject) bool {
+	if method == nil || method.owner == 0 || method.function == nil || !v.classHasBase(classID, method.owner, 0) {
+		return false
+	}
+	owner, err := v.obj(method.owner)
+	if err != nil {
+		return false
+	}
+	if _, flags, direct := hasDirect(owner, UTF16FromString(method.function.Name)); direct && flags&StaticMember != 0 {
+		return false
+	}
+	return true
 }
 
 func (v *VM) classHasBase(classID, targetID ObjectID, depth int) bool {
@@ -4163,15 +4181,39 @@ func (v *VM) writeProperty(property, context, input Value, h Host, b *uint64) er
 func (v *VM) propertyReferenceContext(property, context Value) Value {
 	if property.Kind() == KindObject && !property.IsNull() {
 		if ref := property.ObjectRef(); ref.HasBoundContext() {
-			return v.boundContextValue(ref)
+			context = v.boundContextValue(ref)
 		}
 	}
 	if context.Kind() == KindObject && !context.IsNull() {
 		if ref := context.ObjectRef(); ref.HasBoundContext() {
-			return v.boundContextValue(ref)
+			context = v.boundContextValue(ref)
 		}
 	}
-	return context
+	return v.forwardClassPropertyReceiver(property, context)
+}
+
+// forwardClassPropertyReceiver preserves this when a script reaches an
+// inherited instance property through a class object, as the C++ class
+// context's PropGet/PropSet paths do for objthis.
+func (v *VM) forwardClassPropertyReceiver(property, context Value) Value {
+	if property.Kind() != KindObject || property.IsNull() || context.Kind() != KindObject || context.IsNull() || len(v.traceStack) == 0 {
+		return context
+	}
+	propertyMeta := v.meta[property.ObjectRef().Object]
+	classID := context.ObjectRef().Object
+	class := v.meta[classID]
+	if propertyMeta == nil || propertyMeta.category != CategoryProperty || propertyMeta.nativeStatic || class == nil || class.category != CategoryClass {
+		return context
+	}
+	instanceID := v.traceStack[len(v.traceStack)-1].context
+	instance := v.meta[instanceID]
+	if instance == nil || instance.category != CategoryInstance || !v.classHasBase(instance.classObject, classID, 0) {
+		return context
+	}
+	if propertyMeta.owner != 0 && !v.classHasBase(instance.classObject, propertyMeta.owner, 0) {
+		return context
+	}
+	return ObjectValue(NewObjectRef(instanceID, instanceID))
 }
 
 // CallFunction and CallEventHandler are safe native callback entry points.

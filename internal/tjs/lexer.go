@@ -197,7 +197,7 @@ var keywords = map[string]bool{
 }
 var regexAfter = map[string]bool{"return": true, "throw": true, "case": true, "delete": true, "typeof": true, "void": true, "new": true, "in": true, "instanceof": true, "incontextof": true, "else": true, "do": true}
 
-func lexerIDStart(r rune) bool { return r == '_' || r == '$' || unicode.IsLetter(r) || r >= utf8Self }
+func lexerIDStart(r rune) bool { return r == '_' || unicode.IsLetter(r) || r >= utf8Self }
 func lexerIDContinue(r rune) bool {
 	return lexerIDStart(r) || unicode.IsDigit(r) || r == '\u200c' || r == '\u200d'
 }
@@ -411,7 +411,7 @@ func (l *Lexer) Next() (Token, error) {
 		l.previousText = t.Text
 		return t, nil
 	}
-	if strings.ContainsRune("=+-*/%\\!~&|^<>?", rune(u)) {
+	if strings.ContainsRune("=+-*/%\\!~&|^<>?#$", rune(u)) {
 		l.advance()
 		t := l.token(TokenOperator, start, nil, loc)
 		l.previous = TokenOperator

@@ -146,6 +146,13 @@ func RegisterDefaultNatives(r *NativeRegistry) error {
 			}
 		}
 	}
+	for _, name := range []string{"Debug.addLoggingHandler", "Debug.removeLoggingHandler", "Debug.getLastLog"} {
+		if _, ok := r.Entry(name); !ok {
+			if err := r.Register(name, name); err != nil {
+				return err
+			}
+		}
+	}
 	for _, name := range []string{
 		"System.terminate", "System.exit", "System.toActualColor", "System.clearGraphicCache", "System.touchImages", "System.createUUID", "System.createAppLock", "System.inform", "System.assignMessage", "System.doCompact",
 		"System.get:exePath", "System.get:exeName", "System.get:dataPath", "System.get:title", "System.set:title",
@@ -170,6 +177,23 @@ func RegisterDefaultNatives(r *NativeRegistry) error {
 		if _, ok := r.Entry(name); !ok {
 			if err := r.Register(name, name); err != nil {
 				return err
+			}
+		}
+	}
+	for _, name := range []string{"WaveSoundBuffer.get:flags", "WaveFlags.@initialize", "WaveFlags.@invalidate", "WaveFlags.WaveFlags", "WaveFlags.finalize", "WaveFlags.reset", "WaveFlags.get:count"} {
+		if _, ok := r.Entry(name); !ok {
+			if err := r.Register(name, name); err != nil {
+				return err
+			}
+		}
+	}
+	for index := 0; index < 16; index++ {
+		property := fmt.Sprintf("%d", index)
+		for _, name := range []string{"WaveFlags.get:" + property, "WaveFlags.set:" + property} {
+			if _, ok := r.Entry(name); !ok {
+				if err := r.Register(name, name); err != nil {
+					return err
+				}
 			}
 		}
 	}

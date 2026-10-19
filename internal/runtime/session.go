@@ -426,10 +426,10 @@ func (s *Session) registerNatives() error {
 			return err
 		}
 	}
-	for _, property := range []string{"status", "position", "samplePosition", "totalTime", "frequency", "bits", "channels", "volume", "volume2", "pan", "paused", "looping", "useVisBuffer", "labels"} {
+	for _, property := range []string{"status", "position", "samplePosition", "totalTime", "frequency", "bits", "channels", "volume", "volume2", "pan", "paused", "looping", "useVisBuffer", "labels", "flags"} {
 		setter := ""
 		switch property {
-		case "status", "position", "samplePosition", "totalTime", "bits", "channels", "labels":
+		case "status", "position", "samplePosition", "totalTime", "bits", "channels", "labels", "flags":
 		default:
 			setter = "WaveSoundBuffer.set:" + property
 		}
@@ -439,6 +439,26 @@ func (s *Session) registerNatives() error {
 	}
 	for _, property := range []string{"globalVolume", "globalFocusMode"} {
 		if err := s.VM.RegisterNativeStaticProperty(sound, property, "WaveSoundBuffer.get:"+property, "WaveSoundBuffer.set:"+property); err != nil {
+			return err
+		}
+	}
+	waveFlags, err := s.VM.RegisterNativeClass("WaveFlags")
+	if err != nil {
+		return err
+	}
+	delete(s.VM.Globals, "WaveFlags")
+	s.Services.waveFlagsClass = waveFlags
+	for _, method := range []string{"@initialize", "@invalidate", "WaveFlags", "finalize", "reset"} {
+		if err := s.VM.RegisterNativeMethod(waveFlags, method, "WaveFlags."+method); err != nil {
+			return err
+		}
+	}
+	if err := s.VM.RegisterNativeProperty(waveFlags, "count", "WaveFlags.get:count", ""); err != nil {
+		return err
+	}
+	for index := 0; index < 16; index++ {
+		property := fmt.Sprintf("%d", index)
+		if err := s.VM.RegisterNativeProperty(waveFlags, property, "WaveFlags.get:"+property, "WaveFlags.set:"+property); err != nil {
 			return err
 		}
 	}

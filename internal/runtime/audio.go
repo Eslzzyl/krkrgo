@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
 )
@@ -40,6 +41,7 @@ type soundRender struct {
 type SoundStream struct {
 	audio        assets.Audio
 	info         assets.LoopInfo
+	flagMu       sync.RWMutex
 	flags        [16]int32
 	flagEpoch    uint64
 	sortedLabels []assets.Label
@@ -121,8 +123,10 @@ func (s *SoundStream) SetFlag(index int, value int32) error {
 	} else if value > 9999 {
 		value = 9999
 	}
+	s.flagMu.Lock()
 	s.flags[index] = value
 	s.flagEpoch++
+	s.flagMu.Unlock()
 	return nil
 }
 
@@ -131,14 +135,27 @@ func (s *SoundStream) Flag(index int) (int32, error) {
 	if s == nil || index < 0 || index >= len(s.flags) {
 		return 0, fmt.Errorf("sound flag index out of range")
 	}
+	s.flagMu.RLock()
+	defer s.flagMu.RUnlock()
 	return s.flags[index], nil
 }
 
 func (s *SoundStream) ResetFlags() {
 	if s != nil {
+		s.flagMu.Lock()
 		s.flags = [16]int32{}
 		s.flagEpoch++
+		s.flagMu.Unlock()
 	}
+}
+
+func (s *SoundStream) flagSnapshot() ([16]int32, uint64) {
+	if s == nil {
+		return [16]int32{}, 0
+	}
+	s.flagMu.RLock()
+	defer s.flagMu.RUnlock()
+	return s.flags, s.flagEpoch
 }
 
 // Labels returns a copy of SLI labels in their original file order.

@@ -81,6 +81,9 @@ type Services struct {
 	TraceEvents             []TraceEvent
 	Messages                []string
 	MessageMap              map[string]string
+	debugLogLines           []string
+	debugLogHandlers        []tjs.Value
+	deliveringDebugLog      bool
 	TraceEnabled            bool
 	console                 tjs.Value
 	Windows                 map[uint64]*WindowState
@@ -138,6 +141,7 @@ type Services struct {
 	PhaseVocoders            map[tjs.ObjectID]*phaseVocoderConfig
 	Sounds                   map[tjs.ObjectID]*WaveSoundBuffer
 	SoundEvents              map[tjs.ObjectID][]SoundEvent
+	waveFlagsClass           tjs.Value
 	AudioMixer               *AudioMixer
 	Dialogs                  *DialogService
 	Layers                   map[tjs.ObjectID]*Layer
@@ -381,6 +385,20 @@ func NewServices(storage *assets.Storage, saveDir string, limits core.Limits) *S
 	}
 }
 func DefaultServices() *Services { return NewServices(nil, "", core.DefaultLimits()) }
+
+// SetArguments initializes command-line arguments before project startup.
+func (s *Services) SetArguments(arguments map[string]string) {
+	if s == nil || len(arguments) == 0 {
+		return
+	}
+	s.ensureInit()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name, value := range arguments {
+		s.Arguments[name] = value
+	}
+}
+
 func (s *Services) ensureInit() {
 	if s == nil {
 		return
@@ -1399,6 +1417,7 @@ func (s *Services) GCRoots() []tjs.Value {
 			}
 		}
 	}
+	out = append(out, s.debugLogHandlers...)
 	for id := range s.Layers {
 		out = append(out, tjs.ObjectIDValue(id))
 		if layer := s.Layers[id]; layer != nil && layer.transitionCallback.Kind() == tjs.KindObject && !layer.transitionCallback.IsNull() {
@@ -1613,7 +1632,7 @@ func (s *Services) stopAllSounds() error {
 }
 
 // SoundNative invokes the script-facing WaveSoundBuffer operation set.
-func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value) (tjs.Value, error) {
+func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value, budget *uint64) (tjs.Value, error) {
 
 	s.ensureInit()
 	if operation == "setDefaultCounts" || operation == "setDefaultAheads" {
@@ -1882,6 +1901,25 @@ func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, 
 			values[i] = tjs.StringValue(label.Name)
 		}
 		return vm.NewArray(values)
+	case "get:flags":
+		if vm == nil || s.waveFlagsClass.Kind() != tjs.KindObject {
+			return tjs.VoidValue, fmt.Errorf("WaveSoundBuffer flags require VM")
+		}
+		flags, found, e := vm.GetMemberIfPresent(context, waveSoundFlagsObjectMember, s, budget)
+		if e != nil {
+			return tjs.VoidValue, e
+		}
+		if found && flags.Kind() == tjs.KindObject && !flags.IsNull() {
+			return flags, nil
+		}
+		flags, e = vm.Construct(s.waveFlagsClass, []tjs.Value{context}, s, budget)
+		if e != nil {
+			return tjs.VoidValue, e
+		}
+		if e = vm.SetMemberWithRuntime(context, waveSoundFlagsObjectMember, flags, tjs.HiddenMember, s, budget); e != nil {
+			return tjs.VoidValue, e
+		}
+		return flags, nil
 	case "set:volume":
 		n, e := intArg(0)
 		if e != nil {
@@ -1959,18 +1997,18 @@ func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, 
 // output backend. The reference runtime keeps this class registered in that
 // configuration; its MIDI operations are disabled while base status and volume
 // state remain available.
-func (s *Services) MIDISoundNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value) (tjs.Value, error) {
-	return s.disabledLegacySoundNative(vm, context, operation, args, "MIDISoundBuffer")
+func (s *Services) MIDISoundNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value, budget *uint64) (tjs.Value, error) {
+	return s.disabledLegacySoundNative(vm, context, operation, args, "MIDISoundBuffer", budget)
 }
 
-func (s *Services) CDDASoundNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value) (tjs.Value, error) {
-	return s.disabledLegacySoundNative(vm, context, operation, args, "CDDASoundBuffer")
+func (s *Services) CDDASoundNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value, budget *uint64) (tjs.Value, error) {
+	return s.disabledLegacySoundNative(vm, context, operation, args, "CDDASoundBuffer", budget)
 }
 
-func (s *Services) disabledLegacySoundNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value, className string) (tjs.Value, error) {
+func (s *Services) disabledLegacySoundNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value, className string, budget *uint64) (tjs.Value, error) {
 	switch operation {
 	case "@initialize":
-		if _, err := s.SoundNative(vm, context, "@initialize", args); err != nil {
+		if _, err := s.SoundNative(vm, context, "@initialize", args, budget); err != nil {
 			return tjs.VoidValue, err
 		}
 		if context.Kind() == tjs.KindObject && !context.IsNull() {
@@ -1982,7 +2020,7 @@ func (s *Services) disabledLegacySoundNative(vm *tjs.VM, context tjs.Value, oper
 		}
 		return tjs.VoidValue, nil
 	case "@invalidate", "finalize":
-		return s.SoundNative(vm, context, operation, args)
+		return s.SoundNative(vm, context, operation, args, budget)
 	case "MIDISoundBuffer", "CDDASoundBuffer", "play", "stop", "stopFade", "onStatusChanged", "onFadeCompleted":
 		return tjs.VoidValue, nil
 	case "open":
@@ -1996,7 +2034,7 @@ func (s *Services) disabledLegacySoundNative(vm *tjs.VM, context tjs.Value, oper
 		}
 		return tjs.VoidValue, nil
 	case "get:status", "get:volume", "set:volume":
-		return s.SoundNative(vm, context, operation, args)
+		return s.SoundNative(vm, context, operation, args, budget)
 	case "get:volume2":
 		return tjs.IntegerValue(0), nil
 	case "set:volume2", "get:position", "set:position", "get:paused", "set:paused", "get:totalTime", "set:totalTime", "get:looping", "set:looping":
@@ -2392,16 +2430,19 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		return s.d3dDeviceNative(vm, context, "D3D", strings.TrimPrefix(name, "D3D."), args)
 	}
 	if strings.HasPrefix(name, "CDDASoundBuffer.") {
-		return s.CDDASoundNative(vm, context, strings.TrimPrefix(name, "CDDASoundBuffer."), args)
+		return s.CDDASoundNative(vm, context, strings.TrimPrefix(name, "CDDASoundBuffer."), args, budget)
 	}
 	if strings.HasPrefix(name, "MIDISoundBuffer.") {
-		return s.MIDISoundNative(vm, context, strings.TrimPrefix(name, "MIDISoundBuffer."), args)
+		return s.MIDISoundNative(vm, context, strings.TrimPrefix(name, "MIDISoundBuffer."), args, budget)
 	}
 	if strings.HasPrefix(name, "PhaseVocoder.") {
 		return s.PhaseVocoderNative(context, strings.TrimPrefix(name, "PhaseVocoder."), args)
 	}
+	if strings.HasPrefix(name, "WaveFlags.") {
+		return s.waveFlagsNative(vm, context, strings.TrimPrefix(name, "WaveFlags."), args, budget)
+	}
 	if strings.HasPrefix(name, "WaveSoundBuffer.") {
-		return s.SoundNative(vm, context, strings.TrimPrefix(name, "WaveSoundBuffer."), args)
+		return s.SoundNative(vm, context, strings.TrimPrefix(name, "WaveSoundBuffer."), args, budget)
 	}
 	if strings.HasPrefix(name, "Sound.") {
 		operation := strings.TrimPrefix(name, "Sound.")
@@ -2409,7 +2450,7 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		case "setDevice", "getDevice":
 			return tjs.VoidValue, UnsupportedDevice("audio device")
 		}
-		return s.SoundNative(vm, context, operation, args)
+		return s.SoundNative(vm, context, operation, args, budget)
 	}
 	arg := func(i int) (tjs.Value, error) {
 		if i >= len(args) {
@@ -2427,9 +2468,13 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		s.TraceEnabled = true
 		s.mu.Unlock()
 		return tjs.VoidValue, nil
+	case "Debug.addLoggingHandler", "Debug.removeLoggingHandler", "Debug.getLastLog":
+		return s.debugLoggingNative(vm, strings.TrimPrefix(name, "Debug."), args, budget)
 	case "Debug.message", "Debug.notice":
-		s.Messages = append(s.Messages, joinValues(args))
-		return tjs.VoidValue, nil
+		if len(args) == 0 {
+			return tjs.VoidValue, tjs.ErrBadParamCount
+		}
+		return tjs.VoidValue, s.appendDebugLog(vm, joinValues(args), budget)
 	case "System.getTickCount", "System.getTickCount64":
 		return tjs.IntegerValue(s.systemTickCount()), nil
 	case "System.get:screenWidth":
@@ -2495,8 +2540,7 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		s.mu.Unlock()
 		return console, nil
 	case "Console.log", "Console.info", "Console.warn", "Console.error", "Console.debug", "Console.trace", "Console.dir":
-		s.Messages = append(s.Messages, joinValues(args))
-		return tjs.VoidValue, nil
+		return tjs.VoidValue, s.appendDebugLog(vm, joinValues(args), budget)
 	case "Console.getPlacement", "Console.getRect":
 		return tjs.VoidValue, nil
 	case "Console.setPos", "Console.restoreMaximize", "Console.bringTo", "Console.bringAfter":

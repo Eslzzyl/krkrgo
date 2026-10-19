@@ -27,13 +27,14 @@ const (
 )
 
 type LaunchOptions struct {
-	Project     string
-	SaveDir     string
-	Budget      uint64
-	Renderer    string
-	RenderScale int
-	Upscaler    string
-	Anime4K     bool
+	Project       string
+	SaveDir       string
+	Budget        uint64
+	Renderer      string
+	RenderScale   int
+	Upscaler      string
+	Anime4K       bool
+	GameArguments map[string]string
 }
 
 const (
@@ -43,6 +44,7 @@ const (
 
 func ParseLaunchArgs(args []string) (LaunchOptions, error) {
 	opts := LaunchOptions{Budget: unlimitedBudget, Renderer: rendererGPU, RenderScale: 0}
+	var gameArgs []string
 	fs := flag.NewFlagSet("krkrgo run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&opts.Project, "project", "", "project root or data directory")
@@ -52,6 +54,10 @@ func ParseLaunchArgs(args []string) (LaunchOptions, error) {
 	fs.IntVar(&opts.RenderScale, "render-scale", 0, "rendering pixel density: 1-4, or 0 for the monitor scale (default: 0)")
 	fs.StringVar(&opts.Upscaler, "upscaler", "off", "frame upscaler: off, bilinear, bicubic, anime4k (requires -render-scale 2)")
 	fs.BoolVar(&opts.Anime4K, "anime4k", false, "alias for -upscaler anime4k")
+	fs.Func("game-arg", "pass a command-line option to the game's System.getArgument", func(value string) error {
+		gameArgs = append(gameArgs, value)
+		return nil
+	})
 	if err := fs.Parse(args); err != nil {
 		return LaunchOptions{}, err
 	}
@@ -78,7 +84,32 @@ func ParseLaunchArgs(args []string) (LaunchOptions, error) {
 	if fs.NArg() != 0 {
 		return LaunchOptions{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
+	var err error
+	opts.GameArguments, err = parseGameArguments(gameArgs)
+	if err != nil {
+		return LaunchOptions{}, err
+	}
 	return opts, nil
+}
+
+func parseGameArguments(args []string) (map[string]string, error) {
+	arguments := make(map[string]string, len(args))
+	for _, arg := range args {
+		if len(arg) < 2 || arg[0] != '-' {
+			return nil, fmt.Errorf("game argument %q must start with '-'", arg)
+		}
+		name, value, hasValue := strings.Cut(arg, "=")
+		if len(name) < 2 {
+			return nil, fmt.Errorf("game argument %q has no option name", arg)
+		}
+		if !hasValue {
+			value = "yes"
+		}
+		if _, exists := arguments[name]; !exists {
+			arguments[name] = value
+		}
+	}
+	return arguments, nil
 }
 
 func NewSession(project, saveDir string, budget uint64) (*runtime.Session, error) {
@@ -86,6 +117,10 @@ func NewSession(project, saveDir string, budget uint64) (*runtime.Session, error
 }
 
 func NewSessionWithScale(project, saveDir string, budget uint64, scale int32) (*runtime.Session, error) {
+	return NewSessionWithScaleAndArguments(project, saveDir, budget, scale, nil)
+}
+
+func NewSessionWithScaleAndArguments(project, saveDir string, budget uint64, scale int32, gameArguments map[string]string) (*runtime.Session, error) {
 	var (
 		session *runtime.Session
 		err     error
@@ -98,6 +133,7 @@ func NewSessionWithScale(project, saveDir string, budget uint64, scale int32) (*
 			return nil, fmt.Errorf("open project: %w", err)
 		}
 	}
+	session.Services.SetArguments(gameArguments)
 	session.Services.SetRenderScale(scale)
 
 	if project == "" {
@@ -250,7 +286,7 @@ func RunGame(args []string) {
 		// The frame post-processor consumes a 1x composition and produces 2x.
 		scale = 1
 	}
-	session, err := NewSessionWithScale(opts.Project, opts.SaveDir, opts.Budget, scale)
+	session, err := NewSessionWithScaleAndArguments(opts.Project, opts.SaveDir, opts.Budget, scale, opts.GameArguments)
 	if err != nil {
 		log.Fatal(formatErrorChain(err))
 	}

@@ -35,7 +35,7 @@ launcher process (cmd/krkrgo, MyGo native UI)
   - monitors the child process and its log
 
 game process (cmd/krkrgo run)
-  - parses -project, -save-dir, -budget, -renderer, -render-scale, -upscaler, and -anime4k
+  - parses -project, -save-dir, -budget, -renderer, -render-scale, -upscaler, -anime4k, and repeated -game-arg values
   - creates the runtime Session
   - creates the Ebitengine host
   - runs ebiten.RunGame

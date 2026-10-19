@@ -553,7 +553,7 @@ func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string,
 	case "setOverlayBitmap":
 		return tjs.VoidValue, UnsupportedDevice("native window overlay bitmap")
 	case "resetExSystemMenu":
-		return tjs.VoidValue, UnsupportedDevice("native window system menu")
+		return tjs.VoidValue, nil
 	case "ncHitTest":
 		if _, err := windowIntArg(args, 0, operation); err != nil {
 			return tjs.VoidValue, err

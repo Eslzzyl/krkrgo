@@ -60,6 +60,7 @@ func (s *MixerSource) Position() uint64 {
 	}
 	return s.position
 }
+
 type videoMixerState struct {
 	pending      [][2]float32
 	blockLengths []int
@@ -201,6 +202,7 @@ func (m *AudioMixer) Remove(source *WaveSoundBuffer) {
 		}
 	}
 }
+
 // AddVideo registers a VideoOverlay PCM source once.
 func (m *AudioMixer) AddVideo(video *VideoOverlay) {
 	if m == nil || video == nil {
@@ -366,10 +368,19 @@ func cloneSoundStream(source *SoundStream) *SoundStream {
 	if source == nil {
 		return nil
 	}
-	clone := *source
+	flags, flagEpoch := source.flagSnapshot()
+	clone := SoundStream{
+		audio:        source.audio,
+		info:         source.info,
+		flags:        flags,
+		flagEpoch:    flagEpoch,
+		sortedLabels: append([]assets.Label(nil), source.sortedLabels...),
+		position:     source.position,
+		IgnoreLinks:  source.IgnoreLinks,
+		LoopAtEnd:    source.LoopAtEnd,
+	}
 	clone.info.Links = append([]assets.Link(nil), source.info.Links...)
 	clone.info.Labels = append([]assets.Label(nil), source.info.Labels...)
-	clone.sortedLabels = append([]assets.Label(nil), source.sortedLabels...)
 	if source.crossfade != nil {
 		fade := *source.crossfade
 		fade.samples = append([]int16(nil), source.crossfade.samples...)
@@ -403,16 +414,17 @@ func (s *MixerSource) MixSource(stream *SoundStream, frames int, frequency uint3
 	}
 	target = target[:frames*2]
 	total := uint64(stream.audio.Frames())
-	if s.flagEpoch != stream.flagEpoch {
+	flags, flagEpoch := stream.flagSnapshot()
+	if s.flagEpoch != flagEpoch {
 		position := s.position
 		phase := s.phase
 		if err := stream.Seek(position); err != nil {
 			return nil, false, err
 		}
-		*s = MixerSource{phase: phase, position: position, flagEpoch: stream.flagEpoch}
+		*s = MixerSource{phase: phase, position: position, flagEpoch: flagEpoch}
 	}
 	looping := total != 0 && !s.eof && (stream.LoopAtEnd || (!stream.IgnoreLinks && s.linkLoop))
-	if !s.linkLoop && !stream.IgnoreLinks && stream.info.NextLink(stream.Position(), &stream.flags) != nil {
+	if !s.linkLoop && !stream.IgnoreLinks && stream.info.NextLink(stream.Position(), &flags) != nil {
 		s.linkLoop = true
 		looping = total != 0 && !s.eof
 	}

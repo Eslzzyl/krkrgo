@@ -418,7 +418,7 @@ func (s *cscan) add(k, t string, v Value, l core.SourceLocation) {
 	}
 	s.out = append(s.out, token)
 }
-func isIDStart(r rune) bool { return r == '_' || r == '$' || unicode.IsLetter(r) || r >= utf8.RuneSelf }
+func isIDStart(r rune) bool { return r == '_' || unicode.IsLetter(r) || r >= utf8.RuneSelf }
 func isID(r rune) bool      { return isIDStart(r) || unicode.IsDigit(r) }
 func appendUTF16Rune(out UTF16, r rune) UTF16 {
 	if r <= 0xffff {

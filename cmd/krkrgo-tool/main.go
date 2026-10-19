@@ -163,6 +163,11 @@ func runReplay(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	budget := fs.Uint64("budget", 1<<20, "session instruction budget")
 	memProfile := fs.String("memprofile", "", "write an in-use heap profile after the replay")
 	statsPath := fs.String("stats", "", "write exact runtime memory statistics after the replay")
+	var gameArgs []string
+	fs.Func("game-arg", "pass a command-line option to the game's System.getArgument", func(value string) error {
+		gameArgs = append(gameArgs, value)
+		return nil
+	})
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -171,6 +176,10 @@ func runReplay(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	gameArguments, err := parseReplayGameArguments(gameArgs)
+	if err != nil {
+		return err
 	}
 
 	var input io.Reader = stdin
@@ -194,6 +203,7 @@ func runReplay(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return fmt.Errorf("open project: %w", err)
 	}
 	defer session.Close()
+	session.Services.SetArguments(gameArguments)
 	if *memProfile != "" {
 		defer func() {
 			if err := writeHeapProfile(*memProfile); err != nil {
@@ -240,6 +250,26 @@ func runReplay(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		result.FinalTimeMS = session.Services.TimeMS
 	}
 	return writeReplayResult(*outputPath, stdout, result)
+}
+
+func parseReplayGameArguments(args []string) (map[string]string, error) {
+	arguments := make(map[string]string, len(args))
+	for _, arg := range args {
+		if len(arg) < 2 || arg[0] != '-' {
+			return nil, fmt.Errorf("game argument %q must start with '-'", arg)
+		}
+		name, value, hasValue := strings.Cut(arg, "=")
+		if len(name) < 2 {
+			return nil, fmt.Errorf("game argument %q has no option name", arg)
+		}
+		if !hasValue {
+			value = "yes"
+		}
+		if _, exists := arguments[name]; !exists {
+			arguments[name] = value
+		}
+	}
+	return arguments, nil
 }
 
 func writeHeapProfile(path string) error {
