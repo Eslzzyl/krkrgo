@@ -248,11 +248,18 @@ func collectGPUMotionFrame(resource *motionResource, root map[string]assets.Valu
 			key = resource.path + "\x00" + source
 		}
 		scale := result.Scale
+		rgba := image.RGBA
+		drawWidth, drawHeight := int32(image.Width), int32(image.Height)
+		if scale > 1 {
+			rgba = scaleRGBA(image.RGBA, int32(image.Width), int32(image.Height), scale)
+			drawWidth *= scale
+			drawHeight *= scale
+		}
 		result.Draws = append(result.Draws, RenderMotionDraw{
 			SourceKey: key,
-			RGBA:      scaleRGBA(image.RGBA, int32(image.Width), int32(image.Height), scale),
-			Width:     int32(image.Width) * scale,
-			Height:    int32(image.Height) * scale,
+			RGBA:      rgba,
+			Width:     drawWidth,
+			Height:    drawHeight,
 			A:         transform.a,
 			B:         transform.b,
 			C:         transform.c,

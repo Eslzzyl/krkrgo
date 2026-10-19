@@ -642,6 +642,16 @@ func validLayerImageSize(w, h int32, n, bytesPerPixel int) bool {
 }
 
 func (l *Layer) SetRGBA(width, height int32, rgba []byte) error {
+	return l.setRGBA(width, height, rgba, false)
+}
+
+// SetRGBAOwned adopts rgba when no render scaling is required. The caller must
+// not mutate or reuse the buffer after the call.
+func (l *Layer) SetRGBAOwned(width, height int32, rgba []byte) error {
+	return l.setRGBA(width, height, rgba, true)
+}
+
+func (l *Layer) setRGBA(width, height int32, rgba []byte, owned bool) error {
 	if !validLayerImageSize(width, height, len(rgba), 4) {
 		return fmt.Errorf("%w: %dx%d", ErrImageSizeMismatch, width, height)
 	}
@@ -650,7 +660,11 @@ func (l *Layer) SetRGBA(width, height int32, rgba []byte) error {
 	}
 	l.gpuStretch = nil
 	l.gpuMotion = nil
-	l.RGBA = scaleRGBA(rgba, width, height, l.RenderScale())
+	if owned && l.RenderScale() <= 1 {
+		l.RGBA = rgba
+	} else {
+		l.RGBA = scaleRGBA(rgba, width, height, l.RenderScale())
+	}
 	l.ImageWidth, l.ImageHeight = width, height
 	if l.Bounds.Width == 0 {
 		l.Bounds.Width = width
@@ -877,6 +891,12 @@ func fillLayerNeutral(rgba []byte, layerType LayerType) {
 func (l *Layer) SetImage(im assets.Image) error {
 	return l.SetRGBA(int32(im.Width), int32(im.Height), im.RGBA)
 }
+
+// SetImageOwned adopts im.RGBA when no render scaling is required. The caller
+// must not mutate or reuse the buffer after the call.
+func (l *Layer) SetImageOwned(im assets.Image) error {
+	return l.SetRGBAOwned(int32(im.Width), int32(im.Height), im.RGBA)
+}
 func (l *Layer) ClearImage() {
 	l.gpuStretch = nil
 	l.gpuMotion = nil
@@ -887,6 +907,16 @@ func (l *Layer) ClearImage() {
 }
 
 func (l *Layer) SetProvince(width, height int32, province []byte) error {
+	return l.setProvince(width, height, province, false)
+}
+
+// SetProvinceOwned adopts province without copying. The caller must not mutate
+// or reuse the buffer after the call.
+func (l *Layer) SetProvinceOwned(width, height int32, province []byte) error {
+	return l.setProvince(width, height, province, true)
+}
+
+func (l *Layer) setProvince(width, height int32, province []byte, owned bool) error {
 	if province == nil {
 		l.Province = nil
 		l.ProvinceWidth, l.ProvinceHeight = 0, 0
@@ -899,7 +929,11 @@ func (l *Layer) SetProvince(width, height int32, province []byte) error {
 	if len(l.RGBA) != 0 && (l.ImageWidth != width || l.ImageHeight != height) {
 		return ErrProvinceSizeMismatch
 	}
-	l.Province = append(l.Province[:0], province...)
+	if owned {
+		l.Province = province
+	} else {
+		l.Province = append(l.Province[:0], province...)
+	}
 	l.ProvinceWidth, l.ProvinceHeight = width, height
 	l.markImageDirty()
 	return nil
