@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
+	"runtime/pprof"
 	"sort"
 	"strings"
 
@@ -159,6 +161,7 @@ func runReplay(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	stepMS := fs.Uint64("step-ms", 16, "deterministic tick step in milliseconds")
 	advanceMS := fs.Uint64("advance-ms", 0, "optional final clock time")
 	budget := fs.Uint64("budget", 1<<20, "session instruction budget")
+	memProfile := fs.String("memprofile", "", "write an in-use heap profile after the replay")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -190,6 +193,13 @@ func runReplay(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return fmt.Errorf("open project: %w", err)
 	}
 	defer session.Close()
+	if *memProfile != "" {
+		defer func() {
+			if err := writeHeapProfile(*memProfile); err != nil {
+				fmt.Fprintf(stderr, "write memory profile: %v\n", err)
+			}
+		}()
+	}
 	var end []uint64
 	if *advanceMS != 0 {
 		end = []uint64{*advanceMS}
@@ -222,6 +232,19 @@ func runReplay(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		result.FinalTimeMS = session.Services.TimeMS
 	}
 	return writeReplayResult(*outputPath, stdout, result)
+}
+
+func writeHeapProfile(path string) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	goruntime.GC()
+	if err := pprof.WriteHeapProfile(file); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 func writeReplayResult(outputPath string, stdout io.Writer, result host.ReplayResult) error {
