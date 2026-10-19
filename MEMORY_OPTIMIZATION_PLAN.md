@@ -30,20 +30,73 @@ ordering.
 
 ## Phase 0: measurement baseline
 
-Status: in progress (`--memprofile` implemented; stats and baselines pending).
+Status: done for replay measurement.
 
-- Add `--memprofile` and `--stats` to `krkrgo-tool replay`.
-- Add `VM.MemoryStats()` for object, member, key, UTF-16, octet, array, metadata,
-  registry, and GC workspace counters.
-- Add `Session.MemoryStats()` for Services maps and layer buffers.
-- Add `GPUCompositor.Stats()` for texture, atlas, upload, and target bytes.
-- Record amairo, islanddiary, and lovelyday baselines with replay SHA, wall clock,
-  heap profiles, and process working set.
-- Add retention benchmarks for VM creation, session close, image load, and member
-  access.
+Completed:
 
-Foundational instrumentation; dedicated tests are deferred per the current
-execution instruction.
+- `krkrgo-tool replay --memprofile` writes an in-use heap profile.
+- `krkrgo-tool replay --stats` writes exact `runtime.MemStats` after a forced GC.
+- `GPUCompositor.Stats()` reports texture, atlas, upload-scratch, and target bytes.
+- amairo 10-second replay baselines recorded for `2ff712c` and current commits.
+- Per-commit attribution recorded below.
+- `BenchmarkVMMemberAccess` and `BenchmarkGPUComposeNativeLayers` compared.
+
+Remaining: `VM.MemoryStats()` and `Session.MemoryStats()` counters; islanddiary and
+lovelyday baselines; process working-set sampling.
+
+### Measured results
+
+Method: amairo, deterministic replay at 10,000 ms, 16 ms step, budget `1<<30`,
+three runs per revision. Statistics are taken after `runtime.GC()` and before
+`Session.Close`. All runs produced the same replay JSON SHA-256.
+
+| Metric | Baseline `2ff712c` | Current `9d110f2` | Change |
+| --- | ---: | ---: | ---: |
+| HeapAlloc | 743.86 MB | 737.81 MB | -6.05 MB (-0.81%) |
+| HeapObjects | 505,485 | 436,482 | -69,003 (-13.65%) |
+| TotalAlloc | 4,308.35 MB | 4,273.61 MB | -34.75 MB (-0.81%) |
+| Mallocs | 5,352,160 | 5,156,097 | -196,063 (-3.66%) |
+| HeapSys | 1,658.16 MB | 1,610.87 MB | -47.28 MB (-2.85%) |
+
+Per-commit attribution, single run each:
+
+| Revision | HeapAlloc | HeapObjects | Note |
+| --- | ---: | ---: | --- |
+| `2ff712c` | 743.86 MB | 505,485 | baseline |
+| `3573662` | 744.03 MB | 505,560 | registry lifetime; no measured heap delta in this replay |
+| `50b9e4b` | 737.66 MB | 436,437 | member key removal and lazy maps: dominant saving |
+| `5a6c021` | 737.59 MB | 436,563 | image ownership: TotalAlloc -21.4 MB |
+| `822b9e8` | 737.58 MB | 436,537 | decoded pools: within noise |
+| `7044208` | 737.85 MB | 436,533 | GC order: within noise |
+| `04c0b38` | 737.86 MB | 436,503 | bitmap ownership: within noise |
+| `9d110f2` | 737.81 MB | 436,482 | VM-owned Object helper callables: within noise |
+
+Benchmarks:
+
+- `BenchmarkVMMemberAccess/dynamic-add-delete`: 48 B/op and 3 allocs/op
+  before; 32 B/op and 2 allocs/op after.
+- Other member access cases keep their B/op.
+- `BenchmarkGPUComposeNativeLayers`: B/op and ns/op unchanged. The upload
+  saving is retained footprint, not per-compose work; the scratch test covers it.
+- `BenchmarkVMHandle/valid-object` varied between runs in both revisions; no
+  stable conclusion.
+
+Structural tests added and passing:
+
+- `TestVMDispatchRegistryEntriesFollowCollection`
+- `TestVMReleaseDropsDispatchRegistry`
+- `TestGPUCompositorStatsTrackUploadScratch`
+
+Dominant retained allocations in the 10-second profile, outside the completed
+items:
+
+| Flat | Allocation |
+| ---: | --- |
+| 286.24 MB | system font discovery (`os.readFileContents`, `ScanSystemFonts`) |
+| 209.88 MB | source compiler instruction emission (`compiler.emit`) |
+| 53.24 MB | `runtime.resizeLayerImage` |
+
+These are recorded as the next measurement-backed targets.
 
 ## Phase 1: registry and VM lifetime
 
@@ -56,7 +109,7 @@ Completed:
 - The mismatched `programClasses` name lookup was removed; `NewClassWithBases` is the explicit base API.
 - `ObjectTable.Remove` clears instance-class bookkeeping.
 
-Remaining: retention tests for repeated session creation and cross-VM class isolation.
+Remaining: cross-VM class isolation test; repeated-session heap baseline.
 
 ## Phase 2: runtime resource reclamation
 
@@ -140,6 +193,17 @@ Completed:
 - Evaluate sparse and numeric array representations from workload statistics.
 - Defer generational collection until lifetime data supports it.
 
+## Phase 8: measurement-backed follow-ups
+
+Status: pending.
+
+- Load system fonts lazily. `NewServices` calls `DiscoverSystemFonts`, which reads
+  and parses every font file; the 10-second profile retains about 286 MB.
+- Reduce `compiler.emit` metadata. The profile retains about 210 MB across script
+  compilation; this exceeds all completed TJS layout savings.
+- Inspect `resizeLayerImage` retained bytes (about 53 MB) and its relation to
+  layer attachment and render scale.
+
 ## Headless verification matrix
 
 | Area | Headless | Notes |
@@ -176,3 +240,5 @@ go test ./... -run '^$' -bench 'BenchmarkVM|BenchmarkLayer' -benchmem
 | 7044208 | Allocation-order GC |
 | e21e25d | Motion atlas GPU copy |
 | 04c0b38 | Bitmap buffer ownership |
+| 0468944 | Exact replay memory statistics |
+| 9d110f2 | VM-owned Object helper callables |
