@@ -77,12 +77,12 @@ Completed:
 
 - Per-texture upload buffers were removed; one compositor scratch buffer serves all uploads.
 - `GPUCompositor.Stats()` reports logical texture, atlas, upload-scratch, and target bytes.
-- Layer image and province ownership-transfer APIs adopt decoded buffers at scale 1.
+- Layer, bitmap, and province ownership-transfer APIs adopt decoded buffers at scale 1.
 - Motion draw plans borrow immutable source pixels at scale 1.
+- Motion atlas growth copies existing views on the GPU; entries retain no CPU pixel buffers.
 
 Remaining:
 
-- Replace motion atlas upload retention with GPU-side view copying.
 - Evaluate transition buffer ownership after profiling.
 - Verify upload bytes stay bounded and texture counts follow released layers.
 
@@ -174,3 +174,5 @@ go test ./... -run '^$' -bench 'BenchmarkVM|BenchmarkLayer' -benchmem
 | 5a6c021 | Image buffer ownership |
 | 822b9e8 | Decoded pool release |
 | 7044208 | Allocation-order GC |
+| e21e25d | Motion atlas GPU copy |
+| 04c0b38 | Bitmap buffer ownership |
