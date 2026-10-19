@@ -249,127 +249,146 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 	if err != nil {
 		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q: %w", name, err)
 	}
-	decodeStarted := time.Now()
+	cacheKey := assets.GraphicCacheKey{Name: resolvedName, ColorKey: key}
+	cached, cacheHit := s.Storage.GraphicCacheGet(cacheKey)
 	var decoded assets.Image
-	var decodeErr error
-	var decodeDone chan struct {
-		image assets.Image
-		err   error
-	}
-	var maskData, provinceData []byte
-	var maskErr, provinceErr error
-	if len(data) >= 256<<10 {
-		decodeDone = make(chan struct {
+	var province []byte
+	var tags map[string]string
+	var width, height int32
+	var decodeTime time.Duration
+	if cacheHit {
+		decoded = assets.Image{Width: cached.Width, Height: cached.Height, RGBA: cached.RGBA}
+		province = cached.Province
+		tags = cached.Metadata
+		width, height = int32(decoded.Width), int32(decoded.Height)
+	} else {
+		decodeStarted := time.Now()
+		var decodeErr error
+		var decodeDone chan struct {
 			image assets.Image
 			err   error
-		}, 1)
-		go func() {
-			image, err := s.Storage.DecodeImage(data)
-			decodeDone <- struct {
+		}
+		var maskData, provinceData []byte
+		var maskErr, provinceErr error
+		if len(data) >= 256<<10 {
+			decodeDone = make(chan struct {
 				image assets.Image
 				err   error
-			}{image: image, err: err}
-		}()
-		_, maskData, maskErr = s.readLayerImageSidecar(resolvedName, "_m")
-		_, provinceData, provinceErr = s.readLayerImageSidecar(resolvedName, "_p")
-		result := <-decodeDone
-		decoded, decodeErr = result.image, result.err
-	} else {
-		decoded, decodeErr = s.Storage.DecodeImage(data)
-	}
-	decodeTime := time.Since(decodeStarted)
-	if decodeErr != nil {
-		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q: %w", name, decodeErr)
-	}
-	width, height := int32(decoded.Width), int32(decoded.Height)
-	if !validLayerImageSize(width, height, len(decoded.RGBA), 4) {
-		return tjs.VoidValue, fmt.Errorf("%w: Layer.loadImages image dimensions %dx%d", ErrInvalidLayer, width, height)
-	}
-	if profile && readTime+decodeTime >= 2*time.Millisecond {
-		log.Printf("krkrgo startup-image storage=%q bytes=%d decoded=%dx%d read=%s decode=%s", name, len(data), width, height, readTime, decodeTime)
-	}
-	if stallTrace {
-		stageStarted := time.Now()
-		err = applyLayerImageKey(&decoded, data, key)
-		colorKeyTime = time.Since(stageStarted)
-	} else {
-		err = applyLayerImageKey(&decoded, data, key)
-	}
-	if err != nil {
-		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q color key: %w", name, err)
-	}
-	var maskStarted time.Time
-	if stallTrace {
-		maskStarted = time.Now()
-	}
-	if decodeDone == nil {
-		_, maskData, maskErr = s.readLayerImageSidecar(resolvedName, "_m")
-	}
-	if maskErr == nil {
-		mask, err := s.Storage.DecodeImage(maskData)
+			}, 1)
+			go func() {
+				image, err := s.Storage.DecodeImage(data)
+				decodeDone <- struct {
+					image assets.Image
+					err   error
+				}{image: image, err: err}
+			}()
+			_, maskData, maskErr = s.readLayerImageSidecar(resolvedName, "_m")
+			_, provinceData, provinceErr = s.readLayerImageSidecar(resolvedName, "_p")
+			result := <-decodeDone
+			decoded, decodeErr = result.image, result.err
+		} else {
+			decoded, decodeErr = s.Storage.DecodeImage(data)
+		}
+		decodeTime = time.Since(decodeStarted)
+		if decodeErr != nil {
+			return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q: %w", name, decodeErr)
+		}
+		width, height = int32(decoded.Width), int32(decoded.Height)
+		if !validLayerImageSize(width, height, len(decoded.RGBA), 4) {
+			return tjs.VoidValue, fmt.Errorf("%w: Layer.loadImages image dimensions %dx%d", ErrInvalidLayer, width, height)
+		}
+		if profile && readTime+decodeTime >= 2*time.Millisecond {
+			log.Printf("krkrgo startup-image storage=%q bytes=%d decoded=%dx%d read=%s decode=%s", name, len(data), width, height, readTime, decodeTime)
+		}
+		if stallTrace {
+			stageStarted := time.Now()
+			err = applyLayerImageKey(&decoded, data, key)
+			colorKeyTime = time.Since(stageStarted)
+		} else {
+			err = applyLayerImageKey(&decoded, data, key)
+		}
 		if err != nil {
-			return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q mask: %w", resolvedName, err)
+			return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q color key: %w", name, err)
 		}
-		if mask.Width != decoded.Width || mask.Height != decoded.Height {
-			return tjs.VoidValue, fmt.Errorf("%w: Layer.loadImages mask %dx%d does not match image %dx%d",
-				ErrInvalidLayer, mask.Width, mask.Height, decoded.Width, decoded.Height)
+		var maskStarted time.Time
+		if stallTrace {
+			maskStarted = time.Now()
 		}
-		paletteMask := layerImageIndexedFormat(maskData)
-		for i := 0; i < len(decoded.RGBA); i += 4 {
-			if paletteMask {
-				decoded.RGBA[i+3] = uint8((uint32(mask.RGBA[i])*77 + uint32(mask.RGBA[i+1])*150 + uint32(mask.RGBA[i+2])*29) >> 8)
-			} else {
-				decoded.RGBA[i+3] = mask.RGBA[i+2]
+		if decodeDone == nil {
+			_, maskData, maskErr = s.readLayerImageSidecar(resolvedName, "_m")
+		}
+		if maskErr == nil {
+			mask, err := s.Storage.DecodeImage(maskData)
+			if err != nil {
+				return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q mask: %w", resolvedName, err)
 			}
+			if mask.Width != decoded.Width || mask.Height != decoded.Height {
+				return tjs.VoidValue, fmt.Errorf("%w: Layer.loadImages mask %dx%d does not match image %dx%d",
+					ErrInvalidLayer, mask.Width, mask.Height, decoded.Width, decoded.Height)
+			}
+			paletteMask := layerImageIndexedFormat(maskData)
+			for i := 0; i < len(decoded.RGBA); i += 4 {
+				if paletteMask {
+					decoded.RGBA[i+3] = uint8((uint32(mask.RGBA[i])*77 + uint32(mask.RGBA[i+1])*150 + uint32(mask.RGBA[i+2])*29) >> 8)
+				} else {
+					decoded.RGBA[i+3] = mask.RGBA[i+2]
+				}
+			}
+		} else if !errors.Is(maskErr, assets.ErrNotFound) {
+			return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q mask: %w", resolvedName, maskErr)
 		}
-	} else if !errors.Is(maskErr, assets.ErrNotFound) {
-		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q mask: %w", resolvedName, maskErr)
-	}
-	if stallTrace {
-		maskTime = time.Since(maskStarted)
-	}
-	var provinceStarted time.Time
-	if stallTrace {
-		provinceStarted = time.Now()
-	}
-	var province []byte
-	if decodeDone == nil {
-		_, provinceData, provinceErr = s.readLayerImageSidecar(resolvedName, "_p")
-	}
-	if provinceErr == nil {
-		indexed, err := assets.DecodeIndexedImage(provinceData)
+		if stallTrace {
+			maskTime = time.Since(maskStarted)
+		}
+		var provinceStarted time.Time
+		if stallTrace {
+			provinceStarted = time.Now()
+		}
+		if decodeDone == nil {
+			_, provinceData, provinceErr = s.readLayerImageSidecar(resolvedName, "_p")
+		}
+		if provinceErr == nil {
+			indexed, err := assets.DecodeIndexedImage(provinceData)
+			if err != nil {
+				return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q province: %w", resolvedName, err)
+			}
+			if indexed.Width == 0 || indexed.Height == 0 || indexed.Width > uint32(width) || indexed.Height > uint32(height) {
+				return tjs.VoidValue, fmt.Errorf("%w: Layer.loadImages province %dx%d cannot tile to image %dx%d",
+					ErrProvinceSizeMismatch, indexed.Width, indexed.Height, width, height)
+			}
+			province = make([]byte, int(width)*int(height))
+			for y := 0; y < int(height); y++ {
+				sourceRow, targetRow := (y%int(indexed.Height))*int(indexed.Width), y*int(width)
+				for x := 0; x < int(width); x++ {
+					province[targetRow+x] = indexed.Pixels[sourceRow+x%int(indexed.Width)]
+				}
+			}
+		} else if !errors.Is(provinceErr, assets.ErrNotFound) {
+			return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q province: %w", resolvedName, provinceErr)
+		}
+		if stallTrace {
+			provinceTime = time.Since(provinceStarted)
+		}
+		var metadataStarted time.Time
+		if stallTrace {
+			metadataStarted = time.Now()
+		}
+		tags, err = assets.ImageMetadata(data)
 		if err != nil {
-			return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q province: %w", resolvedName, err)
+			return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q metadata: %w", name, err)
 		}
-		if indexed.Width == 0 || indexed.Height == 0 || indexed.Width > uint32(width) || indexed.Height > uint32(height) {
-			return tjs.VoidValue, fmt.Errorf("%w: Layer.loadImages province %dx%d cannot tile to image %dx%d",
-				ErrProvinceSizeMismatch, indexed.Width, indexed.Height, width, height)
+		if stallTrace {
+			metadataTime = time.Since(metadataStarted)
 		}
-		province = make([]byte, int(width)*int(height))
-		for y := 0; y < int(height); y++ {
-			sourceRow, targetRow := (y%int(indexed.Height))*int(indexed.Width), y*int(width)
-			for x := 0; x < int(width); x++ {
-				province[targetRow+x] = indexed.Pixels[sourceRow+x%int(indexed.Width)]
-			}
-		}
-	} else if !errors.Is(provinceErr, assets.ErrNotFound) {
-		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q province: %w", resolvedName, provinceErr)
-	}
-	if stallTrace {
-		provinceTime = time.Since(provinceStarted)
-	}
-	var metadataStarted time.Time
-	if stallTrace {
-		metadataStarted = time.Now()
-	}
-	tags, err := assets.ImageMetadata(data)
-	if err != nil {
-		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q metadata: %w", name, err)
+		s.Storage.GraphicCachePut(cacheKey, assets.GraphicCacheEntry{
+			Width:    decoded.Width,
+			Height:   decoded.Height,
+			RGBA:     decoded.RGBA,
+			Province: province,
+			Metadata: tags,
+		})
 	}
 	result, err := layerImageMetadata(vm, tags)
-	if stallTrace {
-		metadataTime = time.Since(metadataStarted)
-	}
 	if err != nil {
 		return tjs.VoidValue, err
 	}

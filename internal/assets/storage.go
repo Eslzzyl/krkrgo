@@ -24,12 +24,13 @@ var ErrUnsupportedStorageMedia = errors.New("unsupported storage media")
 // Storage resolves loose files and mounted XP3 archives. Later archives and
 // later search paths override earlier ones; loose files override archives.
 type Storage struct {
-	Project     string
-	Archives    []*Archive
-	Catalog     map[string]int
-	limits      core.Limits
-	searchPaths []string
-	imageCache  imageDecodeCache
+	Project      string
+	Archives     []*Archive
+	Catalog      map[string]int
+	limits       core.Limits
+	searchPaths  []string
+	imageCache   imageDecodeCache
+	graphicCache graphicCache
 
 	filterMu         sync.RWMutex
 	extractionFilter ExtractionFilter
@@ -290,7 +291,7 @@ func (s *Storage) NormalizeStorageName(name string) (string, error) {
 	return s.normalize(name, false)
 }
 
-// ClearCache discards cached XP3 segment and decoded-image data.
+// ClearCache discards cached XP3 segment, decoded-image, and processed-graphic data.
 func (s *Storage) ClearCache() {
 	if s == nil {
 		return
@@ -301,6 +302,7 @@ func (s *Storage) ClearCache() {
 		}
 	}
 	s.imageCache.clear()
+	s.graphicCache.clear()
 	s.clearDirectoryIndexes()
 }
 

@@ -43,6 +43,25 @@ func writeLayerImagePNG(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 }
+
+func writeLayerImageSolidPNG(t *testing.T, path string, pixel color.NRGBA) {
+	t.Helper()
+	im := image.NewNRGBA(image.Rect(0, 0, 2, 1))
+	for offset := 0; offset < len(im.Pix); offset += 4 {
+		copy(im.Pix[offset:offset+4], []byte{pixel.R, pixel.G, pixel.B, pixel.A})
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, im); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, encoded.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeLayerImagePNGSize(t *testing.T, path string, width, height int) {
 	t.Helper()
 	im := image.NewNRGBA(image.Rect(0, 0, width, height))
@@ -104,6 +123,44 @@ func TestNativeLayerLoadImagesUsesReferenceExtensionOrder(t *testing.T) {
 	}
 	if got, want := value.IntegerValue(), int64(0x010203); got != want {
 		t.Fatalf("extensionless image = %#x, want %#x from .bmp", got, want)
+	}
+}
+
+func TestNativeLayerLoadImagesCacheReusesAndClears(t *testing.T) {
+	project := t.TempDir()
+	imagePath := filepath.Join(project, "art", "sprite.png")
+	writeLayerImageSolidPNG(t, imagePath, color.NRGBA{R: 1, G: 2, B: 3, A: 255})
+	storage, err := assets.OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	services := NewServices(storage, t.TempDir(), core.DefaultLimits())
+	session := NewSession(services, 20_000)
+	defer session.Close()
+	if _, err := session.Evaluate(`l = new Layer(); l.loadImages('art/sprite')`); err != nil {
+		t.Fatal(err)
+	}
+	writeLayerImageSolidPNG(t, imagePath, color.NRGBA{R: 90, G: 80, B: 70, A: 255})
+	if _, err := session.Evaluate(`l.loadImages('art/sprite')`); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("l.getMainPixel(0,0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := value.IntegerValue(), int64(0x010203); got != want {
+		t.Fatalf("cached image = %#x, want %#x", got, want)
+	}
+	storage.ClearCache()
+	if _, err := session.Evaluate(`l.loadImages('art/sprite')`); err != nil {
+		t.Fatal(err)
+	}
+	value, err = session.Evaluate("l.getMainPixel(0,0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := value.IntegerValue(), int64(0x5a5046); got != want {
+		t.Fatalf("cleared image cache = %#x, want %#x", got, want)
 	}
 }
 
