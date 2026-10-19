@@ -1401,8 +1401,8 @@ func TestVMWithDotMemberCompoundAssignmentAndCall(t *testing.T) {
 
 func TestVMRejectsMalformedArgumentDescriptors(t *testing.T) {
 	cases := []Program{
-		{Storage: "bad-spread.tjs", Registers: 1, Code: []Instruction{{Op: Op{Code: OpCall, Out: 0, Callee: 0, Args: []Argument{{Kind: ArgumentSpread, Register: 1}}}}}},
-		{Storage: "bad-forward.tjs", Registers: 1, Code: []Instruction{{Op: Op{Code: OpCall, Out: 0, Callee: 0, Args: []Argument{{Kind: ArgumentForwardFrom, From: -1}}}}}},
+		{Storage: "bad-spread.tjs", Registers: 1, Code: []Instruction{{Op: Op{Code: OpCall, Out: 0, Callee: 0, extra: &opExtra{args: []Argument{{Kind: ArgumentSpread, Register: 1}}}}}}},
+		{Storage: "bad-forward.tjs", Registers: 1, Code: []Instruction{{Op: Op{Code: OpCall, Out: 0, Callee: 0, extra: &opExtra{args: []Argument{{Kind: ArgumentForwardFrom, From: -1}}}}}}},
 	}
 	for _, program := range cases {
 		if _, err := NewVM().Execute(&program, vmTestHost{}, nil); err == nil {

@@ -18,44 +18,43 @@ import (
 type OpCode string
 
 const (
-	OpParameter      OpCode = "parameter"
-	OpConstantObject OpCode = "constant_object"
-	OpDeleteName     OpCode = "delete_name"
-	OpDeleteMember   OpCode = "delete_member"
-	OpConstant       OpCode = "constant"
-	OpLoad           OpCode = "load"
-	OpStore          OpCode = "store"
-	OpDeclare        OpCode = "declare"
-	OpMove           OpCode = "move"
-	OpUnary          OpCode = "unary"
-	OpBinary         OpCode = "binary"
-	OpGet            OpCode = "get"
-	OpTypeOfMember   OpCode = "typeof_member"
-	OpEnsureMember   OpCode = "ensure_member"
-	OpSet            OpCode = "set"
-	OpArray          OpCode = "array"
-	OpDictionary     OpCode = "dictionary"
-	OpFunction       OpCode = "function"
-	OpCall           OpCode = "call"
-	OpConstruct      OpCode = "construct"
-	OpClass          OpCode = "class"
-	OpProperty       OpCode = "property"
-	OpReadProperty   OpCode = "read_property"
-	OpWriteProperty  OpCode = "write_property"
-	OpEval           OpCode = "eval"
-	OpJump           OpCode = "jump"
-	OpJumpUnless     OpCode = "jump_unless"
-	OpEnterScope     OpCode = "enter_scope"
-	OpLeaveScope     OpCode = "leave_scope"
-	OpEnterWith      OpCode = "enter_with"
-	OpLeaveWith      OpCode = "leave_with"
-	OpWith           OpCode = "with"
-	OpTry            OpCode = "try"
-	OpEndTry         OpCode = "end_try"
-	OpEndFinally     OpCode = "end_finally"
-	OpUnwind         OpCode = "unwind"
-	OpThrow          OpCode = "throw"
-	OpReturn         OpCode = "return"
+	OpParameter     OpCode = "parameter"
+	OpDeleteName    OpCode = "delete_name"
+	OpDeleteMember  OpCode = "delete_member"
+	OpConstant      OpCode = "constant"
+	OpLoad          OpCode = "load"
+	OpStore         OpCode = "store"
+	OpDeclare       OpCode = "declare"
+	OpMove          OpCode = "move"
+	OpUnary         OpCode = "unary"
+	OpBinary        OpCode = "binary"
+	OpGet           OpCode = "get"
+	OpTypeOfMember  OpCode = "typeof_member"
+	OpEnsureMember  OpCode = "ensure_member"
+	OpSet           OpCode = "set"
+	OpArray         OpCode = "array"
+	OpDictionary    OpCode = "dictionary"
+	OpFunction      OpCode = "function"
+	OpCall          OpCode = "call"
+	OpConstruct     OpCode = "construct"
+	OpClass         OpCode = "class"
+	OpProperty      OpCode = "property"
+	OpReadProperty  OpCode = "read_property"
+	OpWriteProperty OpCode = "write_property"
+	OpEval          OpCode = "eval"
+	OpJump          OpCode = "jump"
+	OpJumpUnless    OpCode = "jump_unless"
+	OpEnterScope    OpCode = "enter_scope"
+	OpLeaveScope    OpCode = "leave_scope"
+	OpEnterWith     OpCode = "enter_with"
+	OpLeaveWith     OpCode = "leave_with"
+	OpWith          OpCode = "with"
+	OpTry           OpCode = "try"
+	OpEndTry        OpCode = "end_try"
+	OpEndFinally    OpCode = "end_finally"
+	OpUnwind        OpCode = "unwind"
+	OpThrow         OpCode = "throw"
+	OpReturn        OpCode = "return"
 )
 
 type ArgumentKind uint8
@@ -81,41 +80,92 @@ type DictionaryOperand struct {
 // keeping one concrete struct makes encoding/json and compatibility tooling
 // considerably less surprising than an interface containing many variants.
 type Op struct {
-	StaticKey    bool                `json:"static_key,omitempty"`
-	Code         OpCode              `json:"code"`
-	Out          int                 `json:"out,omitempty"`
-	Input        int                 `json:"input,omitempty"`
-	Object       int                 `json:"object,omitempty"`
-	Key          int                 `json:"key,omitempty"`
-	Left         int                 `json:"left,omitempty"`
-	Right        int                 `json:"right,omitempty"`
-	Callee       int                 `json:"callee,omitempty"`
-	Context      int                 `json:"context,omitempty"`
-	Target       int                 `json:"target,omitempty"`
-	Exception    int                 `json:"exception,omitempty"`
-	Scopes       int                 `json:"scopes,omitempty"`
-	Handlers     int                 `json:"handlers,omitempty"`
-	Withs        int                 `json:"withs,omitempty"`
-	Finally      int                 `json:"finally,omitempty"`
-	ContextSet   bool                `json:"context_set,omitempty"`
-	TargetSet    bool                `json:"target_set,omitempty"`
-	Name         string              `json:"name,omitempty"`
-	Operator     string              `json:"operator,omitempty"`
-	Optional     bool                `json:"optional,omitempty"`
-	Raw          bool                `json:"raw,omitempty"`
-	ResultNeeded bool                `json:"result_needed,omitempty"`
-	Rest         bool                `json:"rest,omitempty"`
-	Index        int                 `json:"index,omitempty"`
-	Identity     ObjectID            `json:"identity,omitempty"`
-	Value        Value               `json:"value,omitempty"`
-	Literal      Literal             `json:"literal,omitempty"`
-	Items        []int               `json:"items,omitempty"`
-	Pairs        []DictionaryOperand `json:"pairs,omitempty"`
-	Args         []Argument          `json:"args,omitempty"`
-	Function     *Function           `json:"function,omitempty"`
-	Class        *Class              `json:"class,omitempty"`
-	Property     *Property           `json:"property,omitempty"`
+	StaticKey    bool   `json:"static_key,omitempty"`
+	Code         OpCode `json:"code"`
+	Out          int    `json:"out,omitempty"`
+	Input        int    `json:"input,omitempty"`
+	Object       int    `json:"object,omitempty"`
+	Key          int    `json:"key,omitempty"`
+	Left         int    `json:"left,omitempty"`
+	Right        int    `json:"right,omitempty"`
+	Callee       int    `json:"callee,omitempty"`
+	Context      int    `json:"context,omitempty"`
+	Target       int    `json:"target,omitempty"`
+	Exception    int    `json:"exception,omitempty"`
+	Scopes       int    `json:"scopes,omitempty"`
+	Handlers     int    `json:"handlers,omitempty"`
+	Withs        int    `json:"withs,omitempty"`
+	Finally      int    `json:"finally,omitempty"`
+	ContextSet   bool   `json:"context_set,omitempty"`
+	TargetSet    bool   `json:"target_set,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Operator     string `json:"operator,omitempty"`
+	Optional     bool   `json:"optional,omitempty"`
+	Raw          bool   `json:"raw,omitempty"`
+	ResultNeeded bool   `json:"result_needed,omitempty"`
+	Rest         bool   `json:"rest,omitempty"`
+	Index        int    `json:"index,omitempty"`
+	Value        Value  `json:"value,omitempty"`
+	extra        *opExtra
 }
+
+type opExtra struct {
+	items    []int
+	pairs    []DictionaryOperand
+	args     []Argument
+	function *Function
+	class    *Class
+	property *Property
+}
+
+func (o Op) items() []int {
+	if o.extra == nil {
+		return nil
+	}
+	return o.extra.items
+}
+
+func (o Op) pairs() []DictionaryOperand {
+	if o.extra == nil {
+		return nil
+	}
+	return o.extra.pairs
+}
+
+func (o Op) args() []Argument {
+	if o.extra == nil {
+		return nil
+	}
+	return o.extra.args
+}
+
+func (o Op) function() *Function {
+	if o.extra == nil {
+		return nil
+	}
+	return o.extra.function
+}
+
+func (o Op) class() *Class {
+	if o.extra == nil {
+		return nil
+	}
+	return o.extra.class
+}
+
+func (o Op) property() *Property {
+	if o.extra == nil {
+		return nil
+	}
+	return o.extra.property
+}
+
+// FunctionOperand, ClassOperand, and PropertyOperand expose nested descriptors
+// to runtime helpers without restoring their per-instruction storage cost.
+func (o Op) FunctionOperand() *Function { return o.function() }
+func (o Op) ClassOperand() *Class       { return o.class() }
+func (o Op) PropertyOperand() *Property { return o.property() }
+
 type Instruction struct {
 	Location core.SourceLocation `json:"location"`
 	Op       Op                  `json:"op"`
@@ -147,13 +197,13 @@ func (p Program) Validate() error {
 	}
 	for i, in := range p.Code {
 		op := in.Op
-		if op.Code == OpFunction && op.Function == nil {
+		if op.Code == OpFunction && op.function() == nil {
 			return invalid(i, "nil function descriptor")
 		}
-		if op.Code == OpClass && op.Class == nil {
+		if op.Code == OpClass && op.class() == nil {
 			return invalid(i, "nil class descriptor")
 		}
-		if op.Code == OpProperty && op.Property == nil {
+		if op.Code == OpProperty && op.property() == nil {
 			return invalid(i, "nil property descriptor")
 		}
 		if (op.Code == OpJump || op.Code == OpJumpUnless) && (op.Target < 0 || op.Target > len(p.Code)) {
@@ -169,14 +219,14 @@ func (p Program) Validate() error {
 		}
 		check := func(r int, what string) error { return register(i, r, what) }
 		if op.Code == OpClass {
-			for _, r := range op.Items {
+			for _, r := range op.items() {
 				if e := check(r, "class base"); e != nil {
 					return e
 				}
 			}
 		}
 		switch op.Code {
-		case OpConstant, OpConstantObject, OpLoad, OpDeleteName, OpFunction, OpClass, OpProperty, OpWith:
+		case OpConstant, OpLoad, OpDeleteName, OpFunction, OpClass, OpProperty, OpWith:
 			if e := check(op.Out, "output"); e != nil {
 				return e
 			}
@@ -232,7 +282,7 @@ func (p Program) Validate() error {
 			if e := check(op.Out, "output"); e != nil {
 				return e
 			}
-			for _, r := range op.Items {
+			for _, r := range op.items() {
 				if e := check(r, "array item"); e != nil {
 					return e
 				}
@@ -241,7 +291,7 @@ func (p Program) Validate() error {
 			if e := check(op.Out, "output"); e != nil {
 				return e
 			}
-			for _, pair := range op.Pairs {
+			for _, pair := range op.pairs() {
 				if e := check(pair.Key, "dictionary key"); e != nil {
 					return e
 				}
@@ -272,7 +322,7 @@ func (p Program) Validate() error {
 					return e
 				}
 			}
-			for _, arg := range op.Args {
+			for _, arg := range op.args() {
 				switch arg.Kind {
 				case ArgumentValue:
 					if e := check(arg.Register, "argument"); e != nil {
@@ -1512,7 +1562,7 @@ func (c *compiler) hoistGlobalFunction(loc core.SourceLocation, fn *Function, re
 		return
 	}
 	c.hoisted = append(c.hoisted,
-		Instruction{Location: loc, Op: Op{Code: OpFunction, Out: register, Function: fn}},
+		Instruction{Location: loc, Op: Op{Code: OpFunction, Out: register, extra: &opExtra{function: fn}}},
 		Instruction{Location: loc, Op: Op{Code: OpDeclare, Name: name, Input: register}},
 	)
 }
@@ -1709,7 +1759,7 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 		if e.fn == nil {
 			return 0, fmt.Errorf("nil function descriptor")
 		}
-		c.emit(e.loc, Op{Code: OpFunction, Out: out, Function: e.fn})
+		c.emit(e.loc, Op{Code: OpFunction, Out: out, extra: &opExtra{function: e.fn}})
 	case "name":
 		c.emit(e.loc, Op{Code: OpLoad, Out: out, Name: e.text})
 	case "with":
@@ -1753,7 +1803,7 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 				associative = append(associative, associativeEntry{key: key, value: value})
 			}
 		}
-		c.emit(e.loc, Op{Code: OpArray, Out: out, Items: items})
+		c.emit(e.loc, Op{Code: OpArray, Out: out, extra: &opExtra{items: items}})
 		for _, pair := range associative {
 			c.emit(e.loc, Op{Code: OpSet, Object: out, Key: pair.key, Input: pair.value})
 		}
@@ -1770,7 +1820,7 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 			}
 			items[i] = DictionaryOperand{Key: k, Value: v}
 		}
-		c.emit(e.loc, Op{Code: OpDictionary, Out: out, Pairs: items})
+		c.emit(e.loc, Op{Code: OpDictionary, Out: out, extra: &opExtra{pairs: items}})
 	case "seq":
 		if _, err := c.compile(e.left); err != nil {
 			return 0, err
@@ -2091,7 +2141,7 @@ func (c *compiler) compile(e *cexpr) (int, error) {
 			}
 			args[i] = Argument{Kind: ArgumentValue, Register: r}
 		}
-		op := Op{Code: OpCall, Out: out, Callee: callee, Context: context, ContextSet: contextSet, Args: args, ResultNeeded: true}
+		op := Op{Code: OpCall, Out: out, Callee: callee, Context: context, ContextSet: contextSet, extra: &opExtra{args: args}, ResultNeeded: true}
 		if e.kind == "construct" {
 			op.Code = OpConstruct
 			op.ContextSet = false
@@ -2355,7 +2405,7 @@ func (c *compiler) classStatement(loc core.SourceLocation) error {
 	}
 	definition.Initializer = initializer
 	out := c.reg()
-	c.emit(loc, Op{Code: OpClass, Out: out, Class: definition, Items: bases})
+	c.emit(loc, Op{Code: OpClass, Out: out, extra: &opExtra{class: definition, items: bases}})
 	c.emit(loc, Op{Code: OpDeclare, Name: name, Input: out})
 	c.p.eat(";")
 	return nil
@@ -2376,7 +2426,7 @@ func (c *compiler) statement() error {
 			return err
 		}
 		r := c.reg()
-		c.emit(t.loc, Op{Code: OpProperty, Out: r, Property: property})
+		c.emit(t.loc, Op{Code: OpProperty, Out: r, extra: &opExtra{property: property}})
 		c.emit(t.loc, Op{Code: OpDeclare, Name: property.Name, Input: r})
 		if c.p.eat(";") {
 			return nil
@@ -2394,7 +2444,7 @@ func (c *compiler) statement() error {
 			return err
 		}
 		r := c.reg()
-		c.emit(t.loc, Op{Code: OpFunction, Out: r, Function: fn})
+		c.emit(t.loc, Op{Code: OpFunction, Out: r, extra: &opExtra{function: fn}})
 		c.emit(t.loc, Op{Code: OpDeclare, Name: name, Input: r})
 		c.hoistGlobalFunction(t.loc, fn, r, name)
 		if c.p.eat(";") {

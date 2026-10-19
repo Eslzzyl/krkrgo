@@ -1234,9 +1234,9 @@ func shiftProgramLinesVisited(program *tjs.Program, offset int64, functions map[
 			}
 		}
 		op := &program.Code[i].Op
-		shiftFunctionLinesVisited(op.Function, offset, functions, classes, properties)
-		shiftClassLinesVisited(op.Class, offset, functions, classes, properties)
-		shiftPropertyLinesVisited(op.Property, offset, functions, classes, properties)
+		shiftFunctionLinesVisited(op.FunctionOperand(), offset, functions, classes, properties)
+		shiftClassLinesVisited(op.ClassOperand(), offset, functions, classes, properties)
+		shiftPropertyLinesVisited(op.PropertyOperand(), offset, functions, classes, properties)
 	}
 }
 
