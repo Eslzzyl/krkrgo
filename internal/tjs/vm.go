@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -271,6 +270,7 @@ type VM struct {
 	nativeSavePlugin   bool
 	traceStack         []vmTraceFrame
 	constructing       []ObjectID
+	idOrder            []ObjectID
 	registerScratch    []Value
 	gcSeen             map[ObjectID]struct{}
 	gcPending          []ObjectID
@@ -283,7 +283,7 @@ func NewVM() *VM {
 	table := NewObjectTable()
 	global := &Object{ID: 0, Category: CategoryGlobal, members: make(map[string]member), valid: true}
 	_ = table.Add(global)
-	vm := &VM{Objects: table, Globals: make(map[string]Value), roots: make(map[ObjectRef]struct{}), meta: make(map[ObjectID]*vmObject), literals: make(map[ObjectID]Value)}
+	vm := &VM{Objects: table, Globals: make(map[string]Value), roots: make(map[ObjectRef]struct{}), meta: make(map[ObjectID]*vmObject), literals: make(map[ObjectID]Value), idOrder: []ObjectID{0}}
 	vm.meta[0] = &vmObject{category: CategoryGlobal}
 	for _, name := range []string{"Array", "Dictionary", "Object", "RegExp"} {
 		_ = vm.RegisterNative(name)
@@ -357,6 +357,7 @@ func (v *VM) alloc(category ObjectCategory) (Value, ObjectID, error) {
 	o := v.Objects.New(category)
 	id := o.ID
 	v.meta[id] = &vmObject{category: category}
+	v.idOrder = append(v.idOrder, id)
 	v.allocationsSinceGC++
 	value := ObjectValue(o.Ref())
 	// A constructed instance is a bound self-reference, matching TJS `new` values.
@@ -380,13 +381,8 @@ func (v *VM) ObjectsSize() int {
 func (v *VM) allIDsInto(out []ObjectID) []ObjectID {
 	if v == nil || v.Objects == nil {
 		return out[:0]
-	} // ObjectTable intentionally has no iterator; metadata includes all VM allocations.
-	out = out[:0]
-	for id := range v.meta {
-		out = append(out, id)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out
+	} // ObjectTable intentionally has no iterator; idOrder tracks VM allocations.
+	return append(out[:0], v.idOrder...)
 }
 func (v *VM) obj(id ObjectID) (*Object, error) {
 	o, _, e := v.lookup(id)

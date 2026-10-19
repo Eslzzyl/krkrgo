@@ -222,6 +222,13 @@ func (v *VM) collectGarbage(host Host) (int, error) {
 		delete(v.roots, ObjectRef{Object: id})
 		removedIDs = append(removedIDs, id)
 	}
+	kept := v.idOrder[:0]
+	for _, id := range v.idOrder {
+		if v.meta[id] != nil {
+			kept = append(kept, id)
+		}
+	}
+	v.idOrder = kept
 	registry.dropIDs(v.Objects, removedIDs)
 	v.gcPending = pending
 	v.gcHosts = hosts
@@ -250,6 +257,7 @@ func (v *VM) Release() error {
 	v.meta = nil
 	v.literals = nil
 	v.constructing = nil
+	v.idOrder = nil
 	v.registerScratch = nil
 	v.gcSeen = nil
 	v.gcPending = nil
