@@ -756,7 +756,7 @@ func resizeArrayLength(o *Object, length int64) error {
 			if !member.valid {
 				continue
 			}
-			if index, indexed := canonicalArrayIndex(member.key.String()); indexed && index >= length {
+			if index, indexed := canonicalArrayIndex(memberKeyUTF16(key).String()); indexed && index >= length {
 				delete(o.members, key)
 			}
 		}
