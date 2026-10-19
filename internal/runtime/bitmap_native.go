@@ -40,6 +40,18 @@ func (b *Bitmap) renderScale() int32 {
 	return b.Scale
 }
 
+// setImageOwned adopts decoded pixels. The caller must not mutate or reuse the
+// buffer after the call.
+func (b *Bitmap) setImageOwned(image assets.Image) {
+	b.Width, b.Height = image.Width, image.Height
+	if b.renderScale() <= 1 {
+		b.RGBA = image.RGBA
+	} else {
+		b.RGBA = scaleRGBA(image.RGBA, int32(image.Width), int32(image.Height), b.renderScale())
+	}
+	b.markDirty()
+}
+
 func (b *Bitmap) deviceWidth() uint32  { return b.Width * uint32(b.renderScale()) }
 func (b *Bitmap) deviceHeight() uint32 { return b.Height * uint32(b.renderScale()) }
 
@@ -278,9 +290,7 @@ func (s *Services) takeBitmapAsyncResult(id tjs.ObjectID) (bitmapAsyncResult, bo
 		b.loading = false
 		if result.err == nil {
 			commitStarted := time.Now()
-			b.Width, b.Height = result.image.Width, result.image.Height
-			b.RGBA = scaleRGBA(result.image.RGBA, int32(result.image.Width), int32(result.image.Height), b.renderScale())
-			b.markDirty()
+			b.setImageOwned(result.image)
 			commitTime = time.Since(commitStarted)
 		}
 	}
@@ -326,9 +336,7 @@ func (s *Services) bitmapLoad(vm *tjs.VM, b *Bitmap, name string) (tjs.Value, er
 	if im.Width > bitmapMaxDimension || im.Height > bitmapMaxDimension {
 		return tjs.VoidValue, fmt.Errorf("Bitmap: image dimensions exceed limits")
 	}
-	b.Width, b.Height = im.Width, im.Height
-	b.RGBA = scaleRGBA(im.RGBA, int32(im.Width), int32(im.Height), b.renderScale())
-	b.markDirty()
+	b.setImageOwned(im)
 	b.loading = false
 	return bitmapMetadata(vm, data, im.Width, im.Height)
 }
