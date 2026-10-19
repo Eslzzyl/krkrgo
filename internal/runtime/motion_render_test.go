@@ -248,3 +248,202 @@ func TestGPUMotionMarksBakedFramesForStreaming(t *testing.T) {
 		t.Fatalf("baked draws = %+v, want one streamed draw", motion.Draws)
 	}
 }
+
+func TestMotionBlendModesMatchReference(t *testing.T) {
+	opaque := func() []byte { return []byte{100, 100, 100, 255} }
+	src := []byte{100, 100, 100, 255}
+	cases := []struct {
+		mode MotionBlendMode
+		want byte
+	}{
+		{MotionBlendAdditive, 200},
+		{MotionBlendSubtractive, 0},
+		{MotionBlendMultiplicative, 39},
+		{MotionBlendScreen, 161},
+	}
+	for _, test := range cases {
+		dst := opaque()
+		blendMotionPixel(dst, src, 255, test.mode)
+		if dst[0] != test.want || dst[1] != test.want || dst[2] != test.want || dst[3] != 255 {
+			t.Fatalf("mode %d result = %v, want %d and opaque", test.mode, dst, test.want)
+		}
+	}
+	half := opaque()
+	blendMotionPixel(half, src, 128, MotionBlendAdditive)
+	if half[0] != 150 || half[3] != 255 {
+		t.Fatalf("half-alpha additive = %v, want 150 with opaque alpha", half)
+	}
+	half = opaque()
+	blendMotionPixel(half, src, 128, MotionBlendMultiplicative)
+	if half[0] != 69 {
+		t.Fatalf("half-alpha multiply = %v, want 69", half)
+	}
+}
+
+func TestMotionBlendModeSelectsFromRawValue(t *testing.T) {
+	cases := map[int64]MotionBlendMode{
+		0:  MotionBlendAlpha,
+		1:  MotionBlendAdditive,
+		2:  MotionBlendSubtractive,
+		5:  MotionBlendSubtractive,
+		3:  MotionBlendMultiplicative,
+		19: MotionBlendMultiplicative,
+		4:  MotionBlendScreen,
+	}
+	for raw, want := range cases {
+		if got := motionBlendMode(raw); got != want {
+			t.Fatalf("motionBlendMode(%d) = %d, want %d", raw, got, want)
+		}
+	}
+}
+
+func TestMotionBlendImageAppliesMultiply(t *testing.T) {
+	src := &assets.Image{Width: 1, Height: 1, RGBA: []byte{100, 100, 100, 255}}
+	dst := []byte{100, 100, 100, 255}
+	ctx := motionRenderContext{opacity: 255, blendMode: 3, matrix: identityMotionMatrix}
+	if err := blendMotionImage(dst, 1, 1, src, 0.5, 0.5, 0, nil, true, ctx); err != nil {
+		t.Fatal(err)
+	}
+	if dst[0] != 39 || dst[3] != 255 {
+		t.Fatalf("multiply compose = %v, want 39 and opaque", dst)
+	}
+}
+
+func TestMotionNestedTickFollowsSourceStart(t *testing.T) {
+	node := map[string]assets.Value{
+		"frameList": []assets.Value{
+			map[string]assets.Value{"time": float64(0), "content": map[string]assets.Value{"src": "src/chara/mouth0"}},
+			map[string]assets.Value{"time": float64(10), "content": map[string]assets.Value{"src": "motion/chara/nested"}},
+			map[string]assets.Value{"time": float64(20), "content": map[string]assets.Value{"src": "motion/chara/other"}},
+			map[string]assets.Value{"time": float64(30), "content": map[string]assets.Value{"src": "motion/chara/other"}},
+		},
+	}
+	content := map[string]assets.Value{"src": "motion/chara/nested"}
+	if got := motionNestedTick(node, content, 12); got != 2 {
+		t.Fatalf("nested tick just after the source change = %v, want 2", got)
+	}
+	if got := motionNestedTick(node, content, 15); got != 5 {
+		t.Fatalf("nested tick after the source change = %v, want 5", got)
+	}
+	if got := motionNestedTick(node, content, 22); got != 2 {
+		t.Fatalf("nested tick after the second change = %v, want 2", got)
+	}
+}
+
+func TestMotionNestedMotionAdvancesWithParentTime(t *testing.T) {
+	resource := emotePlayerTestResource("nestedtime.psb")
+	root := resource.doc.Root.(map[string]assets.Value)
+	objects := root["object"].(map[string]assets.Value)
+	motions := objects["chara"].(map[string]assets.Value)["motion"].(map[string]assets.Value)
+	motions["nested"] = map[string]assets.Value{
+		"layer": []assets.Value{
+			map[string]assets.Value{
+				"type": int64(0),
+				"frameList": []assets.Value{
+					map[string]assets.Value{"time": float64(0), "content": map[string]assets.Value{"src": "src/chara/mouth0"}},
+					map[string]assets.Value{"time": float64(2), "content": map[string]assets.Value{"src": "src/chara/mouth1"}},
+					map[string]assets.Value{"time": float64(4), "content": map[string]assets.Value{"src": "src/chara/mouth0"}},
+				},
+			},
+		},
+	}
+	motions["idle"].(map[string]assets.Value)["layer"] = []assets.Value{
+		map[string]assets.Value{
+			"type": int64(3),
+			"frameList": []assets.Value{
+				map[string]assets.Value{
+					"time":    float64(0),
+					"content": map[string]assets.Value{"src": "motion/chara/nested"},
+				},
+			},
+		},
+	}
+	render := func(tick float64) []byte {
+		frame, err := renderPSBMotionOptions(resource, "chara", "idle", tick, 0, nil, false, 0, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return frame.RGBA[(4*8+4)*4:]
+	}
+	if got := render(0); got[0] != 255 || got[2] != 0 {
+		t.Fatalf("nested frame at t=0 = %v, want red", got[:4])
+	}
+	if got := render(2); got[2] != 255 || got[0] != 0 {
+		t.Fatalf("nested frame at t=2 = %v, want blue", got[:4])
+	}
+}
+
+func TestMotionParticlesEmitAndExpire(t *testing.T) {
+	layer := map[string]assets.Value{
+		"label":              "flower",
+		"type":               int64(4),
+		"particleMaxNum":     int64(8),
+		"particleAccelRatio": float64(1),
+		"particleMotionList": []assets.Value{"motion/chara/nested"},
+	}
+	content := map[string]assets.Value{
+		"src": "particle/point",
+		"prt": map[string]assets.Value{
+			"amin": float64(0), "amax": float64(0),
+			"vmin": float64(0), "vmax": float64(0),
+			"fmin": float64(10), "fmax": float64(10),
+			"zmin": float64(1), "zmax": float64(1),
+			"trigger": int64(1),
+		},
+	}
+	if got := len(motionParticles(layer, content, 5)); got != 6 {
+		t.Fatalf("particles at tick 5 = %d, want 6", got)
+	}
+	if got := len(motionParticles(layer, content, 30)); got != 8 {
+		t.Fatalf("particles at tick 30 = %d, want the 8-particle cap", got)
+	}
+	if got := len(motionParticles(layer, content, 0)); got != 1 {
+		t.Fatalf("particles at tick 0 = %d, want 1", got)
+	}
+}
+
+func TestMotionParticleEmitterDrawsTemplate(t *testing.T) {
+	resource := emotePlayerTestResource("particle.psb")
+	root := resource.doc.Root.(map[string]assets.Value)
+	objects := root["object"].(map[string]assets.Value)
+	motions := objects["chara"].(map[string]assets.Value)["motion"].(map[string]assets.Value)
+	motions["nested"] = map[string]assets.Value{
+		"layer": []assets.Value{motionTestSpriteLayer("src/chara/mouth0")},
+	}
+	motions["idle"].(map[string]assets.Value)["layer"] = []assets.Value{
+		map[string]assets.Value{
+			"label":              "flower",
+			"type":               int64(4),
+			"particleMaxNum":     int64(4),
+			"particleMotionList": []assets.Value{"motion/chara/nested"},
+			"frameList": []assets.Value{
+				map[string]assets.Value{
+					"time": float64(0),
+					"content": map[string]assets.Value{
+						"src": "particle/point",
+						"prt": map[string]assets.Value{
+							"amin": float64(0), "amax": float64(0),
+							"vmin": float64(0), "vmax": float64(0),
+							"fmin": float64(4), "fmax": float64(4),
+							"zmin": float64(1), "zmax": float64(1),
+							"trigger": int64(1),
+						},
+					},
+				},
+			},
+		},
+	}
+	frame, err := renderPSBMotionOptions(resource, "chara", "idle", 2, 0, nil, false, 0, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opaque := 0
+	for offset := 3; offset < len(frame.RGBA); offset += 4 {
+		if frame.RGBA[offset] != 0 {
+			opaque++
+		}
+	}
+	if opaque == 0 {
+		t.Fatal("particle emitter drew no template pixels")
+	}
+}

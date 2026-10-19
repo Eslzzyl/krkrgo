@@ -205,7 +205,10 @@ device-side queue starvation during a long runtime or presentation stage.
   keys tinted variants by their tint, so animated colors upload as separate
   entries. Mesh and stencil motions bake one canvas per tick; those frames stream
   through a single per-layer texture instead of entering the atlas, and sources a
-  frame no longer draws are evicted before the next upload.
+  frame no longer draws are evicted before the next upload. Motion draws apply
+  the reference blend operations (additive, subtractive, multiplicative, screen)
+  through Ebitengine blend factors, advance nested child motions from the parent
+  loop time, and simulate type-4 particle emitters from the frame's `prt` ranges.
 - `internal/runtime/layer_image.go` recognizes pixel-aligned identity affine
   copies, including a taller destination canvas, and copies rows directly
   instead of running the bilinear sampler. The amairo pre-title path had been

@@ -422,3 +422,31 @@ func TestGPUCompositorEvictsStaleMotionSources(t *testing.T) {
 		t.Fatalf("atlas entries after eviction = %v, want only motion/a", len(atlas.entries))
 	}
 }
+
+func TestGPUMotionBlendFactors(t *testing.T) {
+	if got := gpuMotionBlend(runtime.MotionBlendAlpha); got != ebiten.BlendSourceOver {
+		t.Fatalf("alpha blend = %+v, want source-over", got)
+	}
+	add := gpuMotionBlend(runtime.MotionBlendAdditive)
+	if add.BlendFactorSourceRGB != ebiten.BlendFactorOne ||
+		add.BlendFactorDestinationRGB != ebiten.BlendFactorOne ||
+		add.BlendFactorDestinationAlpha != ebiten.BlendFactorOneMinusSourceAlpha {
+		t.Fatalf("additive blend = %+v", add)
+	}
+	mul := gpuMotionBlend(runtime.MotionBlendMultiplicative)
+	if mul.BlendFactorSourceRGB != ebiten.BlendFactorDestinationColor ||
+		mul.BlendFactorDestinationRGB != ebiten.BlendFactorOneMinusSourceAlpha ||
+		mul.BlendFactorSourceAlpha != ebiten.BlendFactorZero ||
+		mul.BlendFactorDestinationAlpha != ebiten.BlendFactorOne {
+		t.Fatalf("multiplicative blend = %+v", mul)
+	}
+	screen := gpuMotionBlend(runtime.MotionBlendScreen)
+	if screen.BlendFactorSourceRGB != ebiten.BlendFactorOneMinusDestinationColor ||
+		screen.BlendFactorDestinationRGB != ebiten.BlendFactorOne {
+		t.Fatalf("screen blend = %+v", screen)
+	}
+	sub := gpuMotionBlend(runtime.MotionBlendSubtractive)
+	if sub.BlendOperationRGB != ebiten.BlendOperationSubtract {
+		t.Fatalf("subtractive blend = %+v", sub)
+	}
+}

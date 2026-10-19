@@ -572,7 +572,7 @@ func (c *GPUCompositor) composeMotion(node runtime.RenderNode) (*ebiten.Image, e
 		geo.SetElement(1, 2, draw.TY)
 		options := &ebiten.DrawImageOptions{
 			GeoM:           geo,
-			Blend:          ebiten.BlendSourceOver,
+			Blend:          gpuMotionBlend(draw.Blend),
 			Filter:         filter,
 			DisableMipmaps: true,
 		}
@@ -635,6 +635,57 @@ func (c *GPUCompositor) motionStreamSource(nodeID runtime.LayerID, draw runtime.
 	premultipliedPixels(draw.RGBA, upload, false)
 	stream.image.WritePixels(upload)
 	return stream.image, nil
+}
+
+// gpuMotionBlend maps a motion blend operation onto Ebitengine blend factors.
+// The sources are premultiplied, so the reference's mix(dst, blend, srcAlpha)
+// forms reduce to these factor sets (RenderManager_ogl.cpp:3695-3775).
+func gpuMotionBlend(mode runtime.MotionBlendMode) ebiten.Blend {
+	switch mode {
+	case runtime.MotionBlendAdditive:
+		// mix(dst, clamp(src+dst), alpha) == dst + premultiplied src.
+		return ebiten.Blend{
+			BlendFactorSourceRGB:        ebiten.BlendFactorOne,
+			BlendFactorDestinationRGB:   ebiten.BlendFactorOne,
+			BlendFactorSourceAlpha:      ebiten.BlendFactorOne,
+			BlendFactorDestinationAlpha: ebiten.BlendFactorOneMinusSourceAlpha,
+			BlendOperationRGB:           ebiten.BlendOperationAdd,
+			BlendOperationAlpha:         ebiten.BlendOperationAdd,
+		}
+	case runtime.MotionBlendMultiplicative:
+		// dst*(1-alpha) + dst*src == dst*(1 - alpha + alpha*src).
+		return ebiten.Blend{
+			BlendFactorSourceRGB:        ebiten.BlendFactorDestinationColor,
+			BlendFactorDestinationRGB:   ebiten.BlendFactorOneMinusSourceAlpha,
+			BlendFactorSourceAlpha:      ebiten.BlendFactorZero,
+			BlendFactorDestinationAlpha: ebiten.BlendFactorOne,
+			BlendOperationRGB:           ebiten.BlendOperationAdd,
+			BlendOperationAlpha:         ebiten.BlendOperationAdd,
+		}
+	case runtime.MotionBlendScreen:
+		// dst + premultiplied src*(1-dst).
+		return ebiten.Blend{
+			BlendFactorSourceRGB:        ebiten.BlendFactorOneMinusDestinationColor,
+			BlendFactorDestinationRGB:   ebiten.BlendFactorOne,
+			BlendFactorSourceAlpha:      ebiten.BlendFactorZero,
+			BlendFactorDestinationAlpha: ebiten.BlendFactorOne,
+			BlendOperationRGB:           ebiten.BlendOperationAdd,
+			BlendOperationAlpha:         ebiten.BlendOperationAdd,
+		}
+	case runtime.MotionBlendSubtractive:
+		// The reference subtracts (1 - src) scaled by alpha; fixed-function
+		// factors cannot express the constant term, so the host approximates it
+		// with plain source subtraction.
+		return ebiten.Blend{
+			BlendFactorSourceRGB:        ebiten.BlendFactorOne,
+			BlendFactorDestinationRGB:   ebiten.BlendFactorOne,
+			BlendFactorSourceAlpha:      ebiten.BlendFactorZero,
+			BlendFactorDestinationAlpha: ebiten.BlendFactorOne,
+			BlendOperationRGB:           ebiten.BlendOperationSubtract,
+			BlendOperationAlpha:         ebiten.BlendOperationAdd,
+		}
+	}
+	return ebiten.BlendSourceOver
 }
 
 func (c *GPUCompositor) transitionCoversTarget(ax, ay, imageLeft, imageTop, x0, y0, x1, y1 int32) bool {

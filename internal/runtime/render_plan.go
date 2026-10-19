@@ -52,6 +52,20 @@ type RenderMotion struct {
 	Draws  []RenderMotionDraw
 }
 
+// MotionBlendMode is the Photoshop blend operation a motion frame applies when
+// it composites into the owning canvas. The values follow the reference's
+// resolveBlendOperationModeLike_0x6C7440 mapping of the raw "bm" low nibble
+// (PlayerRenderInternal.cpp:423-442).
+type MotionBlendMode uint8
+
+const (
+	MotionBlendAlpha MotionBlendMode = iota
+	MotionBlendAdditive
+	MotionBlendSubtractive
+	MotionBlendMultiplicative
+	MotionBlendScreen
+)
+
 type RenderMotionDraw struct {
 	SourceKey     string
 	RGBA          []byte
@@ -59,6 +73,8 @@ type RenderMotionDraw struct {
 	A, B, C, D    float64
 	TX, TY        float64
 	Opacity       uint8
+	Blend         MotionBlendMode
+	SortKey       float64
 	// Baked marks a canvas-sized frame produced for one motion tick (mesh or
 	// stencil composition). The pixels change every frame and have no reusable
 	// source identity, so the host streams them into one texture per layer.
