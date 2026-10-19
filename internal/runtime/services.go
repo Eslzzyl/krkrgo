@@ -703,7 +703,11 @@ func (s *Services) readStorage(name string) ([]byte, error) {
 	if name == "" {
 		return nil, fmt.Errorf("empty storage name")
 	}
-	if s.SaveDir != "" {
+	// Archive member names use ">" to separate the archive from the member and
+	// never address a save-overlay file. Resolving them against the overlay
+	// would hand the separator to the host filesystem, which rejects it on
+	// Windows, so they go straight to the project storage.
+	if s.SaveDir != "" && !strings.ContainsRune(name, '>') {
 		save := SaveStorage{Root: s.SaveDir, Project: serviceProjectPath(s)}
 		data, err := save.Read(name)
 		if err == nil {
@@ -2205,7 +2209,7 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		add := tjs.NewNativeFunction(vm.Objects, "Object.add", func(context tjs.ObjectRef, args []tjs.Value) (tjs.Value, error) {
+		add := tjs.NewNativeFunctionForVM(vm, "Object.add", func(context tjs.ObjectRef, args []tjs.Value) (tjs.Value, error) {
 			target, ok := vm.Objects.Lookup(context.Object)
 			if !ok {
 				return tjs.VoidValue, fmt.Errorf("Object.add target is unavailable")
@@ -2225,7 +2229,7 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 			}
 			return tjs.VoidValue, nil
 		})
-		set := tjs.NewNativeFunction(vm.Objects, "Object.set", func(context tjs.ObjectRef, args []tjs.Value) (tjs.Value, error) {
+		set := tjs.NewNativeFunctionForVM(vm, "Object.set", func(context tjs.ObjectRef, args []tjs.Value) (tjs.Value, error) {
 			if len(args) < 2 {
 				return tjs.VoidValue, fmt.Errorf("Object.set requires key and value")
 			}

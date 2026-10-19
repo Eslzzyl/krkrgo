@@ -55,7 +55,7 @@ go run ./cmd/krkrgo-tool replay \
   --output result.json
 ```
 
-Replay mode does not open an Ebitengine window. Its default tick step is 16 ms; `--step-ms`, `--advance-ms`, and `--budget` control deterministic verification runs.
+Replay mode does not open an Ebitengine window. Its default tick step is 16 ms; `--step-ms`, `--advance-ms`, and `--budget` control deterministic verification runs. `--memprofile` writes an in-use heap profile, and `--stats` writes exact runtime memory statistics after a forced collection.
 
 ## Development
 

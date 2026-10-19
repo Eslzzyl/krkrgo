@@ -154,14 +154,15 @@ func TestVMReexecutesMutatedProgramCode(t *testing.T) {
 	program := Program{
 		Storage:   "mutable-program.tjs",
 		Registers: 1,
+		Constants: []Value{IntegerValue(7)},
 		Code: []Instruction{
-			{Op: Op{Code: OpConstant, Out: 0, Value: IntegerValue(7)}},
+			{Op: Op{Code: OpConstant, Out: 0, Const: 0}},
 			{Op: Op{Code: OpReturn, Input: 0}},
 		},
 	}
 	vm := NewVM()
 	for _, want := range []int64{7, 19} {
-		program.Code[0].Op.Value = IntegerValue(want)
+		program.Constants[program.Code[0].Op.Const] = IntegerValue(want)
 		budget := uint64(10)
 		got, err := vm.Execute(&program, vmTestHost{}, &budget)
 		if err != nil {
@@ -199,9 +200,9 @@ func TestVMVoidFunctionGuardDoesNotInvoke(t *testing.T) {
 
 func TestVMArithmeticProgram(t *testing.T) {
 	vm := NewVM()
-	p := Program{Storage: "test", Registers: 3, Code: []Instruction{
-		{Op: Op{Code: OpConstant, Out: 0, Value: IntegerValue(2)}},
-		{Op: Op{Code: OpConstant, Out: 1, Value: IntegerValue(3)}},
+	p := Program{Storage: "test", Registers: 3, Constants: []Value{IntegerValue(2), IntegerValue(3)}, Code: []Instruction{
+		{Op: Op{Code: OpConstant, Out: 0, Const: 0}},
+		{Op: Op{Code: OpConstant, Out: 1, Const: 1}},
 		{Op: Op{Code: OpBinary, Out: 2, Operator: "+", Left: 0, Right: 1}},
 		{Op: Op{Code: OpReturn, Input: 2}},
 	}}
@@ -568,9 +569,9 @@ return instance.missing;`},
 func TestVMOptionalMissingMemberStillReturnsVoid(t *testing.T) {
 	vm := NewVM()
 	target := vm.Globals["Dictionary"]
-	program := Program{Storage: "optional-missing-member.tjs", Registers: 3, Code: []Instruction{
-		{Op: Op{Code: OpConstant, Out: 0, Value: target}},
-		{Op: Op{Code: OpConstant, Out: 1, Value: StringValue("missing")}},
+	program := Program{Storage: "optional-missing-member.tjs", Registers: 3, Constants: []Value{target, StringValue("missing")}, Code: []Instruction{
+		{Op: Op{Code: OpConstant, Out: 0, Const: 0}},
+		{Op: Op{Code: OpConstant, Out: 1, Const: 1}},
 		{Op: Op{Code: OpGet, Out: 2, Object: 0, Key: 1, Optional: true}},
 		{Op: Op{Code: OpReturn, Input: 2}},
 	}}
@@ -1413,8 +1414,8 @@ func TestVMWithDotMemberCompoundAssignmentAndCall(t *testing.T) {
 
 func TestVMRejectsMalformedArgumentDescriptors(t *testing.T) {
 	cases := []Program{
-		{Storage: "bad-spread.tjs", Registers: 1, Code: []Instruction{{Op: Op{Code: OpCall, Out: 0, Callee: 0, Args: []Argument{{Kind: ArgumentSpread, Register: 1}}}}}},
-		{Storage: "bad-forward.tjs", Registers: 1, Code: []Instruction{{Op: Op{Code: OpCall, Out: 0, Callee: 0, Args: []Argument{{Kind: ArgumentForwardFrom, From: -1}}}}}},
+		{Storage: "bad-spread.tjs", Registers: 1, Code: []Instruction{{Op: Op{Code: OpCall, Out: 0, Callee: 0, extra: &opExtra{args: []Argument{{Kind: ArgumentSpread, Register: 1}}}}}}},
+		{Storage: "bad-forward.tjs", Registers: 1, Code: []Instruction{{Op: Op{Code: OpCall, Out: 0, Callee: 0, extra: &opExtra{args: []Argument{{Kind: ArgumentForwardFrom, From: -1}}}}}}},
 	}
 	for _, program := range cases {
 		if _, err := NewVM().Execute(&program, vmTestHost{}, nil); err == nil {

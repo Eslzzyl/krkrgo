@@ -302,3 +302,35 @@ func TestVMAutomaticGCTracesRootsFromEveryActiveFrameHost(t *testing.T) {
 		}
 	}
 }
+
+func TestVMDispatchRegistryEntriesFollowCollection(t *testing.T) {
+	vm := NewVM()
+	if got := registry.scopeCount(vm.Objects); got != 0 {
+		t.Fatalf("fresh VM registry entries = %d, want 0", got)
+	}
+	_ = NewNativeFunctionForVM(vm, "registryGCTest", func(ObjectRef, []Value) (Value, error) {
+		return VoidValue, nil
+	})
+	if got := registry.scopeCount(vm.Objects); got != 1 {
+		t.Fatalf("registry entries after registration = %d, want 1", got)
+	}
+	if _, err := vm.CollectGarbage(nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := registry.scopeCount(vm.Objects); got != 0 {
+		t.Fatalf("registry entries after collection = %d, want 0", got)
+	}
+}
+
+func TestVMReleaseDropsDispatchRegistry(t *testing.T) {
+	vm := NewVM()
+	_ = NewNativeFunctionForVM(vm, "releaseTest", func(ObjectRef, []Value) (Value, error) {
+		return VoidValue, nil
+	})
+	if err := vm.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if vm.Objects != nil {
+		t.Fatal("VM release retained the object table")
+	}
+}

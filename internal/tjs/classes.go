@@ -16,31 +16,124 @@ type callableMeta struct {
 	valueCall  ValueFunc
 	bound      ObjectRef
 	boundValue *Value
+	scope      *ObjectTable
 }
 
 type classMeta struct {
 	definition Class
 	object     *Object
 	bases      []*classMeta
+	scope      *ObjectTable
 }
 
-type propertyMeta struct{ property Property }
+type propertyMeta struct {
+	property Property
+	scope    *ObjectTable
+}
+
+type instanceMeta struct {
+	class *classMeta
+	scope *ObjectTable
+}
 
 type dispatchRegistry struct {
-	mu             sync.RWMutex
-	callable       map[ObjectID]*callableMeta
-	classes        map[ObjectID]*classMeta
-	objects        map[ObjectID]*classMeta
-	props          map[ObjectID]*propertyMeta
-	programClasses map[string]*classMeta
+	mu       sync.RWMutex
+	callable map[ObjectID]*callableMeta
+	classes  map[ObjectID]*classMeta
+	objects  map[ObjectID]*instanceMeta
+	props    map[ObjectID]*propertyMeta
 }
 
 var registry = dispatchRegistry{
-	callable:       make(map[ObjectID]*callableMeta),
-	classes:        make(map[ObjectID]*classMeta),
-	objects:        make(map[ObjectID]*classMeta),
-	props:          make(map[ObjectID]*propertyMeta),
-	programClasses: make(map[string]*classMeta),
+	callable: make(map[ObjectID]*callableMeta),
+	classes:  make(map[ObjectID]*classMeta),
+	objects:  make(map[ObjectID]*instanceMeta),
+	props:    make(map[ObjectID]*propertyMeta),
+}
+
+// dropIDs removes registry entries owned by scope for the object IDs that VM
+// collection has just removed. Entries owned by other tables remain intact.
+func (r *dispatchRegistry) dropIDs(scope *ObjectTable, ids []ObjectID) {
+	if scope == nil || len(ids) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, id := range ids {
+		if meta := r.callable[id]; meta != nil && meta.scope == scope {
+			delete(r.callable, id)
+		}
+		if meta := r.classes[id]; meta != nil && meta.scope == scope {
+			delete(r.classes, id)
+		}
+		if meta := r.objects[id]; meta != nil && (meta.scope == scope || (meta.class != nil && meta.class.scope == scope)) {
+			delete(r.objects, id)
+		}
+		if meta := r.props[id]; meta != nil && meta.scope == scope {
+			delete(r.props, id)
+		}
+	}
+}
+
+// scopeCount reports the number of registry entries owned by scope. It is used
+// by lifetime tests and diagnostics.
+func (r *dispatchRegistry) scopeCount(scope *ObjectTable) int {
+	if scope == nil {
+		return 0
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	count := 0
+	for _, meta := range r.callable {
+		if meta != nil && meta.scope == scope {
+			count++
+		}
+	}
+	for _, meta := range r.classes {
+		if meta != nil && meta.scope == scope {
+			count++
+		}
+	}
+	for _, meta := range r.objects {
+		if meta != nil && (meta.scope == scope || (meta.class != nil && meta.class.scope == scope)) {
+			count++
+		}
+	}
+	for _, meta := range r.props {
+		if meta != nil && meta.scope == scope {
+			count++
+		}
+	}
+	return count
+}
+
+// dropScope releases every registry entry owned by scope.
+func (r *dispatchRegistry) dropScope(scope *ObjectTable) {
+	if scope == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, meta := range r.callable {
+		if meta != nil && meta.scope == scope {
+			delete(r.callable, id)
+		}
+	}
+	for id, meta := range r.classes {
+		if meta != nil && meta.scope == scope {
+			delete(r.classes, id)
+		}
+	}
+	for id, meta := range r.objects {
+		if meta != nil && meta.scope == scope {
+			delete(r.objects, id)
+		}
+	}
+	for id, meta := range r.props {
+		if meta != nil && meta.scope == scope {
+			delete(r.props, id)
+		}
+	}
 }
 
 func newFunctionObject(table *ObjectTable, fn Function, call NativeFunc, valueCall ValueFunc, bound ObjectRef, boundValue *Value) *Object {
@@ -51,7 +144,7 @@ func newFunctionObject(table *ObjectTable, fn Function, call NativeFunc, valueCa
 		o = NewObject(CategoryFunction)
 	}
 	registry.mu.Lock()
-	registry.callable[o.ID] = &callableMeta{fn: fn, call: call, valueCall: valueCall, bound: bound, boundValue: boundValue}
+	registry.callable[o.ID] = &callableMeta{fn: fn, call: call, valueCall: valueCall, bound: bound, boundValue: boundValue, scope: table}
 	registry.mu.Unlock()
 	_ = o.Set("name", StringValue(fn.Name))
 	_ = o.SetFlags("name", MemberReadOnly)
@@ -69,6 +162,26 @@ func FunctionValue(fn Function) Value {
 func NewNativeFunction(table *ObjectTable, name string, fn NativeFunc) Value {
 	o := newFunctionObject(table, Function{Name: name}, fn, nil, ObjectRef{}, nil)
 	return ObjectValue(o.Ref())
+}
+
+// NewNativeFunctionForVM allocates a host callable in the VM heap so normal
+// collection removes both the object and its dispatch entry.
+func NewNativeFunctionForVM(vm *VM, name string, fn NativeFunc) Value {
+	if vm == nil || vm.Objects == nil {
+		return VoidValue
+	}
+	value, id, err := vm.alloc(CategoryFunction)
+	if err != nil {
+		return VoidValue
+	}
+	registry.mu.Lock()
+	registry.callable[id] = &callableMeta{fn: Function{Name: name}, call: fn, scope: vm.Objects}
+	registry.mu.Unlock()
+	if object, ok := vm.Objects.Lookup(id); ok {
+		_ = object.Set("name", StringValue(name))
+		_ = object.SetFlags("name", MemberReadOnly)
+	}
+	return value
 }
 
 // Bind returns a closure with the supplied object as its this context.
@@ -93,16 +206,10 @@ func NewClass(table *ObjectTable, definition Class) *Object {
 		table = NewObjectTable()
 	}
 	classObject := table.New(CategoryClass)
-	record := &classMeta{definition: definition.Clone(), object: classObject}
+	record := &classMeta{definition: definition.Clone(), object: classObject, scope: table}
 	registry.mu.Lock()
 	registry.classes[classObject.ID] = record
-	registry.programClasses[definition.Name] = record
 	registry.mu.Unlock()
-	for _, base := range definition.Bases {
-		if b := classFromProgram(base); b != nil {
-			record.bases = append(record.bases, b)
-		}
-	}
 	for _, method := range definition.Methods {
 		fn := newFunctionObject(table, method, nil, nil, ObjectRef{}, nil)
 		_ = classObject.Set(method.Name, ObjectValue(fn.Ref()))
@@ -112,7 +219,7 @@ func NewClass(table *ObjectTable, definition Class) *Object {
 		// lookup find the descriptor without inventing another Value kind.
 		marker := newFunctionObject(table, Function{Name: property.Name}, nil, nil, ObjectRef{}, nil)
 		registry.mu.Lock()
-		registry.props[marker.ID] = &propertyMeta{property: property.Clone()}
+		registry.props[marker.ID] = &propertyMeta{property: property.Clone(), scope: table}
 		registry.mu.Unlock()
 		_ = classObject.Set(property.Name, ObjectValue(marker.Ref()))
 	}
@@ -132,10 +239,12 @@ func NewClassWithBases(table *ObjectTable, definition Class, bases ...*Object) *
 	object := NewClass(table, definition)
 	registry.mu.Lock()
 	record := registry.classes[object.ID]
-	for _, base := range bases {
-		if base != nil {
-			if parent := registry.classes[base.ID]; parent != nil {
-				record.bases = append(record.bases, parent)
+	if record != nil {
+		for _, base := range bases {
+			if base != nil {
+				if parent := registry.classes[base.ID]; parent != nil {
+					record.bases = append(record.bases, parent)
+				}
 			}
 		}
 	}
@@ -143,17 +252,14 @@ func NewClassWithBases(table *ObjectTable, definition Class, bases ...*Object) *
 	return object
 }
 
-func classFromProgram(program Program) *classMeta {
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
-	return registry.programClasses[program.Storage]
-}
-
 func classForObject(id ObjectID) *classMeta {
 	registry.mu.RLock()
 	c := registry.objects[id]
 	registry.mu.RUnlock()
-	return c
+	if c == nil {
+		return nil
+	}
+	return c.class
 }
 
 // NewInstance constructs an object from a class object and invokes its
@@ -173,7 +279,7 @@ func NewInstance(table *ObjectTable, classObject *Object, args ...Value) (*Objec
 	}
 	instance := table.New(CategoryInstance)
 	registry.mu.Lock()
-	registry.objects[instance.ID] = c
+	registry.objects[instance.ID] = &instanceMeta{class: c, scope: table}
 	registry.mu.Unlock()
 	if err := constructClass(c, instance, args); err != nil {
 		return nil, err
@@ -202,10 +308,10 @@ func IsInstanceOf(instance Value, class *Object) bool {
 	target := registry.classes[class.ID]
 	got := registry.objects[instance.ObjectRef().Object]
 	registry.mu.RUnlock()
-	if target == nil || got == nil {
+	if target == nil || got == nil || got.class == nil {
 		return false
 	}
-	return classIncludes(got, target)
+	return classIncludes(got.class, target)
 }
 
 func classIncludes(got, target *classMeta) bool {
@@ -265,7 +371,7 @@ func DefineProperty(table *ObjectTable, object *Object, property Property) error
 	}
 	marker := newFunctionObject(table, Function{Name: property.Name}, nil, nil, ObjectRef{}, nil)
 	registry.mu.Lock()
-	registry.props[marker.ID] = &propertyMeta{property: property.Clone()}
+	registry.props[marker.ID] = &propertyMeta{property: property.Clone(), scope: table}
 	registry.mu.Unlock()
 	if err := object.Set(property.Name, ObjectValue(marker.Ref())); err != nil {
 		return err

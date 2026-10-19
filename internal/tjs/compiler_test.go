@@ -119,11 +119,14 @@ func TestCompileAndRunNumberLiterals(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, instruction := range program.Code {
-		if instruction.Op.Code == OpConstant && instruction.Op.Value.Kind() == KindInteger && instruction.Op.Value.IntegerValue() == 42 {
-			if instruction.Location.Line != 2 || instruction.Location.Column != 3 {
-				t.Fatalf("hex literal location = %#v, want line 2 column 3", instruction.Location)
+		if instruction.Op.Code == OpConstant {
+			value := programConstant(&program, instruction.Op.Const)
+			if value.Kind() == KindInteger && value.IntegerValue() == 42 {
+				if instruction.Location.Line != 2 || instruction.Location.Column != 3 {
+					t.Fatalf("hex literal location = %#v, want line 2 column 3", instruction.Location)
+				}
+				return
 			}
-			return
 		}
 	}
 	t.Fatal("hex literal constant was not emitted")
@@ -224,8 +227,9 @@ delete object.value;
 		case OpGet, OpSet, OpTypeOfMember, OpDeleteMember:
 			if instruction.Op.StaticKey {
 				staticOps++
-				if instruction.Op.Value.Kind() != KindString || instruction.Op.Value.Text() != "value" {
-					t.Fatalf("static member key = %#v, want string value", instruction.Op.Value)
+				value := programConstant(&program, instruction.Op.Const)
+				if value.Kind() != KindString || value.Text() != "value" {
+					t.Fatalf("static member key = %#v, want string value", value)
 				}
 			} else if instruction.Op.Code == OpGet {
 				dynamicGets++
@@ -532,15 +536,19 @@ func TestCompileAdjacentStringLiterals(t *testing.T) {
 		var units []uint16
 		var firstLocationLine, firstLocationColumn uint64
 		for _, instruction := range program.Code {
-			if instruction.Op.Code != OpConstant || instruction.Op.Value.Kind() != KindString {
+			if instruction.Op.Code != OpConstant {
+				continue
+			}
+			value := programConstant(&program, instruction.Op.Const)
+			if value.Kind() != KindString {
 				continue
 			}
 			if len(got) == 0 {
 				firstLocationLine = instruction.Location.Line
 				firstLocationColumn = instruction.Location.Column
 			}
-			got = append(got, instruction.Op.Value.Text())
-			units = instruction.Op.Value.UTF16()
+			got = append(got, value.Text())
+			units = value.UTF16()
 		}
 		if !reflect.DeepEqual(got, test.want) {
 			t.Errorf("%s: string constants = %q, want %q", test.name, got, test.want)

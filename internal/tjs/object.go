@@ -93,7 +93,6 @@ type PropertyEntry struct {
 }
 
 type member struct {
-	key   UTF16
 	value Value
 	flags uint32
 	valid bool
@@ -116,7 +115,7 @@ func NewObject(categories ...ObjectCategory) *Object {
 		category = categories[0]
 	}
 	id := ObjectID(nextObjectID.Add(1))
-	return &Object{ID: id, Category: category, members: make(map[string]member), valid: true}
+	return &Object{ID: id, Category: category, valid: true}
 }
 func (o *Object) Ref(context ...ObjectID) ObjectRef {
 	if o == nil {
@@ -208,10 +207,12 @@ func (o *Object) SetString(name string, value Value) error {
 		}
 	}
 	k := memberKeyString(name)
+	if o.members == nil {
+		o.members = make(map[string]member)
+	}
 	m, ok := o.members[k]
 	if !ok {
-		units := UTF16FromString(name)
-		m = member{key: NewUTF16(units), valid: true}
+		m = member{valid: true}
 	}
 	m.value = value
 	m.valid = true
@@ -239,9 +240,12 @@ func (o *Object) SetUnits(key UTF16, value Value) error {
 		}
 	}
 	k := memberKey(key)
+	if o.members == nil {
+		o.members = make(map[string]member)
+	}
 	m, ok := o.members[k]
 	if !ok {
-		m = member{key: NewUTF16(key), valid: true}
+		m = member{valid: true}
 	}
 	m.value = value
 	m.valid = true
@@ -258,9 +262,12 @@ func (o *Object) SetFlags(name string, flags uint32) error {
 		return errInvalidObject
 	}
 	k := memberKey(UTF16FromString(name))
+	if o.members == nil {
+		o.members = make(map[string]member)
+	}
 	m, ok := o.members[k]
 	if !ok {
-		m = member{key: UTF16FromString(name), valid: true}
+		m = member{valid: true}
 	}
 	m.flags = flags
 	m.valid = true
@@ -404,6 +411,18 @@ func (o *Object) IsMemberValid(name string) bool {
 
 // Entries returns members in UTF-16 lexicographic order, matching Rust's
 // BTreeMap and the engine's deterministic enumeration behaviour.
+// memberKeyUTF16 reverses memberKey without losing unpaired surrogate units.
+func memberKeyUTF16(key string) UTF16 {
+	if len(key)%2 != 0 {
+		return nil
+	}
+	units := make(UTF16, len(key)/2)
+	for i := range units {
+		units[i] = uint16(key[2*i]) | uint16(key[2*i+1])<<8
+	}
+	return units
+}
+
 func (o *Object) Entries() []PropertyEntry {
 	if o == nil {
 		return nil
@@ -413,16 +432,26 @@ func (o *Object) Entries() []PropertyEntry {
 	if !o.valid {
 		return nil
 	}
-	all := make([]member, 0, len(o.members))
-	for _, m := range o.members {
+	type keyedMember struct {
+		key    UTF16
+		member member
+	}
+	all := make([]keyedMember, 0, len(o.members))
+	for key, m := range o.members {
 		if m.valid {
-			all = append(all, m)
+			all = append(all, keyedMember{key: memberKeyUTF16(key), member: m})
 		}
 	}
 	sort.Slice(all, func(i, j int) bool { return compareUTF16(all[i].key, all[j].key) < 0 })
 	out := make([]PropertyEntry, len(all))
-	for i, m := range all {
-		out[i] = PropertyEntry{Key: NewUTF16(m.key), Name: m.key.String(), Value: m.value, Flags: m.flags, Valid: m.valid}
+	for i, entry := range all {
+		out[i] = PropertyEntry{
+			Key:   entry.key,
+			Name:  entry.key.String(),
+			Value: entry.member.value,
+			Flags: entry.member.flags,
+			Valid: entry.member.valid,
+		}
 	}
 	return out
 }
@@ -574,6 +603,7 @@ func (t *ObjectTable) Remove(id ObjectID) bool {
 	delete(t.objects, id)
 	delete(t.classInstanceNames, id)
 	delete(t.registeredClassInfo, id)
+	delete(t.instanceClasses, id)
 	return true
 }
 func (t *ObjectTable) Ref(id ObjectID, context ...ObjectID) (ObjectRef, bool) {

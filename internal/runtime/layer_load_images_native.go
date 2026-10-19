@@ -393,13 +393,14 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 	}
 	layer.ImageLeft = maxInt32(layer.ImageLeft, layer.Bounds.Width-width)
 	layer.ImageTop = maxInt32(layer.ImageTop, layer.Bounds.Height-height)
-	layer.RGBA = scaleRGBA(decoded.RGBA, width, height, layer.RenderScale())
-	layer.ImageWidth, layer.ImageHeight = width, height
-	layer.Province = append(layer.Province[:0], province...)
-	if len(province) == 0 {
-		layer.ClearProvince()
-	} else {
-		layer.ProvinceWidth, layer.ProvinceHeight = width, height
+	layer.ClearProvince()
+	if err := layer.SetRGBAOwned(width, height, decoded.RGBA); err != nil {
+		return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q: %w", name, err)
+	}
+	if len(province) != 0 {
+		if err := layer.SetProvinceOwned(width, height, province); err != nil {
+			return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q: %w", name, err)
+		}
 	}
 	resetNativeLayerClip(layer)
 	layer.imageModified = true

@@ -189,6 +189,16 @@ func DecodeBytecode(data []byte) (*DecodedBytecode, error) {
 		}
 	}
 	d.legacyPrepared = make([]legacyPreparation, len(d.Objects))
+	// Constant values are materialized above. Numeric and octet pools have no
+	// runtime consumers after this point, so release their backing storage.
+	// The string pool remains because script class and member names resolve
+	// through DecodedBytecode.Strings.
+	d.Bytes = nil
+	d.Shorts = nil
+	d.Integers = nil
+	d.Longs = nil
+	d.Reals = nil
+	d.Octets = nil
 	return d, nil
 }
 

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -271,18 +270,20 @@ type VM struct {
 	nativeSavePlugin   bool
 	traceStack         []vmTraceFrame
 	constructing       []ObjectID
+	idOrder            []ObjectID
 	registerScratch    []Value
 	gcSeen             map[ObjectID]struct{}
 	gcPending          []ObjectID
 	gcHosts            []Host
 	gcIDs              []ObjectID
+	gcRemoved          []ObjectID
 }
 
 func NewVM() *VM {
 	table := NewObjectTable()
 	global := &Object{ID: 0, Category: CategoryGlobal, members: make(map[string]member), valid: true}
 	_ = table.Add(global)
-	vm := &VM{Objects: table, Globals: make(map[string]Value), roots: make(map[ObjectRef]struct{}), meta: make(map[ObjectID]*vmObject), literals: make(map[ObjectID]Value)}
+	vm := &VM{Objects: table, Globals: make(map[string]Value), roots: make(map[ObjectRef]struct{}), meta: make(map[ObjectID]*vmObject), literals: make(map[ObjectID]Value), idOrder: []ObjectID{0}}
 	vm.meta[0] = &vmObject{category: CategoryGlobal}
 	for _, name := range []string{"Array", "Dictionary", "Object", "RegExp"} {
 		_ = vm.RegisterNative(name)
@@ -356,6 +357,7 @@ func (v *VM) alloc(category ObjectCategory) (Value, ObjectID, error) {
 	o := v.Objects.New(category)
 	id := o.ID
 	v.meta[id] = &vmObject{category: category}
+	v.idOrder = append(v.idOrder, id)
 	v.allocationsSinceGC++
 	value := ObjectValue(o.Ref())
 	// A constructed instance is a bound self-reference, matching TJS `new` values.
@@ -379,13 +381,8 @@ func (v *VM) ObjectsSize() int {
 func (v *VM) allIDsInto(out []ObjectID) []ObjectID {
 	if v == nil || v.Objects == nil {
 		return out[:0]
-	} // ObjectTable intentionally has no iterator; metadata includes all VM allocations.
-	out = out[:0]
-	for id := range v.meta {
-		out = append(out, id)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out
+	} // ObjectTable intentionally has no iterator; idOrder tracks VM allocations.
+	return append(out[:0], v.idOrder...)
 }
 func (v *VM) obj(id ObjectID) (*Object, error) {
 	o, _, e := v.lookup(id)
@@ -2504,6 +2501,13 @@ func (v *VM) Run(program *Program, host Host, budget *uint64) (Value, error) {
 	return v.Execute(program, host, budget)
 }
 
+func programConstant(p *Program, index int32) Value {
+	if p == nil || index < 0 || int(index) >= len(p.Constants) {
+		return VoidValue
+	}
+	return p.Constants[index]
+}
+
 func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 	if p == nil {
 		return VoidValue, vmAbortError(errors.New("nil TJS program"))
@@ -2686,17 +2690,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 				}
 			}
 		case OpConstant:
-			r[op.Out] = op.Value
-		case OpConstantObject:
-			x, e := v.materialize(op.Literal, b)
-			if e == nil && op.Identity != 0 {
-				if old, ok := v.literals[op.Identity]; ok {
-					x = old
-				} else {
-					v.literals[op.Identity] = x
-				}
-			}
-			r[op.Out] = x
+			r[op.Out] = programConstant(p, op.Const)
 		case OpLoad:
 			var x Value
 			x, e = v.loadName(&f, op.Name, op.Optional, op.Raw, h, b)
@@ -2720,7 +2714,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			} else {
 				key := reg(op.Key)
 				if op.StaticKey {
-					key = op.Value
+					key = programConstant(p, op.Const)
 				}
 				_, exists, er := v.getMemberWithRuntime(id, key, h, b)
 				if er != nil {
@@ -2735,7 +2729,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			if e == nil {
 				key := reg(op.Key)
 				if op.StaticKey {
-					key = op.Value
+					key = programConstant(p, op.Const)
 				}
 				var ok bool
 				ok, e = v.deleteMember(id, key)
@@ -2796,7 +2790,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			receiver := r[op.Object]
 			key := r[op.Key]
 			if op.StaticKey {
-				key = op.Value
+				key = programConstant(p, op.Const)
 			}
 			if receiver.Kind() == KindString {
 				if property, ok := vmStringProperty(receiver, key); ok {
@@ -2898,7 +2892,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			receiver := reg(op.Object)
 			key := reg(op.Key)
 			if op.StaticKey {
-				key = op.Value
+				key = programConstant(p, op.Const)
 			}
 			if receiver.Kind() == KindString {
 				var x Value
@@ -2959,7 +2953,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			receiver := r[op.Object]
 			key := r[op.Key]
 			if op.StaticKey {
-				key = op.Value
+				key = programConstant(p, op.Const)
 			}
 			value := r[op.Input]
 			if receiver.Kind() == KindOctet {
@@ -3019,8 +3013,9 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 				}
 			}
 		case OpArray:
-			items := make([]Value, len(op.Items))
-			for i, x := range op.Items {
+			operands := op.items()
+			items := make([]Value, len(operands))
+			for i, x := range operands {
 				items[i] = reg(x)
 			}
 			x, er := v.NewArray(items)
@@ -3030,7 +3025,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			x, er := v.NewDictionary()
 			e = er
 			if e == nil {
-				for _, pair := range op.Pairs {
+				for _, pair := range op.pairs() {
 					value := reg(pair.Value)
 					e = v.setMember(x.ObjectRef().Object, reg(pair.Key), value)
 					if e != nil {
@@ -3040,13 +3035,13 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			}
 			put(op.Out, x)
 		case OpFunction:
-			if op.Function == nil {
+			if op.function() == nil {
 				e = errors.New("nil function descriptor")
 			} else {
 				x, id, er := v.alloc(CategoryFunction)
 				e = er
 				if e == nil {
-					v.meta[id].function = op.Function
+					v.meta[id].function = op.function()
 					v.meta[id].capturedScopes = append([]map[string]Value(nil), f.scopes...)
 					v.meta[id].capturedWiths = append([]Value(nil), f.withs...)
 					v.meta[id].lexicalContext = f.lexicalContext
@@ -3057,7 +3052,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 				}
 			}
 		case OpCall:
-			args, er := v.expandArgs(op.Args, r, f.args, f.argScratch)
+			args, er := v.expandArgs(op.args(), r, f.args, f.argScratch)
 			if er == nil {
 				f.argScratch = args[:0]
 			}
@@ -3073,7 +3068,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 				r[op.Out] = x
 			}
 		case OpConstruct:
-			args, er := v.expandArgs(op.Args, r, f.args, f.argScratch)
+			args, er := v.expandArgs(op.args(), r, f.args, f.argScratch)
 			if er == nil {
 				f.argScratch = args[:0]
 			}
@@ -3089,7 +3084,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 				r[op.Out] = x
 			}
 		case OpClass:
-			if op.Class == nil {
+			if op.class() == nil {
 				e = errors.New("nil class descriptor")
 				break
 			}
@@ -3104,10 +3099,10 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 				break
 			}
 			meta := v.meta[id]
-			definition := op.Class.Clone()
+			definition := op.class().Clone()
 			meta.class = &definition
 			meta.classObject = id
-			for _, baseRegister := range op.Items {
+			for _, baseRegister := range op.items() {
 				baseID, baseErr := v.handle(reg(baseRegister))
 				if baseErr != nil {
 					e = baseErr
@@ -3162,13 +3157,13 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			}
 			put(op.Out, x)
 		case OpProperty:
-			if op.Property == nil {
+			if op.property() == nil {
 				e = errors.New("nil property descriptor")
 			} else {
 				x, id, er := v.alloc(CategoryProperty)
 				e = er
 				if e == nil {
-					v.meta[id].property = op.Property
+					v.meta[id].property = op.property()
 					put(op.Out, x)
 				}
 			}
@@ -4157,47 +4152,6 @@ func (v *VM) propertyReferenceContext(property, context Value) Value {
 		}
 	}
 	return context
-}
-func (v *VM) materialize(l Literal, b *uint64) (Value, error) {
-	if e := l.Validate(); e != nil {
-		return VoidValue, e
-	}
-	switch l.Kind() {
-	case LiteralValueKind:
-		x, _ := l.Value()
-		return x, nil
-	case LiteralArrayKind:
-		xs := l.Array()
-		a := make([]Value, len(xs))
-		for i := range xs {
-			x, e := v.materialize(xs[i], b)
-			if e != nil {
-				return VoidValue, e
-			}
-			a[i] = x
-		}
-		return v.NewArray(a)
-	case LiteralDictionaryKind:
-		x, e := v.NewDictionary()
-		if e != nil {
-			return VoidValue, e
-		}
-		for _, p := range l.Dictionary() {
-			k, e := v.materialize(p.Key, b)
-			if e != nil {
-				return VoidValue, e
-			}
-			y, e := v.materialize(p.Value, b)
-			if e != nil {
-				return VoidValue, e
-			}
-			if e = v.setMember(x.ObjectRef().Object, k, y); e != nil {
-				return VoidValue, e
-			}
-		}
-		return x, nil
-	}
-	return VoidValue, errors.New("invalid TJS literal")
 }
 
 // CallFunction and CallEventHandler are safe native callback entry points.

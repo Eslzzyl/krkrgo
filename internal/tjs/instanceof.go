@@ -74,9 +74,6 @@ func classHasName(class *Class, name string) bool {
 		if base.Storage == name {
 			return true
 		}
-		if baseMeta := classFromProgram(base); baseMeta != nil && classMetaHasName(baseMeta, name, make(map[*classMeta]struct{})) {
-			return true
-		}
 	}
 	return false
 }

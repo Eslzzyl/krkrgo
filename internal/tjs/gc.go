@@ -208,7 +208,7 @@ func (v *VM) collectGarbage(host Host) (int, error) {
 			}
 		}
 	}
-	removed := 0
+	removedIDs := v.gcRemoved[:0]
 	ids := v.allIDsInto(v.gcIDs)
 	for _, id := range ids {
 		if id == 0 {
@@ -220,13 +220,51 @@ func (v *VM) collectGarbage(host Host) (int, error) {
 		v.Objects.Remove(id)
 		delete(v.meta, id)
 		delete(v.roots, ObjectRef{Object: id})
-		removed++
+		removedIDs = append(removedIDs, id)
 	}
+	kept := v.idOrder[:0]
+	for _, id := range v.idOrder {
+		if v.meta[id] != nil {
+			kept = append(kept, id)
+		}
+	}
+	v.idOrder = kept
+	registry.dropIDs(v.Objects, removedIDs)
 	v.gcPending = pending
 	v.gcHosts = hosts
 	v.gcIDs = ids
+	v.gcRemoved = removedIDs
 	v.allocationsSinceGC = 0
-	return removed, nil
+	return len(removedIDs), nil
+}
+
+// Release drops VM-owned script state and dispatch registry entries. It is the
+// explicit lifetime boundary for a VM whose host is shutting down.
+func (v *VM) Release() error {
+	if v == nil {
+		return nil
+	}
+	if v.depth != 0 || len(v.frameRoots) != 0 {
+		return errors.New("TJS release requires an idle interpreter")
+	}
+	registry.dropScope(v.Objects)
+	v.Objects = nil
+	v.Globals = nil
+	v.roots = nil
+	v.frameRoots = nil
+	v.legacyRoots = nil
+	v.transientRoots = nil
+	v.meta = nil
+	v.literals = nil
+	v.constructing = nil
+	v.idOrder = nil
+	v.registerScratch = nil
+	v.gcSeen = nil
+	v.gcPending = nil
+	v.gcHosts = nil
+	v.gcIDs = nil
+	v.gcRemoved = nil
+	return nil
 }
 func (v *VM) GC(host Host) error             { _, e := v.CollectGarbage(host); return e }
 func (v *VM) Collect(host Host) (int, error) { return v.CollectGarbage(host) }
