@@ -207,8 +207,18 @@ device-side queue starvation during a long runtime or presentation stage.
   through a single per-layer texture instead of entering the atlas, and sources a
   frame no longer draws are evicted before the next upload. Motion draws apply
   the reference blend operations (additive, subtractive, multiplicative, screen)
-  through Ebitengine blend factors, advance nested child motions from the parent
-  loop time, and simulate type-4 particle emitters from the frame's `prt` ranges.
+  through Ebitengine blend factors; subtractive frames upload a premultiplied
+  complement variant of the sprite because a reversed subtraction needs that
+  constant term. Nested child motions advance from the parent loop time, and
+  type-4 emitters follow the reference spawn model: one particle per tick up to
+  the trigger count, template-duration lifetimes, and depth-corrected offsets
+  for 3D volume sources.
+- `internal/runtime/motion_render.go` composes CPU motion frames through a
+  collected draw list: one deferred item per source or mesh frame, stable-sorted
+  by accumulated z before rasterization, with nested motions and particles
+  expanded into the same list. Each stencil group keeps a private list and one
+  canvas allocation per frame; identity work still goes through the row-copy and
+  parallel-band paths at draw time.
 - `internal/runtime/layer_image.go` recognizes pixel-aligned identity affine
   copies, including a taller destination canvas, and copies rows directly
   instead of running the bilinear sampler. The amairo pre-title path had been
