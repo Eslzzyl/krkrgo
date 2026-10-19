@@ -759,21 +759,8 @@ func (s *Session) loadXP3ArchiveExtractionFilter() error {
 	} else if err != nil {
 		return fmt.Errorf("stat XP3 extraction filter %q: %w", path, err)
 	}
-	readStarted := time.Now()
-	sourceBytes, err := storage.Read("xp3filter.tjs")
-	if s.startupTiming {
-		log.Printf("krkrgo-startup phase=script-read name=%q elapsed=%s bytes=%d error=%v", "xp3filter.tjs", time.Since(readStarted), len(sourceBytes), err)
-	}
-	if err != nil {
-		return fmt.Errorf("read XP3 extraction filter: %w", err)
-	}
-	decodeStarted := time.Now()
-	source, err := decodeScriptStorageDefault(sourceBytes)
-	if s.startupTiming {
-		log.Printf("krkrgo-startup phase=script-decode name=%q elapsed=%s bytes=%d decoded_bytes=%d error=%v", "xp3filter.tjs", time.Since(decodeStarted), len(sourceBytes), len(source), err)
-	}
-	if err != nil {
-		return fmt.Errorf("decode XP3 extraction filter: %w", err)
+	if _, err := s.executeStorage("xp3filter.tjs", false); err != nil {
+		return fmt.Errorf("execute XP3 extraction filter: %w", err)
 	}
 	return nil
 }
