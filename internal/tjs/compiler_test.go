@@ -3,6 +3,7 @@ package tjs
 import (
 	"bytes"
 	"errors"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -126,6 +127,32 @@ func TestCompileAndRunNumberLiterals(t *testing.T) {
 		}
 	}
 	t.Fatal("hex literal constant was not emitted")
+}
+
+func TestCompileReservedNaNAndInfinityLiterals(t *testing.T) {
+	for _, test := range []struct {
+		source  string
+		isNaN   bool
+		infSign int
+	}{
+		{source: "NaN", isNaN: true},
+		{source: "Infinity", infSign: 1},
+		{source: "-Infinity", infSign: -1},
+	} {
+		program, err := compile_expression("reserved-real.tjs", test.source)
+		if err != nil {
+			t.Fatalf("compile %q: %v", test.source, err)
+		}
+		budget := uint64(1000)
+		got, err := NewVM().Execute(&program, vmTestHost{}, &budget)
+		if err != nil {
+			t.Fatalf("execute %q: %v", test.source, err)
+		}
+		if got.Kind() != KindReal || math.IsNaN(got.RealValue()) != test.isNaN ||
+			test.infSign != 0 && (!math.IsInf(got.RealValue(), test.infSign)) {
+			t.Errorf("execute %q = %v; want NaN=%v infinity sign=%d", test.source, got, test.isNaN, test.infSign)
+		}
+	}
 }
 
 func TestCompileAndRunPostfixIsValid(t *testing.T) {
@@ -334,6 +361,73 @@ func TestCompileAndRunOctetLiteral(t *testing.T) {
 	}
 	if program.Code[0].Location.Storage != "octet.tjs" || program.Code[0].Location.Line != 1 || program.Code[0].Location.Column != 1 {
 		t.Fatalf("literal location = %#v", program.Code[0].Location)
+	}
+}
+
+func TestVMReadsImmutableOctetElements(t *testing.T) {
+	got := executeVMSource(t, `var b = <% 0a 0b 0c %>; return b[1] * 100 + b.length;`)
+	if got.Kind() != KindInteger || got.IntegerValue() != 1103 {
+		t.Fatalf("octet read = %v, want 1103", got)
+	}
+}
+
+func TestVMMutatesNativeOctetBufferInPlace(t *testing.T) {
+	vm := NewVM()
+	buf := []byte{0x10, 0x20, 0x30, 0x40}
+	vm.Globals["b"] = OctetBufferValue(buf)
+	program, err := compile("octet-buffer.tjs", `
+b[0] ^= 0xff;
+b.xor(1, 2, 0x1ff);
+return b[2];
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := uint64(1000)
+	got, err := vm.Execute(&program, vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind() != KindInteger || got.IntegerValue() != 0xcf {
+		t.Fatalf("b[2] = %v, want integer 0xcf", got)
+	}
+	if want := []byte{0xef, 0xdf, 0xcf, 0x40}; !bytes.Equal(buf, want) {
+		t.Fatalf("native buffer = %#x, want %#x", buf, want)
+	}
+}
+
+func TestVMRejectsOctetMutationForCopiedValues(t *testing.T) {
+	for _, source := range []string{
+		`var b = <% 01 02 %>; b[0] = 3; return b[0];`,
+		`var b = <% 01 02 %>; b.xor(0, 1, 1); return b[0];`,
+	} {
+		program, err := compile("octet-immutable.tjs", source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		budget := uint64(1000)
+		if _, err := NewVM().Execute(&program, vmTestHost{}, &budget); err == nil || !strings.Contains(err.Error(), "immutable") {
+			t.Errorf("%q error = %v, want immutable octet error", source, err)
+		}
+	}
+}
+
+func TestVMOctetIndexAndXorEnforceBounds(t *testing.T) {
+	for _, source := range []string{
+		`b[4] = 1; return 0;`,
+		`b.xor(3, 2, 0); return 0;`,
+		`b.xor(-1, 1, 0); return 0;`,
+	} {
+		vm := NewVM()
+		vm.Globals["b"] = OctetBufferValue(make([]byte, 4))
+		program, err := compile("octet-bounds.tjs", source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		budget := uint64(1000)
+		if _, err := vm.Execute(&program, vmTestHost{}, &budget); err == nil || !strings.Contains(err.Error(), "out of range") && !strings.Contains(err.Error(), "outside") {
+			t.Errorf("%q error = %v, want octet bounds error", source, err)
+		}
 	}
 }
 

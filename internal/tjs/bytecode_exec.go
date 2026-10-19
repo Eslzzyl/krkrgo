@@ -218,7 +218,7 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		return index, nil
 	}
 	propertyTarget := func(value Value, pc int) error {
-		if value.Kind() == KindString {
+		if value.Kind() == KindString || value.Kind() == KindOctet {
 			return nil
 		}
 		if value.Kind() != KindObject || value.IsNull() {

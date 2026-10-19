@@ -202,6 +202,7 @@ type Layer struct {
 	transitionType2       int32
 	transitionAccel       int32
 	transitionChildren    bool
+	transitionExchange    bool // KAG simple transitions retain layer identity.
 	transitionCallback    tjs.Value
 	transitionDuration    uint64
 	transitionStart       uint64

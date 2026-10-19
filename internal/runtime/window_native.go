@@ -340,6 +340,12 @@ func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string,
 			return windowRectValue(vm, window.WindowRect())
 		case "clientRect":
 			return windowRectValue(vm, window.ClientRect())
+		case "primaryLayer":
+			layer := s.Layer(tjs.ObjectID(window.primaryLayer))
+			if layer == nil {
+				return tjs.VoidValue, fmt.Errorf("Window.primaryLayer: window has no primary layer")
+			}
+			return layerValue(layer), nil
 		case "focusedLayer":
 			layer := s.Layer(tjs.ObjectID(window.focusedLayer))
 			if layer == nil {

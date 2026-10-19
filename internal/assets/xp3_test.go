@@ -51,6 +51,83 @@ func TestOpenArchiveSupportsBareAndMZEmbeddedXP3(t *testing.T) {
 	}
 }
 
+func TestOpenArchiveReportsNonArchiveSeparatelyFromMalformedXP3(t *testing.T) {
+	path := xp3TestWriteFile(t, []byte("7z signature"))
+	archive, err := OpenArchive(path, core.DefaultLimits())
+	if archive != nil {
+		archive.Close()
+		t.Fatal("OpenArchive() returned an archive for a non-XP3 file")
+	}
+	if !errors.Is(err, ErrMalformed) || !errors.Is(err, ErrNotArchive) {
+		t.Fatalf("OpenArchive() error = %v, want ErrMalformed and ErrNotArchive", err)
+	}
+}
+
+func TestProtectedXP3EntryUsesFilterBeforeChecksum(t *testing.T) {
+	plain := []byte("filter-mutated plaintext")
+	ciphertext := append([]byte(nil), plain...)
+	for i := range ciphertext {
+		ciphertext[i] ^= 0x35
+	}
+	archive, err := OpenArchive(xp3TestWriteFile(t, xp3TestProtectedArchive("data/protected.bin", ciphertext, plain)), core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+
+	calls := 0
+	archive.SetExtractionFilter(func(info ExtractionFilterInfo) error {
+		calls++
+		if info.FileHash != Adler32(plain) || info.FileName != "data/protected.bin" || info.Offset != 0 {
+			t.Fatalf("filter info = %+v", info)
+		}
+		for i := range info.Buffer {
+			info.Buffer[i] ^= 0x35
+		}
+		return nil
+	})
+	got, err := archive.Read("data/protected.bin")
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if !bytes.Equal(got, plain) || calls != 1 {
+		t.Fatalf("Read() = %q, callback calls = %d; want %q and one call", got, calls, plain)
+	}
+
+	callbackErr := errors.New("filter failure")
+	archive.SetExtractionFilter(func(ExtractionFilterInfo) error { return callbackErr })
+	if _, err := archive.Read("data/protected.bin"); !errors.Is(err, callbackErr) {
+		t.Fatalf("Read() error = %v, want filter error %v", err, callbackErr)
+	}
+}
+
+func TestOpenStorageSkipsNonXP3FilesWithXP3Extension(t *testing.T) {
+	project := t.TempDir()
+	validPath := filepath.Join(project, "data.xp3")
+	if err := os.WriteFile(validPath, xp3TestArchive("startup.tjs", []byte("startup")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "patch.xp3"), []byte("7z signature"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatalf("OpenStorage() error = %v", err)
+	}
+	defer func() {
+		for _, archive := range storage.Archives {
+			_ = archive.Close()
+		}
+	}()
+	if len(storage.Archives) != 1 {
+		t.Fatalf("mounted archives = %d, want only data.xp3", len(storage.Archives))
+	}
+	got, err := storage.Read("startup.tjs")
+	if err != nil || string(got) != "startup" {
+		t.Fatalf("Read(startup.tjs) = %q, %v, want startup,nil", got, err)
+	}
+}
+
 func TestOpenArchiveRejectsMZWithoutAlignedXP3Marker(t *testing.T) {
 	tests := []struct {
 		name string
@@ -74,8 +151,8 @@ func TestOpenArchiveRejectsMZWithoutAlignedXP3Marker(t *testing.T) {
 				archive.Close()
 				t.Fatal("OpenArchive() returned an archive for an invalid MZ file")
 			}
-			if !errors.Is(err, ErrMalformed) {
-				t.Fatalf("OpenArchive() error = %v, want ErrMalformed", err)
+			if !errors.Is(err, ErrMalformed) || !errors.Is(err, ErrNotArchive) {
+				t.Fatalf("OpenArchive() error = %v, want ErrMalformed and ErrNotArchive", err)
 			}
 		})
 	}
@@ -103,6 +180,37 @@ func xp3TestArchive(name string, contents []byte) []byte {
 	segment = xp3TestU64(segment, uint64(len(contents)))
 	entry = xp3TestChunk(entry, "segm", segment)
 	entry = xp3TestChunk(entry, "adlr", xp3TestU32(nil, Adler32(contents)))
+	index := xp3TestChunk(nil, "File", entry)
+
+	indexOffset := uint64(len(archive))
+	binary.LittleEndian.PutUint64(archive[len(MAGIC):], indexOffset)
+	archive = append(archive, 0)
+	archive = xp3TestU64(archive, uint64(len(index)))
+	archive = append(archive, index...)
+	return archive
+}
+
+func xp3TestProtectedArchive(name string, ciphertext, plaintext []byte) []byte {
+	archive := make([]byte, len(MAGIC)+8)
+	copy(archive, MAGIC)
+	dataOffset := uint64(len(archive))
+	archive = append(archive, ciphertext...)
+
+	nameUnits := utf16.Encode([]rune(name))
+	info := xp3TestU32(nil, 0x80000000)
+	info = xp3TestU64(info, uint64(len(plaintext)))
+	info = xp3TestU64(info, uint64(len(ciphertext)))
+	info = xp3TestU16(info, uint16(len(nameUnits)))
+	for _, unit := range nameUnits {
+		info = xp3TestU16(info, unit)
+	}
+	entry := xp3TestChunk(nil, "info", info)
+	segment := xp3TestU32(nil, 0)
+	segment = xp3TestU64(segment, dataOffset)
+	segment = xp3TestU64(segment, uint64(len(plaintext)))
+	segment = xp3TestU64(segment, uint64(len(ciphertext)))
+	entry = xp3TestChunk(entry, "segm", segment)
+	entry = xp3TestChunk(entry, "adlr", xp3TestU32(nil, Adler32(plaintext)))
 	index := xp3TestChunk(nil, "File", entry)
 
 	indexOffset := uint64(len(archive))

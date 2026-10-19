@@ -655,14 +655,14 @@ func (p *KAGParser) Step(budget *uint64) (KAGEvent, error) {
 				if !p.conditionActive() {
 					continue
 				}
-				label, ok := token.Tag.Get("target")
-				if !ok {
-					label, ok = token.Tag.Get("label")
-				}
-				if !ok || label == "" {
-					return KAGEvent{}, kagLocationError(token.Location, fmt.Errorf("KAG %s missing target", name))
+				label, hasTarget := token.Tag.Get("target")
+				if !hasTarget {
+					label, hasTarget = token.Tag.Get("label")
 				}
 				storage, _ := token.Tag.Get("storage")
+				if (!hasTarget || label == "") && storage == "" {
+					return KAGEvent{}, kagLocationError(token.Location, fmt.Errorf("KAG %s missing target", name))
+				}
 				if err := p.jumpScenario(storage, label, name); err != nil {
 					return KAGEvent{}, kagLocationError(token.Location, err)
 				}

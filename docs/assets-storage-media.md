@@ -6,11 +6,13 @@
 
 ## Storage and XP3
 
-[`storage.go`](../internal/assets/storage.go) resolves loose project files and explicitly mounted XP3 archives. Names are normalized against the project; search paths are project-relative. Later search paths take precedence, while loose files take precedence over mounted archive entries.
+[`storage.go`](../internal/assets/storage.go) resolves loose project files and explicitly mounted XP3 archives. Root-level files with a `.xp3` extension are auto-discovered; files without an XP3 signature are ignored, while malformed XP3 archives still fail to mount. Names are normalized against the project; search paths are project-relative. Later search paths take precedence, while loose files take precedence over mounted archive entries.
 
 For a project opened from its root with `data/startup.tjs`, runtime storage keeps the project root as its base (and therefore as `System.exePath`) while adding `data/` as a lower-priority search path. XP3 archives found in `data/` are mounted alongside root archives; resources can be addressed by archive basename or project-relative archive path, including executable-relative names such as `System.exePath + "data/image00.xp3>"`. The default save directory remains `<project root>/savedata`; opening `data/` itself still treats that directory as the project root.
 
 [`xp3.go`](../internal/assets/xp3.go) supports ordinary XP3 archives and an XP3 archive embedded in an MZ executable. `findArchiveOffset` scans 16-byte boundaries within a configured bound; archive-relative index/segment offsets are translated through `Archive.baseOffset` when read. Segment data is bounded/cached. Cache clearing drops mounted XP3 segment data; there is no separate process-global archive-object cache.
+
+Protected XP3 entries run the installed `Storages.setXP3ArchiveExtractionFilter` callback after decompression and before Adler-32 verification. The callback mutates the extracted buffer in place; checksum failure or callback errors abort the read. A root-level loose `xp3filter.tjs` loads before `startup.tjs`, matching the C++ runtime's filter registration order.
 
 These project-relative and executable-relative XP3 names are the resource paths used by the headless project runtime as well as ordinary storage reads; `Layer.loadImages` and media consumers resolve through the same mounted storage rather than requiring extracted loose-file copies.
 
@@ -28,7 +30,7 @@ These project-relative and executable-relative XP3 names are the resource paths 
 
 ## Resource and text formats
 
-The README and sources record PSB v2 structured values/resources, SLI legacy/v2 loop metadata (labels, conditions, and link selection), and AMV container/alpha-packet handling. See [`psb.go`](../internal/assets/psb.go), [`sli.go`](../internal/assets/sli.go), and [`amv.go`](../internal/assets/amv.go).
+The README and sources record PSB v2 structured values/resources, SLI legacy/v2 loop metadata (labels, conditions, and link selection), and AMV container/alpha-packet handling. `ParsePSBWithSeed` decrypts the E-mote v2 metadata region from `offsetEncrypt` through `offsetChunkOffsets` when the seed is positive, matching `PSBFile::loadFromStream`; equal `offsetEncrypt` and `offsetNames` values still require decryption. See [`psb.go`](../internal/assets/psb.go), [`sli.go`](../internal/assets/sli.go), and [`amv.go`](../internal/assets/amv.go).
 
 [`text.go`](../internal/assets/text.go) decodes Kirikiri text streams, including UTF-16 representations and BOM-less UTF-8, Shift_JIS, and GBK sources. For non-UTF-8 input, the compatibility decoder compares strict Shift_JIS and GBK candidates using script-text character plausibility; malformed input is rejected rather than silently replaced. Until `Scripts.textEncoding` is explicitly assigned, `Scripts.execStorage` and `evalStorage` use this decoder; explicit UTF-8, Shift_JIS, and GBK settings select strict source decoders. TJS storage text decoding has a related encoding-aware path in [`scripts_native.go`](../internal/runtime/scripts_native.go).
 

@@ -1,6 +1,10 @@
 package tjs
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
 
 func TestDispatchMembersAndReadOnlyData(t *testing.T) {
 	table := NewObjectTable()
@@ -359,5 +363,44 @@ func TestDispatchArrayFindUsesStrictValueAndStartIndex(t *testing.T) {
 		if err != nil || got.IntegerValue() != test.want {
 			t.Fatalf("Array.find(%v, %v) = %v, %v; want %d", test.value, test.start, got, err, test.want)
 		}
+	}
+}
+
+func TestDispatchOctetIndexAndXorMutateNativeBuffer(t *testing.T) {
+	d := NewDispatcher(NewObjectTable())
+	buf := []byte{0x01, 0x02, 0x03, 0x04}
+	octet := OctetBufferValue(buf)
+
+	if got, err := d.Get(octet, "length"); err != nil || got.IntegerValue() != 4 {
+		t.Fatalf("octet length = %v, %v; want 4", got, err)
+	}
+	if got, err := d.Get(octet, "1"); err != nil || got.IntegerValue() != 0x02 {
+		t.Fatalf("octet[1] = %v, %v; want 2", got, err)
+	}
+	if _, err := d.Get(octet, "4"); err == nil || !strings.Contains(err.Error(), "out of range") {
+		t.Fatalf("out-of-range octet read = %v, want range error", err)
+	}
+	if err := d.Set(octet, "0", IntegerValue(0x109)); err != nil {
+		t.Fatal(err)
+	}
+	if buf[0] != 0x09 {
+		t.Fatalf("octet[0] write = %#x, want low byte 0x09", buf[0])
+	}
+	if _, err := d.CallMember(octet, "xor", IntegerValue(1), IntegerValue(2), IntegerValue(0x1ff)); err != nil {
+		t.Fatal(err)
+	}
+	if want := []byte{0x09, 0xfd, 0xfc, 0x04}; !bytes.Equal(buf, want) {
+		t.Fatalf("octet after xor = %#x, want %#x", buf, want)
+	}
+	if _, err := d.CallMember(octet, "xor", IntegerValue(3), IntegerValue(2), IntegerValue(0)); err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("out-of-range xor = %v, want range error", err)
+	}
+
+	immutable := OctetValue(buf)
+	if err := d.Set(immutable, "0", IntegerValue(0)); err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("immutable octet write = %v, want immutable error", err)
+	}
+	if _, err := d.CallMember(immutable, "xor", IntegerValue(0), IntegerValue(1), IntegerValue(1)); err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("immutable octet xor = %v, want immutable error", err)
 	}
 }

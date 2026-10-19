@@ -40,20 +40,32 @@ const (
 
 type motionPlayerState struct {
 	resourceManager tjs.ObjectID
-	chara           string
-	motion          string
-	stealthMotion   string
-	frameTick       float64
-	speed           float64
-	playing         bool
+	// resource is the PSB module a player bound explicitly (EmotePlayer's
+	// motionKey/module path). When set it takes precedence over the
+	// resource-manager lookup so playback never depends on whichever module the
+	// manager loaded last.
+	resource *motionResource
+	// attached holds the secondary snapshots MultiCache linked to the primary
+	// (EmotePlayer::play calls addEmoteFile for every non-primary cached
+	// module); source and nested-motion lookup falls back to them.
+	attached      []*motionResource
+	emote         *emotePlayerState
+	chara         string
+	motion        string
+	stealthMotion string
+	frameTick     float64
+	speed         float64
+	playing       bool
 	// held marks a one-shot motion that reached its last time: the reference
 	// stops advancing the timeline at that point and keeps the evaluated pose,
 	// and the layer keeps drawing the clamped frame. A repeat apply of the same
 	// motion keeps the held pose; an explicit stop clears the mark so a later
 	// apply starts the motion again.
 	held           bool
+	syncWaiting    bool
+	syncActive     bool
 	completionType int64
-	outline        int64
+	outline        string
 	onAction       tjs.Value
 	drawMatrix     motionDrawMatrix
 	playerID       tjs.ObjectID
@@ -66,9 +78,12 @@ type motionPlayerGPUKey struct {
 	resource      *motionResource
 	chara, motion string
 	tick          float64
-	filter        int64
 	matrix        motionDrawMatrix
 	scale         int32
+	maskMode      int64
+	completion    int64
+	freezeBody    bool
+	variables     string
 }
 
 func (s *Services) loadMotionResource(path string) (*motionResource, error) {
@@ -77,29 +92,233 @@ func (s *Services) loadMotionResource(path string) (*motionResource, error) {
 	if err != nil {
 		return nil, err
 	}
-	doc, err := assets.ParsePSB(data)
+	s.mu.RLock()
+	seed := s.EmotePSBDecryptSeed
+	s.mu.RUnlock()
+	doc, err := assets.ParsePSBWithSeed(data, seed)
 	if err != nil {
 		return nil, err
 	}
 	return &motionResource{path: path, doc: doc, data: data}, nil
 }
 
+// motionResourceStore is the Go counterpart of the reference ResourceManager
+// State::loadedModules (ResourceManager.h:42-58): one manager holds every loaded
+// PSB keyed by path alias, and a second load adds an entry instead of replacing
+// the first. order preserves insertion order so multi-cache primary selection
+// and equality checks stay deterministic.
+type motionResourceStore struct {
+	modules    map[string]*motionResource
+	order      []*motionResource
+	cachePaths map[*motionResource]map[string]struct{}
+	lastLoaded *motionResource
+	lastPath   string
+}
+
+// motionResourcePathAliases mirrors buildPathCacheKeys (ResourceManager.cpp:36)
+// without host path resolution: the raw storage path, the lzfs-trimmed path,
+// and a slash-normalized clean spelling all address the same entry.
+func motionResourcePathAliases(path string) []string {
+	aliases := make([]string, 0, 4)
+	add := func(value string) {
+		if value == "" {
+			return
+		}
+		for _, existing := range aliases {
+			if existing == value {
+				return
+			}
+		}
+		aliases = append(aliases, value)
+	}
+	add(path)
+	trimmed := path
+	for _, prefix := range []string{"lzfs://./", "lzfs://", "file://./", "file://"} {
+		trimmed = strings.TrimPrefix(trimmed, prefix)
+	}
+	trimmed = strings.TrimPrefix(trimmed, "./")
+	add(trimmed)
+	add(strings.ReplaceAll(trimmed, "\\", "/"))
+	return aliases
+}
+
+func (s *Services) motionResourceStoreForLocked(manager tjs.ObjectID) *motionResourceStore {
+	cache := s.MotionResources[manager]
+	if cache == nil {
+		cache = &motionResourceStore{modules: make(map[string]*motionResource)}
+		s.MotionResources[manager] = cache
+	}
+	return cache
+}
+
 func (s *Services) motionResource(path string, manager tjs.ObjectID) *motionResource {
 	s.ensureInit()
 	s.mu.RLock()
-	resource := s.MotionResources[manager]
-	s.mu.RUnlock()
-	if resource == nil || resource.path != path {
-		return nil
+	cache := s.MotionResources[manager]
+	var resource *motionResource
+	if cache != nil {
+		for _, alias := range motionResourcePathAliases(path) {
+			if candidate := cache.modules[alias]; candidate != nil {
+				resource = candidate
+				break
+			}
+		}
 	}
+	s.mu.RUnlock()
 	return resource
 }
 
 func (s *Services) setMotionResource(manager tjs.ObjectID, resource *motionResource) {
+	if resource == nil {
+		return
+	}
 	s.ensureInit()
 	s.mu.Lock()
-	s.MotionResources[manager] = resource
+	cache := s.motionResourceStoreForLocked(manager)
+	for _, alias := range motionResourcePathAliases(resource.path) {
+		cache.modules[alias] = resource
+	}
+	known := false
+	for _, candidate := range cache.order {
+		if candidate == resource {
+			known = true
+			break
+		}
+	}
+	if !known {
+		cache.order = append(cache.order, resource)
+	}
+	cache.lastLoaded = resource
+	cache.lastPath = resource.path
 	s.mu.Unlock()
+}
+
+func (s *Services) rememberMotionResourceCachePath(manager tjs.ObjectID, resource *motionResource, path string) {
+	if resource == nil || path == "" {
+		return
+	}
+	s.ensureInit()
+	s.mu.Lock()
+	cache := s.motionResourceStoreForLocked(manager)
+	if cache.cachePaths == nil {
+		cache.cachePaths = make(map[*motionResource]map[string]struct{})
+	}
+	paths := cache.cachePaths[resource]
+	if paths == nil {
+		paths = make(map[string]struct{})
+		cache.cachePaths[resource] = paths
+	}
+	paths[path] = struct{}{}
+	s.mu.Unlock()
+}
+
+func (s *Services) motionResourceCachePaths(manager tjs.ObjectID, resource *motionResource) []string {
+	if resource == nil {
+		return nil
+	}
+	s.ensureInit()
+	s.mu.RLock()
+	cache := s.MotionResources[manager]
+	var paths []string
+	if cache != nil {
+		for path := range cache.cachePaths[resource] {
+			paths = append(paths, path)
+		}
+	}
+	s.mu.RUnlock()
+	return paths
+}
+
+// uniqueMotionResources returns the distinct modules a manager holds in load
+// order. The reference derives its play mode from uniqueCachedModules()
+// (EmotePlayer.cpp:676): one motion module selects SingleCache, several select
+// MultiCache.
+func (s *Services) uniqueMotionResources(manager tjs.ObjectID) []*motionResource {
+	s.ensureInit()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cache := s.MotionResources[manager]
+	if cache == nil {
+		return nil
+	}
+	return append([]*motionResource(nil), cache.order...)
+}
+
+// unloadMotionResource drops every alias that points at the module addressed by
+// path, matching collectModuleCacheKeys + unregisterModuleSnapshot
+// (ResourceManager.cpp:59-75,172-204).
+func (s *Services) unloadMotionResource(manager tjs.ObjectID, path string) bool {
+	s.ensureInit()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cache := s.MotionResources[manager]
+	if cache == nil {
+		return false
+	}
+	var target *motionResource
+	for _, alias := range motionResourcePathAliases(path) {
+		if candidate := cache.modules[alias]; candidate != nil {
+			target = candidate
+			break
+		}
+	}
+	if target == nil {
+		return false
+	}
+	for alias, candidate := range cache.modules {
+		if candidate == target {
+			delete(cache.modules, alias)
+		}
+	}
+	for index, candidate := range cache.order {
+		if candidate == target {
+			cache.order = append(cache.order[:index], cache.order[index+1:]...)
+			break
+		}
+	}
+	if cache.lastLoaded == target {
+		cache.lastLoaded = nil
+		cache.lastPath = ""
+	}
+	for id, module := range s.MotionModules {
+		if module == target {
+			delete(s.MotionModules, id)
+		}
+	}
+	delete(cache.cachePaths, target)
+	return true
+}
+
+// clearMotionResourceCache releases every module and layer-id mapping the
+// manager held (ResourceManager.cpp:207-220).
+func (s *Services) clearMotionResourceCache(manager tjs.ObjectID) {
+	s.ensureInit()
+	s.mu.Lock()
+	cache := s.MotionResources[manager]
+	if cache != nil {
+		owned := make(map[*motionResource]struct{}, len(cache.order))
+		for _, resource := range cache.order {
+			owned[resource] = struct{}{}
+		}
+		for id, resource := range s.MotionModules {
+			if _, ok := owned[resource]; ok {
+				delete(s.MotionModules, id)
+			}
+		}
+		delete(s.MotionResources, manager)
+	}
+	s.mu.Unlock()
+}
+
+func (s *Services) lastMotionResource(manager tjs.ObjectID) *motionResource {
+	s.ensureInit()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cache := s.MotionResources[manager]
+	if cache == nil {
+		return nil
+	}
+	return cache.lastLoaded
 }
 
 func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value) (tjs.Value, error) {
@@ -291,7 +510,7 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 	case "completionType":
 		return tjs.IntegerValue(state.completionType), nil
 	case "outline":
-		return tjs.IntegerValue(state.outline), nil
+		return tjs.StringValue(state.outline), nil
 	case "onAction":
 		return state.onAction, nil
 	default:
@@ -338,11 +557,7 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 		}
 		state.completionType = n
 	case "outline":
-		n, err := value.Int()
-		if err != nil {
-			return err
-		}
-		state.outline = n
+		state.outline = value.Text()
 	case "onAction":
 		state.onAction = value
 	default:
@@ -352,16 +567,23 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 }
 
 func (s *Services) playerResource(state *motionPlayerState) *motionResource {
-	s.mu.RLock()
-	resource := s.MotionResources[state.resourceManager]
-	if resource == nil {
-		for _, candidate := range s.MotionResources {
-			resource = candidate
-			break
-		}
+	if state.resource != nil {
+		return state.resource
 	}
+	s.ensureInit()
+	s.mu.RLock()
+	cache := s.MotionResources[state.resourceManager]
 	s.mu.RUnlock()
-	return resource
+	if cache == nil {
+		return nil
+	}
+	if len(cache.order) == 1 {
+		return cache.order[0]
+	}
+	// Motion.Player historically used whatever module the manager loaded last;
+	// keep that fallback only for players that did not bind an explicit module,
+	// while EmotePlayer always pins its own resource.
+	return cache.lastLoaded
 }
 
 // motionField reads one numeric field of a motion entry, returning fallback
@@ -467,16 +689,33 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 	if err != nil {
 		return err
 	}
+	// EmotePlayer carries coord/scale/rot/mirror state the shared player does
+	// not; compose it with the explicit draw matrix so Motion.Player (emote ==
+	// nil) keeps using state.drawMatrix unchanged.
+	drawMatrix := state.drawMatrix
+	var params []float64
+	var attached []*motionResource
+	maskMode := int64(0)
+	freezeBody := false
+	if state.emote != nil {
+		drawMatrix = state.emote.drawMatrixFor(drawMatrix)
+		params = state.emote.renderParameters()
+		attached = state.attached
+		maskMode = state.emote.maskMode
+		freezeBody = state.emote.freezeBodyMotion()
+	}
 	if s.gpuCapture && layerHasCanvas(layer) && layer.Type == LayerAlpha {
 		key := motionPlayerGPUKey{
 			resource: resource, chara: state.chara, motion: state.motion,
-			tick: state.frameTick, filter: state.completionType, matrix: state.drawMatrix,
-			scale: layer.RenderScale(),
+			tick: state.frameTick, matrix: drawMatrix,
+			scale: layer.RenderScale(), maskMode: maskMode,
+			completion: state.completionType, freezeBody: freezeBody,
+			variables: motionVariablesSignature(params) + "\x00" + motionAttachmentsSignature(attached),
 		}
 		motion := state.gpuMotion
 		if !state.gpuMotionValid || state.gpuMotionKey != key {
 			var err error
-			motion, err = buildGPUMotion(resource, state.chara, state.motion, state.frameTick, state.completionType, state.drawMatrix, layer.RenderScale())
+			motion, err = buildGPUMotionVariables(resource, state.chara, state.motion, state.frameTick, 0, drawMatrix, layer.RenderScale(), params, freezeBody, maskMode, state.completionType, attached)
 			if err != nil {
 				return err
 			}
@@ -496,10 +735,16 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 		}
 		return nil
 	}
-	frame, err := renderPSBMotion(resource, state.chara, state.motion, state.frameTick, state.completionType)
+	frame, err := renderPSBMotionOptions(resource, state.chara, state.motion, state.frameTick, 0, params, freezeBody, maskMode, state.completionType, attached)
 	if err != nil {
 		return err
 	}
+	// Camera nodes offset prepared items in final draw space, so the offset
+	// joins the draw matrix translation (PlayerRenderItems.cpp:1174-1215).
+	baseDrawMatrix := drawMatrix
+	drawMatrix = motionCameraDrawMatrix(resource, state.chara, state.motion, state.frameTick, params, freezeBody, maskMode, state.completionType, attached, drawMatrix)
+	cameraOffsetX := drawMatrix.tx - baseDrawMatrix.tx
+	cameraOffsetY := drawMatrix.ty - baseDrawMatrix.ty
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	layer.gpuMotion = nil
@@ -507,6 +752,12 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 	// layer keeps the size its KAG definition assigned. Only a layer without a
 	// bitmap adopts the motion canvas size.
 	if !layerHasCanvas(layer) {
+		if cameraOffsetX != 0 || cameraOffsetY != 0 {
+			// This fallback adopts the canvas verbatim, so the camera offset is
+			// applied as an integer canvas translation rather than through a
+			// draw affine.
+			frame = motionTranslateCanvas(frame, int(cameraOffsetX), int(cameraOffsetY))
+		}
 		if err := layer.SetRGBA(int32(frame.Width), int32(frame.Height), frame.RGBA); err != nil {
 			return err
 		}
@@ -518,7 +769,7 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 		layer.markImageDirty()
 		return nil
 	}
-	drawMotionCanvasInto(layer, frame, state.drawMatrix, state.completionType)
+	drawMotionCanvasInto(layer, frame, drawMatrix, 0)
 	layer.Visible = true
 	layer.imageModified = true
 	layer.markImageDirty()

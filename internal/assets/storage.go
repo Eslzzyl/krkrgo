@@ -29,10 +29,12 @@ type Storage struct {
 	searchPaths []string
 	imageCache  imageDecodeCache
 
-	directoryMu  sync.Mutex
-	directories  map[string]directoryIndex
-	directoryAge uint64
-	cacheProject string
+	filterMu         sync.RWMutex
+	extractionFilter ExtractionFilter
+	directoryMu      sync.Mutex
+	directories      map[string]directoryIndex
+	directoryAge     uint64
+	cacheProject     string
 }
 
 const maxStorageDirectoryIndexes = 128
@@ -154,6 +156,9 @@ func OpenStorage(project string, limits core.Limits) (*Storage, error) {
 	s := &Storage{Project: project, Catalog: make(map[string]int), limits: limits}
 	for _, path := range paths {
 		if err := s.Mount(path, limits); err != nil {
+			if errors.Is(err, ErrNotArchive) {
+				continue
+			}
 			return nil, err
 		}
 	}
@@ -162,6 +167,21 @@ func OpenStorage(project string, limits core.Limits) (*Storage, error) {
 
 func NewStorage(project string, limits core.Limits) (*Storage, error) {
 	return OpenStorage(project, limits)
+}
+
+// SetExtractionFilter applies a protected XP3 entry callback to current and future mounts.
+func (s *Storage) SetExtractionFilter(filter ExtractionFilter) {
+	if s == nil {
+		return
+	}
+	s.filterMu.Lock()
+	s.extractionFilter = filter
+	for _, archive := range s.Archives {
+		if archive != nil {
+			archive.SetExtractionFilter(filter)
+		}
+	}
+	s.filterMu.Unlock()
 }
 
 func (s *Storage) Mount(path string, limits core.Limits) error {
@@ -185,11 +205,14 @@ func (s *Storage) Mount(path string, limits core.Limits) error {
 	if err != nil {
 		return err
 	}
+	s.filterMu.Lock()
+	a.SetExtractionFilter(s.extractionFilter)
 	index := len(s.Archives)
 	for name := range a.Entries {
 		s.Catalog[name] = index
 	}
 	s.Archives = append(s.Archives, a)
+	s.filterMu.Unlock()
 	s.clearDirectoryIndexes()
 	return nil
 }

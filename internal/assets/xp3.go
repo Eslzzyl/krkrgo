@@ -16,9 +16,10 @@ import (
 )
 
 var (
-	ErrMalformed = errors.New("malformed asset")
-	ErrLimit     = errors.New("asset limit exceeded")
-	ErrNotFound  = errors.New("asset not found")
+	ErrMalformed  = errors.New("malformed asset")
+	ErrNotArchive = errors.New("not an XP3 archive")
+	ErrLimit      = errors.New("asset limit exceeded")
+	ErrNotFound   = errors.New("asset not found")
 )
 
 var MAGIC = []byte{'X', 'P', '3', '\r', '\n', ' ', '\n', 0x1a, 0x8b, 0x67, 0x01}
@@ -53,6 +54,18 @@ type cachedSegment struct {
 	older, newer         *cachedSegment
 }
 
+// ExtractionFilterInfo describes one fully decompressed protected XP3 entry.
+// Buffer is private to this read and can be modified before checksum verification.
+type ExtractionFilterInfo struct {
+	Offset   uint64
+	Buffer   []byte
+	FileHash uint32
+	FileName string
+}
+
+// ExtractionFilter transforms protected entry bytes into checksum-valid plaintext.
+type ExtractionFilter func(ExtractionFilterInfo) error
+
 type Archive struct {
 	Path    string
 	Entries map[string]Entry
@@ -62,10 +75,22 @@ type Archive struct {
 	baseOffset  uint64
 	limits      core.Limits
 	mu          sync.Mutex
+	filterMu    sync.RWMutex
+	filter      ExtractionFilter
 	cache       map[segmentCacheKey]*cachedSegment
 	cacheOldest *cachedSegment
 	cacheNewest *cachedSegment
 	cacheBytes  uint64
+}
+
+// SetExtractionFilter configures the callback used for protected XP3 entries.
+func (a *Archive) SetExtractionFilter(filter ExtractionFilter) {
+	if a == nil {
+		return
+	}
+	a.filterMu.Lock()
+	a.filter = filter
+	a.filterMu.Unlock()
 }
 
 func OpenArchive(path string, limits core.Limits) (*Archive, error) {
@@ -157,7 +182,7 @@ func findArchiveOffset(file *os.File, length, maxScan uint64) (uint64, error) {
 		return 0, nil
 	}
 	if n < 2 || header[0] != 'M' || header[1] != 'Z' {
-		return 0, fmt.Errorf("%w: file is not an XP3 archive", ErrMalformed)
+		return 0, errors.Join(ErrMalformed, ErrNotArchive)
 	}
 
 	scanEnd := length
@@ -167,7 +192,7 @@ func findArchiveOffset(file *os.File, length, maxScan uint64) (uint64, error) {
 	const scanChunkSize uint64 = 256 << 10
 	const markerLen uint64 = 11
 	if scanEnd < 16 || scanEnd-16 < markerLen {
-		return 0, fmt.Errorf("%w: MZ executable contains no XP3 marker", ErrMalformed)
+		return 0, errors.Join(ErrMalformed, ErrNotArchive)
 	}
 	buffer := make([]byte, int(scanChunkSize)+len(MAGIC)-1)
 	for chunkStart := uint64(16); chunkStart <= scanEnd-markerLen; {
@@ -192,7 +217,7 @@ func findArchiveOffset(file *os.File, length, maxScan uint64) (uint64, error) {
 		}
 		chunkStart += scanChunkSize
 	}
-	return 0, fmt.Errorf("%w: MZ executable contains no XP3 marker within scan limit", ErrMalformed)
+	return 0, errors.Join(ErrMalformed, ErrNotArchive)
 }
 
 func inflate(data []byte, size, limit uint64) ([]byte, error) {
@@ -347,6 +372,18 @@ func (a *Archive) ReadRange(name string, offset, size uint64) ([]byte, error) {
 		all, err := a.readEncodedRange(e, 0, e.Size)
 		if err != nil {
 			return nil, err
+		}
+		a.filterMu.RLock()
+		filter := a.filter
+		a.filterMu.RUnlock()
+		if filter != nil {
+			if err := filter(ExtractionFilterInfo{
+				Buffer:   all,
+				FileHash: e.Hash,
+				FileName: e.Name,
+			}); err != nil {
+				return nil, fmt.Errorf("%w: XP3 extraction filter %s: %w", ErrMalformed, e.Name, err)
+			}
 		}
 		if hashadler.Checksum(all) != e.Hash {
 			return nil, fmt.Errorf("%w: protected entry is not checksum-verified plaintext", ErrMalformed)

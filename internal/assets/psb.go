@@ -1,6 +1,7 @@
 package assets
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -71,7 +72,7 @@ func psbArray(data []byte, offset int) ([]uint32, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	if t < 13 || t > 16 {
+	if t < 13 || t > 20 {
 		return nil, 0, psbErr("invalid array count type %d", t)
 	}
 	width := int(t - 12)
@@ -87,7 +88,7 @@ func psbArray(data []byte, offset int) ([]uint32, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	if et < 13 || et > 16 {
+	if et < 13 || et > 20 {
 		return nil, 0, psbErr("invalid array element type %d", et)
 	}
 	elem := int(et - 12)
@@ -106,9 +107,58 @@ func psbArray(data []byte, offset int) ([]uint32, int, error) {
 		if err != nil {
 			return nil, 0, err
 		}
+		if v > uint64(^uint32(0)) {
+			return nil, 0, psbErr("array element exceeds 32-bit offset")
+		}
 		values[i] = uint32(v)
 	}
 	return values, start + length, nil
+}
+
+// ParsePSBWithSeed decrypts an E-mote PSB v2 metadata region with the
+// ResourceManager seed before decoding it.
+func ParsePSBWithSeed(data []byte, seed int32) (*Document, error) {
+	if seed <= 0 {
+		return ParsePSB(data)
+	}
+	decrypted, err := decryptEmotePSB(data, uint32(seed))
+	if err != nil {
+		return nil, err
+	}
+	return ParsePSB(decrypted)
+}
+
+func decryptEmotePSB(data []byte, seed uint32) ([]byte, error) {
+	if len(data) < 40 || string(data[:4]) != "PSB\x00" {
+		return nil, psbErr("not a PSB container")
+	}
+	version := binary.LittleEndian.Uint16(data[4:6])
+	if version != 2 {
+		return nil, psbErr("encrypted seed is unsupported for version %d", version)
+	}
+	offsetEncrypt := binary.LittleEndian.Uint32(data[8:12])
+	offsetChunkOffsets := binary.LittleEndian.Uint32(data[24:28])
+	if uint64(offsetEncrypt) > uint64(len(data)) ||
+		uint64(offsetChunkOffsets) > uint64(len(data)) ||
+		offsetEncrypt >= offsetChunkOffsets {
+		return nil, psbErr("invalid encrypted region")
+	}
+
+	out := append([]byte(nil), data...)
+	key := [4]uint32{0x075BCD15, 0x159A55E5, 0x1F123BB5, seed}
+	var value uint32
+	for i := int(offsetEncrypt); i < int(offsetChunkOffsets); i++ {
+		if value == 0 {
+			b := key[3]
+			a := key[0] ^ key[0]<<11
+			key[0], key[1], key[2] = key[1], key[2], b
+			c := a ^ b ^ ((a ^ (b >> 11)) >> 8)
+			key[3], value = c, c
+		}
+		out[i] ^= byte(value)
+		value >>= 8
+	}
+	return out, nil
 }
 
 // ParsePSB decodes a bounded PSB v2 document.

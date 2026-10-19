@@ -304,9 +304,20 @@ func RunGame(args []string) {
 }
 
 // displayRenderScale rounds the monitor's device scale factor to an integer
-// render density. Retina displays report 2; conventional displays report 1.
+// render density. Ebitengine may not have initialized a monitor before RunGame;
+// use scale 1 until that monitor becomes available.
 func displayRenderScale() int32 {
-	scale := ebiten.Monitor().DeviceScaleFactor()
+	return displayScaleForMonitor(ebiten.Monitor())
+}
+
+func displayScaleForMonitor(monitor *ebiten.MonitorType) int32 {
+	if monitor == nil {
+		return 1
+	}
+	return renderScaleFromDeviceScale(monitor.DeviceScaleFactor())
+}
+
+func renderScaleFromDeviceScale(scale float64) int32 {
 	if scale < 1 {
 		return 1
 	}

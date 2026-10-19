@@ -36,6 +36,22 @@ func TestPSBScalarsAndLists(t *testing.T) {
 		t.Fatalf("list = %#v", doc.Root)
 	}
 }
+func TestPSBEmoteSeedDecryptsEqualOffsetRegion(t *testing.T) {
+	const seed = int32(742877301)
+	data := minimalPSB([]byte{5, 0xff})
+	binary.LittleEndian.PutUint32(data[8:], 40)
+	encrypted, err := decryptEmotePSB(data, uint32(seed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ParsePSBWithSeed(encrypted, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := doc.Root.(int64); !ok || got != -1 {
+		t.Fatalf("root = %#v, want int64(-1)", doc.Root)
+	}
+}
 
 func TestPSBAllowsZeroHeaderLength(t *testing.T) {
 	data := minimalPSB([]byte{4})

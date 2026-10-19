@@ -792,6 +792,18 @@ func TestVMGlobalScriptPropertyGetterAndSetter(t *testing.T) {
 	}
 }
 
+func TestVMGlobalPropertyDeclarationIsAvailableBeforeExecution(t *testing.T) {
+	got := executeVMSource(t, `
+var object = %[field:0];
+with (object) { &.field = &future; }
+property future { getter { return 42; } }
+return *(&object.field);
+`)
+	if n, _ := got.Int(); n != 42 {
+		t.Fatalf("forward property reference = %v, want 42", got)
+	}
+}
+
 func TestVMReadOnlyScriptProperty(t *testing.T) {
 	got := executeVMSource(t, `property answer { getter() { return 42; } } answer=7; return answer;`)
 	if n, _ := got.Int(); n != 42 {

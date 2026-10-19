@@ -245,10 +245,10 @@ func (s *Session) registerNatives() error {
 			return err
 		}
 	}
-	for _, property := range []string{"caption", "visible", "minimized", "maximized", "left", "top", "layerLeft", "layerTop", "width", "height", "innerWidth", "innerHeight", "borderStyle", "fullScreen", "fitToClient", "zoom", "zoomNumer", "zoomDenom", "mouseCursor", "mouseCursorState", "disableResize", "disableMove", "enableNCMouseEvent", "exSystemMenu", "windowRect", "clientRect", "normalRect", "drawDevice", "focusedLayer"} {
+	for _, property := range []string{"caption", "visible", "minimized", "maximized", "left", "top", "layerLeft", "layerTop", "width", "height", "innerWidth", "innerHeight", "borderStyle", "fullScreen", "fitToClient", "zoom", "zoomNumer", "zoomDenom", "mouseCursor", "mouseCursorState", "disableResize", "disableMove", "enableNCMouseEvent", "exSystemMenu", "windowRect", "clientRect", "normalRect", "drawDevice", "focusedLayer", "primaryLayer"} {
 		setter := "Window.set:" + property
 		switch property {
-		case "windowRect", "clientRect", "normalRect":
+		case "windowRect", "clientRect", "normalRect", "primaryLayer":
 			setter = ""
 		}
 		if err := s.VM.RegisterNativeProperty(window, property, "Window.get:"+property, setter); err != nil {
@@ -339,7 +339,7 @@ func (s *Session) registerNatives() error {
 	if err := s.VM.RegisterNativeMethod(storages, "@initialize", "Storages.@initialize"); err != nil {
 		return err
 	}
-	for _, method := range []string{"addArchive", "addAutoPath", "removeAutoPath", "getFullPath", "getPlacedPath", "getLocalName", "isExistentStorage", "isExistentDirectory", "getListAt", "fstat", "dirlist", "dirlistEx", "extractStorageExt", "extractStorageName", "extractStoragePath", "chopStorageExt", "clearArchiveCache", "clearStorageCaches", "getTime", "setTime", "getLastModifiedFileTime", "setLastModifiedFileTime", "exportFile", "deleteFile", "truncateFile", "moveFile", "dirtree", "removeDirectory", "createDirectory", "createDirectoryNoNormalize", "changeDirectory", "setFileAttributes", "resetFileAttributes", "getFileAttributes", "selectDirectory", "copyFile", "copyFileNoNormalize", "isExistentStorageNoSearchNoNormalize", "getDisplayName", "searchPath"} {
+	for _, method := range []string{"addArchive", "setXP3ArchiveExtractionFilter", "addAutoPath", "removeAutoPath", "getFullPath", "getPlacedPath", "getLocalName", "isExistentStorage", "isExistentDirectory", "getListAt", "fstat", "dirlist", "dirlistEx", "extractStorageExt", "extractStorageName", "extractStoragePath", "chopStorageExt", "clearArchiveCache", "clearStorageCaches", "getTime", "setTime", "getLastModifiedFileTime", "setLastModifiedFileTime", "exportFile", "deleteFile", "truncateFile", "moveFile", "dirtree", "removeDirectory", "createDirectory", "createDirectoryNoNormalize", "changeDirectory", "setFileAttributes", "resetFileAttributes", "getFileAttributes", "selectDirectory", "copyFile", "copyFileNoNormalize", "isExistentStorageNoSearchNoNormalize", "getDisplayName", "searchPath"} {
 		if err := s.VM.RegisterNativeStaticMethod(storages, method, "Storages."+method); err != nil {
 			return err
 		}
@@ -689,7 +689,35 @@ func (s *Session) executeStorage(name string, useConfiguredEncoding bool) (tjs.V
 	}
 	return s.executeSource(name, src, false)
 }
+func (s *Session) loadXP3ArchiveExtractionFilter() error {
+	if s.Services == nil || s.Services.Storage == nil {
+		return nil
+	}
+	storage := s.Services.Storage
+	path := filepath.Join(storage.Project, "xp3filter.tjs")
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("stat XP3 extraction filter %q: %w", path, err)
+	}
+	sourceBytes, err := storage.Read("xp3filter.tjs")
+	if err != nil {
+		return fmt.Errorf("read XP3 extraction filter: %w", err)
+	}
+	source, err := decodeScriptStorageDefault(sourceBytes)
+	if err != nil {
+		return fmt.Errorf("decode XP3 extraction filter: %w", err)
+	}
+	if _, err := s.executeSource("xp3filter.tjs", source, false); err != nil {
+		return fmt.Errorf("execute XP3 extraction filter: %w", err)
+	}
+	return nil
+}
+
 func (s *Session) Startup() (tjs.Value, error) {
+	if err := s.loadXP3ArchiveExtractionFilter(); err != nil {
+		return tjs.VoidValue, err
+	}
 	if _, installed := s.VM.Globals["exists"]; !installed {
 		if err := s.VM.RegisterNative("exists"); err != nil {
 			return tjs.VoidValue, err
@@ -1955,7 +1983,11 @@ func (s *Session) Close() error {
 				video.Close()
 			}
 		}
+		if s.Services.Storage != nil {
+			s.Services.Storage.SetExtractionFilter(nil)
+		}
 		s.Services.mu.Lock()
+		s.Services.xp3ExtractionFilter = tjs.VoidValue
 		s.Services.Videos = make(map[tjs.ObjectID]*VideoOverlay)
 		s.Services.audioMixerOwner = nil
 		s.Services.mu.Unlock()

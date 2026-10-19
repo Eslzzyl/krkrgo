@@ -19,7 +19,7 @@ import (
 // storagesNative implements the static Storages API against the session's
 // existing project storage. Storage-independent path helpers remain available
 // to headless sessions without mounted project storage.
-func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value) (tjs.Value, error) {
+func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value, budget *uint64) (tjs.Value, error) {
 	if operation == "@initialize" {
 		return tjs.VoidValue, fmt.Errorf("Storages cannot be instantiated")
 	}
@@ -88,6 +88,45 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 			return tjs.VoidValue, UnsupportedDevice("archive cache")
 		}
 		storage.ClearCache()
+		return tjs.VoidValue, nil
+	}
+	if operation == "setXP3ArchiveExtractionFilter" {
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Storages.setXP3ArchiveExtractionFilter requires a function or void")
+		}
+		callback := args[0]
+		if callback.IsVoid() || (callback.Kind() == tjs.KindObject && callback.IsNull()) {
+			s.mu.Lock()
+			s.xp3ExtractionFilter = tjs.VoidValue
+			s.mu.Unlock()
+			if storage := storagesStorage(s); storage != nil {
+				storage.SetExtractionFilter(nil)
+			}
+			return tjs.VoidValue, nil
+		}
+		if callback.Kind() != tjs.KindObject {
+			return tjs.VoidValue, fmt.Errorf("Storages.setXP3ArchiveExtractionFilter requires a function or void")
+		}
+		object, exists := vm.Objects.Lookup(callback.ObjectRef().Object)
+		if !exists || object.Category != tjs.CategoryFunction {
+			return tjs.VoidValue, fmt.Errorf("Storages.setXP3ArchiveExtractionFilter requires a function or void")
+		}
+		s.mu.Lock()
+		s.xp3ExtractionFilter = callback
+		s.mu.Unlock()
+		if storage := storagesStorage(s); storage != nil {
+			storage.SetExtractionFilter(func(info assets.ExtractionFilterInfo) error {
+				_, err := vm.CallFunction(callback, tjs.VoidValue, []tjs.Value{
+					tjs.IntegerValue(int64(info.FileHash)),
+					tjs.IntegerValue(int64(info.Offset)),
+					tjs.OctetBufferValue(info.Buffer),
+					tjs.IntegerValue(int64(len(info.Buffer))),
+					tjs.StringValue(info.FileName),
+					tjs.VoidValue,
+				}, s, budget)
+				return err
+			})
+		}
 		return tjs.VoidValue, nil
 	}
 	if operation == "addArchive" {

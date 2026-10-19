@@ -80,13 +80,16 @@ func boundContextRef(context ObjectID) ObjectRef {
 // Value is a TJS variant. Strings contain UTF-16 code units, not Go runes.
 // Values are immutable from the script engine's point of view; constructors and
 // accessors copy slices so an object cannot mutate a value behind another value.
+// OctetBufferValue is the single constructor that opts out of that rule: it
+// borrows a native callback's buffer so script writes can update it in place.
 type Value struct {
-	kind    ValueKind
-	integer int64
-	real    float64
-	string  UTF16
-	octet   []byte
-	object  ObjectRef
+	kind         ValueKind
+	integer      int64
+	real         float64
+	string       UTF16
+	octet        []byte
+	octetMutable bool
+	object       ObjectRef
 }
 
 var VoidValue = Value{kind: KindVoid}
@@ -100,6 +103,16 @@ func StringValue(s string) Value       { return Value{kind: KindString, string: 
 func StringUnits(units []uint16) Value { return Value{kind: KindString, string: NewUTF16(units)} }
 func OctetValue(bytes []byte) Value {
 	return Value{kind: KindOctet, octet: append([]byte(nil), bytes...)}
+}
+
+// OctetBufferValue wraps buf as a mutable TJS Octet without copying. Native
+// callbacks use it when a script must mutate storage they own, such as an XP3
+// filter buffer. The returned Value borrows buf: it must not outlive the
+// callback's buffer, and later script writes made through this Value (indexed
+// assignment or Octet.xor) modify buf in place. OctetValue remains the
+// copying, immutable constructor for all other callers.
+func OctetBufferValue(buf []byte) Value {
+	return Value{kind: KindOctet, octet: buf, octetMutable: true}
 }
 func ObjectValue(ref ObjectRef) Value    { return Value{kind: KindObject, object: ref} }
 func ObjectIDValue(id ObjectID) Value    { return ObjectValue(NewObjectRef(id)) }

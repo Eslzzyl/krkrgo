@@ -130,3 +130,20 @@ func TestLiteralValidation(t *testing.T) {
 		t.Fatal("non-null object literal accepted")
 	}
 }
+
+func TestOctetBufferValueBorrowsNativeBuffer(t *testing.T) {
+	buf := []byte{1, 2, 3}
+	borrowed := OctetBufferValue(buf)
+	buf[0] = 9
+	if got := borrowed.Octets()[0]; got != 9 {
+		t.Fatalf("borrowed octet[0] = %d, want 9", got)
+	}
+	copied := OctetValue(buf)
+	buf[1] = 8
+	if got := copied.Octets()[1]; got != 2 {
+		t.Fatalf("copied octet[1] = %d, want 2", got)
+	}
+	if !borrowed.octetMutable || copied.octetMutable {
+		t.Fatalf("octet mutability = %v/%v, want true/false", borrowed.octetMutable, copied.octetMutable)
+	}
+}

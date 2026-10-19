@@ -35,6 +35,7 @@ func TestLayerTransitionLifecycleAndCompletionCallback(t *testing.T) {
 		};
 		destinationLayer.beginTransition("crossfade", true, sourceLayer, %[
 			time: 10,
+			exchange: true,
 			callback: function() { transitionTicks = clock; return clock; }
 		]);
 	`, false); err != nil {
@@ -218,7 +219,7 @@ func TestLayerTransitionAutomaticCompletionAndIdleStop(t *testing.T) {
 			completedDestination = dest;
 			completedSource = src;
 		};
-		destinationLayer.beginTransition("crossfade", true, sourceLayer, %[time:10]);
+		destinationLayer.beginTransition("crossfade", true, sourceLayer, %[time:10, exchange:true]);
 	`, false); err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +261,7 @@ func TestLayerTransitionWithChildrenExchangesSubtrees(t *testing.T) {
 		sourceLayer.fillRect(0, 0, 1, 1, 0xff000000);
 		destinationChild = new Layer(null, destinationLayer);
 		sourceChild = new Layer(null, sourceLayer);
-		destinationLayer.beginTransition("crossfade", true, sourceLayer, %[time:10]);
+		destinationLayer.beginTransition("crossfade", true, sourceLayer, %[time:10, exchange:true]);
 		destinationLayer.stopTransition();
 	`, false); err != nil {
 		t.Fatal(err)
@@ -282,6 +283,53 @@ func TestLayerTransitionWithChildrenExchangesSubtrees(t *testing.T) {
 	}
 	if !truth {
 		t.Fatalf("withchildren subtree exchange = %v", value)
+	}
+}
+func TestLayerTransitionSimpleCompletionKeepsTreeAndUsesSourceImage(t *testing.T) {
+	session := NewSession(DefaultServices(), 10_000)
+	if _, err := session.executeSource("<transition-simple-completion-setup>", `
+		rootLayer = new Layer();
+		rootLayer.setSize(1, 1);
+		destinationLayer = new Layer(null, rootLayer);
+		sourceLayer = new Layer(null, rootLayer);
+		destinationLayer.fillRect(0, 0, 1, 1, 0xffffffff);
+		sourceLayer.fillRect(0, 0, 1, 1, 0xff000000);
+		destinationLayer.visible = true;
+		sourceLayer.visible = true;
+		completedDestination = null;
+		completedSource = null;
+		destinationLayer.onTransitionCompleted = function(dest, src) {
+			completedDestination = dest;
+			completedSource = src;
+		};
+		destinationLayer.beginTransition("crossfade", true, sourceLayer, %[time:10]);
+	`, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AdvanceClock(10); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate(`
+		rootLayer.children[0] === destinationLayer &&
+		rootLayer.children[1] === sourceLayer &&
+		destinationLayer.parent === rootLayer &&
+		sourceLayer.parent === rootLayer &&
+		destinationLayer.visible &&
+		sourceLayer.visible &&
+		completedDestination === destinationLayer &&
+		completedSource === sourceLayer &&
+		destinationLayer.getMainPixel(0,0) == 0 &&
+		sourceLayer.getMainPixel(0,0) == 0
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	truth, err := value.Truth()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truth {
+		t.Fatalf("simple transition completion = %v, want source image on destination with tree and source preserved", value)
 	}
 }
 

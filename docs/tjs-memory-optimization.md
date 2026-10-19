@@ -69,6 +69,7 @@ Relevant ownership behavior:
 - `Value.UTF16()` returns a copied UTF-16 slice;
 - `Value.Octets()` returns copied bytes;
 - `ToOctet` copies an existing octet value;
+- `OctetBufferValue` is the exception: it borrows a native callback buffer without copying and marks it mutable, so indexed assignment and `Octet.xor` update that buffer in place; `OctetValue` results and script literals stay immutable;
 - string concatenation allocates a new UTF-16 result.
 
 The copy behavior is part of the public safety model. Internal VM paths need separate read-only or transfer-oriented APIs before any copy is removed.

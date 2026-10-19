@@ -52,6 +52,11 @@ func TestNativeWindowSessionPropertiesAndTransitions(t *testing.T) {
 	} else if same, err := value.Truth(); err != nil || !same {
 		t.Fatalf("Window.drawDevice setter/getter = %v, %v", value, err)
 	}
+	if value, err := session.Evaluate(`primary = new Layer(window, null); window.primaryLayer === primary`); err != nil {
+		t.Fatal(err)
+	} else if same, truthErr := value.Truth(); truthErr != nil || !same {
+		t.Fatalf("Window.primaryLayer = %v, %v", value, truthErr)
+	}
 	object, ok := session.VM.Objects.Lookup(id)
 	if !ok {
 		t.Fatal("window object missing from VM")

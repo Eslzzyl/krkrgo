@@ -6,6 +6,7 @@ package tjs
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode"
@@ -1346,15 +1347,20 @@ func (p *cparser) expr(min int) (*cexpr, error) {
 				return nil, fmt.Errorf("unsupported TJS construct %s", t.text)
 			}
 			p.p++
-			if t.text == "true" {
+			switch t.text {
+			case "NaN":
+				left = &cexpr{kind: "value", value: RealValue(math.NaN()), loc: t.loc}
+			case "Infinity":
+				left = &cexpr{kind: "value", value: RealValue(math.Inf(1)), loc: t.loc}
+			case "true":
 				left = &cexpr{kind: "value", value: IntegerValue(1), loc: t.loc}
-			} else if t.text == "false" {
+			case "false":
 				left = &cexpr{kind: "value", value: IntegerValue(0), loc: t.loc}
-			} else if t.text == "null" {
+			case "null":
 				left = &cexpr{kind: "value", value: NullValue, loc: t.loc}
-			} else if t.text == "void" {
+			case "void":
 				left = &cexpr{kind: "value", value: VoidValue, loc: t.loc}
-			} else {
+			default:
 				left = &cexpr{kind: "name", text: t.text, loc: t.loc}
 			}
 		} else {
@@ -1516,8 +1522,17 @@ func (c *compiler) hoistGlobalFunction(loc core.SourceLocation, fn *Function, re
 		Instruction{Location: loc, Op: Op{Code: OpDeclare, Name: name, Input: register}},
 	)
 }
+func (c *compiler) hoistGlobalProperty(loc core.SourceLocation, property *Property, register int, name string) {
+	if c.scopeDepth != 0 || c.withDepth != 0 {
+		return
+	}
+	c.hoisted = append(c.hoisted,
+		Instruction{Location: loc, Op: Op{Code: OpProperty, Out: register, Property: property}},
+		Instruction{Location: loc, Op: Op{Code: OpDeclare, Name: name, Input: register}},
+	)
+}
 
-func (c *compiler) prependHoistedFunctions() {
+func (c *compiler) prependHoistedDeclarations() {
 	if len(c.hoisted) == 0 {
 		return
 	}
@@ -2378,6 +2393,7 @@ func (c *compiler) statement() error {
 		r := c.reg()
 		c.emit(t.loc, Op{Code: OpProperty, Out: r, Property: property})
 		c.emit(t.loc, Op{Code: OpDeclare, Name: property.Name, Input: r})
+		c.hoistGlobalProperty(t.loc, property, r, property.Name)
 		if c.p.eat(";") {
 			return nil
 		}
@@ -2946,7 +2962,7 @@ func compile_with_preprocessor(storage, source string, expression bool, state *P
 			}
 		}
 	}
-	c.prependHoistedFunctions()
+	c.prependHoistedDeclarations()
 	return c.program, nil
 }
 func compile(storage, source string) (Program, error) {

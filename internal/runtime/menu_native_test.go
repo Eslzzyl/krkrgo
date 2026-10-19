@@ -89,6 +89,15 @@ func TestMenuPluginInstallsHeadlessMenuSurface(t *testing.T) {
 	if _, err := session.Evaluate(`Plugins.link("windowEx.dll")`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := session.Evaluate(`owner = new Dictionary(); owner.window = window; pluginItem = new MenuItem(owner, "plugin item"); root.add(pluginItem)`); err != nil {
+		t.Fatalf("MenuItem with plugin owner and caption: %v", err)
+	}
+	if !evalTruth(`pluginItem.window === null && pluginItem.root === root`) {
+		t.Fatal("MenuItem inferred a Window from its action owner instead of the optional second argument")
+	}
+	if _, err := session.Evaluate(`root.remove(pluginItem)`); err != nil {
+		t.Fatal(err)
+	}
 	if !evalTruth(`MenuItem.biSystem == 1 && MenuItem.biRestore == 2 && MenuItem.biMinimize == 3 && MenuItem.biClose == 5 && MenuItem.biCloseDisabled == 6 && MenuItem.biMinimizeDisabled == 7 && MenuItem.biPopupClose == 8 && MenuItem.biPopupRestore == 9 && MenuItem.biPopupMaximize == 10 && MenuItem.biPopupMinimize == 11`) {
 		t.Fatal("windowEx MenuItem bitmap constants are incorrect")
 	}

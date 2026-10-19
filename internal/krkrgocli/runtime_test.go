@@ -32,3 +32,26 @@ func TestParseLaunchArgsUpscaler(t *testing.T) {
 		t.Fatal("conflicting upscaler flags succeeded")
 	}
 }
+
+func TestDisplayScaleDefaultsWithoutMonitor(t *testing.T) {
+	if got := displayScaleForMonitor(nil); got != 1 {
+		t.Fatalf("display scale without monitor = %d, want 1", got)
+	}
+}
+
+func TestRenderScaleFromDeviceScale(t *testing.T) {
+	for _, test := range []struct {
+		deviceScale float64
+		want        int32
+	}{
+		{0, 1},
+		{1, 1},
+		{1.5, 2},
+		{2, 2},
+		{8, 4},
+	} {
+		if got := renderScaleFromDeviceScale(test.deviceScale); got != test.want {
+			t.Errorf("renderScaleFromDeviceScale(%v) = %d, want %d", test.deviceScale, got, test.want)
+		}
+	}
+}

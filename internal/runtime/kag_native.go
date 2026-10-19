@@ -41,9 +41,9 @@ func cloneKAGConductorQueue(vm *tjs.VM, value tjs.Value, host tjs.Host, budget *
 }
 
 func storeKAGConductorQueues(vm *tjs.VM, context, state tjs.Value, host tjs.Host, budget *uint64) error {
-	queues := make([]tjs.Value, len(kagConductorQueueNames))
-	present := 0
-	for index, name := range kagConductorQueueNames {
+	var queueState tjs.Value
+	present := false
+	for _, name := range kagConductorQueueNames {
 		value, exists, err := vm.GetMemberIfPresent(context, name, host, budget)
 		if err != nil {
 			return fmt.Errorf("read KAG conductor %s: %w", name, err)
@@ -51,27 +51,23 @@ func storeKAGConductorQueues(vm *tjs.VM, context, state tjs.Value, host tjs.Host
 		if !exists {
 			continue
 		}
-		queues[index], err = cloneKAGConductorQueue(vm, value, host, budget)
+		copy, err := cloneKAGConductorQueue(vm, value, host, budget)
 		if err != nil {
 			return fmt.Errorf("copy KAG conductor %s: %w", name, err)
 		}
-		present++
-	}
-	if present == 0 {
-		return nil
-	}
-	if present != len(kagConductorQueueNames) {
-		return fmt.Errorf("incomplete KAG conductor queue state")
-	}
-
-	queueState, err := vm.NewDictionary()
-	if err != nil {
-		return err
-	}
-	for index, name := range kagConductorQueueNames {
-		if err := vm.SetMemberWithRuntime(queueState, name, queues[index], 0, host, budget); err != nil {
+		if !present {
+			queueState, err = vm.NewDictionary()
+			if err != nil {
+				return err
+			}
+		}
+		if err := vm.SetMemberWithRuntime(queueState, name, copy, 0, host, budget); err != nil {
 			return fmt.Errorf("store KAG conductor %s: %w", name, err)
 		}
+		present = true
+	}
+	if !present {
+		return nil
 	}
 	if err := vm.SetMemberWithRuntime(state, kagConductorQueuesMember, queueState, 0, host, budget); err != nil {
 		return fmt.Errorf("store KAG conductor queues: %w", err)
@@ -91,7 +87,12 @@ func restoreKAGConductorQueues(vm *tjs.VM, context, state tjs.Value, host tjs.Ho
 				return fmt.Errorf("read saved KAG conductor %s: %w", name, err)
 			}
 			if !found {
-				return fmt.Errorf("saved KAG conductor state missing %s", name)
+				continue
+			}
+			if _, exists, err := vm.GetMemberIfPresent(context, name, host, budget); err != nil {
+				return fmt.Errorf("read KAG conductor %s before restore: %w", name, err)
+			} else if !exists {
+				continue
 			}
 			copy, err := cloneKAGConductorQueue(vm, value, host, budget)
 			if err != nil {

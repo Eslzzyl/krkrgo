@@ -164,6 +164,13 @@ func (s *Services) layerTransition(vm *tjs.VM, context tjs.Value, operation stri
 	if !callback.IsVoid() && (callback.Kind() != tjs.KindObject || callback.IsNull()) {
 		return tjs.VoidValue, fmt.Errorf("Layer.beginTransition: options.callback must be a function")
 	}
+	exchange := false
+	if value, ok := options.Get("exchange"); ok && !value.IsVoid() {
+		exchange, err = value.Truth()
+		if err != nil {
+			return tjs.VoidValue, fmt.Errorf("Layer.beginTransition: options.exchange: %w", err)
+		}
+	}
 	selfUpdate := false
 	if value, ok := options.Get("selfupdate"); ok && !value.IsVoid() {
 		selfUpdate, err = value.Truth()
@@ -250,6 +257,7 @@ func (s *Services) layerTransition(vm *tjs.VM, context tjs.Value, operation stri
 	layer.transitionType1 = type1
 	layer.transitionType2 = type2
 	layer.transitionAccel = accel
+	layer.transitionExchange = exchange
 	layer.transitionChildren = withChildren
 	layer.transitionCallback = callback
 	layer.transitionDuration = uint64(time)
@@ -283,6 +291,7 @@ func (s *Services) cancelLayerTransition(layer *Layer) {
 	layer.transitionType2 = 0
 	layer.transitionAccel = 0
 	layer.transitionChildren = false
+	layer.transitionExchange = false
 	layer.transitionCallback = tjs.VoidValue
 	layer.transitionVague = 0
 	layer.transitionRule = nil
@@ -712,26 +721,27 @@ func (s *Services) stopLayerTransition(vm *tjs.VM, layer *Layer, notify bool, bu
 		s.cancelLayerTransition(layer)
 		return nil
 	}
-	destX, destY, destVisible := layer.Bounds.X, layer.Bounds.Y, layer.Visible
-	srcX, srcY, srcVisible := source.Bounds.X, source.Bounds.Y, source.Visible
-	if os.Getenv("KRKRGO_TRANSITION_TRACE") == "1" {
-		fmt.Fprintf(os.Stderr, "transition-trace stop time=%d layer=%d source=%d notify=%t method=%s dest=%08x src=%08x pixels=%08x\n",
-			s.TimeMS, layer.ID, source.ID, notify, layer.transitionMethod,
-			crc32.ChecksumIEEE(layer.transitionDestImage), crc32.ChecksumIEEE(layer.transitionSourceImage), crc32.ChecksumIEEE(layer.transitionPixels))
+	if layer.transitionExchange {
+		destX, destY, destVisible := layer.Bounds.X, layer.Bounds.Y, layer.Visible
+		srcX, srcY, srcVisible := source.Bounds.X, source.Bounds.Y, source.Visible
+		layer.RGBA = append(layer.RGBA[:0], layer.transitionSourceImage...)
+		source.RGBA = append(source.RGBA[:0], layer.transitionDestImage...)
+		layer.ImageWidth, source.ImageWidth = source.ImageWidth, layer.ImageWidth
+		layer.ImageHeight, source.ImageHeight = source.ImageHeight, layer.ImageHeight
+		layer.ProvinceWidth, source.ProvinceWidth = source.ProvinceWidth, layer.ProvinceWidth
+		layer.ProvinceHeight, source.ProvinceHeight = source.ProvinceHeight, layer.ProvinceHeight
+		layer.ImageLeft, source.ImageLeft = source.ImageLeft, layer.ImageLeft
+		layer.ImageTop, source.ImageTop = source.ImageTop, layer.ImageTop
+		layer.Bounds.X, layer.Bounds.Y, layer.Visible = srcX, srcY, srcVisible
+		source.Bounds.X, source.Bounds.Y, source.Visible = destX, destY, destVisible
+		s.exchangeLayerTree(layer, source, !layer.transitionChildren)
+	} else {
+		// KAG's simple completion callback assigns the source to the existing
+		// layer; preserve source pixels and tree identity for that path.
+		layer.RGBA = append(layer.RGBA[:0], layer.transitionSourceImage...)
 	}
-	layer.RGBA = append(layer.RGBA[:0], layer.transitionSourceImage...)
-	source.RGBA = append(source.RGBA[:0], layer.transitionDestImage...)
-	layer.ImageWidth, source.ImageWidth = source.ImageWidth, layer.ImageWidth
-	layer.ImageHeight, source.ImageHeight = source.ImageHeight, layer.ImageHeight
-	layer.ProvinceWidth, source.ProvinceWidth = source.ProvinceWidth, layer.ProvinceWidth
-	layer.ProvinceHeight, source.ProvinceHeight = source.ProvinceHeight, layer.ProvinceHeight
-	layer.ImageLeft, source.ImageLeft = source.ImageLeft, layer.ImageLeft
-	layer.ImageTop, source.ImageTop = source.ImageTop, layer.ImageTop
-	layer.Bounds.X, layer.Bounds.Y, layer.Visible = srcX, srcY, srcVisible
-	source.Bounds.X, source.Bounds.Y, source.Visible = destX, destY, destVisible
 	layer.markImageDirty()
 	source.markImageDirty()
-	s.exchangeLayerTree(layer, source, !layer.transitionChildren)
 	source.transitionHidden = false
 	layer.markRenderDirty()
 	source.markRenderDirty()
@@ -741,6 +751,7 @@ func (s *Services) stopLayerTransition(vm *tjs.VM, layer *Layer, notify bool, bu
 	layer.transitionType1 = 0
 	layer.transitionType2 = 0
 	layer.transitionAccel = 0
+	layer.transitionExchange = false
 	layer.transitionChildren = false
 	layer.transitionCallback = tjs.VoidValue
 	layer.transitionDuration = 0

@@ -793,8 +793,6 @@ func (s *Services) constructMenuItem(id tjs.ObjectID, args []tjs.Value) error {
 	windowID := tjs.ObjectID(0)
 	if root.Kind() == tjs.KindObject && !root.IsNull() {
 		windowID = root.ObjectRef().Object
-	} else if model.installed {
-		windowID = owner.ObjectRef().Object
 	}
 	if windowID != 0 {
 		window := s.Window(windowID)

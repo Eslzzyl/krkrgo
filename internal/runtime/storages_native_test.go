@@ -302,6 +302,52 @@ func TestStoragesAddArchiveMountsProjectArchive(t *testing.T) {
 	}
 }
 
+func TestXP3ExtractionFilterLoadsBeforeStartup(t *testing.T) {
+	project := t.TempDir()
+	plain := []byte("protected resource")
+	ciphertext := append([]byte(nil), plain...)
+	for i := range ciphertext {
+		ciphertext[i] ^= 53
+	}
+	if err := os.WriteFile(filepath.Join(project, "protected.xp3"), storagesTestProtectedXP3("entry.bin", ciphertext, plain), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "xp3filter.tjs"), []byte(`Storages.setXP3ArchiveExtractionFilter(function(hash, offset, buffer, size, fileName, context) { buffer.xor(0, size, 53); });`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "startup.tjs"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := assets.OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeArchivesOnCleanup(t, storage)
+	session := NewSession(NewServices(storage, "", core.DefaultLimits()), 50_000)
+	defer session.Close()
+
+	if _, err := session.Startup(); err != nil {
+		t.Fatalf("Startup() error = %v", err)
+	}
+
+	got, err := storage.Read("protected.xp3>entry.bin")
+	if err != nil || string(got) != string(plain) {
+		t.Fatalf("protected resource = %q, %v; want %q", got, err, plain)
+	}
+	laterPath := filepath.Join(project, "later.xp3")
+	if err := os.WriteFile(laterPath, storagesTestProtectedXP3("later.bin", ciphertext, plain), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Evaluate(`Storages.addArchive("later.xp3")`); err != nil {
+		t.Fatalf("Storages.addArchive() error = %v", err)
+	}
+	got, err = storage.Read("later.xp3>later.bin")
+	if err != nil || string(got) != string(plain) {
+		t.Fatalf("mounted protected resource = %q, %v; want %q", got, err, plain)
+	}
+
+}
+
 // localStorageURI returns the file-media storage name for a native path with
 // its original case, matching System.dataPath and the reference
 // TVPNormalizeStorageName spelling.
@@ -373,6 +419,36 @@ func storagesTestXP3(name string, contents []byte) []byte {
 	segment = storagesTestU64(segment, uint64(len(contents)))
 	entry = storagesTestChunk(entry, "segm", segment)
 	entry = storagesTestChunk(entry, "adlr", storagesTestU32(nil, assets.Adler32(contents)))
+	index := storagesTestChunk(nil, "File", entry)
+
+	indexOffset := uint64(len(archive))
+	binary.LittleEndian.PutUint64(archive[len(assets.MAGIC):], indexOffset)
+	archive = append(archive, 0)
+	archive = storagesTestU64(archive, uint64(len(index)))
+	return append(archive, index...)
+}
+
+func storagesTestProtectedXP3(name string, ciphertext, plaintext []byte) []byte {
+	archive := make([]byte, len(assets.MAGIC)+8)
+	copy(archive, assets.MAGIC)
+	dataOffset := uint64(len(archive))
+	archive = append(archive, ciphertext...)
+
+	nameUnits := utf16.Encode([]rune(name))
+	info := storagesTestU32(nil, 0x80000000)
+	info = storagesTestU64(info, uint64(len(plaintext)))
+	info = storagesTestU64(info, uint64(len(ciphertext)))
+	info = storagesTestU16(info, uint16(len(nameUnits)))
+	for _, unit := range nameUnits {
+		info = storagesTestU16(info, unit)
+	}
+	entry := storagesTestChunk(nil, "info", info)
+	segment := storagesTestU32(nil, 0)
+	segment = storagesTestU64(segment, dataOffset)
+	segment = storagesTestU64(segment, uint64(len(plaintext)))
+	segment = storagesTestU64(segment, uint64(len(ciphertext)))
+	entry = storagesTestChunk(entry, "segm", segment)
+	entry = storagesTestChunk(entry, "adlr", storagesTestU32(nil, assets.Adler32(plaintext)))
 	index := storagesTestChunk(nil, "File", entry)
 
 	indexOffset := uint64(len(archive))

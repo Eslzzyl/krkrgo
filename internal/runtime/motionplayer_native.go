@@ -51,6 +51,11 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 			return err
 		}
 	}
+	for _, method := range []string{"setEmotePSBDecryptSeed", "getEmotePSBDecryptSeed"} {
+		if err := vm.RegisterNativeStaticMethod(resourceManager, method, "Motion.ResourceManager."+method); err != nil {
+			return err
+		}
+	}
 	for _, method := range []string{"requireLayerId", "releaseLayerId"} {
 		if err := vm.RegisterNativeMethod(resourceManager, method, "Motion.ResourceManager.unsupported:"+method); err != nil {
 			return err
@@ -97,6 +102,26 @@ func (s *Services) motionResourceManagerNative(vm *tjs.VM, context tjs.Value, op
 	switch operation {
 	case "@initialize", "@invalidate", "ResourceManager", "finalize":
 		return tjs.VoidValue, nil
+	case "setEmotePSBDecryptSeed":
+		if len(args) != 1 {
+			return tjs.VoidValue, fmt.Errorf("Motion.ResourceManager.setEmotePSBDecryptSeed requires one integer")
+		}
+		seed, err := args[0].Int()
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		if seed < -2147483648 || seed > 2147483647 {
+			return tjs.VoidValue, fmt.Errorf("Motion.ResourceManager.setEmotePSBDecryptSeed: seed out of range")
+		}
+		s.mu.Lock()
+		s.EmotePSBDecryptSeed = int32(seed)
+		s.mu.Unlock()
+		return tjs.VoidValue, nil
+	case "getEmotePSBDecryptSeed":
+		s.mu.RLock()
+		seed := s.EmotePSBDecryptSeed
+		s.mu.RUnlock()
+		return tjs.IntegerValue(int64(seed)), nil
 	case "load", "loadSource":
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.ResourceManager.%s: missing storage path", operation)
@@ -106,28 +131,41 @@ func (s *Services) motionResourceManagerNative(vm *tjs.VM, context tjs.Value, op
 			return tjs.VoidValue, err
 		}
 		path := args[0].Text()
-		if tjs.HasMember(vm.Objects, cache, path) {
-			if s.motionResource(path, context.ObjectRef().Object) == nil {
-				resource, err := s.loadMotionResource(path)
-				if err != nil {
-					return tjs.VoidValue, err
-				}
-				s.setMotionResource(context.ObjectRef().Object, resource)
+		manager := context.ObjectRef().Object
+		resource := s.motionResource(path, manager)
+		if resource != nil {
+			value, found, err := s.motionModuleFromCache(vm, cache, manager, path)
+			if err != nil {
+				return tjs.VoidValue, err
 			}
-			return tjs.GetMember(vm.Objects, cache, path)
+			if found {
+				return value, nil
+			}
+			value, err = psbValueToTJS(vm, resource.doc.Root, resource.data, 0)
+			if err != nil {
+				return tjs.VoidValue, err
+			}
+			s.registerMotionModule(value, resource)
+			if err := tjs.SetMember(vm.Objects, cache, path, value); err != nil {
+				return tjs.VoidValue, err
+			}
+			s.rememberMotionResourceCachePath(manager, resource, path)
+			return value, nil
 		}
-		resource, err := s.loadMotionResource(path)
+		resource, err = s.loadMotionResource(path)
 		if err != nil {
 			return tjs.VoidValue, err
 		}
+		s.setMotionResource(manager, resource)
 		value, err := psbValueToTJS(vm, resource.doc.Root, resource.data, 0)
 		if err != nil {
 			return tjs.VoidValue, err
 		}
+		s.registerMotionModule(value, resource)
 		if err := tjs.SetMember(vm.Objects, cache, path, value); err != nil {
 			return tjs.VoidValue, err
 		}
-		s.setMotionResource(context.ObjectRef().Object, resource)
+		s.rememberMotionResourceCachePath(manager, resource, path)
 		return value, nil
 	case "unload":
 		if len(args) == 0 {
@@ -137,12 +175,29 @@ func (s *Services) motionResourceManagerNative(vm *tjs.VM, context tjs.Value, op
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		return tjs.VoidValue, tjs.DeleteMember(vm.Objects, cache, args[0].Text())
+		path := args[0].Text()
+		manager := context.ObjectRef().Object
+		resource := s.motionResource(path, manager)
+		paths := motionResourcePathAliases(path)
+		if resource != nil {
+			paths = append(paths, s.motionResourceCachePaths(manager, resource)...)
+			paths = append(paths, motionResourcePathAliases(resource.path)...)
+		}
+		for _, cachePath := range paths {
+			if tjs.HasMember(vm.Objects, cache, cachePath) {
+				if err := tjs.DeleteMember(vm.Objects, cache, cachePath); err != nil {
+					return tjs.VoidValue, err
+				}
+			}
+		}
+		s.unloadMotionResource(manager, path)
+		return tjs.VoidValue, nil
 	case "clearCache":
 		cache, err := vm.NewDictionary()
 		if err != nil {
 			return tjs.VoidValue, err
 		}
+		s.clearMotionResourceCache(context.ObjectRef().Object)
 		return tjs.VoidValue, tjs.SetMember(vm.Objects, context, "_motionResourceCache", cache)
 	case "findSource":
 		if len(args) == 0 {
@@ -152,13 +207,93 @@ func (s *Services) motionResourceManagerNative(vm *tjs.VM, context tjs.Value, op
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		if tjs.HasMember(vm.Objects, cache, args[0].Text()) {
-			return tjs.GetMember(vm.Objects, cache, args[0].Text())
+		path := args[0].Text()
+		manager := context.ObjectRef().Object
+		resource := s.motionResource(path, manager)
+		if resource == nil {
+			return tjs.VoidValue, nil
 		}
-		return tjs.VoidValue, nil
+		value, found, err := s.motionModuleFromCache(vm, cache, manager, path)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		if found {
+			return value, nil
+		}
+		value, err = psbValueToTJS(vm, resource.doc.Root, resource.data, 0)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		s.registerMotionModule(value, resource)
+		if err := tjs.SetMember(vm.Objects, cache, path, value); err != nil {
+			return tjs.VoidValue, err
+		}
+		s.rememberMotionResourceCachePath(manager, resource, path)
+		return value, nil
 	default:
 		return tjs.VoidValue, fmt.Errorf("unsupported Motion.ResourceManager operation %q", operation)
 	}
+}
+
+func (s *Services) motionModuleValueForResource(vm *tjs.VM, manager tjs.ObjectID, resource *motionResource) (tjs.Value, bool, error) {
+	if vm == nil || resource == nil {
+		return tjs.VoidValue, false, nil
+	}
+	paths := s.motionResourceCachePaths(manager, resource)
+	if len(paths) == 0 {
+		return tjs.VoidValue, false, nil
+	}
+	cache, err := s.motionResourceCache(vm, tjs.ObjectIDValue(manager))
+	if err != nil {
+		return tjs.VoidValue, false, err
+	}
+	for _, path := range paths {
+		value, found, err := s.motionModuleFromCache(vm, cache, manager, path)
+		if err != nil {
+			return tjs.VoidValue, false, err
+		}
+		if found {
+			return value, true, nil
+		}
+	}
+	return tjs.VoidValue, false, nil
+}
+
+func (s *Services) motionModuleFromCache(vm *tjs.VM, cache tjs.Value, manager tjs.ObjectID, path string) (tjs.Value, bool, error) {
+	expected := s.motionResource(path, manager)
+	if expected == nil {
+		return tjs.VoidValue, false, nil
+	}
+	for _, alias := range motionResourcePathAliases(path) {
+		if !tjs.HasMember(vm.Objects, cache, alias) {
+			continue
+		}
+		value, err := tjs.GetMember(vm.Objects, cache, alias)
+		if err != nil {
+			return tjs.VoidValue, false, err
+		}
+		if value.Kind() != tjs.KindObject || value.IsNull() {
+			continue
+		}
+		s.mu.RLock()
+		resource := s.MotionModules[value.ObjectRef().Object]
+		s.mu.RUnlock()
+		if resource == expected {
+			return value, true, nil
+		}
+	}
+	return tjs.VoidValue, false, nil
+}
+
+// registerMotionModule lets EmotePlayer.load(module) resolve the snapshot the
+// same way the reference lookupModuleSnapshot does.
+func (s *Services) registerMotionModule(value tjs.Value, resource *motionResource) {
+	if resource == nil || value.Kind() != tjs.KindObject || value.IsNull() {
+		return
+	}
+	s.mu.Lock()
+	s.MotionModules[value.ObjectRef().Object] = resource
+	s.mu.Unlock()
 }
 
 func (s *Services) motionResourceCache(vm *tjs.VM, context tjs.Value) (tjs.Value, error) {

@@ -281,3 +281,69 @@ afterSelfAssign = p.getNextTag();`
 		t.Fatal("self-assign changed parser state or retained macro definitions")
 	}
 }
+func TestKAGConductorSnapshotPreservesOnlyPresentQueues(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	vm, host := session.VM, session.Services
+	budget := uint64(10_000)
+
+	context, err := vm.NewDictionary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := vm.NewDictionary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := vm.NewArray([]tjs.Value{tjs.StringValue("queued")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetMemberWithRuntime(context, "pendings", pending, 0, host, &budget); err != nil {
+		t.Fatal(err)
+	}
+	if err := storeKAGConductorQueues(vm, context, state, host, &budget); err != nil {
+		t.Fatalf("store sparse conductor queues: %v", err)
+	}
+
+	savedQueues, exists, err := vm.GetMemberIfPresent(state, kagConductorQueuesMember, host, &budget)
+	if err != nil || !exists {
+		t.Fatalf("saved queue state = %v, %t, %v", savedQueues, exists, err)
+	}
+	if _, exists, err := vm.GetMemberIfPresent(savedQueues, "fasttags", host, &budget); err != nil || exists {
+		t.Fatalf("saved fasttags = %t, %v; want omitted", exists, err)
+	}
+	extraQueue, err := vm.NewArray([]tjs.Value{tjs.StringValue("unrecognized by this conductor")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetMemberWithRuntime(savedQueues, "fasttags", extraQueue, 0, host, &budget); err != nil {
+		t.Fatal(err)
+	}
+
+	restoredContext, err := vm.NewDictionary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := vm.NewArray([]tjs.Value{tjs.StringValue("replacement")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetMemberWithRuntime(restoredContext, "pendings", replacement, 0, host, &budget); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreKAGConductorQueues(vm, restoredContext, state, host, &budget); err != nil {
+		t.Fatalf("restore sparse conductor queues: %v", err)
+	}
+	got, exists, err := vm.GetMemberIfPresent(restoredContext, "pendings", host, &budget)
+	if err != nil || !exists {
+		t.Fatalf("restored pendings = %v, %t, %v", got, exists, err)
+	}
+	items, err := vm.ArrayItems(got)
+	if err != nil || len(items) != 1 || items[0].Text() != "queued" {
+		t.Fatalf("restored pendings items = %v, %v; want [queued]", items, err)
+	}
+	if _, exists, err := vm.GetMemberIfPresent(restoredContext, "fasttags", host, &budget); err != nil || exists {
+		t.Fatalf("restored fasttags = %t, %v; want omitted", exists, err)
+	}
+}

@@ -1,7 +1,9 @@
 package tjs
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -160,6 +162,13 @@ func (d *Dispatcher) Set(target Value, name string, value Value, flags ...uint32
 	var flag uint32
 	if len(flags) != 0 {
 		flag = flags[0]
+	}
+	if target.Kind() == KindOctet {
+		index, ok := octetIndexName(name)
+		if !ok {
+			return ErrMemberNotFound
+		}
+		return setOctetElement(target, index, value)
 	}
 	o, err := d.resolve(target)
 	if err != nil {
@@ -614,20 +623,26 @@ func splitTJSString(subject, delimiters UTF16, purgeEmpty bool) []Value {
 }
 
 func octetMethod(d *Dispatcher, value Value, name string) (Value, error) {
+	if index, ok := octetIndexName(name); ok {
+		return octetElement(value, index)
+	}
 	switch name {
 	case "length":
-		return IntegerValue(int64(len(value.Octets()))), nil
+		return IntegerValue(int64(len(value.octet))), nil
 	case "get":
 		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
 			i, e := argInt(a, 0)
 			if e != nil {
 				return Value{}, e
 			}
-			b := v.Octets()
-			if i < 0 || i >= int64(len(b)) {
+			if i < 0 || i >= int64(len(v.octet)) {
 				return IntegerValue(0), nil
 			}
-			return IntegerValue(int64(b[i])), nil
+			return IntegerValue(int64(v.octet[i])), nil
+		}), nil
+	case "xor":
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
+			return xorOctetBuffer(v, a)
 		}), nil
 	case "subarray":
 		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
@@ -635,14 +650,14 @@ func octetMethod(d *Dispatcher, value Value, name string) (Value, error) {
 			if e != nil {
 				return Value{}, e
 			}
-			end := int64(len(v.Octets()))
+			end := int64(len(v.octet))
 			if len(a) > 1 {
 				end, e = a[1].Int()
 				if e != nil {
 					return Value{}, e
 				}
 			}
-			b := v.Octets()
+			b := v.octet
 			if start < 0 {
 				start = 0
 			}
@@ -658,6 +673,95 @@ func octetMethod(d *Dispatcher, value Value, name string) (Value, error) {
 		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) { return StringValue(v.Text()), nil }), nil
 	}
 	return VoidValue, ErrMemberNotFound
+}
+
+// octetIndexName converts a member name to a TJS octet byte index. The
+// reference VM treats names beginning with a decimal digit as indices and
+// parses the leading digits like TJS_atoi.
+func octetIndexName(name string) (int64, bool) {
+	if name == "" || name[0] < '0' || name[0] > '9' {
+		return 0, false
+	}
+	end := 1
+	for end < len(name) && name[end] >= '0' && name[end] <= '9' {
+		end++
+	}
+	n, err := strconv.ParseInt(name[:end], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// octetIndexKey converts a TJS member key to an octet byte index. Integer keys
+// are exact, real keys truncate toward zero, and string keys use the
+// reference VM's digit-prefix rule.
+func octetIndexKey(key Value) (int64, bool) {
+	switch key.Kind() {
+	case KindInteger:
+		return key.IntegerValue(), true
+	case KindReal:
+		n := key.RealValue()
+		if math.IsNaN(n) || math.IsInf(n, 0) || n < math.MinInt64 || n >= math.MaxInt64 {
+			return 0, false
+		}
+		return int64(n), true
+	case KindString:
+		return octetIndexName(key.Text())
+	}
+	return 0, false
+}
+
+func octetElement(value Value, index int64) (Value, error) {
+	if index < 0 || index >= int64(len(value.octet)) {
+		return Value{}, fmt.Errorf("TJS Octet index %d out of range", index)
+	}
+	return IntegerValue(int64(value.octet[index])), nil
+}
+
+func setOctetElement(value Value, index int64, next Value) error {
+	if !value.octetMutable {
+		return errors.New("cannot modify immutable TJS Octet")
+	}
+	if index < 0 || index >= int64(len(value.octet)) {
+		return fmt.Errorf("TJS Octet index %d out of range", index)
+	}
+	n, err := next.Int()
+	if err != nil {
+		return err
+	}
+	value.octet[index] = byte(n)
+	return nil
+}
+
+// xorOctetBuffer XORs the low eight bits of mask into
+// value.octet[offset:offset+length]. It requires a buffer created by
+// OctetBufferValue and reports ranges that leave the buffer instead of
+// clamping or partially applying the operation.
+func xorOctetBuffer(value Value, args []Value) (Value, error) {
+	offset, err := argInt(args, 0)
+	if err != nil {
+		return Value{}, err
+	}
+	length, err := argInt(args, 1)
+	if err != nil {
+		return Value{}, err
+	}
+	mask, err := argInt(args, 2)
+	if err != nil {
+		return Value{}, err
+	}
+	if !value.octetMutable {
+		return Value{}, errors.New("cannot modify immutable TJS Octet")
+	}
+	if offset < 0 || length < 0 || offset > int64(len(value.octet)) || length > int64(len(value.octet))-offset {
+		return Value{}, fmt.Errorf("TJS Octet.xor range offset %d length %d is outside the %d-byte buffer", offset, length, len(value.octet))
+	}
+	b := byte(mask)
+	for i := offset; i < offset+length; i++ {
+		value.octet[i] ^= b
+	}
+	return VoidValue, nil
 }
 
 func argInt(args []Value, n int) (int64, error) {

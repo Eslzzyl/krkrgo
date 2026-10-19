@@ -2818,6 +2818,28 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 				r[op.Out] = VoidValue
 				break
 			}
+			if receiver.Kind() == KindOctet {
+				if index, indexed := octetIndexKey(key); indexed {
+					x, er := octetElement(receiver, index)
+					if er != nil {
+						e = er
+					} else {
+						r[op.Out] = x
+					}
+					break
+				}
+				x, er := octetMethod(NewDispatcher(v.Objects), receiver, key.Text())
+				if er == nil {
+					r[op.Out] = x
+				} else if errors.Is(er, ErrMemberNotFound) && op.Optional {
+					r[op.Out] = VoidValue
+				} else if errors.Is(er, ErrMemberNotFound) {
+					e = fmt.Errorf("member not found: %s", key.Text())
+				} else {
+					e = er
+				}
+				break
+			}
 			id, er := v.handle(receiver)
 			if er != nil {
 				if op.Optional {
@@ -2940,6 +2962,15 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 				key = op.Value
 			}
 			value := r[op.Input]
+			if receiver.Kind() == KindOctet {
+				index, indexed := octetIndexKey(key)
+				if !indexed {
+					e = fmt.Errorf("member not found: %s", key.Text())
+					break
+				}
+				e = setOctetElement(receiver, index, value)
+				break
+			}
 			id, er := v.handle(receiver)
 			if er != nil {
 				e = er

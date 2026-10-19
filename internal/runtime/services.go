@@ -145,10 +145,16 @@ type Services struct {
 	pendingPaintScratch      []tjs.ObjectID
 	transitionIDsScratch     []tjs.ObjectID
 	pendingTransitionScratch []tjs.ObjectID
-	MotionResources          map[tjs.ObjectID]*motionResource
+	MotionResources          map[tjs.ObjectID]*motionResourceStore
+	MotionModules            map[tjs.ObjectID]*motionResource
+	EmotePSBDecryptSeed      int32
 	MotionPlayers            map[tjs.ObjectID]*motionPlayerState
 	MotionAdaptors           map[tjs.ObjectID]tjs.ObjectID
 	Bitmaps                  map[tjs.ObjectID]*Bitmap
+	D3DImages                map[tjs.ObjectID]*d3dImageData
+	D3DPictures              map[tjs.ObjectID]*d3dPictureData
+	D3DLayers                map[tjs.ObjectID]*d3dLayerData
+	D3DDevices               map[tjs.ObjectID]*d3dDeviceData
 	bitmapLoadGeneration     map[tjs.ObjectID]uint64
 	bitmapLoadResults        map[tjs.ObjectID]bitmapAsyncResult
 	Fonts                    map[tjs.ObjectID]*FontState
@@ -162,6 +168,7 @@ type Services struct {
 	prerenderedFonts         map[string]*prerenderedFont
 	prerenderedFontMappings  map[prerenderedFontMapKey]string
 	Pads                     map[tjs.ObjectID]*padState
+	xp3ExtractionFilter      tjs.Value
 	Roots                    []tjs.Value
 	scriptsInitialized       bool
 	clipboardBackend         clipboardBackend
@@ -370,7 +377,7 @@ func NewServices(storage *assets.Storage, saveDir string, limits core.Limits) *S
 		appLocks:                make(map[string]struct{}),
 		Dates:                   make(map[tjs.ObjectID]*tjs.Date),
 		LayerCursors:            make(map[tjs.ObjectID]tjs.Value),
-		Arguments:               make(map[string]string), MessageMap: make(map[string]string), Natives: NewNativeRegistry(), KAGParsers: make(map[tjs.ObjectID]*KAGParser), CSVParsers: make(map[tjs.ObjectID]*csvParserState), Videos: make(map[tjs.ObjectID]*VideoOverlay), Sounds: make(map[tjs.ObjectID]*WaveSoundBuffer), SoundEvents: make(map[tjs.ObjectID][]SoundEvent), Layers: make(map[tjs.ObjectID]*Layer), MotionResources: make(map[tjs.ObjectID]*motionResource), MotionPlayers: make(map[tjs.ObjectID]*motionPlayerState), MotionAdaptors: make(map[tjs.ObjectID]tjs.ObjectID), Bitmaps: make(map[tjs.ObjectID]*Bitmap), Fonts: make(map[tjs.ObjectID]*FontState), TextRenderers: make(map[tjs.ObjectID]*textRenderState), LayerFonts: make(map[tjs.ObjectID]tjs.ObjectID), LayerDefaultFonts: make(map[tjs.ObjectID]tjs.ObjectID), LayerChildren: make(map[tjs.ObjectID]tjs.Value),
+		Arguments:               make(map[string]string), MessageMap: make(map[string]string), Natives: NewNativeRegistry(), KAGParsers: make(map[tjs.ObjectID]*KAGParser), CSVParsers: make(map[tjs.ObjectID]*csvParserState), Videos: make(map[tjs.ObjectID]*VideoOverlay), Sounds: make(map[tjs.ObjectID]*WaveSoundBuffer), SoundEvents: make(map[tjs.ObjectID][]SoundEvent), Layers: make(map[tjs.ObjectID]*Layer), MotionResources: make(map[tjs.ObjectID]*motionResourceStore), MotionModules: make(map[tjs.ObjectID]*motionResource), MotionPlayers: make(map[tjs.ObjectID]*motionPlayerState), MotionAdaptors: make(map[tjs.ObjectID]tjs.ObjectID), Bitmaps: make(map[tjs.ObjectID]*Bitmap), Fonts: make(map[tjs.ObjectID]*FontState), TextRenderers: make(map[tjs.ObjectID]*textRenderState), LayerFonts: make(map[tjs.ObjectID]tjs.ObjectID), LayerDefaultFonts: make(map[tjs.ObjectID]tjs.ObjectID), LayerChildren: make(map[tjs.ObjectID]tjs.Value),
 	}
 }
 func DefaultServices() *Services { return NewServices(nil, "", core.DefaultLimits()) }
@@ -399,6 +406,12 @@ func (s *Services) ensureInit() {
 	}
 	if s.preprocessor == nil {
 		s.preprocessor = newRuntimePreprocessor()
+	}
+	if s.MotionResources == nil {
+		s.MotionResources = make(map[tjs.ObjectID]*motionResourceStore)
+	}
+	if s.MotionModules == nil {
+		s.MotionModules = make(map[tjs.ObjectID]*motionResource)
 	}
 	if s.sessionPreprocessors == nil {
 		s.sessionPreprocessors = make(map[*tjs.VM]*tjs.Preprocessor)
@@ -491,6 +504,18 @@ func (s *Services) ensureInit() {
 	}
 	if s.Bitmaps == nil {
 		s.Bitmaps = make(map[tjs.ObjectID]*Bitmap)
+	}
+	if s.D3DImages == nil {
+		s.D3DImages = make(map[tjs.ObjectID]*d3dImageData)
+	}
+	if s.D3DPictures == nil {
+		s.D3DPictures = make(map[tjs.ObjectID]*d3dPictureData)
+	}
+	if s.D3DLayers == nil {
+		s.D3DLayers = make(map[tjs.ObjectID]*d3dLayerData)
+	}
+	if s.D3DDevices == nil {
+		s.D3DDevices = make(map[tjs.ObjectID]*d3dDeviceData)
 	}
 	if s.bitmapLoadGeneration == nil {
 		s.bitmapLoadGeneration = make(map[tjs.ObjectID]uint64)
@@ -1338,6 +1363,9 @@ func (s *Services) GCRoots() []tjs.Value {
 	if s.console.Kind() == tjs.KindObject && !s.console.IsNull() {
 		out = append(out, s.console)
 	}
+	if s.xp3ExtractionFilter.Kind() == tjs.KindObject && !s.xp3ExtractionFilter.IsNull() {
+		out = append(out, s.xp3ExtractionFilter)
+	}
 	for id, window := range s.WindowObjects {
 		out = append(out, tjs.ObjectIDValue(id))
 		if window == nil {
@@ -1371,6 +1399,24 @@ func (s *Services) GCRoots() []tjs.Value {
 		out = append(out, tjs.ObjectIDValue(id))
 		if layer := s.Layers[id]; layer != nil && layer.transitionCallback.Kind() == tjs.KindObject && !layer.transitionCallback.IsNull() {
 			out = append(out, layer.transitionCallback)
+		}
+	}
+	for id := range s.D3DImages {
+		out = append(out, tjs.ObjectIDValue(id))
+	}
+	for id := range s.D3DPictures {
+		out = append(out, tjs.ObjectIDValue(id))
+	}
+	for id := range s.D3DLayers {
+		out = append(out, tjs.ObjectIDValue(id))
+	}
+	for id, device := range s.D3DDevices {
+		out = append(out, tjs.ObjectIDValue(id))
+		if device == nil {
+			continue
+		}
+		for _, layerID := range device.layers {
+			out = append(out, tjs.ObjectIDValue(layerID))
 		}
 	}
 	for _, value := range s.LayerChildren {
@@ -2027,7 +2073,7 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		return tjs.VoidValue, nil
 	}
 	if name == "exists" {
-		return s.storagesNative(vm, "isExistentStorage", args)
+		return s.storagesNative(vm, "isExistentStorage", args, budget)
 	}
 	if name == "cancel" {
 		return tjs.VoidValue, nil
@@ -2280,7 +2326,7 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		return s.clipboardNative(strings.TrimPrefix(name, "Clipboard."), args)
 	}
 	if strings.HasPrefix(name, "Storages.") {
-		return s.storagesNative(vm, strings.TrimPrefix(name, "Storages."), args)
+		return s.storagesNative(vm, strings.TrimPrefix(name, "Storages."), args, budget)
 	}
 	if strings.HasPrefix(name, "Scripts.") {
 		return s.scriptsNative(vm, strings.TrimPrefix(name, "Scripts."), args, budget, resultNeeded)
@@ -2314,6 +2360,9 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 	if strings.HasPrefix(name, "Motion.ResourceManager.") {
 		return s.motionResourceManagerNative(vm, context, strings.TrimPrefix(name, "Motion.ResourceManager."), args)
 	}
+	if strings.HasPrefix(name, "Motion.EmotePlayer.") {
+		return s.motionEmotePlayerNative(vm, context, strings.TrimPrefix(name, "Motion.EmotePlayer."), args)
+	}
 	if strings.HasPrefix(name, "Motion.Player.") {
 		return s.motionPlayerNative(vm, context, strings.TrimPrefix(name, "Motion.Player."), args)
 	}
@@ -2322,6 +2371,21 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 	}
 	if strings.HasPrefix(name, "PSBFile.") {
 		return s.psbFileNative(vm, context, strings.TrimPrefix(name, "PSBFile."), args)
+	}
+	if strings.HasPrefix(name, "D3DImage.") {
+		return s.d3dImageNative(vm, context, strings.TrimPrefix(name, "D3DImage."), args)
+	}
+	if strings.HasPrefix(name, "D3DPicture.") {
+		return s.d3dPictureNative(vm, context, strings.TrimPrefix(name, "D3DPicture."), args)
+	}
+	if strings.HasPrefix(name, "D3DLayer.") {
+		return s.d3dLayerNative(vm, context, strings.TrimPrefix(name, "D3DLayer."), args)
+	}
+	if strings.HasPrefix(name, "DrawDeviceD3D.") {
+		return s.d3dDeviceNative(vm, context, "DrawDeviceD3D", strings.TrimPrefix(name, "DrawDeviceD3D."), args)
+	}
+	if strings.HasPrefix(name, "D3D.") {
+		return s.d3dDeviceNative(vm, context, "D3D", strings.TrimPrefix(name, "D3D."), args)
 	}
 	if strings.HasPrefix(name, "CDDASoundBuffer.") {
 		return s.CDDASoundNative(vm, context, strings.TrimPrefix(name, "CDDASoundBuffer."), args)
@@ -2445,9 +2509,15 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		if !isImplementedNativePlugin(key) {
 			return tjs.VoidValue, fmt.Errorf("%w: Plugins.link(%q)", ErrUnsupportedNative, p)
 		}
-		if path.Base(key) == "motionplayer.dll" {
+		module := path.Base(key)
+		if module == "motionplayer.dll" || module == "emoteplayer.dll" {
 			if e := installMotionPlayerNative(vm); e != nil {
 				return tjs.VoidValue, e
+			}
+			if module == "emoteplayer.dll" {
+				if e := installEmotePlayerNative(vm); e != nil {
+					return tjs.VoidValue, e
+				}
 			}
 		}
 		if strings.HasSuffix(key, "alphamovie.dll") {
@@ -2482,6 +2552,11 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		}
 		if strings.HasSuffix(key, "psd.dll") {
 			if e := installPSDNative(vm, s); e != nil {
+				return tjs.VoidValue, e
+			}
+		}
+		if strings.HasSuffix(key, "drawdeviced3d.dll") || strings.HasSuffix(key, "drawdeviced3dz.dll") {
+			if e := installDrawDeviceD3DNative(vm, s); e != nil {
 				return tjs.VoidValue, e
 			}
 		}

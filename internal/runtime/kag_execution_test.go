@@ -519,6 +519,33 @@ func TestKAGExecutionStorageJumpLoadsScenario(t *testing.T) {
 	}
 }
 
+func TestKAGExecutionStorageJumpCanOmitTarget(t *testing.T) {
+	parser, err := NewKAGParser("first.ks", "@jump storage=logo.ks\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parser.SetScenarioLoadCallback(func(_ *KAGParser, storage, source string) (string, error) {
+		if storage != "logo.ks" || source != "" {
+			t.Errorf("scenario load = %q, %q", storage, source)
+		}
+		return "*start\n@title\n@end\n", nil
+	})
+	budget := uint64(100)
+	for range 4 {
+		event, err := parser.Step(&budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Kind == KAGEventTag {
+			if event.Tag == nil || event.Tag.Name != "title" {
+				t.Fatalf("event = %#v, want title tag after storage jump", event)
+			}
+			return
+		}
+	}
+	t.Fatal("storage jump without a target did not enter the loaded scenario")
+}
+
 func TestKAGExecutionBudgetAndInvalidation(t *testing.T) {
 	parser, err := NewKAGParser("budget.ks", "one\ntwo\n")
 	if err != nil {
