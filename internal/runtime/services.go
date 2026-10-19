@@ -678,7 +678,11 @@ func (s *Services) readStorage(name string) ([]byte, error) {
 	if name == "" {
 		return nil, fmt.Errorf("empty storage name")
 	}
-	if s.SaveDir != "" {
+	// Archive member names use ">" to separate the archive from the member and
+	// never address a save-overlay file. Resolving them against the overlay
+	// would hand the separator to the host filesystem, which rejects it on
+	// Windows, so they go straight to the project storage.
+	if s.SaveDir != "" && !strings.ContainsRune(name, '>') {
 		save := SaveStorage{Root: s.SaveDir, Project: serviceProjectPath(s)}
 		data, err := save.Read(name)
 		if err == nil {
