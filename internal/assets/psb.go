@@ -24,8 +24,17 @@ type Resource struct {
 
 // Document is a PSB v2 structured-data document.
 type Document struct {
-	Version uint16 `json:"version"`
-	Root    Value  `json:"root"`
+	Version uint16      `json:"version"`
+	Root    Value       `json:"root"`
+	Objects []PSBObject `json:"-"`
+}
+
+// PSBObject records a decoded dictionary and its key path in PSB traversal
+// order. Motion snapshots use this order when resolving numeric layer
+// references, matching the reference parser's depth-first dictionary walk.
+type PSBObject struct {
+	Path  []string
+	Value map[string]Value
 }
 
 type psbParser struct {
@@ -39,6 +48,7 @@ type psbParser struct {
 	remaining    int
 	outputBytes  int
 	active       map[int]bool
+	objects      []PSBObject
 }
 
 func psbErr(format string, args ...any) error {
@@ -285,11 +295,11 @@ func ParsePSB(data []byte) (*Document, error) {
 		chunkOffsets: chunkOffsets, chunkLengths: chunkLengths, chunkData: chunkData,
 		remaining: 1_000_000, outputBytes: 256 << 20, active: make(map[int]bool),
 	}
-	root, err := parser.value(offsets[7], 0)
+	root, err := parser.value(offsets[7], 0, nil)
 	if err != nil {
 		return nil, err
 	}
-	return &Document{Version: uint16(version), Root: root}, nil
+	return &Document{Version: uint16(version), Root: root, Objects: parser.objects}, nil
 }
 
 func (p *psbParser) allocate(n int) error {
@@ -307,7 +317,7 @@ func (p *psbParser) offset(base int, delta uint32) (int, error) {
 	return base + int(delta), nil
 }
 
-func (p *psbParser) value(offset, depth int) (Value, error) {
+func (p *psbParser) value(offset, depth int, path []string) (Value, error) {
 	if depth >= 128 || p.remaining <= 0 {
 		return nil, psbErr("object budget exceeded")
 	}
@@ -411,7 +421,7 @@ func (p *psbParser) value(offset, depth int) (Value, error) {
 			if offsetErr != nil {
 				return nil, offsetErr
 			}
-			result[i], err = p.value(child, depth+1)
+			result[i], err = p.value(child, depth+1, append(path, fmt.Sprintf("%d", i)))
 			if err != nil {
 				return nil, err
 			}
@@ -436,6 +446,7 @@ func (p *psbParser) value(offset, depth int) (Value, error) {
 			return nil, err
 		}
 		result := make(map[string]Value, len(keys))
+		p.objects = append(p.objects, PSBObject{Path: append([]string(nil), path...), Value: result})
 		for i, key := range keys {
 			name, ok := p.names[key]
 			if !ok {
@@ -451,7 +462,7 @@ func (p *psbParser) value(offset, depth int) (Value, error) {
 			if offsetErr != nil {
 				return nil, offsetErr
 			}
-			v, err := p.value(child, depth+1)
+			v, err := p.value(child, depth+1, append(path, name))
 			if err != nil {
 				return nil, err
 			}

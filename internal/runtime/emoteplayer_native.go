@@ -35,6 +35,8 @@ type emoteVariableState struct {
 	frames   []emoteVariableFrame
 	value    float64
 	rangeMin float64
+	rangeMax float64
+	rangeSet bool
 	set      bool
 }
 
@@ -371,7 +373,7 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 		// Reference EmotePlayer(ResourceManager) only stores the manager; it
 		// does not bind whichever module the manager happened to load.
 		if len(args) > 0 && args[0].Kind() == tjs.KindObject && !args[0].IsNull() {
-			state.resourceManager = args[0].ObjectRef().Object
+			state.resourceManager = s.motionResourceManagerID(args[0].ObjectRef().Object)
 		}
 		return tjs.VoidValue, nil
 	case "@invalidate", "finalize":
@@ -381,6 +383,24 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 		return tjs.VoidValue, nil
 	}
 	state, emote := s.emotePlayerStateFor(id)
+	return s.motionEmotePlayerNativeWithState(vm, context, operation, args, state, emote, true)
+}
+
+func (s *Services) motionEmotePlayerNativeWithState(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value, state *motionPlayerState, emote *emotePlayerState, emoteAPI bool) (tjs.Value, error) {
+	if emoteAPI {
+		switch operation {
+		case "getVariable", "getVariableFrameList", "countVariables", "getVariableLabelAt", "countVariableFrameAt",
+			"getVariableFrameLabelAt", "getVariableFrameValueAt", "getTimelinePlaying", "isTimelinePlaying",
+			"countMainTimelines", "getMainTimelineLabelAt", "getMainTimelineLabelList",
+			"countDiffTimelines", "getDiffTimelineLabelAt", "getDiffTimelineLabelList", "getLoopTimeline",
+			"isLoopTimeline", "countPlayingTimelines", "getPlayingTimelineLabelAt", "getPlayingTimelineFlagsAt",
+			"getTimelineTotalFrameCount", "playTimeline", "setTimelineBlendRatio", "getPlayingTimelineInfoList",
+			"skip", "skipToSync":
+			if err := s.motionPlayerEnsureLoaded(vm, state); err != nil {
+				return tjs.VoidValue, err
+			}
+		}
+	}
 	if strings.HasPrefix(operation, "get:") {
 		return s.emotePlayerGet(state, emote, strings.TrimPrefix(operation, "get:"))
 	}
@@ -402,6 +422,7 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 		state.playing = false
 		state.held = false
 		state.frameTick = 0
+		state.clampedEvalTime = 0
 		s.emoteResetRuntime(emote)
 		emote.modified = true
 		return tjs.VoidValue, nil
@@ -445,13 +466,18 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 		return tjs.VoidValue, nil
 	case "show":
 		emote.visible = true
+		state.viewVisible = true
 		return tjs.VoidValue, nil
 	case "hide":
 		emote.visible = false
+		state.viewVisible = false
 		return tjs.VoidValue, nil
 	case "assignState":
-		// Transforms compose into the draw matrix per draw, so applying the
-		// shell state only clears the modified flag.
+		state.viewVisible = emote.visible && emote.drawVisible
+		state.d3dDrawMode = emote.useD3D
+		state.hairScale = emote.hairScale
+		state.partsScale = emote.partsScale
+		state.bustScale = emote.bustScale
 		emote.modified = false
 		return tjs.VoidValue, nil
 	case "initPhysics":
@@ -470,6 +496,7 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 			return tjs.VoidValue, err
 		}
 		emote.rot = rot
+		state.rotateAngle = rot
 		emote.modified = true
 		return tjs.VoidValue, nil
 	case "getRot":
@@ -489,6 +516,7 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 			return tjs.VoidValue, err
 		}
 		emote.coordX, emote.coordY = x, y
+		state.x, state.y = x, y
 		emote.modified = true
 		return tjs.VoidValue, nil
 	case "setScale":
@@ -500,6 +528,7 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 			return tjs.VoidValue, err
 		}
 		emote.scale = scale
+		state.emoteScale = scale
 		emote.modified = true
 		return tjs.VoidValue, nil
 	case "getScale":
@@ -514,7 +543,19 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 		if err != nil {
 			return tjs.VoidValue, err
 		}
+		changed := state.rootFlipX != mirror || state.mirrorEvalEnabled != mirror
+		state.rootFlipX = mirror
+		state.mirrorEvalEnabled = mirror
 		emote.mirror = mirror
+		if changed {
+			state.gpuMotionValid = false
+			emote.animators = make(map[int]map[string]*emoteAnimator)
+			emote.evalResults = make(map[string]float64)
+			emote.evalOrder = nil
+			if state.selectorEnabled {
+				s.emoteSyncSelectorControls(state, emote)
+			}
+		}
 		emote.modified = true
 		return tjs.VoidValue, nil
 	case "setColor":
@@ -594,12 +635,22 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 			}
 		}
 		s.emoteSetVariable(emote, label, value, transition, ease)
+		emote.modified = true
 		return tjs.VoidValue, nil
 	case "getVariable":
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.EmotePlayer.getVariable requires a label")
 		}
 		return tjs.RealValue(emoteVariableValue(emote, args[0].Text())), nil
+	case "getVariableRange":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.EmotePlayer.getVariableRange requires a label")
+		}
+		variable := emote.variables[args[0].Text()]
+		if variable == nil || !variable.rangeSet {
+			return tjs.VoidValue, nil
+		}
+		return vm.NewArray([]tjs.Value{tjs.RealValue(variable.rangeMin), tjs.RealValue(variable.rangeMax)})
 	case "getVariableFrameList":
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.EmotePlayer.getVariableFrameList requires a label")
@@ -671,7 +722,7 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.EmotePlayer.getTimelineTotalFrameCount requires a label")
 		}
-		return tjs.RealValue(s.emoteTimelineTotalFrames(emote, args[0].Text())), nil
+		return tjs.IntegerValue(int64(s.emoteTimelineTotalFrames(emote, args[0].Text()))), nil
 	case "playTimeline":
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.EmotePlayer.playTimeline requires a label")
@@ -685,6 +736,10 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 			flags = value
 		}
 		s.emotePlayTimeline(emote, args[0].Text(), flags)
+		state.playing = len(emote.playingOrder) > 0
+		if emoteAPI {
+			emote.modified = true
+		}
 		return tjs.VoidValue, nil
 	case "isTimelinePlaying", "getTimelinePlaying":
 		if len(args) == 0 {
@@ -697,6 +752,7 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 			return tjs.VoidValue, fmt.Errorf("Motion.EmotePlayer.stopTimeline requires a label")
 		}
 		s.emoteStopTimeline(emote, args[0].Text())
+		state.playing = len(emote.playingOrder) > 0
 		return tjs.VoidValue, nil
 	case "setTimeline":
 		// EmotePlayer::setTimeline ignores the loop argument and calls
@@ -705,6 +761,7 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 			return tjs.VoidValue, fmt.Errorf("Motion.EmotePlayer.setTimeline requires a label")
 		}
 		s.emotePlayTimeline(emote, args[0].Text(), 0)
+		state.playing = len(emote.playingOrder) > 0
 		return tjs.VoidValue, nil
 	case "setTimelineBlendRatio":
 		if len(args) < 2 {
@@ -736,12 +793,19 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 			return tjs.VoidValue, err
 		}
 		label := args[0].Text()
-		if duration <= 0 {
+		if emoteAPI && !emoteContainsString(emote.playingOrder, label) {
+			if err := s.motionPlayerEnsureLoaded(vm, state); err != nil {
+				return tjs.VoidValue, err
+			}
+		}
+		if emoteAPI && duration <= 0 {
 			flags, err := emoteOptionalInt(args, 2)
 			if err != nil {
 				return tjs.VoidValue, err
 			}
 			s.emotePlayTimeline(emote, label, flags)
+			state.playing = len(emote.playingOrder) > 0
+			emote.modified = true
 			return tjs.VoidValue, nil
 		}
 		if !emoteContainsString(emote.playingOrder, label) {
@@ -749,7 +813,10 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 			s.emoteSetTimelineBlendLike(emote, label, false, 0, 0, 0)
 		}
 		s.emoteSetTimelineBlendLike(emote, label, false, 1, duration, 0)
-		emote.modified = true
+		state.playing = len(emote.playingOrder) > 0
+		if emoteAPI {
+			emote.modified = true
+		}
 		return tjs.VoidValue, nil
 	case "fadeOutTimeline":
 		if len(args) == 0 {
@@ -760,12 +827,15 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 			return tjs.VoidValue, err
 		}
 		label := args[0].Text()
-		if duration <= 0 {
+		if emoteAPI && duration <= 0 {
 			s.emoteStopTimeline(emote, label)
+			state.playing = len(emote.playingOrder) > 0
 			return tjs.VoidValue, nil
 		}
 		s.emoteSetTimelineBlendLike(emote, label, true, 0, duration, 0)
-		emote.modified = true
+		if emoteAPI {
+			emote.modified = true
+		}
 		return tjs.VoidValue, nil
 	case "getPlayingTimelineInfoList":
 		return s.emotePlayingTimelineInfoList(vm, emote)
@@ -791,7 +861,7 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 		if !emote.visible || !emote.drawVisible || state.resource == nil {
 			return tjs.VoidValue, nil
 		}
-		state.playerID = id
+		state.playerID = context.ObjectRef().Object
 		if err := s.drawMotionTarget(vm, state, args[0]); err != nil {
 			return tjs.VoidValue, err
 		}
@@ -867,19 +937,19 @@ func (s *Services) emotePlayerGet(state *motionPlayerState, emote *emotePlayerSt
 	case "motionKey":
 		return tjs.StringValue(emote.motionKey), nil
 	case "maskMode":
-		return tjs.IntegerValue(emote.maskMode), nil
+		return tjs.IntegerValue(state.maskMode), nil
 	case "outline":
 		return tjs.StringValue(state.outline), nil
 	case "priorDraw":
-		return tjs.RealValue(emote.priorDraw), nil
+		return tjs.RealValue(state.priorDraw), nil
 	case "frameLastTime":
-		return tjs.RealValue(emote.frameLastTime), nil
+		return tjs.RealValue(state.frameLastTime), nil
 	case "frameLoopTime":
-		return tjs.RealValue(emote.frameLoopTime), nil
+		return tjs.RealValue(state.frameLoopTime), nil
 	case "loopTime":
-		return tjs.RealValue(emote.loopTime), nil
+		return tjs.RealValue(state.loopTime), nil
 	case "processedMeshVerticesNum":
-		return tjs.IntegerValue(emote.processedMeshVerticesNum), nil
+		return tjs.IntegerValue(state.processedMeshVerticesNum), nil
 	case "visible":
 		return emoteBoolValue(emote.visible), nil
 	case "smoothing":
@@ -897,7 +967,7 @@ func (s *Services) emotePlayerGet(state *motionPlayerState, emote *emotePlayerSt
 	case "playCallback":
 		return emoteBoolValue(emote.playCallback), nil
 	case "animating":
-		return emoteBoolValue(len(emote.playingOrder) > 0), nil
+		return emoteBoolValue(s.motionPlayerAllPlaying(state)), nil
 	case "meshDivisionRatio":
 		return tjs.RealValue(emote.meshDivisionRatio), nil
 	case "hairScale":
@@ -937,7 +1007,7 @@ func (s *Services) emotePlayerSet(vm *tjs.VM, state *motionPlayerState, emote *e
 		if err != nil {
 			return err
 		}
-		emote.maskMode = n
+		state.maskMode = n
 	case "outline":
 		state.outline = value.Text()
 	case "priorDraw":
@@ -945,37 +1015,38 @@ func (s *Services) emotePlayerSet(vm *tjs.VM, state *motionPlayerState, emote *e
 		if err != nil {
 			return err
 		}
-		emote.priorDraw = n
+		state.priorDraw = n
 	case "frameLastTime":
 		n, err := value.Real()
 		if err != nil {
 			return err
 		}
-		emote.frameLastTime = n
+		state.frameLastTime = n
 	case "frameLoopTime":
 		n, err := value.Real()
 		if err != nil {
 			return err
 		}
-		emote.frameLoopTime = n
+		state.frameLoopTime = n
 	case "loopTime":
 		n, err := value.Real()
 		if err != nil {
 			return err
 		}
-		emote.loopTime = n
+		state.loopTime = n
 	case "processedMeshVerticesNum":
 		n, err := value.Int()
 		if err != nil {
 			return err
 		}
-		emote.processedMeshVerticesNum = n
+		state.processedMeshVerticesNum = n
 	case "visible":
 		v, err := value.Truth()
 		if err != nil {
 			return err
 		}
 		emote.visible = v
+		state.viewVisible = v
 	case "smoothing":
 		v, err := value.Truth()
 		if err != nil {
@@ -994,6 +1065,7 @@ func (s *Services) emotePlayerSet(vm *tjs.VM, state *motionPlayerState, emote *e
 			return err
 		}
 		emote.useD3D = v
+		state.d3dDrawMode = v
 	case "modified":
 		v, err := value.Truth()
 		if err != nil {
@@ -1024,18 +1096,24 @@ func (s *Services) emotePlayerSet(vm *tjs.VM, state *motionPlayerState, emote *e
 			return err
 		}
 		emote.hairScale = n
+		state.hairScale = n
+		emote.modified = true
 	case "partsScale":
 		n, err := value.Real()
 		if err != nil {
 			return err
 		}
 		emote.partsScale = n
+		state.partsScale = n
+		emote.modified = true
 	case "bustScale":
 		n, err := value.Real()
 		if err != nil {
 			return err
 		}
 		emote.bustScale = n
+		state.bustScale = n
+		emote.modified = true
 	case "bodyScale":
 		n, err := value.Real()
 		if err != nil {
@@ -1255,12 +1333,16 @@ func (s *Services) emotePlayerPlay(vm *tjs.VM, state *motionPlayerState, emote *
 	emote.isSelfClear = selfClear
 	emote.progress = 0
 	state.frameTick = 0
+	state.clampedEvalTime = 0
+	state.frameLoopTime = 0
+	state.speed = true
+	state.speedSet = true
 	emote.frameLoopTime = 0
-	emote.loopTime = 0
 	started := s.emoteStartMotion(state, emote, clipLookup, flags)
 	if !started && label != "" && label != clipLookup {
 		started = s.emoteStartMotion(state, emote, label, flags)
 	}
+	state.playing = true
 	emote.modified = true
 	return emoteBoolValue(started), nil
 }
@@ -1269,6 +1351,9 @@ func (s *Services) emotePlayerPlay(vm *tjs.VM, state *motionPlayerState, emote *
 // the matching timeline, or the primary main/diff timelines when the label is
 // not a timeline.
 func (s *Services) emoteStartMotion(state *motionPlayerState, emote *emotePlayerState, lookup string, flags int64) bool {
+	if flags&motionPlayFlagForce != 0 {
+		s.emoteStopTimeline(emote, "")
+	}
 	_, hasTimeline := emote.timelines[lookup]
 	primary := emote.mainTimelines
 	if len(primary) == 0 {
@@ -1277,21 +1362,20 @@ func (s *Services) emoteStartMotion(state *motionPlayerState, emote *emotePlayer
 	if !hasTimeline && len(primary) == 0 {
 		return false
 	}
-	state.motion = lookup
+	if lookup != "" && flags&motionPlayFlagStealth == 0 {
+		state.motion = lookup
+	}
 	state.playing = true
 	state.held = false
-	if flags&motionPlayFlagForce != 0 {
-		s.emoteStopTimeline(emote, "")
-	}
 	if flags&motionPlayFlagChain == 0 {
 		state.frameTick = 0
 	}
 	if hasTimeline {
-		s.emotePlayTimeline(emote, lookup, flags)
+		s.emoteStartTimeline(emote, lookup, flags)
 		return true
 	}
 	for _, timelineLabel := range primary {
-		s.emotePlayTimeline(emote, timelineLabel, flags)
+		s.emoteStartTimeline(emote, timelineLabel, flags)
 	}
 	return true
 }
@@ -1299,6 +1383,9 @@ func (s *Services) emoteStartMotion(state *motionPlayerState, emote *emotePlayer
 func (s *Services) emoteSkipToSync(state *motionPlayerState, emote *emotePlayerState) {
 	syncTime := 0.0
 	for _, timeline := range emote.timelines {
+		if !timeline.control {
+			continue
+		}
 		syncTime = math.Max(syncTime, timeline.lastTime)
 		if timeline.loopEnd >= timeline.loopBegin {
 			syncTime = math.Max(syncTime, timeline.loopEnd)
@@ -1326,6 +1413,8 @@ func (s *Services) emoteSkipToSync(state *motionPlayerState, emote *emotePlayerS
 	s.emoteApplyEvalPostProcess(emote)
 	state.syncWaiting = false
 	state.syncActive = false
+	state.frameLoopTime = syncTime
+	state.clampedEvalTime = syncTime
 	emote.modified = true
 }
 
@@ -1347,10 +1436,12 @@ func (s *Services) emotePlayerProgress(state *motionPlayerState, emote *emotePla
 	}
 	frames := interval * motionFramesPerMillisecond
 	emote.progress += interval
-	emote.frameLastTime = frames
 	if !motionPlayerSpeed(state) && !emote.freezeBodyMotion() {
+		emote.modified = true
 		return tjs.VoidValue, nil
 	}
+	state.frameLastTime = frames
+	emote.frameLastTime = frames
 	if interval > 0 && motionPlayerSpeed(state) {
 		if state.playing {
 			state.frameTick += frames
@@ -1360,6 +1451,8 @@ func (s *Services) emotePlayerProgress(state *motionPlayerState, emote *emotePla
 				}
 			}
 		}
+		state.frameLoopTime += frames
+		state.loopTime += frames
 		emote.frameLoopTime += frames
 		emote.loopTime += frames
 		s.emoteAdvanceTimelines(emote, frames)
@@ -1374,6 +1467,7 @@ func (s *Services) emotePlayerProgress(state *motionPlayerState, emote *emotePla
 		s.emoteApplyEvalPostProcess(emote)
 	}
 	state.syncActive = state.syncWaiting && len(emote.playingOrder) > 0
+	state.clampedEvalTime = 0
 	emote.modified = true
 	return tjs.VoidValue, nil
 }
@@ -1443,6 +1537,9 @@ func (s *Services) emoteApplyEvalPostProcess(emote *emotePlayerState) {
 }
 
 func emoteShouldMirror(emote *emotePlayerState, label string) bool {
+	if emote == nil || !emote.mirror {
+		return false
+	}
 	for _, candidate := range emote.mirrorLabels {
 		if candidate == label {
 			return true
@@ -1793,6 +1890,41 @@ func (s *Services) emoteSetVariableResolved(emote *emotePlayerState, label strin
 	}
 }
 
+// emoteSyncSelectorControls mirrors Player::syncSelectorControlsLike_0x670D1C.
+// The reference clears each selector and option's transient variable state,
+// then writes selector index zero when selector handling is enabled.
+func (s *Services) emoteSyncSelectorControls(state *motionPlayerState, emote *emotePlayerState) {
+	if state == nil || emote == nil || state.resource == nil {
+		return
+	}
+	resetVariable := func(label string) {
+		if label == "" {
+			return
+		}
+		emote.eraseAnimator(label)
+		delete(emote.evalResults, label)
+		for i, existing := range emote.evalOrder {
+			if existing == label {
+				emote.evalOrder = append(emote.evalOrder[:i], emote.evalOrder[i+1:]...)
+				break
+			}
+		}
+		if variable := emote.variables[label]; variable != nil {
+			variable.value = 0
+			variable.set = false
+		}
+	}
+	for label, selector := range emote.selectorControls {
+		resetVariable(label)
+		for _, option := range selector.options {
+			resetVariable(option.label)
+		}
+		if state.selectorEnabled {
+			s.emoteSetVariableResolved(emote, label, 0, 0, 1)
+		}
+	}
+}
+
 func (s *Services) emoteQueueController(emote *emotePlayerState, label string, state *emoteAnimator, current, requested, transition, weight float64) {
 	if transition <= 0 {
 		state.queue = nil
@@ -1870,13 +2002,14 @@ func (s *Services) emoteEnsureTimeline(emote *emotePlayerState, label string) *e
 }
 
 func (s *Services) emotePlayTimeline(emote *emotePlayerState, label string, flags int64) {
-	if flags&1 != 0 {
-		s.emoteStopTimeline(emote, "")
-	}
-	if label == "" {
+	s.emotePlayTimelineWithReset(emote, label, flags, true)
+}
+
+func (s *Services) emoteStartTimeline(emote *emotePlayerState, label string, flags int64) {
+	if _, exists := emote.timelines[label]; !exists || label == "" {
 		return
 	}
-	timeline := s.emoteEnsureTimeline(emote, label)
+	timeline := emote.timelines[label]
 	if !emoteContainsString(emote.playingOrder, label) {
 		emote.playingOrder = append(emote.playingOrder, label)
 	}
@@ -1885,8 +2018,35 @@ func (s *Services) emotePlayTimeline(emote *emotePlayerState, label string, flag
 	timeline.blendRatio = 1
 	if flags&motionPlayFlagChain == 0 {
 		timeline.time = 0
-		timeline.blendAnimator = emoteAnimator{}
-		timeline.blendAutoStop = false
+		timeline.controlInit = false
+		timeline.controlLast = 0
+		timeline.controlCursor = nil
+		timeline.controlValues = nil
+		timeline.controlAnims = nil
+		if timeline.control {
+			s.emoteResetTimelineControl(emote, timeline, 0)
+		}
+	}
+}
+
+func (s *Services) emotePlayTimelineWithReset(emote *emotePlayerState, label string, flags int64, resetPosition bool) {
+	if _, exists := emote.timelines[label]; !exists || label == "" {
+		return
+	}
+	if flags&1 != 0 {
+		s.emoteStopTimeline(emote, "")
+	}
+	timeline := s.emoteEnsureTimeline(emote, label)
+	if !emoteContainsString(emote.playingOrder, label) {
+		emote.playingOrder = append(emote.playingOrder, label)
+	}
+	timeline.flags = flags
+	timeline.playing = true
+	timeline.blendRatio = 1
+	timeline.blendAnimator = emoteAnimator{}
+	timeline.blendAutoStop = false
+	if resetPosition {
+		timeline.time = 0
 		timeline.controlInit = false
 		timeline.controlLast = 0
 		timeline.controlCursor = nil
@@ -2262,7 +2422,7 @@ func (s *Services) emotePlayerContains(state *motionPlayerState, emote *emotePla
 			params: emote.renderParameters(), freezeBody: emote.freezeBodyMotion(),
 			completion: state.completionType, attached: state.attached,
 		}
-		found, hit := hitTestMotionLayer(resource, root, layers, state.frameTick, eval, label, x, y)
+		found, hit := hitTestMotionLayer(resource, root, layers, state.clampedEvalTime, eval, label, x, y)
 		return emoteBoolValue(found && hit), nil
 	}
 	if len(args) == 2 {
@@ -2280,12 +2440,8 @@ func (s *Services) emotePlayerContains(state *motionPlayerState, emote *emotePla
 	if width <= 0 || height <= 0 {
 		return tjs.IntegerValue(0), nil
 	}
-	scale := math.Abs(emote.scale)
-	left := emote.coordX
-	if emote.mirror {
-		left -= width * scale
-	}
-	inside := x >= left && x <= left+width*scale && y >= emote.coordY && y <= emote.coordY+height*scale
+	scale := emote.scale
+	inside := x >= emote.coordX && x <= emote.coordX+width*scale && y >= emote.coordY && y <= emote.coordY+height*scale
 	return emoteBoolValue(inside), nil
 }
 
@@ -2309,7 +2465,7 @@ func motionLayerListHasLabel(layers []assets.Value, label string) bool {
 		if psbLabel(layer) == label {
 			return true
 		}
-		if nested, ok := layer["layer"].([]assets.Value); ok && motionLayerListHasLabel(nested, label) {
+		if nested, ok := layer["children"].([]assets.Value); ok && motionLayerListHasLabel(nested, label) {
 			return true
 		}
 	}
@@ -2550,7 +2706,7 @@ func (s *Services) emotePlayerClone(vm *tjs.VM, state *motionPlayerState, emote 
 	if err != nil {
 		return tjs.VoidValue, err
 	}
-	instance, err := vm.Construct(class, []tjs.Value{tjs.ObjectIDValue(state.resourceManager)}, s, nil)
+	instance, err := vm.Construct(class, nil, s, nil)
 	if err != nil {
 		return tjs.VoidValue, err
 	}
@@ -2558,7 +2714,7 @@ func (s *Services) emotePlayerClone(vm *tjs.VM, state *motionPlayerState, emote 
 		return tjs.VoidValue, fmt.Errorf("Motion.EmotePlayer clone did not produce an instance")
 	}
 	cloneState, cloneEmote := s.emotePlayerStateFor(instance.ObjectRef().Object)
-	cloneState.resourceManager = state.resourceManager
+	cloneState.resourceManager = 0
 	cloneState.resource = state.resource
 	cloneState.speed = true
 	cloneState.speedSet = true
@@ -2566,6 +2722,11 @@ func (s *Services) emotePlayerClone(vm *tjs.VM, state *motionPlayerState, emote 
 	copyEmotePlayerState(cloneEmote, emote)
 	s.emoteResetRuntime(cloneEmote)
 	s.emoteApplyResourceMetadata(cloneEmote, state.resource)
+	cloneState.viewVisible = cloneEmote.visible
+	cloneState.d3dDrawMode = cloneEmote.useD3D
+	cloneState.hairScale = cloneEmote.hairScale
+	cloneState.partsScale = cloneEmote.partsScale
+	cloneState.bustScale = cloneEmote.bustScale
 	cloneState.chara = cloneEmote.moduleChara
 	cloneState.motion = ""
 	cloneState.stealthMotion = ""
@@ -2588,12 +2749,6 @@ func copyEmotePlayerState(target, source *emotePlayerState) {
 	target.moduleChara = source.moduleChara
 	target.clipLabel = source.clipLabel
 	target.isSelfClear = source.isSelfClear
-	target.maskMode = source.maskMode
-	target.priorDraw = source.priorDraw
-	target.frameLastTime = source.frameLastTime
-	target.frameLoopTime = source.frameLoopTime
-	target.loopTime = source.loopTime
-	target.processedMeshVerticesNum = source.processedMeshVerticesNum
 	target.visible = source.visible
 	target.smoothing = source.smoothing
 	target.queuing = source.queuing
@@ -2701,19 +2856,18 @@ func copyEmotePlayerState(target, source *emotePlayerState) {
 // draw matrix: the explicit setDrawAffineTranslateMatrix transform is the outer
 // transform, the emote coord/scale/rot/mirror transform the inner one. rot is
 // in radians, as the reference setRotate stores it.
-func (e *emotePlayerState) drawMatrixFor(outer motionDrawMatrix) motionDrawMatrix {
-	if e == nil {
+func (e *emotePlayerState) drawMatrixFor(outer motionDrawMatrix, state *motionPlayerState) motionDrawMatrix {
+	if e == nil || state == nil {
 		return outer
 	}
-	scale := e.scale
-	if e.mirror {
+	scale := state.emoteScale
+	if state.rootFlipX {
 		scale = -scale
 	}
-	cos, sin := math.Cos(e.rot), math.Sin(e.rot)
+	cos, sin := math.Cos(state.rotateAngle), math.Sin(state.rotateAngle)
 	inner := motionDrawMatrix{
 		a: scale * cos, b: -scale * sin,
 		c: scale * sin, d: scale * cos,
-		tx: e.coordX, ty: e.coordY,
 	}
 	return motionDrawMatrix{
 		a:  outer.a*inner.a + outer.b*inner.c,
@@ -2842,6 +2996,11 @@ func motionResourceEmoteMetadata(resource *motionResource) emoteMetadata {
 			}
 			if !math.IsInf(minValue, 1) {
 				variable.rangeMin = minValue
+				variable.rangeMax = math.Inf(-1)
+				for _, frame := range variable.frames {
+					variable.rangeMax = math.Max(variable.rangeMax, frame.value)
+				}
+				variable.rangeSet = true
 			}
 		}
 	}

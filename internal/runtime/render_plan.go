@@ -70,6 +70,12 @@ const (
 )
 
 type RenderMotionDraw struct {
+	// LayerID is local to LayerTreeKey and follows NodeTree's per-node
+	// allocation order. Zero is reserved for baked whole-canvas draws.
+	LayerID       int
+	LayerTreeKey  string
+	Viewport      [4]float64
+	HasViewport   bool
 	SourceKey     string
 	RGBA          []byte
 	Width, Height int32

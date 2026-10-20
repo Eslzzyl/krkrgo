@@ -104,85 +104,88 @@ type Services struct {
 	systemExecutableName     string
 	systemExecutableResolved bool
 
-	EventDisabled            bool
-	ExitOnWindowClose        bool
-	DrawThreadNum            int64
-	ExitOnNoWindowStartup    bool
-	Terminated               bool
-	TerminationCode          int64
-	ContinuousHandlers       []tjs.Value
-	Root                     *Layer
-	Compositor               *Compositor
-	RenderScale              int32
-	validatedTreeRoot        *Layer
-	validatedTreeRevision    uint64
-	validatedTreeError       error
-	gpuCapture               bool
-	Scheduler                *Scheduler
-	Events                   *EventQueue
-	Timers                   *TimerRegistry
-	TimerActions             map[tjs.ObjectID]timerAction
-	Rects                    map[tjs.ObjectID]*scriptRect
-	Dates                    map[tjs.ObjectID]*tjs.Date
-	AsyncTriggers            map[tjs.ObjectID]*asyncTriggerState
-	AsyncTriggerActions      map[tjs.ObjectID]timerAction
-	Arguments                map[string]string
-	Plugins                  []string
-	menuData                 menuModel
-	sampleDefaultCounts      int
-	sampleDefaultAheads      int
-	samplePluginVMs          map[*tjs.VM]struct{}
-	KAGMacroObjects          map[tjs.ObjectID]tjs.Value
-	KAGParamMacroObjects     map[tjs.ObjectID]tjs.Value
-	Natives                  *NativeRegistry
-	KAGParsers               map[tjs.ObjectID]*KAGParser
-	CSVParsers               map[tjs.ObjectID]*csvParserState
-	Videos                   map[tjs.ObjectID]*VideoOverlay
-	PhaseVocoders            map[tjs.ObjectID]*phaseVocoderConfig
-	Sounds                   map[tjs.ObjectID]*WaveSoundBuffer
-	SoundEvents              map[tjs.ObjectID][]SoundEvent
-	waveFlagsClass           tjs.Value
-	AudioMixer               *AudioMixer
-	Dialogs                  *DialogService
-	Layers                   map[tjs.ObjectID]*Layer
-	pendingPaintIDs          []tjs.ObjectID
-	pendingPaintScratch      []tjs.ObjectID
-	transitionIDsScratch     []tjs.ObjectID
-	pendingTransitionScratch []tjs.ObjectID
-	MotionResources          map[tjs.ObjectID]*motionResourceStore
-	MotionModules            map[tjs.ObjectID]*motionResource
-	EmotePSBDecryptSeed      int32
-	MotionPlayers            map[tjs.ObjectID]*motionPlayerState
-	MotionAdaptors           map[tjs.ObjectID]tjs.ObjectID
-	Bitmaps                  map[tjs.ObjectID]*Bitmap
-	D3DImages                map[tjs.ObjectID]*d3dImageData
-	D3DPictures              map[tjs.ObjectID]*d3dPictureData
-	D3DLayers                map[tjs.ObjectID]*d3dLayerData
-	D3DDevices               map[tjs.ObjectID]*d3dDeviceData
-	bitmapLoadGeneration     map[tjs.ObjectID]uint64
-	bitmapLoadResults        map[tjs.ObjectID]bitmapAsyncResult
-	Fonts                    map[tjs.ObjectID]*FontState
-	TextRenderers            map[tjs.ObjectID]*textRenderState
-	LayerFonts               map[tjs.ObjectID]tjs.ObjectID
-	LayerDefaultFonts        map[tjs.ObjectID]tjs.ObjectID
-	LayerChildren            map[tjs.ObjectID]tjs.Value
-	LayerCursors             map[tjs.ObjectID]tjs.Value
-	FontBook                 *FontBook
-	FontSystem               *FontSystem
-	prerenderedFonts         map[string]*prerenderedFont
-	prerenderedFontMappings  map[prerenderedFontMapKey]string
-	Pads                     map[tjs.ObjectID]*padState
-	win32Dialogs             map[tjs.ObjectID]*win32DialogState
-	win32DialogBlobs         map[tjs.ObjectID]*win32DialogBlobState
-	win32DialogRevision      uint64
-	win32DialogPresentation  win32DialogPresentation
-	win32DialogSuppressClick bool
-	xp3ExtractionFilter      tjs.Value
-	Roots                    []tjs.Value
-	scriptsInitialized       bool
-	clipboardBackend         clipboardBackend
-	preprocessor             *tjs.Preprocessor
-	sessionPreprocessors     map[*tjs.VM]*tjs.Preprocessor
+	EventDisabled                bool
+	ExitOnWindowClose            bool
+	DrawThreadNum                int64
+	ExitOnNoWindowStartup        bool
+	Terminated                   bool
+	TerminationCode              int64
+	ContinuousHandlers           []tjs.Value
+	Root                         *Layer
+	Compositor                   *Compositor
+	RenderScale                  int32
+	validatedTreeRoot            *Layer
+	validatedTreeRevision        uint64
+	validatedTreeError           error
+	gpuCapture                   bool
+	Scheduler                    *Scheduler
+	Events                       *EventQueue
+	Timers                       *TimerRegistry
+	TimerActions                 map[tjs.ObjectID]timerAction
+	Rects                        map[tjs.ObjectID]*scriptRect
+	Dates                        map[tjs.ObjectID]*tjs.Date
+	AsyncTriggers                map[tjs.ObjectID]*asyncTriggerState
+	AsyncTriggerActions          map[tjs.ObjectID]timerAction
+	Arguments                    map[string]string
+	Plugins                      []string
+	menuData                     menuModel
+	sampleDefaultCounts          int
+	sampleDefaultAheads          int
+	samplePluginVMs              map[*tjs.VM]struct{}
+	KAGMacroObjects              map[tjs.ObjectID]tjs.Value
+	KAGParamMacroObjects         map[tjs.ObjectID]tjs.Value
+	Natives                      *NativeRegistry
+	KAGParsers                   map[tjs.ObjectID]*KAGParser
+	CSVParsers                   map[tjs.ObjectID]*csvParserState
+	Videos                       map[tjs.ObjectID]*VideoOverlay
+	PhaseVocoders                map[tjs.ObjectID]*phaseVocoderConfig
+	Sounds                       map[tjs.ObjectID]*WaveSoundBuffer
+	SoundEvents                  map[tjs.ObjectID][]SoundEvent
+	waveFlagsClass               tjs.Value
+	AudioMixer                   *AudioMixer
+	Dialogs                      *DialogService
+	Layers                       map[tjs.ObjectID]*Layer
+	pendingPaintIDs              []tjs.ObjectID
+	pendingPaintScratch          []tjs.ObjectID
+	transitionIDsScratch         []tjs.ObjectID
+	pendingTransitionScratch     []tjs.ObjectID
+	MotionResources              map[tjs.ObjectID]*motionResourceStore
+	MotionResourceManagerAliases map[tjs.ObjectID]tjs.ObjectID
+	MotionModules                map[tjs.ObjectID]*motionResource
+	EmotePSBDecryptSeed          int32
+	EmotePSBDecryptFunc          tjs.Value
+	MotionPlayers                map[tjs.ObjectID]*motionPlayerState
+	MotionAdaptors               map[tjs.ObjectID]tjs.ObjectID
+	MotionValueObjects           map[tjs.ObjectID]*motionValueObjectState
+	Bitmaps                      map[tjs.ObjectID]*Bitmap
+	D3DImages                    map[tjs.ObjectID]*d3dImageData
+	D3DPictures                  map[tjs.ObjectID]*d3dPictureData
+	D3DLayers                    map[tjs.ObjectID]*d3dLayerData
+	D3DDevices                   map[tjs.ObjectID]*d3dDeviceData
+	bitmapLoadGeneration         map[tjs.ObjectID]uint64
+	bitmapLoadResults            map[tjs.ObjectID]bitmapAsyncResult
+	Fonts                        map[tjs.ObjectID]*FontState
+	TextRenderers                map[tjs.ObjectID]*textRenderState
+	LayerFonts                   map[tjs.ObjectID]tjs.ObjectID
+	LayerDefaultFonts            map[tjs.ObjectID]tjs.ObjectID
+	LayerChildren                map[tjs.ObjectID]tjs.Value
+	LayerCursors                 map[tjs.ObjectID]tjs.Value
+	FontBook                     *FontBook
+	FontSystem                   *FontSystem
+	prerenderedFonts             map[string]*prerenderedFont
+	prerenderedFontMappings      map[prerenderedFontMapKey]string
+	Pads                         map[tjs.ObjectID]*padState
+	win32Dialogs                 map[tjs.ObjectID]*win32DialogState
+	win32DialogBlobs             map[tjs.ObjectID]*win32DialogBlobState
+	win32DialogRevision          uint64
+	win32DialogPresentation      win32DialogPresentation
+	win32DialogSuppressClick     bool
+	xp3ExtractionFilter          tjs.Value
+	Roots                        []tjs.Value
+	scriptsInitialized           bool
+	clipboardBackend             clipboardBackend
+	preprocessor                 *tjs.Preprocessor
+	sessionPreprocessors         map[*tjs.VM]*tjs.Preprocessor
 	// appLocks stays scoped to this Services instance, not package-global state.
 	appLocks        map[string]struct{}
 	inputStates     map[uint64]*keyInputState
@@ -386,7 +389,7 @@ func NewServices(storage *assets.Storage, saveDir string, limits core.Limits) *S
 		appLocks:                make(map[string]struct{}),
 		Dates:                   make(map[tjs.ObjectID]*tjs.Date),
 		LayerCursors:            make(map[tjs.ObjectID]tjs.Value),
-		Arguments:               make(map[string]string), MessageMap: make(map[string]string), Natives: NewNativeRegistry(), KAGParsers: make(map[tjs.ObjectID]*KAGParser), CSVParsers: make(map[tjs.ObjectID]*csvParserState), Videos: make(map[tjs.ObjectID]*VideoOverlay), Sounds: make(map[tjs.ObjectID]*WaveSoundBuffer), SoundEvents: make(map[tjs.ObjectID][]SoundEvent), Layers: make(map[tjs.ObjectID]*Layer), MotionResources: make(map[tjs.ObjectID]*motionResourceStore), MotionModules: make(map[tjs.ObjectID]*motionResource), MotionPlayers: make(map[tjs.ObjectID]*motionPlayerState), MotionAdaptors: make(map[tjs.ObjectID]tjs.ObjectID), Bitmaps: make(map[tjs.ObjectID]*Bitmap), Fonts: make(map[tjs.ObjectID]*FontState), TextRenderers: make(map[tjs.ObjectID]*textRenderState), LayerFonts: make(map[tjs.ObjectID]tjs.ObjectID), LayerDefaultFonts: make(map[tjs.ObjectID]tjs.ObjectID), LayerChildren: make(map[tjs.ObjectID]tjs.Value),
+		Arguments:               make(map[string]string), MessageMap: make(map[string]string), Natives: NewNativeRegistry(), KAGParsers: make(map[tjs.ObjectID]*KAGParser), CSVParsers: make(map[tjs.ObjectID]*csvParserState), Videos: make(map[tjs.ObjectID]*VideoOverlay), Sounds: make(map[tjs.ObjectID]*WaveSoundBuffer), SoundEvents: make(map[tjs.ObjectID][]SoundEvent), Layers: make(map[tjs.ObjectID]*Layer), MotionResources: make(map[tjs.ObjectID]*motionResourceStore), MotionModules: make(map[tjs.ObjectID]*motionResource), MotionPlayers: make(map[tjs.ObjectID]*motionPlayerState), MotionAdaptors: make(map[tjs.ObjectID]tjs.ObjectID), MotionValueObjects: make(map[tjs.ObjectID]*motionValueObjectState), Bitmaps: make(map[tjs.ObjectID]*Bitmap), Fonts: make(map[tjs.ObjectID]*FontState), TextRenderers: make(map[tjs.ObjectID]*textRenderState), LayerFonts: make(map[tjs.ObjectID]tjs.ObjectID), LayerDefaultFonts: make(map[tjs.ObjectID]tjs.ObjectID), LayerChildren: make(map[tjs.ObjectID]tjs.Value),
 	}
 }
 func DefaultServices() *Services { return NewServices(nil, "", core.DefaultLimits()) }
@@ -433,8 +436,20 @@ func (s *Services) ensureInit() {
 	if s.MotionResources == nil {
 		s.MotionResources = make(map[tjs.ObjectID]*motionResourceStore)
 	}
+	if s.MotionResourceManagerAliases == nil {
+		s.MotionResourceManagerAliases = make(map[tjs.ObjectID]tjs.ObjectID)
+	}
 	if s.MotionModules == nil {
 		s.MotionModules = make(map[tjs.ObjectID]*motionResource)
+	}
+	if s.MotionPlayers == nil {
+		s.MotionPlayers = make(map[tjs.ObjectID]*motionPlayerState)
+	}
+	if s.MotionAdaptors == nil {
+		s.MotionAdaptors = make(map[tjs.ObjectID]tjs.ObjectID)
+	}
+	if s.MotionValueObjects == nil {
+		s.MotionValueObjects = make(map[tjs.ObjectID]*motionValueObjectState)
 	}
 	if s.win32Dialogs == nil {
 		s.win32Dialogs = make(map[tjs.ObjectID]*win32DialogState)
@@ -2430,7 +2445,13 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		return s.motionPlayerNative(vm, context, strings.TrimPrefix(name, "Motion.Player."), args)
 	}
 	if strings.HasPrefix(name, "Motion.SeparateLayerAdaptor.") {
-		return s.motionSeparateLayerAdaptorNative(context, strings.TrimPrefix(name, "Motion.SeparateLayerAdaptor."), args)
+		return s.motionSeparateLayerAdaptorNative(vm, context, strings.TrimPrefix(name, "Motion.SeparateLayerAdaptor."), args)
+	}
+	for _, className := range []string{"Point", "Circle", "Rect", "Quad", "LayerGetter", "ObjSource", "SourceCache", "D3DAdaptor"} {
+		prefix := "Motion." + className + "."
+		if strings.HasPrefix(name, prefix) {
+			return s.motionValueObjectNative(vm, context, className, strings.TrimPrefix(name, prefix), args)
+		}
 	}
 	if strings.HasPrefix(name, "PSBFile.") {
 		return s.psbFileNative(vm, context, strings.TrimPrefix(name, "PSBFile."), args)

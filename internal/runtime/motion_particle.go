@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/binary"
+	"fmt"
 	"hash/fnv"
 	"math"
 
@@ -15,6 +16,7 @@ type motionParticle struct {
 	angle    float64
 	scale    float64
 	age      float64
+	birth    float64
 	template string
 }
 
@@ -90,10 +92,11 @@ func motionParticleLifetime(resource *motionResource, attached []*motionResource
 	}
 	_, _, nested := motionLookupMotion(resource, attached, parts[0], parts[1])
 	// A looping template never stops playing, so its child is never erased.
-	if psbMotionInt(nested, "loopTime", -1) >= 0 {
+	if loopTime, ok := motionLoopTimeValue(nested); ok && loopTime >= 0 {
 		return math.Inf(1)
 	}
-	return float64(psbMotionInt(nested, "lastTime", 0))
+	totalFrames, _ := motionTotalFramesValue(nested)
+	return totalFrames
 }
 
 // motionParticleDuration returns the template motion's total frame count,
@@ -108,7 +111,16 @@ func motionParticleDuration(resource *motionResource, attached []*motionResource
 		return 0
 	}
 	_, _, nested := motionLookupMotion(resource, attached, parts[0], parts[1])
-	return float64(psbMotionInt(nested, "lastTime", 0))
+	totalFrames, _ := motionTotalFramesValue(nested)
+	return totalFrames
+}
+
+func motionResourceEmoteMode(resource *motionResource) bool {
+	if resource == nil || resource.doc == nil {
+		return false
+	}
+	root, _ := resource.doc.Root.(map[string]assets.Value)
+	return psbMotionInt(root, "type", 0) == 1
 }
 
 // motionParticles simulates the live particles of a type-4 emitter node at
@@ -116,6 +128,9 @@ func motionParticleDuration(resource *motionResource, attached []*motionResource
 // emitter's own velocity inheritance follow PlayerUpdateParticles.cpp:440-880;
 // lifetimes come from the template motion's total frame count.
 func motionParticles(resource *motionResource, attached []*motionResource, node map[string]assets.Value, content map[string]assets.Value, ctx motionRenderContext, tick float64, width, height int) []motionParticle {
+	if motionResourceEmoteMode(resource) {
+		return nil
+	}
 	templates := motionStringList(node["particleMotionList"])
 	if len(templates) == 0 {
 		return nil
@@ -123,9 +138,6 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 	maxNum := psbMotionInt(node, "particleMaxNum", 0)
 	if maxNum <= 0 {
 		return nil
-	}
-	if maxNum > 512 {
-		maxNum = 512
 	}
 	parameters, _ := content["prt"].(map[string]assets.Value)
 	if parameters == nil {
@@ -155,7 +167,7 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 		}
 	} else if trigger == 1 {
 		seed := motionParticleRandoms(label, -1)
-		count = int(math.Round(fmin + (fmax-fmin)*seed[0]))
+		count = int(fmin + (fmax-fmin)*seed[0])
 		if count <= 0 {
 			return nil
 		}
@@ -191,22 +203,6 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 		}
 	}
 	parentMatrix := multiplyMotionMatrix(ctx.matrix, invertMotionMatrix(currentLocal))
-
-	// inheritVelocity 1 adds the emitter's per-frame displacement to each
-	// child (PlayerUpdateParticles.cpp:870-880).
-	var deltaX, deltaY, deltaZ float64
-	if inheritVelocity == 1 {
-		localX, localY, localZ := motionNodeLocalDelta(node, tick)
-		if coordinateMode == 1 {
-			deltaX = parentMatrix.a*localX + parentMatrix.b*localZ
-			deltaZ = parentMatrix.c*localX + parentMatrix.d*localZ
-			deltaY = localY
-		} else {
-			deltaX = parentMatrix.a*localX + parentMatrix.b*localY
-			deltaY = parentMatrix.c*localX + parentMatrix.d*localY
-			deltaZ = localZ
-		}
-	}
 
 	lifetimes := make(map[string]float64, len(templates))
 	durations := make(map[string]float64, len(templates))
@@ -259,13 +255,31 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 		if age >= 0 && age <= lifetime {
 			birthLocal := currentLocal
 			birthX, birthY, birthZ := currentX, currentY, currentZ
+			birthContent := content
 			if len(frames) > 0 {
 				if content, visible := psbMotionResolvedContent(frames, birth, psbMotionInt(node, "type", 0), psbMotionInt(node, "coordinate", 0)); visible {
 					birthX, birthY, birthZ = motionNodeCoord(content)
 					birthLocal = psbMotionLocalMatrix(node, content)
+					birthContent = content
 				}
 			}
 			emitMatrix := multiplyMotionMatrix(parentMatrix, birthLocal)
+			// The reference adds the emitter's displacement from the particle's
+			// birth update to that child's velocity
+			// (PlayerUpdateParticles.cpp:870-880).
+			var deltaX, deltaY, deltaZ float64
+			if inheritVelocity == 1 {
+				localX, localY, localZ := motionNodeLocalDelta(node, birth)
+				if coordinateMode == 1 {
+					deltaX = parentMatrix.a*localX + parentMatrix.b*localZ
+					deltaZ = parentMatrix.c*localX + parentMatrix.d*localZ
+					deltaY = localY
+				} else {
+					deltaX = parentMatrix.a*localX + parentMatrix.b*localY
+					deltaY = parentMatrix.c*localX + parentMatrix.d*localY
+					deltaZ = localZ
+				}
+			}
 			// The reference spawns the child at the emitter's accumulated
 			// position for that frame, so the delta back to the birth position
 			// stays fixed in canvas space for inheritVelocity modes other
@@ -286,8 +300,10 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 				// emitter matrix (PlayerUpdateParticles.cpp:652-657).
 				offsetZ *= math.Sqrt(emitMatrix.a*emitMatrix.d - emitMatrix.b*emitMatrix.c)
 			}
-			txOff := emitMatrix.a*offsetX + emitMatrix.b*offsetY
-			tyOff := emitMatrix.c*offsetX + emitMatrix.d*offsetY
+			clipOriginX := psbMotionFloat(birthContent, "ox", 0)
+			clipOriginY := psbMotionFloat(birthContent, "oy", 0)
+			txOff := emitMatrix.a*(offsetX-clipOriginX) + emitMatrix.b*(offsetY-clipOriginY)
+			tyOff := emitMatrix.c*(offsetX-clipOriginX) + emitMatrix.d*(offsetY-clipOriginY)
 
 			speed := vmin
 			if vmin != vmax {
@@ -339,8 +355,26 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 			if amin != amax {
 				angle = amin + (amax-amin)*random.value()
 			}
+			if ctx.transform.flipX != ctx.transform.flipY {
+				angle = -angle
+			}
 			if inheritAngle {
-				angle += totalAngle * 180 / math.Pi
+				inheritedAngle := totalAngle
+				if ctx.transform.flipX {
+					inheritedAngle += math.Pi
+				}
+				angle += inheritedAngle * 180 / math.Pi
+			}
+			if inheritVelocity == 2 && inheritAngle {
+				birthTransform := motionTransformFromContent(birthContent)
+				if ctx.inheritParent != nil {
+					birthTransform = inheritMotionTransform(ctx.inheritParent.transform, birthTransform, ctx.inheritMask)
+				}
+				angleDelta := ctx.transform.angle - birthTransform.angle
+				if ctx.transform.flipX != ctx.transform.flipY {
+					angleDelta = -angleDelta
+				}
+				angle += angleDelta
 			}
 			angle = math.Mod(angle, 360)
 			if angle < 0 {
@@ -405,6 +439,7 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 				angle:    angle,
 				scale:    zoom,
 				age:      age,
+				birth:    birth,
 				template: template,
 			})
 			if len(particles) > maxNum {
@@ -480,9 +515,10 @@ func motionParticleTransform(ctx motionRenderContext, particle motionParticle) m
 	ctx.y += particle.y
 	ctx.z += particle.z
 	ctx.childTick = 0
-	// A particle child is a separate player: the spawn writes only its root
-	// position, angle, and zoom, so the emitter's own matrix does not carry
-	// into the template (PlayerUpdateParticles.cpp:740-850).
+	// A particle child is a separate player. The emitter contributes the
+	// spawn position, parent flips, and blend/color state; its root matrix and
+	// transform do not carry into the template
+	// (PlayerUpdateParticles.cpp:740-850).
 	radians := particle.angle * math.Pi / 180
 	cosine, sine := math.Cos(radians), math.Sin(radians)
 	ctx.matrix = motionMatrix{
@@ -491,6 +527,17 @@ func motionParticleTransform(ctx motionRenderContext, particle motionParticle) m
 		c: sine * particle.scale,
 		d: cosine * particle.scale,
 	}
+	ctx.rootMatrix = ctx.matrix
+	ctx.coordinateMode = 0
+	ctx.transform = motionTransformState{
+		flipX: ctx.transform.flipX, flipY: ctx.transform.flipY,
+		angle: particle.angle, scaleX: particle.scale, scaleY: particle.scale,
+	}
+	ctx.rootTransform = ctx.transform
+	ctx.inheritMask = 0
+	ctx.inheritParent = nil
+	ctx.evalNode = nil
+	ctx.targetNodes = nil
 	return ctx
 }
 
@@ -556,13 +603,15 @@ func collectGPUMotionParticles(resource *motionResource, layer map[string]assets
 		return nil
 	}
 	eval.inParticle = true
-	for _, particle := range particles {
+	for particleIndex, particle := range particles {
 		owner, ownerRoot, layers := motionParticleLayers(resource, eval.attached, particle.template)
 		if len(layers) == 0 {
 			continue
 		}
 		particleCtx := motionParticleTransform(ctx, particle)
-		if err := collectGPUMotionValue(owner, ownerRoot, layers, particle.age, eval, particleCtx, drawMatrix, result, stack); err != nil {
+		particleCtx.layerTreeKey = fmt.Sprintf("%s/emitter:%d/particle:%d/template:%s", ctx.layerTreeKey, ctx.layerID, particleIndex, particle.template)
+		particleLayerID := 1
+		if err := collectGPUMotionValue(owner, ownerRoot, layers, particle.age, eval, particleCtx, drawMatrix, result, stack, &particleLayerID); err != nil {
 			return err
 		}
 	}
