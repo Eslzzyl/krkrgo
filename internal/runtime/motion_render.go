@@ -2486,6 +2486,30 @@ func collectMotionLayerNames(value assets.Value, names map[string]struct{}) {
 	}
 }
 
+func findMotionLayerByLabel(value assets.Value, label string) map[string]assets.Value {
+	var found map[string]assets.Value
+	var visit func(assets.Value)
+	visit = func(value assets.Value) {
+		switch node := value.(type) {
+		case []assets.Value:
+			for _, child := range node {
+				visit(child)
+			}
+		case map[string]assets.Value:
+			if psbLabel(node) == label {
+				found = node
+			}
+			for _, key := range []string{"children", "layer"} {
+				if child, exists := node[key]; exists {
+					visit(child)
+				}
+			}
+		}
+	}
+	visit(value)
+	return found
+}
+
 func motionCameraOffsetValue(value assets.Value, tick float64, eval motionRenderEval, parent motionCameraAccumulated, drawMatrix motionDrawMatrix) (float64, float64, bool) {
 	switch node := value.(type) {
 	case []assets.Value:

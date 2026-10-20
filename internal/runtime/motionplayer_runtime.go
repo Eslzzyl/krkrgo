@@ -698,6 +698,16 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 			values[index] = tjs.StringValue(name)
 		}
 		return vm.NewArray(values)
+	case "getLayerMotion":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.getLayerMotion requires a layer name")
+		}
+		resource := s.playerResource(state)
+		layer := findMotionLayerByLabel(motionLayerList(resource, state.chara, state.motion), args[0].Text())
+		if layer == nil || resource == nil {
+			return tjs.VoidValue, nil
+		}
+		return psbValueToTJS(vm, layer, resource.data, 0)
 	case "requireLayerId":
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.Player.requireLayerId requires a layer name")
