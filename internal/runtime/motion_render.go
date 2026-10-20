@@ -1075,6 +1075,7 @@ func drawMotionSourceFrame(resource *motionResource, root map[string]assets.Valu
 type motionMeshControlNet struct {
 	points           [16][2]float64
 	originX, originY float64
+	centerX, centerY float64
 	invM11, invM12   float64
 	invM21, invM22   float64
 }
@@ -1105,6 +1106,14 @@ func (net *motionMeshControlNet) deform(x, y float64) (float64, float64) {
 	u := net.invM11*tx + net.invM12*ty
 	v := net.invM21*tx + net.invM22*ty
 	return net.evaluate(u, v)
+}
+
+// deformOffset applies the control net to a node position stored relative to
+// the canvas center, matching the reference's parent mesh deformation of
+// child positions (PlayerUpdateLayersInternal.h:362-407).
+func (net *motionMeshControlNet) deformOffset(x, y float64) (float64, float64) {
+	px, py := net.deform(net.centerX+x, net.centerY+y)
+	return px - net.centerX, py - net.centerY
 }
 
 // motionMeshControlNetAt builds the control net declared by content.mesh.bp.
@@ -1145,6 +1154,8 @@ func motionMeshControlNetAt(content map[string]assets.Value, ctx motionRenderCon
 	net.invM12 = -mw12 / det
 	net.invM21 = -mw21 / det
 	net.invM22 = mw11 / det
+	net.centerX = width / 2
+	net.centerY = height / 2
 	net.originX = centerX - (ctx.matrix.a*originX + ctx.matrix.b*originY)
 	net.originY = centerY - (ctx.matrix.c*originX + ctx.matrix.d*originY)
 	for index := range 16 {
@@ -1890,6 +1901,9 @@ func psbMotionContext(parent motionRenderContext, content map[string]assets.Valu
 		ctx.x = worldX + transformParent.x
 		ctx.y = worldY + transformParent.y
 		ctx.z = transformParent.z + coordZ
+	}
+	for index := len(parent.meshAncestors) - 1; index >= 0; index-- {
+		ctx.x, ctx.y = parent.meshAncestors[index].deformOffset(ctx.x, ctx.y)
 	}
 	if opacity, ok := content["opa"]; ok {
 		value := psbMotionFloatValue(opacity, 255)
