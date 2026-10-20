@@ -81,9 +81,12 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 	}
 	for _, property := range []string{
 		"chara", "motion", "stealthMotion", "tickCount", "frameTickCount",
-		"frameLastTime", "frameLoopTime", "loopTime", "speed", "playing",
-		"allplaying", "tags", "variableKeys", "completionType", "maskMode",
-		"zFactor", "outline", "onAction",
+		"motionKey", "metadata", "frameLastTime", "frameLoopTime", "loopTime",
+		"priorDraw", "processedMeshVerticesNum", "queuing", "directEdit",
+		"selectorEnabled", "syncWaiting", "syncActive", "hasCamera",
+		"cameraActive", "stereovisionActive", "speed", "playing", "allplaying",
+		"tags", "variableKeys", "completionType", "maskMode", "zFactor",
+		"outline", "onAction",
 	} {
 		setter := "Motion.Player.set:" + property
 		switch property {

@@ -48,30 +48,39 @@ type motionPlayerState struct {
 	// attached holds the secondary snapshots MultiCache linked to the primary
 	// (EmotePlayer::play calls addEmoteFile for every non-primary cached
 	// module); source and nested-motion lookup falls back to them.
-	attached         []*motionResource
-	emote            *emotePlayerState
-	metadataResource *motionResource
-	chara            string
-	motion           string
-	stealthMotion    string
-	frameTick        float64
-	frameLastTime    float64
-	frameLoopTime    float64
-	loopTime         float64
-	loopTimeSet      bool
-	speed            bool
-	speedSet         bool
-	zFactor          float64
-	zFactorSet       bool
-	playing          bool
+	attached                 []*motionResource
+	emote                    *emotePlayerState
+	metadataResource         *motionResource
+	chara                    string
+	motion                   string
+	stealthMotion            string
+	frameTick                float64
+	frameLastTime            float64
+	frameLoopTime            float64
+	loopTime                 float64
+	loopTimeSet              bool
+	speed                    bool
+	speedSet                 bool
+	zFactor                  float64
+	zFactorSet               bool
+	playing                  bool
+	metadata                 tjs.Value
+	priorDraw                float64
+	processedMeshVerticesNum int64
+	queuing                  bool
+	directEdit               bool
+	selectorEnabled          bool
+	syncWaiting              bool
+	syncActive               bool
+	hasCamera                bool
+	cameraActive             bool
+	stereovisionActive       bool
 	// held marks a one-shot motion that reached its last time: the reference
 	// stops advancing the timeline at that point and keeps the evaluated pose,
 	// and the layer keeps drawing the clamped frame. A repeat apply of the same
 	// motion keeps the held pose; an explicit stop clears the mark so a later
 	// apply starts the motion again.
 	held           bool
-	syncWaiting    bool
-	syncActive     bool
 	completionType int64
 	maskMode       int64
 	outline        string
@@ -533,8 +542,10 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 	switch property {
 	case "chara":
 		return tjs.StringValue(state.chara), nil
-	case "motion":
+	case "motion", "motionKey":
 		return tjs.StringValue(state.motion), nil
+	case "metadata":
+		return state.metadata, nil
 	case "stealthMotion":
 		return tjs.StringValue(state.stealthMotion), nil
 	case "tickCount":
@@ -550,6 +561,26 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 		return tjs.RealValue(state.frameLastTime), nil
 	case "frameLoopTime":
 		return tjs.RealValue(state.frameLoopTime), nil
+	case "priorDraw":
+		return tjs.RealValue(state.priorDraw), nil
+	case "processedMeshVerticesNum":
+		return tjs.IntegerValue(state.processedMeshVerticesNum), nil
+	case "queuing":
+		return tjs.IntegerValue(boolInt(state.queuing)), nil
+	case "directEdit":
+		return tjs.IntegerValue(boolInt(state.directEdit)), nil
+	case "selectorEnabled":
+		return tjs.IntegerValue(boolInt(state.selectorEnabled)), nil
+	case "syncWaiting":
+		return tjs.IntegerValue(boolInt(state.syncWaiting)), nil
+	case "syncActive":
+		return tjs.IntegerValue(boolInt(state.syncActive)), nil
+	case "hasCamera":
+		return tjs.IntegerValue(boolInt(state.hasCamera)), nil
+	case "cameraActive":
+		return tjs.IntegerValue(boolInt(state.cameraActive)), nil
+	case "stereovisionActive":
+		return tjs.IntegerValue(boolInt(state.stereovisionActive)), nil
 	case "loopTime":
 		if state.loopTimeSet {
 			return tjs.RealValue(state.loopTime), nil
@@ -599,7 +630,7 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 		state.chara = value.Text()
 	case "stealthMotion":
 		state.stealthMotion = value.Text()
-	case "motion":
+	case "motion", "motionKey":
 		motion := value.Text()
 		if state.motion == motion {
 			return nil
@@ -611,6 +642,8 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 		state.loopTimeSet = false
 		state.playing = motion != ""
 		state.held = false
+	case "metadata":
+		state.metadata = value
 	case "tickCount":
 		n, err := value.Real()
 		if err != nil {
@@ -639,6 +672,34 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 			return err
 		}
 		state.frameLoopTime = n
+	case "priorDraw":
+		n, err := value.Real()
+		if err != nil {
+			return err
+		}
+		state.priorDraw = n
+	case "processedMeshVerticesNum":
+		n, err := value.Int()
+		if err != nil {
+			return err
+		}
+		state.processedMeshVerticesNum = n
+	case "queuing":
+		state.queuing = motionPlayerBool(value)
+	case "directEdit":
+		state.directEdit = motionPlayerBool(value)
+	case "selectorEnabled":
+		state.selectorEnabled = motionPlayerBool(value)
+	case "syncWaiting":
+		state.syncWaiting = motionPlayerBool(value)
+	case "syncActive":
+		state.syncActive = motionPlayerBool(value)
+	case "hasCamera":
+		state.hasCamera = motionPlayerBool(value)
+	case "cameraActive":
+		state.cameraActive = motionPlayerBool(value)
+	case "stereovisionActive":
+		state.stereovisionActive = motionPlayerBool(value)
 	case "loopTime":
 		n, err := value.Real()
 		if err != nil {
@@ -832,6 +893,11 @@ func motionPlayerZFactor(state *motionPlayerState) float64 {
 
 func motionPlayerSpeed(state *motionPlayerState) bool {
 	return state == nil || (!state.speedSet && !state.speed) || state.speed
+}
+
+func motionPlayerBool(value tjs.Value) bool {
+	n, err := value.Int()
+	return err == nil && n != 0
 }
 
 func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value tjs.Value) error {
