@@ -188,6 +188,18 @@ func motionResourcePathAliases(path string) []string {
 	return aliases
 }
 
+func motionResourcePathMatches(left, right string) bool {
+	leftAliases := motionResourcePathAliases(left)
+	for _, alias := range motionResourcePathAliases(right) {
+		for _, candidate := range leftAliases {
+			if alias == candidate {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (s *Services) motionResourceStoreForLocked(manager tjs.ObjectID) *motionResourceStore {
 	cache := s.MotionResources[manager]
 	if cache == nil {
@@ -704,6 +716,49 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		state.metadataResource = nil
 		s.motionPlayerEmote(state)
 		return module, nil
+	case "unload":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.unload requires a motion key")
+		}
+		key := args[0].Text()
+		if key == "" {
+			return tjs.VoidValue, nil
+		}
+		if state.resource != nil && motionResourcePathMatches(state.resource.path, key) {
+			state.resource = nil
+			state.metadataResource = nil
+			state.motion = ""
+			state.playing = false
+			state.held = false
+			if state.emote != nil {
+				s.emoteResetRuntime(state.emote)
+			}
+		}
+		return tjs.VoidValue, nil
+	case "unloadAll":
+		s.clearMotionResourceCache(state.resourceManager)
+		if state.resourceManager != 0 {
+			manager := tjs.ObjectIDValue(state.resourceManager)
+			cache, err := vm.NewDictionary()
+			if err != nil {
+				return tjs.VoidValue, err
+			}
+			if err := tjs.SetMember(vm.Objects, manager, "_motionResourceCache", cache); err != nil {
+				return tjs.VoidValue, err
+			}
+		}
+		state.resource = nil
+		state.attached = nil
+		state.metadataResource = nil
+		state.motion = ""
+		state.playing = false
+		state.held = false
+		state.variableKeys = tjs.VoidValue
+		state.drawMatrix = identityMotionDrawMatrix()
+		if state.emote != nil {
+			s.emoteResetRuntime(state.emote)
+		}
+		return tjs.VoidValue, nil
 	case "setVariable":
 		if len(args) < 2 {
 			return tjs.VoidValue, fmt.Errorf("Motion.Player.setVariable requires name and value")
