@@ -421,6 +421,8 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		}
 		state.playing = true
 		state.held = false
+		emote := s.motionPlayerEmote(state)
+		s.emoteStartMotion(state, emote, motion, flags)
 		motionTrace("play id=%d chara=%q motion=%q flags=%d", id, state.chara, state.motion, flags)
 		return tjs.VoidValue, nil
 	case "stop":
@@ -438,9 +440,9 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		if interval < 0 || interval > motionProgressMaxMS {
 			interval = 0
 		}
-		// A player that was stopped or that reached the end of a one-shot
-		// motion holds the pose it has; further progress calls do not move it.
-		if !state.playing {
+		// Stopped players with active timeline labels continue timeline progress;
+		// a stopped player with no active labels keeps its evaluated pose.
+		if !state.playing && (state.emote == nil || len(state.emote.playingOrder) == 0) {
 			return tjs.VoidValue, nil
 		}
 		if !motionPlayerSpeed(state) {
@@ -458,6 +460,8 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 				s.emoteAdvanceTimelines(emote, frames)
 			}
 			s.emoteApplyEvalPostProcess(emote)
+			state.playing = len(emote.playingOrder) > 0
+			state.syncActive = state.syncWaiting && state.playing
 			return tjs.VoidValue, nil
 		}
 		if state.queuing {
@@ -472,6 +476,8 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 			s.emoteStepControllerBuckets(emote, frames)
 		}
 		s.emoteApplyEvalPostProcess(emote)
+		state.playing = len(emote.playingOrder) > 0
+		state.syncActive = state.syncWaiting && state.playing
 		state.frameLoopTime += frames
 		state.frameTick += frames
 		if resource := s.playerResource(state); resource != nil {
@@ -554,8 +560,16 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		"getPlayingTimelineFlagsAt", "getTimelineTotalFrameCount", "playTimeline",
 		"stopTimeline", "setTimelineBlendRatio", "getTimelineBlendRatio",
 		"fadeInTimeline", "fadeOutTimeline", "getPlayingTimelineInfoList":
-		s.motionPlayerEmote(state)
-		return s.motionEmotePlayerNative(vm, context, operation, args)
+		emote := s.motionPlayerEmote(state)
+		result, err := s.motionEmotePlayerNative(vm, context, operation, args)
+		if err != nil {
+			return result, err
+		}
+		if operation == "playTimeline" || operation == "stopTimeline" {
+			state.playing = len(emote.playingOrder) > 0
+			state.syncActive = state.syncWaiting && state.playing
+		}
+		return result, nil
 	default:
 		return tjs.VoidValue, fmt.Errorf("unsupported Motion.Player operation %q", operation)
 	}
