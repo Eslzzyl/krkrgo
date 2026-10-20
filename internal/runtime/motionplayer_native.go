@@ -57,7 +57,7 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 		}
 	}
 	for _, method := range []string{"requireLayerId", "releaseLayerId"} {
-		if err := vm.RegisterNativeMethod(resourceManager, method, "Motion.ResourceManager.unsupported:"+method); err != nil {
+		if err := vm.RegisterNativeMethod(resourceManager, method, "Motion.ResourceManager."+method); err != nil {
 			return err
 		}
 	}
@@ -83,6 +83,7 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 		"fadeInTimeline", "fadeOutTimeline", "getPlayingTimelineInfoList",
 		"getCameraOffset", "setCameraOffset", "setStereovisionCameraPosition",
 		"modifyRoot", "skipToSync", "setDrawAffineTranslateMatrix",
+		"requireLayerId", "releaseLayerId", "isPlaying",
 	} {
 		if err := vm.RegisterNativeMethod(player, method, "Motion.Player."+method); err != nil {
 			return err
@@ -150,6 +151,21 @@ func (s *Services) motionResourceManagerNative(vm *tjs.VM, context tjs.Value, op
 		seed := s.EmotePSBDecryptSeed
 		s.mu.RUnlock()
 		return tjs.IntegerValue(int64(seed)), nil
+	case "requireLayerId":
+		if len(args) != 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.ResourceManager.requireLayerId takes no arguments")
+		}
+		return tjs.IntegerValue(s.requireMotionLayerID(context.ObjectRef().Object, "")), nil
+	case "releaseLayerId":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.ResourceManager.releaseLayerId requires an id")
+		}
+		id, err := args[0].Int()
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		s.releaseMotionLayerID(context.ObjectRef().Object, id)
+		return tjs.VoidValue, nil
 	case "load", "loadSource":
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.ResourceManager.%s: missing storage path", operation)

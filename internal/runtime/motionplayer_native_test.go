@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"math"
-	"strings"
 	"testing"
 )
 
@@ -17,6 +16,11 @@ func TestMotionPlayerLinkInstallsPortableResourceManagerSurface(t *testing.T) {
 			Motion.ShapeTypeQuad, Motion.TransformOrderSlant,
 			Motion.CoordinateRecutangularXZ, Motion.MaskModeAlpha].join(",");
 		missingSource = rm.findSource("missing.psb") === void;
+		layerID = rm.requireLayerId();
+		rm.releaseLayerId(layerID);
+		player = new Motion.Player(rm);
+		playerLayerID = player.requireLayerId("layer");
+		playerLayerIDAgain = player.requireLayerId("layer");
 		rm.clearCache();
 		rm.unload("missing.psb");
 	`, false); err != nil {
@@ -29,8 +33,12 @@ func TestMotionPlayerLinkInstallsPortableResourceManagerSurface(t *testing.T) {
 	if got, want := value.Text(), "3,2,3,3,1,1|1"; got != want {
 		t.Fatalf("Motion constants and findSource = %q, want %q", got, want)
 	}
-	if _, err := session.Evaluate(`rm.requireLayerId("layer")`); err == nil || !strings.Contains(err.Error(), "unsupported Motion.ResourceManager operation") {
-		t.Fatalf("unimplemented resource-manager method error = %v, want explicit unsupported error", err)
+	value, err = session.Evaluate(`playerLayerID === playerLayerIDAgain`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Text() != "1" {
+		t.Fatalf("named player layer id was not reused: %q", value.Text())
 	}
 }
 

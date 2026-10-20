@@ -150,11 +150,15 @@ func (s *Services) loadMotionResource(path string) (*motionResource, error) {
 // the first. order preserves insertion order so multi-cache primary selection
 // and equality checks stay deterministic.
 type motionResourceStore struct {
-	modules    map[string]*motionResource
-	order      []*motionResource
-	cachePaths map[*motionResource]map[string]struct{}
-	lastLoaded *motionResource
-	lastPath   string
+	modules        map[string]*motionResource
+	order          []*motionResource
+	cachePaths     map[*motionResource]map[string]struct{}
+	lastLoaded     *motionResource
+	lastPath       string
+	usedLayerIDs   map[int64]struct{}
+	layerIDsByName map[string]int64
+	layerNamesByID map[int64]string
+	nextLayerID    int64
 }
 
 // motionResourcePathAliases mirrors buildPathCacheKeys (ResourceManager.cpp:36)
@@ -187,10 +191,63 @@ func motionResourcePathAliases(path string) []string {
 func (s *Services) motionResourceStoreForLocked(manager tjs.ObjectID) *motionResourceStore {
 	cache := s.MotionResources[manager]
 	if cache == nil {
-		cache = &motionResourceStore{modules: make(map[string]*motionResource)}
+		cache = &motionResourceStore{
+			modules:        make(map[string]*motionResource),
+			usedLayerIDs:   make(map[int64]struct{}),
+			layerIDsByName: make(map[string]int64),
+			layerNamesByID: make(map[int64]string),
+			nextLayerID:    1,
+		}
 		s.MotionResources[manager] = cache
 	}
 	return cache
+}
+
+func (s *Services) requireMotionLayerID(manager tjs.ObjectID, name string) int64 {
+	s.ensureInit()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cache := s.motionResourceStoreForLocked(manager)
+	if name != "" {
+		if id := cache.layerIDsByName[name]; id != 0 {
+			return id
+		}
+	}
+	if cache.nextLayerID < 1 {
+		cache.nextLayerID = 1
+	}
+	for {
+		if _, used := cache.usedLayerIDs[cache.nextLayerID]; !used {
+			break
+		}
+		cache.nextLayerID++
+	}
+	id := cache.nextLayerID
+	cache.nextLayerID++
+	cache.usedLayerIDs[id] = struct{}{}
+	if name != "" {
+		cache.layerIDsByName[name] = id
+		cache.layerNamesByID[id] = name
+	}
+	return id
+}
+
+func (s *Services) releaseMotionLayerID(manager tjs.ObjectID, id int64) {
+	if id == 0 {
+		return
+	}
+	s.ensureInit()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cache := s.MotionResources[manager]
+	if cache == nil {
+		return
+	}
+	delete(cache.usedLayerIDs, id)
+	if name, found := cache.layerNamesByID[id]; found {
+		delete(cache.layerIDsByName, name)
+		delete(cache.layerNamesByID, id)
+	}
 }
 
 func (s *Services) motionResource(path string, manager tjs.ObjectID) *motionResource {
@@ -606,6 +663,21 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 				state.frameTick = last
 			}
 		}
+		return tjs.VoidValue, nil
+	case "requireLayerId":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.requireLayerId requires a layer name")
+		}
+		return tjs.IntegerValue(s.requireMotionLayerID(state.resourceManager, args[0].Text())), nil
+	case "releaseLayerId":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.releaseLayerId requires an id")
+		}
+		id, err := args[0].Int()
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		s.releaseMotionLayerID(state.resourceManager, id)
 		return tjs.VoidValue, nil
 	case "setVariable":
 		if len(args) < 2 {
