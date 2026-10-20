@@ -585,7 +585,7 @@ func motionFrameBounds(resource *motionResource, root map[string]assets.Value, c
 		originX += psbMotionFloat(content, "ox", 0)
 		originY += psbMotionFloat(content, "oy", 0)
 		centerX := float64(width)/2 + ctx.x
-		centerY := float64(height)/2 + ctx.y
+		centerY := float64(height)/2 + motionProjectedY(ctx)
 		minX, minY := math.Inf(1), math.Inf(1)
 		maxX, maxY := math.Inf(-1), math.Inf(-1)
 		for _, corner := range [][2]float64{
@@ -980,8 +980,8 @@ func motionGPUTransform(drawMatrix motionDrawMatrix, ctx motionRenderContext, or
 		c: drawMatrix.c*ctx.matrix.a + drawMatrix.d*ctx.matrix.c,
 		d: drawMatrix.c*ctx.matrix.b + drawMatrix.d*ctx.matrix.d,
 	}
-	tx := drawMatrix.tx + drawMatrix.a*ctx.x + drawMatrix.b*ctx.y - transform.a*originX - transform.b*originY
-	ty := drawMatrix.ty + drawMatrix.c*ctx.x + drawMatrix.d*ctx.y - transform.c*originX - transform.d*originY
+	tx := drawMatrix.tx + drawMatrix.a*ctx.x + drawMatrix.b*motionProjectedY(ctx) - transform.a*originX - transform.b*originY
+	ty := drawMatrix.ty + drawMatrix.c*ctx.x + drawMatrix.d*motionProjectedY(ctx) - transform.c*originX - transform.d*originY
 	return transform, tx, ty
 }
 
@@ -1151,7 +1151,7 @@ func motionMeshControlNetAt(content map[string]assets.Value, ctx motionRenderCon
 		return motionMeshControlNet{}, false
 	}
 	centerX := width/2 + ctx.x
-	centerY := height/2 + ctx.y
+	centerY := height/2 + motionProjectedY(ctx)
 	var net motionMeshControlNet
 	net.invM11 = mw22 / det
 	net.invM12 = -mw12 / det
@@ -1236,7 +1236,7 @@ func renderMotionMeshFrame(layer map[string]assets.Value, content map[string]ass
 	}
 	points := make([]motionPoint, divX*divY)
 	centerX := float64(width)/2 + ctx.x
-	centerY := float64(height)/2 + ctx.y
+	centerY := float64(height)/2 + motionProjectedY(ctx)
 	sourceWidth, sourceHeight := float64(image.Width), float64(image.Height)
 	controlNet, deformed := motionMeshControlNetAt(content, ctx, originX, originY, clipW, clipH, float64(width), float64(height))
 	gridX := make([]float64, divX)
@@ -1907,7 +1907,13 @@ func psbMotionContext(parent motionRenderContext, content map[string]assets.Valu
 		ctx.z = transformParent.z + coordZ
 	}
 	if parent.meshChildDeform != nil {
-		ctx.x, ctx.y = parent.meshChildDeform.deformOffset(ctx.x, ctx.y)
+		projectedY := motionProjectedY(ctx)
+		ctx.x, projectedY = parent.meshChildDeform.deformOffset(ctx.x, projectedY)
+		if parent.coordinateMode != 0 {
+			ctx.z = projectedY - ctx.y
+		} else {
+			ctx.y = projectedY - ctx.z
+		}
 	}
 	if opacity, ok := content["opa"]; ok {
 		value := psbMotionFloatValue(opacity, 255)
@@ -1957,6 +1963,12 @@ func motionShapeAABBContext(ctx motionRenderContext, layer, content map[string]a
 	ctx.viewport = clip
 	ctx.hasViewport = true
 	return ctx
+}
+
+// motionProjectedY applies Player::_zFactor's default value of 1 when a node
+// position reaches the 2D render plane (PlayerUpdateGeometry.cpp:270-273).
+func motionProjectedY(ctx motionRenderContext) float64 {
+	return ctx.y + ctx.z
 }
 
 func motionTransformFromContent(content map[string]assets.Value) motionTransformState {
@@ -2070,7 +2082,7 @@ func hitMotionShape(shape int, ctx motionRenderContext, content map[string]asset
 	// before applying the shape type (PlayerUpdateGeometry.cpp:210-253,
 	// 927-983). The shape extent and orientation stay those of the node's own
 	// accumulated affine transform.
-	centerX, centerY := ctx.x, ctx.y
+	centerX, centerY := ctx.x, motionProjectedY(ctx)
 	for index := len(ctx.meshAncestors) - 1; index >= 0; index-- {
 		centerX, centerY = ctx.meshAncestors[index].deformOffset(centerX, centerY)
 	}
@@ -2651,7 +2663,7 @@ func blendMotionImage(dst []byte, width, height int, src *assets.Image, originX,
 		return nil
 	}
 	centerX := float64(width)/2 + ctx.x
-	centerY := float64(height)/2 + ctx.y
+	centerY := float64(height)/2 + motionProjectedY(ctx)
 	blend := motionBlendMode(ctx.blendMode)
 	if !ctx.hasViewport && matrix.a == 1 && matrix.b == 0 && matrix.c == 0 && matrix.d == 1 {
 		offsetXFloat := centerX - originX
