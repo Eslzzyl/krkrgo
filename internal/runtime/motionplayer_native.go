@@ -73,7 +73,14 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 		"progress", "clear", "draw", "setVariable", "getVariable",
 		"countVariables", "getVariableLabelAt", "countVariableFrameAt",
 		"getVariableFrameLabelAt", "getVariableFrameValueAt", "getVariableRange",
-		"getVariableFrameList", "skipToSync", "setDrawAffineTranslateMatrix",
+		"getVariableFrameList", "getTimelinePlaying", "countMainTimelines",
+		"getMainTimelineLabelAt", "getMainTimelineLabelList", "countDiffTimelines",
+		"getDiffTimelineLabelAt", "getDiffTimelineLabelList", "getLoopTimeline",
+		"countPlayingTimelines", "getPlayingTimelineLabelAt",
+		"getPlayingTimelineFlagsAt", "getTimelineTotalFrameCount", "playTimeline",
+		"stopTimeline", "setTimelineBlendRatio", "getTimelineBlendRatio",
+		"fadeInTimeline", "fadeOutTimeline", "getPlayingTimelineInfoList",
+		"skipToSync", "setDrawAffineTranslateMatrix",
 	} {
 		if err := vm.RegisterNativeMethod(player, method, "Motion.Player."+method); err != nil {
 			return err

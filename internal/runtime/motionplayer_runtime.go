@@ -443,15 +443,29 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		frames := float64(interval) * motionFramesPerMillisecond
 		state.frameLastTime = frames
 		emote := s.motionPlayerEmote(state)
-		if emote != nil {
-			s.emoteStepControllerBuckets(emote, frames)
+		if emote.freezeBodyMotion() {
+			if frames > 0 {
+				state.frameLoopTime += frames
+				emote.frameLastTime = frames
+				emote.frameLoopTime += frames
+				emote.loopTime += frames
+				s.emoteAdvanceTimelines(emote, frames)
+			}
 			s.emoteApplyEvalPostProcess(emote)
+			return tjs.VoidValue, nil
 		}
-		if state.queuing && !emote.freezeBodyMotion() {
+		if state.queuing {
 			state.queuing = false
 			state.syncActive = state.syncWaiting && state.playing
 			return tjs.VoidValue, nil
 		}
+		if frames > 0 {
+			emote.evalResults = make(map[string]float64)
+			emote.evalOrder = nil
+			s.emoteAdvanceTimelines(emote, frames)
+			s.emoteStepControllerBuckets(emote, frames)
+		}
+		s.emoteApplyEvalPostProcess(emote)
 		state.frameLoopTime += frames
 		state.frameTick += frames
 		if resource := s.playerResource(state); resource != nil {
@@ -527,7 +541,13 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		return tjs.RealValue(emoteVariableValue(s.motionPlayerEmote(state), args[0].Text())), nil
 	case "countVariables", "getVariableLabelAt", "countVariableFrameAt",
 		"getVariableFrameLabelAt", "getVariableFrameValueAt", "getVariableRange",
-		"getVariableFrameList":
+		"getVariableFrameList", "getTimelinePlaying", "countMainTimelines",
+		"getMainTimelineLabelAt", "getMainTimelineLabelList", "countDiffTimelines",
+		"getDiffTimelineLabelAt", "getDiffTimelineLabelList", "getLoopTimeline",
+		"countPlayingTimelines", "getPlayingTimelineLabelAt",
+		"getPlayingTimelineFlagsAt", "getTimelineTotalFrameCount", "playTimeline",
+		"stopTimeline", "setTimelineBlendRatio", "getTimelineBlendRatio",
+		"fadeInTimeline", "fadeOutTimeline", "getPlayingTimelineInfoList":
 		s.motionPlayerEmote(state)
 		return s.motionEmotePlayerNative(vm, context, operation, args)
 	default:
