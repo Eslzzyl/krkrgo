@@ -719,7 +719,7 @@ func buildGPUMotionVariables(resource *motionResource, chara, motion string, tic
 	if offsetX, offsetY, ok := motionCameraOffset(layers, tick, eval, drawMatrix); ok {
 		drawMatrix = motionDrawMatrixWithCameraOffset(drawMatrix, offsetX, offsetY)
 	}
-	if motionHasStencilGroup(layers) || motionHasMesh(layers) || motionHasShapeAABB(layers) {
+	if motionTreeNeedsBakedGPU(resource, attached, layers, make(map[string]bool)) {
 		// A stencil composite needs a private group buffer and alpha mask
 		// application; mesh nodes need a triangle grid. Bake the tree at
 		// canvas resolution and hand the result to the GPU as one transformed
@@ -790,61 +790,46 @@ func motionBakedSourceKeyWithMatrix(resource *motionResource, chara, motion stri
 		drawMatrix.a, drawMatrix.b, drawMatrix.c, drawMatrix.d, drawMatrix.tx, drawMatrix.ty)
 }
 
-// motionHasMesh reports whether the layer tree contains a node whose PSB
-// meshTransform selects a mesh draw (node+2000).
-func motionHasMesh(value assets.Value) bool {
+func motionTreeNeedsBakedGPU(resource *motionResource, attached []*motionResource, value assets.Value, stack map[string]bool) bool {
 	switch node := value.(type) {
 	case []assets.Value:
 		for _, child := range node {
-			if motionHasMesh(child) {
+			if motionTreeNeedsBakedGPU(resource, attached, child, stack) {
 				return true
 			}
 		}
 	case map[string]assets.Value:
-		if psbMotionInt(node, "meshTransform", 0) != 0 {
+		if motionStencilGroup(node) || psbMotionInt(node, "meshTransform", 0) != 0 || psbMotionInt(node, "type", -1) == 7 {
 			return true
 		}
-		if motionHasMesh(node["children"]) || motionHasMesh(node["layer"]) {
-			return true
-		}
-	}
-	return false
-}
-
-// motionHasStencilGroup reports whether the layer tree contains a type-12
-// stencilComposite parent that needs masked group composition.
-func motionHasStencilGroup(value assets.Value) bool {
-	switch node := value.(type) {
-	case []assets.Value:
-		for _, child := range node {
-			if motionHasStencilGroup(child) {
-				return true
+		if frames, ok := node["frameList"].([]assets.Value); ok {
+			for _, frameValue := range frames {
+				frame, _ := frameValue.(map[string]assets.Value)
+				content, _ := frame["content"].(map[string]assets.Value)
+				source, _ := content["src"].(string)
+				if !strings.HasPrefix(source, "motion/") {
+					continue
+				}
+				parts := strings.Split(strings.TrimPrefix(source, "motion/"), "/")
+				if len(parts) < 2 {
+					continue
+				}
+				key := parts[0] + "/" + parts[1]
+				if stack[key] {
+					continue
+				}
+				stack[key] = true
+				_, _, nested := motionLookupMotion(resource, attached, parts[0], parts[1])
+				needsBaked := motionTreeNeedsBakedGPU(resource, attached, nested["layer"], stack)
+				delete(stack, key)
+				if needsBaked {
+					return true
+				}
 			}
 		}
-	case map[string]assets.Value:
-		if motionStencilGroup(node) {
+		if motionTreeNeedsBakedGPU(resource, attached, node["children"], stack) || motionTreeNeedsBakedGPU(resource, attached, node["layer"], stack) {
 			return true
 		}
-		if motionHasStencilGroup(node["children"]) || motionHasStencilGroup(node["layer"]) {
-			return true
-		}
-	}
-	return false
-}
-
-func motionHasShapeAABB(value assets.Value) bool {
-	switch node := value.(type) {
-	case []assets.Value:
-		for _, child := range node {
-			if motionHasShapeAABB(child) {
-				return true
-			}
-		}
-	case map[string]assets.Value:
-		if psbMotionInt(node, "type", -1) == 7 {
-			return true
-		}
-		return motionHasShapeAABB(node["children"]) || motionHasShapeAABB(node["layer"])
 	}
 	return false
 }
