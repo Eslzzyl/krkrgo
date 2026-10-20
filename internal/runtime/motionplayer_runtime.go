@@ -96,6 +96,18 @@ type motionPlayerState struct {
 	busy                     bool
 	colorWeight              uint32
 	independentLayerInherit  bool
+	viewFlip                 bool
+	viewOpacity              float64
+	viewVisible              bool
+	viewSlant                float64
+	viewZoom                 float64
+	lastViewParam            tjs.Value
+	clearColor               int64
+	resizable                bool
+	width, height            int64
+	alphaOpCounter           int64
+	backgrounds              []tjs.Value
+	captions                 []tjs.Value
 	// held marks a one-shot motion that reached its last time: the reference
 	// stops advancing the timeline at that point and keeps the evaluated pose,
 	// and the layer keeps drawing the clamped frame. A repeat apply of the same
@@ -436,24 +448,107 @@ func (s *Services) lastMotionResource(manager tjs.ObjectID) *motionResource {
 func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value) (tjs.Value, error) {
 	s.ensureInit()
 	id := context.ObjectRef().Object
-	switch operation {
-	case "@initialize", "Player":
-		state := s.motionPlayer(id)
-		if len(args) > 0 && args[0].Kind() == tjs.KindObject && !args[0].IsNull() {
-			state.resourceManager = args[0].ObjectRef().Object
-		}
-		return tjs.VoidValue, nil
-	case "@invalidate", "finalize":
+	if operation == "@invalidate" || operation == "finalize" {
 		s.mu.Lock()
 		delete(s.MotionPlayers, id)
 		s.mu.Unlock()
+		return tjs.VoidValue, nil
+	}
+	state := s.motionPlayer(id)
+	switch operation {
+	case "@initialize", "Player":
+		if len(args) > 0 && args[0].Kind() == tjs.KindObject && !args[0].IsNull() {
+			state.resourceManager = args[0].ObjectRef().Object
+		}
 		return tjs.VoidValue, nil
 	case "initPhysics":
 		return tjs.VoidValue, nil
 	case "copyRect", "adjustGamma", "unloadUnusedTextures", "doAlphaMaskOperation":
 		return tjs.VoidValue, nil
+	case "setClearColor":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.setClearColor requires a color")
+		}
+		color, err := args[0].Int()
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		state.clearColor = color
+		return tjs.VoidValue, nil
+	case "setResizable":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.setResizable requires a flag")
+		}
+		state.resizable = motionPlayerBool(args[0])
+		return tjs.VoidValue, nil
+	case "removeAllTextures":
+		motionClearSourceCaches(s.playerResource(state))
+		return tjs.VoidValue, nil
+	case "removeAllBg":
+		state.backgrounds = nil
+		return tjs.VoidValue, nil
+	case "removeAllCaption":
+		state.captions = nil
+		return tjs.VoidValue, nil
+	case "registerBg":
+		if len(args) > 0 {
+			state.backgrounds = append(state.backgrounds, args[0])
+		}
+		return tjs.VoidValue, nil
+	case "registerCaption":
+		if len(args) > 0 {
+			state.captions = append(state.captions, args[0])
+		}
+		return tjs.VoidValue, nil
+	case "alphaOpAdd":
+		state.alphaOpCounter++
+		return tjs.IntegerValue(state.alphaOpCounter), nil
+	case "setSize":
+		if len(args) < 2 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.setSize requires width and height")
+		}
+		width, err := args[0].Int()
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		height, err := args[1].Int()
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		state.width, state.height = width, height
+		return tjs.VoidValue, nil
+	case "setFlip":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.setFlip requires a flag")
+		}
+		state.viewFlip = motionPlayerBool(args[0])
+		return tjs.VoidValue, nil
+	case "setOpacity", "setSlant", "setZoom":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.%s requires a value", operation)
+		}
+		number, err := args[0].Real()
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		switch operation {
+		case "setOpacity":
+			state.viewOpacity = number
+		case "setSlant":
+			state.viewSlant = number
+		case "setZoom":
+			state.viewZoom = number
+		}
+		return tjs.VoidValue, nil
+	case "setVisible":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.setVisible requires a flag")
+		}
+		state.viewVisible = motionPlayerBool(args[0])
+		return tjs.VoidValue, nil
+	case "calcViewParam":
+		return tjs.VoidValue, motionPlayerCalcViewParam(vm, state)
 	}
-	state := s.motionPlayer(id)
 	if strings.HasPrefix(operation, "get:") {
 		return s.motionPlayerGet(vm, state, strings.TrimPrefix(operation, "get:"))
 	}
@@ -887,7 +982,7 @@ func (s *Services) motionPlayer(id tjs.ObjectID) *motionPlayerState {
 	defer s.mu.Unlock()
 	state := s.MotionPlayers[id]
 	if state == nil {
-		state = &motionPlayerState{speed: true, speedSet: true, zFactor: 1, zFactorSet: true, cameraFOV: 60, colorWeight: 0xFF808080, drawMatrix: identityMotionDrawMatrix()}
+		state = &motionPlayerState{speed: true, speedSet: true, zFactor: 1, zFactorSet: true, cameraFOV: 60, colorWeight: 0xFF808080, viewOpacity: 1, viewVisible: true, viewZoom: 1, drawMatrix: identityMotionDrawMatrix()}
 		s.MotionPlayers[id] = state
 	}
 	return state
@@ -1275,6 +1370,29 @@ func motionPlayerLoopTime(state *motionPlayerState, resource *motionResource) fl
 	return motionLoopTime(resource, state.chara, state.motion)
 }
 
+func motionPlayerCalcViewParam(vm *tjs.VM, state *motionPlayerState) error {
+	view, err := vm.NewDictionary()
+	if err != nil {
+		return err
+	}
+	members := map[string]tjs.Value{
+		"flip":        tjs.IntegerValue(boolInt(state.viewFlip)),
+		"opacity":     tjs.RealValue(state.viewOpacity),
+		"visible":     tjs.IntegerValue(boolInt(state.viewVisible)),
+		"slant":       tjs.RealValue(state.viewSlant),
+		"zoom":        tjs.RealValue(state.viewZoom),
+		"zFactor":     tjs.RealValue(motionPlayerZFactor(state)),
+		"colorWeight": tjs.IntegerValue(int64(motionSwapPackedRB(state.colorWeight))),
+	}
+	for name, value := range members {
+		if err := tjs.SetMember(vm.Objects, view, name, value); err != nil {
+			return err
+		}
+	}
+	state.lastViewParam = view
+	return nil
+}
+
 // advanceMotionClock moves the frame clock by one interval and applies the
 // reference loop rule: a negative loopTime clamps at lastTime and ends
 // playback, a loopTime inside the timeline wraps the clock back to the loop
@@ -1365,12 +1483,22 @@ func motionSwapPackedRB(color uint32) uint32 {
 }
 
 func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value tjs.Value) error {
+	layer, err := s.motionLayerFromValue(vm, value)
+	if err != nil {
+		return err
+	}
+	if !state.viewVisible {
+		s.mu.Lock()
+		layer.Visible = false
+		layer.gpuMotion = nil
+		s.mu.Unlock()
+		return nil
+	}
 	resource := s.playerResource(state)
 	if resource == nil {
 		return fmt.Errorf("Motion.Player.draw has no loaded PSB resource")
 	}
-	layer, err := s.motionLayerFromValue(vm, value)
-	if err != nil {
+	if err := motionPlayerCalcViewParam(vm, state); err != nil {
 		return err
 	}
 	// EmotePlayer carries coord/scale/rot/mirror state the shared player does

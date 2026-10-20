@@ -89,6 +89,10 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 		"releaseSyncWait", "getLayerNames",
 		"getLayerMotion",
 		"copyRect", "adjustGamma", "unloadUnusedTextures", "doAlphaMaskOperation",
+		"setClearColor", "setResizable", "removeAllTextures", "removeAllBg",
+		"removeAllCaption", "registerBg", "registerCaption", "alphaOpAdd",
+		"setSize", "calcViewParam", "setFlip", "setOpacity", "setVisible",
+		"setSlant", "setZoom",
 	} {
 		if err := vm.RegisterNativeMethod(player, method, "Motion.Player."+method); err != nil {
 			return err

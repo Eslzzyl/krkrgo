@@ -35,6 +35,16 @@ type motionResource struct {
 	canvasValid                   bool
 }
 
+func motionClearSourceCaches(resource *motionResource) {
+	if resource == nil {
+		return
+	}
+	clear(resource.images)
+	clear(resource.premultiplied)
+	clear(resource.colored)
+	clear(resource.opaque)
+}
+
 func (l *Layer) materializeGPUMotion() error {
 	if l == nil || l.gpuMotion == nil {
 		return nil
