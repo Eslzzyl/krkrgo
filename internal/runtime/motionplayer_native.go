@@ -70,6 +70,7 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 	}
 	for _, method := range []string{
 		"@initialize", "@invalidate", "Player", "finalize", "play", "stop",
+		"initPhysics",
 		"progress", "clear", "draw", "setVariable", "getVariable",
 		"countVariables", "getVariableLabelAt", "countVariableFrameAt",
 		"getVariableFrameLabelAt", "getVariableFrameValueAt", "getVariableRange",
