@@ -40,6 +40,7 @@ type motionResource struct {
 	canvasAnyTimelinePlaying      bool
 	canvasRootState               motionPlayerRootState
 	canvasHasRootState            bool
+	canvasPreview                 bool
 	canvasValid                   bool
 }
 
@@ -198,6 +199,19 @@ type motionRenderEval struct {
 	rootState               motionPlayerRootState
 	hasRootState            bool
 	anchorOutputs           map[string]motionAnchorNodeOutput
+	// preview mirrors Player._preview: item preparation keeps only nodes whose
+	// priorDraw flag is set and never expands child players or particles
+	// (PlayerRenderItems.cpp:507-511,558-560).
+	preview bool
+	// stats collects renderer work for Player.processedMeshVerticesNum.
+	stats *motionRenderStats
+}
+
+// motionRenderStats accumulates per-render counters the player exposes as
+// properties. The reference keeps them on the player and increments them while
+// updating geometry (PlayerUpdateGeometry.cpp:518-523).
+type motionRenderStats struct {
+	meshVertices int
 }
 
 type motionRenderOptions struct {
@@ -210,6 +224,8 @@ type motionRenderOptions struct {
 	rootState              motionPlayerRootState
 	hasRootState           bool
 	anchorOutputs          map[string]motionAnchorNodeOutput
+	preview                bool
+	stats                  *motionRenderStats
 }
 
 func motionRenderOptionsValue(options []motionRenderOptions) motionRenderOptions {
@@ -407,6 +423,7 @@ func renderPSBMotionOptionsZFactorInheritDimensions(resource *motionResource, ch
 		resource.canvasAnyTimelinePlaying == renderOptions.anyTimelinePlaying &&
 		resource.canvasRootState == renderOptions.rootState &&
 		resource.canvasHasRootState == renderOptions.hasRootState &&
+		resource.canvasPreview == renderOptions.preview &&
 		resource.canvasVariables == paramsKey && resource.canvasMask == maskMode &&
 		resource.canvasCompletion == completion &&
 		resource.canvasFreeze == freezeBody &&
@@ -444,6 +461,7 @@ func renderPSBMotionOptionsZFactorInheritDimensions(resource *motionResource, ch
 		resource.canvasAnyTimelinePlaying = renderOptions.anyTimelinePlaying
 		resource.canvasRootState = renderOptions.rootState
 		resource.canvasHasRootState = renderOptions.hasRootState
+		resource.canvasPreview = renderOptions.preview
 		resource.canvasValid = true
 		return canvas, nil
 	}
@@ -464,6 +482,8 @@ func renderPSBMotionOptionsZFactorInheritDimensions(resource *motionResource, ch
 		rootState:              renderOptions.rootState,
 		hasRootState:           renderOptions.hasRootState,
 		anchorOutputs:          renderOptions.anchorOutputs,
+		preview:                renderOptions.preview,
+		stats:                  renderOptions.stats,
 	}
 	ctx := motionRootRenderContext(eval, zFactor)
 	if err := renderMotionValue(resource, root, layers, tick, eval, ctx, pixels, width, height, resource.stack); err != nil {
@@ -484,6 +504,7 @@ func renderPSBMotionOptionsZFactorInheritDimensions(resource *motionResource, ch
 	resource.canvasAnyTimelinePlaying = renderOptions.anyTimelinePlaying
 	resource.canvasRootState = renderOptions.rootState
 	resource.canvasHasRootState = renderOptions.hasRootState
+	resource.canvasPreview = renderOptions.preview
 	resource.canvasValid = true
 	return canvas, nil
 }
@@ -547,7 +568,7 @@ func collectMotionValue(resource *motionResource, root map[string]assets.Value, 
 		// node contributes its own draw item; child nodes are separate items in
 		// the flattened node list (PlayerRenderItems.cpp:430-533), so a masked
 		// container keeps its children. Gate only this node's frame here.
-		drawFrame := motionNodeAllowed(node, eval.completion)
+		drawFrame := motionNodeAllowed(node, eval.completion, eval.preview)
 		ctx := parent
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
 			nodeTick := motionNodeTick(node, tick, eval)
@@ -562,7 +583,12 @@ func collectMotionValue(resource *motionResource, root map[string]assets.Value, 
 			if motionNestedMotionSource(content) {
 				ctx.childTick = motionNestedEvalTick(node, content, nodeTick, eval)
 			}
-			if drawFrame || motionNestedMotionSource(content) || motionParticleSource(content) {
+			// Preview preparation keeps only priorDraw items and skips
+			// child-player and particle expansion (PlayerRenderItems.cpp:507-511,558-560).
+			if eval.preview && !motionNodePriorDraw(node) {
+				drawFrame = false
+			}
+			if drawFrame || (!eval.preview && (motionNestedMotionSource(content) || motionParticleSource(content))) {
 				if err := collectMotionFrame(resource, root, content, node, eval, ctx, nodeTick, list, width, height, stack); err != nil {
 					return err
 				}
@@ -631,7 +657,7 @@ func collectMotionValueFiltered(resource *motionResource, root map[string]assets
 // The mask selects whether a node contributes its own draw item. It says
 // nothing about the node's children, which the reference keeps in its
 // flattened node list, so callers walk children unconditionally.
-func motionNodeAllowed(node map[string]assets.Value, completion int64) bool {
+func motionNodeAllowed(node map[string]assets.Value, completion int64, preview bool) bool {
 	value, ok := psbNumber(node["type"])
 	if !ok {
 		return true
@@ -640,11 +666,31 @@ func motionNodeAllowed(node map[string]assets.Value, completion int64) bool {
 	if nodeType < 0 || nodeType > 31 {
 		return false
 	}
+	// Item masks: 1089 (0x441) normally, 1097 (0x449) for preview, both plus
+	// the type-12 stencil bit the runtime always keeps
+	// (PlayerRenderItems.cpp:556-559).
 	bitmask := int64(0x1441)
-	if completion != 0 {
+	if completion != 0 || preview {
 		bitmask = 0x1449
 	}
 	return bitmask&(int64(1)<<nodeType) != 0
+}
+
+// motionNodePriorDraw reports a node's emoteEdit priorDraw flag, which the
+// reference reads for force-visible nodes and uses to gate preview items
+// (PlayerUpdateGeometry.cpp:172-194; PlayerRenderItems.cpp:558-560).
+func motionNodePriorDraw(node map[string]assets.Value) bool {
+	edit, ok := node["emoteEdit"].(map[string]assets.Value)
+	if !ok {
+		return false
+	}
+	// PSB writes the flag as a number in some modules and a boolean in others
+	// (PlayerUpdateGeometry.cpp:176-183 accepts PSBNumber and PSBBool).
+	if flag, ok := edit["priorDraw"].(bool); ok {
+		return flag
+	}
+	value, ok := psbNumber(edit["priorDraw"])
+	return ok && value != 0
 }
 
 // motionNestedMotionSource reports whether a resolved frame expands a child
@@ -791,7 +837,7 @@ func motionValueBounds(resource *motionResource, root map[string]assets.Value, v
 			motionValueBounds(resource, root, child, tick, eval, parent, width, height, bounds, stack)
 		}
 	case map[string]assets.Value:
-		drawFrame := motionNodeAllowed(node, eval.completion)
+		drawFrame := motionNodeAllowed(node, eval.completion, eval.preview)
 		ctx := parent
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
 			nodeTick := motionNodeTick(node, tick, eval)
@@ -990,6 +1036,8 @@ func buildGPUMotionVariablesZFactorInherit(resource *motionResource, chara, moti
 		rootState:              renderOptions.rootState,
 		hasRootState:           renderOptions.hasRootState,
 		anchorOutputs:          renderOptions.anchorOutputs,
+		preview:                renderOptions.preview,
+		stats:                  renderOptions.stats,
 	}
 	// The reference adds the camera offset to prepared item corners after
 	// drawAffineMatrix * vertex has already been computed, i.e. it is a
@@ -1022,7 +1070,7 @@ func buildGPUMotionVariablesZFactorInherit(resource *motionResource, chara, moti
 		centerX, centerY := float64(source.Width)/2, float64(source.Height)/2
 		result.Draws = append(result.Draws, RenderMotionDraw{
 			LayerTreeKey: fmt.Sprintf("%p/%s/%s", resource, chara, motion),
-			SourceKey:    fmt.Sprintf("%s/%t/%d/%g/%t/%g/%t/%#v/%t/%s", motionBakedSourceKeyWithMatrix(resource, chara, motion, tick, filter, params, freezeBody, maskMode, completion, zFactor, attached, drawMatrix), independentLayerInherit, eval.rootCoordinateMode, eval.parentFrameLoopTime, eval.hasParentFrameLoopTime, eval.frameLastTime, eval.anyTimelinePlaying, eval.rootState, eval.hasRootState, motionAnchorOutputSignature(eval.anchorOutputs)),
+			SourceKey:    fmt.Sprintf("%s/%t/%d/%g/%t/%g/%t/%#v/%t/%t/%s", motionBakedSourceKeyWithMatrix(resource, chara, motion, tick, filter, params, freezeBody, maskMode, completion, zFactor, attached, drawMatrix), independentLayerInherit, eval.rootCoordinateMode, eval.parentFrameLoopTime, eval.hasParentFrameLoopTime, eval.frameLastTime, eval.anyTimelinePlaying, eval.rootState, eval.hasRootState, eval.preview, motionAnchorOutputSignature(eval.anchorOutputs)),
 			RGBA:         source.RGBA,
 			Width:        int32(source.Width),
 			Height:       int32(source.Height),
@@ -1132,7 +1180,7 @@ func collectGPUMotionValue(resource *motionResource, root map[string]assets.Valu
 	case map[string]assets.Value:
 		layerID := *nextLayerID
 		*nextLayerID = layerID + 2
-		drawFrame := motionNodeAllowed(node, eval.completion)
+		drawFrame := motionNodeAllowed(node, eval.completion, eval.preview)
 		ctx := parent
 		ctx.layerID = layerID
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
@@ -1152,7 +1200,12 @@ func collectGPUMotionValue(resource *motionResource, root map[string]assets.Valu
 			if motionNestedMotionSource(content) {
 				ctx.childTick = motionNestedEvalTick(node, content, nodeTick, eval)
 			}
-			if drawFrame || motionNestedMotionSource(content) || motionParticleSource(content) {
+			// Preview preparation keeps only priorDraw items and skips
+			// child-player and particle expansion (PlayerRenderItems.cpp:507-511,558-560).
+			if eval.preview && !motionNodePriorDraw(node) {
+				drawFrame = false
+			}
+			if drawFrame || (!eval.preview && (motionNestedMotionSource(content) || motionParticleSource(content))) {
 				if err := collectGPUMotionFrame(resource, root, content, node, eval, ctx, drawMatrix, nodeTick, result, stack); err != nil {
 					return err
 				}
@@ -1624,11 +1677,14 @@ func drawMotionSourceFrame(resource *motionResource, root map[string]assets.Valu
 		premultiplied = nil
 	}
 	if psbMotionInt(layer, "meshTransform", 0) != 0 {
-		renderMotionMeshFrame(layer, content, ctx, imageOut, originX+psbMotionFloat(content, "ox", 0), originY+psbMotionFloat(content, "oy", 0), pixels, width, height)
+		renderMotionMeshFrame(layer, content, ctx, imageOut, originX+psbMotionFloat(content, "ox", 0), originY+psbMotionFloat(content, "oy", 0), pixels, width, height, eval.stats)
 		return nil
 	}
 	return blendMotionImage(pixels, width, height, imageOut, originX+psbMotionFloat(content, "ox", 0), originY+psbMotionFloat(content, "oy", 0), eval.filter, premultiplied, opaque, ctx)
 }
+
+// motionMeshControlNetPoints is the PSB mesh control-net dimension.
+const motionMeshControlNetPoints = 16
 
 // motionMeshControlNet is the world-space 4x4 Bezier control net a
 // meshTransform node contributes to its descendants plus the inverse of the
@@ -1637,7 +1693,7 @@ func drawMotionSourceFrame(resource *motionResource, root map[string]assets.Valu
 // PlayerUpdateGeometry.cpp:418-437 and the PSB mesh.bp layout documented in
 // MOTIONPLAYER_PSB_STRUCT.md §9.
 type motionMeshControlNet struct {
-	points           [16][2]float64
+	points           [motionMeshControlNetPoints][2]float64
 	originX, originY float64
 	invM11, invM12   float64
 	invM21, invM22   float64
@@ -1808,7 +1864,7 @@ func motionMeshAncestorContext(resource *motionResource, root map[string]assets.
 // A content.mesh.bp control net deforms the node's own surface, and every
 // ancestor net collected in ctx.meshAncestors deforms the grid points in turn
 // (0x6BD118..0x6BD380).
-func renderMotionMeshFrame(layer map[string]assets.Value, content map[string]assets.Value, ctx motionRenderContext, image *assets.Image, originX, originY float64, pixels []byte, width, height int) {
+func renderMotionMeshFrame(layer map[string]assets.Value, content map[string]assets.Value, ctx motionRenderContext, image *assets.Image, originX, originY float64, pixels []byte, width, height int, stats *motionRenderStats) {
 	if image == nil || psbMotionInt(layer, "meshTransform", 0) != 1 {
 		return
 	}
@@ -1834,6 +1890,11 @@ func renderMotionMeshFrame(layer map[string]assets.Value, content map[string]ass
 	centerY := float64(height)/2 + motionProjectedY(ctx)
 	sourceWidth, sourceHeight := float64(image.Width), float64(image.Height)
 	controlNet, deformed := motionMeshControlNetAt(content, ctx, originX, originY, clipW, clipH, float64(width), float64(height))
+	if stats != nil && len(ctx.meshAncestors) != 0 {
+		// Each ancestor maps this node's control points plus its origin
+		// (PlayerUpdateGeometry.cpp:518-523).
+		stats.meshVertices += len(ctx.meshAncestors) * (motionMeshControlNetPoints + 1)
+	}
 	gridX := make([]float64, divX)
 	gridY := make([]float64, divY)
 	for index := range divX {
@@ -3074,6 +3135,8 @@ func motionCameraDrawMatrixZFactorInherit(resource *motionResource, chara, motio
 		rootState:              renderOptions.rootState,
 		hasRootState:           renderOptions.hasRootState,
 		anchorOutputs:          renderOptions.anchorOutputs,
+		preview:                renderOptions.preview,
+		stats:                  renderOptions.stats,
 	}
 	offsetX, offsetY, ok := motionCameraOffset(layers, tick, eval, drawMatrix)
 	if !ok {

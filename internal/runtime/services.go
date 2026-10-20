@@ -155,6 +155,7 @@ type Services struct {
 	EmotePSBDecryptSeed          int32
 	EmotePSBDecryptFunc          tjs.Value
 	MotionPlayers                map[tjs.ObjectID]*motionPlayerState
+	D3DEmoteModule               *d3dEmoteModuleState
 	MotionAdaptors               map[tjs.ObjectID]tjs.ObjectID
 	MotionValueObjects           map[tjs.ObjectID]*motionValueObjectState
 	Bitmaps                      map[tjs.ObjectID]*Bitmap
@@ -1466,6 +1467,52 @@ func (s *Services) GCRoots() []tjs.Value {
 		}
 		for _, layerID := range device.layers {
 			out = append(out, tjs.ObjectIDValue(layerID))
+		}
+	}
+	// Players keep TJS values in Go state (module objects, child players,
+	// source caches, the random generator). The reference holds the same
+	// values from TJS, so they must be roots here or the collector frees them
+	// while the player still uses them.
+	rootValue := func(value tjs.Value) {
+		if value.Kind() == tjs.KindObject && !value.IsNull() {
+			out = append(out, value)
+		}
+	}
+	for _, player := range s.MotionPlayers {
+		if player == nil {
+			continue
+		}
+		for _, value := range []tjs.Value{
+			player.metadata, player.cameraTarget, player.cameraPosition,
+			player.project, player.lastViewParam, player.lastCanvas,
+			player.onAction, player.tags, player.variableKeys,
+			player.randomGenerator,
+		} {
+			rootValue(value)
+		}
+		for _, value := range player.backgrounds {
+			rootValue(value)
+		}
+		for _, value := range player.captions {
+			rootValue(value)
+		}
+		for _, value := range player.particleArrays {
+			rootValue(value)
+		}
+		for _, value := range player.motionChildren {
+			rootValue(value)
+		}
+		for _, values := range player.particleChildren {
+			for _, value := range values {
+				rootValue(value)
+			}
+		}
+		for _, value := range player.sourceCache {
+			rootValue(value)
+		}
+		if player.emote != nil {
+			rootValue(player.emote.module)
+			rootValue(player.emote.physicsRule)
 		}
 	}
 	for _, value := range s.LayerChildren {

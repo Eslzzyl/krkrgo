@@ -63,73 +63,83 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 			return err
 		}
 	}
-	player, err := vm.RegisterNativeClass("Motion.Player")
+	// The reference registers Player at module scope and aliases the same class
+	// object into the Motion namespace (main.cpp:505-527), so
+	// `Motion.Player === Player` holds.
+	player, err := vm.RegisterNativeClass("Player")
 	if err != nil {
 		return err
 	}
 	if err := class.Set("Player", player); err != nil {
 		return err
 	}
-	for _, method := range []string{
-		"@initialize", "@invalidate", "Player", "finalize", "play", "stop",
-		"random", "initPhysics", "frameProgress",
-		"progress", "draw", "setVariable", "getVariable",
-		"countVariables", "getVariableLabelAt", "countVariableFrameAt",
-		"getVariableFrameLabelAt", "getVariableFrameValueAt", "getVariableRange",
-		"getVariableFrameList", "getTimelinePlaying", "countMainTimelines",
-		"getMainTimelineLabelAt", "getMainTimelineLabelList", "countDiffTimelines",
-		"getDiffTimelineLabelAt", "getDiffTimelineLabelList", "getLoopTimeline",
-		"countPlayingTimelines", "getPlayingTimelineLabelAt",
-		"getPlayingTimelineFlagsAt", "getTimelineTotalFrameCount", "playTimeline",
-		"stopTimeline", "setTimelineBlendRatio", "getTimelineBlendRatio",
-		"fadeInTimeline", "fadeOutTimeline", "getPlayingTimelineInfoList",
-		"getCameraOffset", "setCameraOffset", "setStereovisionCameraPosition",
-		"modifyRoot", "skipToSync", "setDrawAffineTranslateMatrix",
-		"isSelectorTarget", "deactivateSelectorTarget",
-		"captureCanvas", "clearCache", "clear",
-		"findSource", "loadSource",
-		"getCommandList", "onFindMotion",
-		"setHairScale", "setPartsScale", "setBustScale", "setRotate", "setMirror",
-		"requireLayerId", "releaseLayerId", "isPlaying",
-		"isExistMotion", "findMotion",
-		"unload", "unloadAll",
-		"releaseSyncWait", "getLayerNames",
-		"getLayerMotion", "getLayerGetter", "getLayerGetterList",
-		"copyRect", "adjustGamma", "unloadUnusedTextures", "doAlphaMaskOperation",
-		"setClearColor", "setResizable", "removeAllTextures", "removeAllBg",
-		"removeAllCaption", "registerBg", "registerCaption", "alphaOpAdd",
-		"setSize", "calcViewParam", "setFlip", "setOpacity", "setVisible",
-		"setSlant", "setZoom",
-		"serialize", "unserialize", "motionList", "getD3DAvailable",
-		"debugPrint", "emoteEdit",
-	} {
-		if err := vm.RegisterNativeMethod(player, method, "Motion.Player."+method); err != nil {
-			return err
+	// registerPlayerSurface binds the full Player surface to the class.
+	registerPlayerSurface := func(receiver tjs.Value) error {
+		for _, method := range []string{
+			"@initialize", "@invalidate", "Player", "finalize", "play", "stop",
+			"random", "initPhysics", "frameProgress",
+			"progress", "draw", "setVariable", "getVariable",
+			"countVariables", "getVariableLabelAt", "countVariableFrameAt",
+			"getVariableFrameLabelAt", "getVariableFrameValueAt", "getVariableRange",
+			"getVariableFrameList", "getTimelinePlaying", "countMainTimelines",
+			"getMainTimelineLabelAt", "getMainTimelineLabelList", "countDiffTimelines",
+			"getDiffTimelineLabelAt", "getDiffTimelineLabelList", "getLoopTimeline",
+			"countPlayingTimelines", "getPlayingTimelineLabelAt",
+			"getPlayingTimelineFlagsAt", "getTimelineTotalFrameCount", "playTimeline",
+			"stopTimeline", "setTimelineBlendRatio", "getTimelineBlendRatio",
+			"fadeInTimeline", "fadeOutTimeline", "getPlayingTimelineInfoList",
+			"getCameraOffset", "setCameraOffset", "setStereovisionCameraPosition",
+			"modifyRoot", "skipToSync", "setDrawAffineTranslateMatrix",
+			"isSelectorTarget", "deactivateSelectorTarget",
+			"captureCanvas", "clearCache", "clear",
+			"findSource", "loadSource",
+			"getCommandList", "onFindMotion",
+			"setHairScale", "setPartsScale", "setBustScale", "setRotate", "setMirror",
+			"requireLayerId", "releaseLayerId", "isPlaying",
+			"isExistMotion", "findMotion",
+			"unload", "unloadAll",
+			"releaseSyncWait", "getLayerNames",
+			"getLayerMotion", "getLayerGetter", "getLayerGetterList",
+			"copyRect", "adjustGamma", "unloadUnusedTextures", "doAlphaMaskOperation",
+			"setClearColor", "setResizable", "removeAllTextures", "removeAllBg",
+			"removeAllCaption", "registerBg", "registerCaption", "alphaOpAdd",
+			"setSize", "calcViewParam", "setFlip", "setOpacity", "setVisible",
+			"setSlant", "setZoom",
+			"serialize", "unserialize", "motionList", "getD3DAvailable",
+			"debugPrint", "emoteEdit",
+		} {
+			if err := vm.RegisterNativeMethod(receiver, method, "Motion.Player."+method); err != nil {
+				return err
+			}
 		}
+		for _, property := range []string{
+			"chara", "motion", "stealthMotion", "tickCount", "frameTickCount",
+			"motionKey", "metadata", "x", "y", "left", "top", "frameLastTime",
+			"frameLoopTime", "loopTime",
+			"priorDraw", "processedMeshVerticesNum", "queuing", "directEdit",
+			"selectorEnabled", "syncWaiting", "syncActive", "hasCamera",
+			"cameraActive", "stereovisionActive", "cameraTarget", "cameraPosition",
+			"cameraFOV", "cameraAlive", "speed", "playing", "allplaying",
+			"canvasCaptureEnabled", "clearEnabled", "hitThreshold", "preview",
+			"outsideFactor", "resourceManager", "stealthChara", "project",
+			"useD3D", "meshline", "busy",
+			"tags", "variableKeys", "completionType", "maskMode", "colorWeight", "zFactor",
+			"independentLayerInherit",
+			"outline", "onAction",
+		} {
+			setter := "Motion.Player.set:" + property
+			switch property {
+			case "playing", "allplaying", "busy":
+				setter = ""
+			}
+			if err := vm.RegisterNativeProperty(receiver, property, "Motion.Player.get:"+property, setter); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	for _, property := range []string{
-		"chara", "motion", "stealthMotion", "tickCount", "frameTickCount",
-		"motionKey", "metadata", "x", "y", "left", "top", "frameLastTime",
-		"frameLoopTime", "loopTime",
-		"priorDraw", "processedMeshVerticesNum", "queuing", "directEdit",
-		"selectorEnabled", "syncWaiting", "syncActive", "hasCamera",
-		"cameraActive", "stereovisionActive", "cameraTarget", "cameraPosition",
-		"cameraFOV", "cameraAlive", "speed", "playing", "allplaying",
-		"canvasCaptureEnabled", "clearEnabled", "hitThreshold", "preview",
-		"outsideFactor", "resourceManager", "stealthChara", "project",
-		"useD3D", "meshline", "busy",
-		"tags", "variableKeys", "completionType", "maskMode", "colorWeight", "zFactor",
-		"independentLayerInherit",
-		"outline", "onAction",
-	} {
-		setter := "Motion.Player.set:" + property
-		switch property {
-		case "playing", "allplaying", "busy":
-			setter = ""
-		}
-		if err := vm.RegisterNativeProperty(player, property, "Motion.Player.get:"+property, setter); err != nil {
-			return err
-		}
+	if err := registerPlayerSurface(player); err != nil {
+		return err
 	}
 	adaptor, err := vm.RegisterNativeClass("Motion.SeparateLayerAdaptor")
 	if err != nil {

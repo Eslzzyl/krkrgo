@@ -153,7 +153,7 @@ type motionPlayerState struct {
 	anchorStates            map[string]motionAnchorNodeState
 	sourceCache             map[string]tjs.Value
 	sourceCacheResolved     map[string]string
-	randomGenerator         *tjs.RandomGenerator
+	randomGenerator         tjs.Value
 	disabledSelectorTargets map[string]bool
 	gpuMotion               *RenderMotion
 	gpuMotionValid          bool
@@ -177,6 +177,7 @@ type motionPlayerGPUKey struct {
 	freezeBody              bool
 	variables               string
 	independentLayerInherit bool
+	preview                 bool
 }
 
 type motionPlayerRootState struct {
@@ -850,10 +851,26 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 	case "initPhysics":
 		return tjs.VoidValue, nil
 	case "random":
-		if state.randomGenerator == nil {
-			state.randomGenerator = tjs.NewRandomGenerator()
+		// The reference constructs `new Math.RandomGenerator()` per player and
+		// calls the object's random() method; child players inherit the same
+		// object (PlayerCore.cpp:201-207,1318-1333).
+		generator, err := s.motionPlayerRandomGenerator(vm, state)
+		if err != nil {
+			return tjs.VoidValue, err
 		}
-		return tjs.RealValue(state.randomGenerator.Random()), nil
+		method, err := vm.GetMember(generator, "random", s, nil)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		result, err := vm.InvokeLegacy(method, generator, nil, s, nil, true)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		number, err := result.Real()
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		return tjs.RealValue(number), nil
 	case "frameProgress":
 		frames := 0.0
 		if len(args) > 0 && args[0].Kind() != tjs.KindVoid {
@@ -1918,7 +1935,19 @@ func (s *Services) motionPlayerFindMotion(vm *tjs.VM, state *motionPlayerState, 
 	}
 	state.playing = len(state.playingTimelineLabels) > 0
 	state.motionClockActive = state.motion != ""
+	s.motionPlayerConsumeStealth(state)
 	return nil
+}
+
+// motionPlayerConsumeStealth mirrors the stealth tail of Player::onFindMotion:
+// a pending stealth motion records the chara that was active when the next
+// motion loads and is then cleared (PlayerMotionLoad.cpp:135-140).
+func (s *Services) motionPlayerConsumeStealth(state *motionPlayerState) {
+	if state == nil || state.stealthMotion == "" {
+		return
+	}
+	state.stealthChara = state.chara
+	state.stealthMotion = ""
 }
 
 func (s *Services) motionPlayer(id tjs.ObjectID) *motionPlayerState {
@@ -1926,10 +1955,37 @@ func (s *Services) motionPlayer(id tjs.ObjectID) *motionPlayerState {
 	defer s.mu.Unlock()
 	state := s.MotionPlayers[id]
 	if state == nil {
-		state = &motionPlayerState{speed: true, speedSet: true, zFactor: 1, zFactorSet: true, cameraFOV: 60, colorWeight: 0xFF808080, viewOpacity: 1, viewVisible: true, viewZoom: 1, emoteScale: 1, hairScale: 1, partsScale: 1, bustScale: 1, drawMatrix: identityMotionDrawMatrix(), randomGenerator: tjs.NewRandomGenerator()}
+		state = &motionPlayerState{speed: true, speedSet: true, zFactor: 1, zFactorSet: true, cameraFOV: 60, colorWeight: 0xFF808080, viewOpacity: 1, viewVisible: true, viewZoom: 1, emoteScale: 1, hairScale: 1, partsScale: 1, bustScale: 1, drawMatrix: identityMotionDrawMatrix(), randomGenerator: tjs.VoidValue}
 		s.MotionPlayers[id] = state
 	}
 	return state
+}
+
+// motionPlayerRandomGenerator returns the player's TJS random generator,
+// creating it on first use. The reference builds it in the Player constructor
+// with `new Math.RandomGenerator()` and hands the same object to child players
+// (PlayerCore.cpp:201-207; PlayerMotionLoad.cpp:217-220).
+func (s *Services) motionPlayerRandomGenerator(vm *tjs.VM, state *motionPlayerState) (tjs.Value, error) {
+	if state.randomGenerator.Kind() == tjs.KindObject && !state.randomGenerator.IsNull() {
+		return state.randomGenerator, nil
+	}
+	if vm == nil {
+		return tjs.VoidValue, fmt.Errorf("Motion.Player.random requires a VM")
+	}
+	math, found := vm.Globals["Math"]
+	if !found || math.Kind() != tjs.KindObject || math.IsNull() {
+		return tjs.VoidValue, fmt.Errorf("Motion.Player.random requires Math.RandomGenerator")
+	}
+	class, err := vm.GetMember(math, "RandomGenerator", s, nil)
+	if err != nil {
+		return tjs.VoidValue, err
+	}
+	generator, err := vm.Construct(class, nil, s, nil)
+	if err != nil {
+		return tjs.VoidValue, err
+	}
+	state.randomGenerator = generator
+	return generator, nil
 }
 
 func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, property string) (tjs.Value, error) {
@@ -2993,6 +3049,20 @@ func (s *Services) drawMotionTargetLayer(vm *tjs.VM, state *motionPlayerState, l
 	drawMatrix.ty += drawMatrix.c*state.x + drawMatrix.d*state.y
 	drawMatrix.tx += state.cameraOffsetX
 	drawMatrix.ty += state.cameraOffsetY
+	renderStats := &motionRenderStats{}
+	renderOptions := motionRenderOptions{
+		rootCoordinateMode:     state.rootCoordinateMode,
+		emoteMode:              motionResourceEmoteMode(resource),
+		parentFrameLoopTime:    state.frameLoopTime,
+		hasParentFrameLoopTime: true,
+		frameLastTime:          state.frameLastTime,
+		anyTimelinePlaying:     len(state.playingTimelineLabels) > 0,
+		rootState:              state.rootState,
+		hasRootState:           state.hasRootState,
+		anchorOutputs:          motionAnchorOutputs(state.anchorStates),
+		preview:                state.preview,
+		stats:                  renderStats,
+	}
 	if !d3dTarget && s.gpuCapture && layerHasCanvas(layer) && layer.Type == LayerAlpha {
 		key := motionPlayerGPUKey{
 			resource: resource, chara: state.chara, motion: state.motion,
@@ -3004,15 +3074,20 @@ func (s *Services) drawMotionTargetLayer(vm *tjs.VM, state *motionPlayerState, l
 			completion: state.completionType, freezeBody: freezeBody,
 			independentLayerInherit: state.independentLayerInherit,
 			variables:               motionVariablesSignature(params) + "\x00" + motionAttachmentsSignature(attached) + "\x00anchor:" + motionAnchorOutputSignature(motionAnchorOutputs(state.anchorStates)),
+			preview:                 state.preview,
 		}
 		motion := state.gpuMotion
 		if !state.gpuMotionValid || state.gpuMotionKey != key {
 			var err error
-			motion, err = buildGPUMotionVariablesZFactorInherit(resource, state.chara, state.motion, state.clampedEvalTime, 0, drawMatrix, layer.RenderScale(), params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, state.independentLayerInherit, motionRenderOptions{rootCoordinateMode: state.rootCoordinateMode, emoteMode: motionResourceEmoteMode(resource), parentFrameLoopTime: state.frameLoopTime, hasParentFrameLoopTime: true, frameLastTime: state.frameLastTime, anyTimelinePlaying: len(state.playingTimelineLabels) > 0, rootState: state.rootState, hasRootState: state.hasRootState, anchorOutputs: motionAnchorOutputs(state.anchorStates)})
+			motion, err = buildGPUMotionVariablesZFactorInherit(resource, state.chara, state.motion, state.clampedEvalTime, 0, drawMatrix, layer.RenderScale(), params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, state.independentLayerInherit, renderOptions)
 			if err != nil {
 				return err
 			}
 			state.gpuMotion, state.gpuMotionKey, state.gpuMotionValid = motion, key, true
+			// The counter reports the mesh vertices this draw rasterized; a
+			// cached build keeps the previous total, like a skipped geometry
+			// update (PlayerUpdateGeometry.cpp:518-523).
+			state.processedMeshVerticesNum += int64(renderStats.meshVertices)
 		}
 		s.mu.Lock()
 		changed := layer.gpuMotion != motion
@@ -3031,17 +3106,18 @@ func (s *Services) drawMotionTargetLayer(vm *tjs.VM, state *motionPlayerState, l
 	var frame *assets.Image
 	var err error
 	if d3dTarget {
-		frame, err = renderPSBMotionOptionsZFactorInheritDimensions(resource, state.chara, state.motion, state.clampedEvalTime, 0, params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, state.independentLayerInherit, int(layer.ImageWidth), int(layer.ImageHeight), motionRenderOptions{rootCoordinateMode: state.rootCoordinateMode, parentFrameLoopTime: state.frameLoopTime, hasParentFrameLoopTime: true, frameLastTime: state.frameLastTime, anyTimelinePlaying: len(state.playingTimelineLabels) > 0, rootState: state.rootState, hasRootState: state.hasRootState, anchorOutputs: motionAnchorOutputs(state.anchorStates)})
+		frame, err = renderPSBMotionOptionsZFactorInheritDimensions(resource, state.chara, state.motion, state.clampedEvalTime, 0, params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, state.independentLayerInherit, int(layer.ImageWidth), int(layer.ImageHeight), renderOptions)
 	} else {
-		frame, err = renderPSBMotionOptionsZFactorInherit(resource, state.chara, state.motion, state.clampedEvalTime, 0, params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, state.independentLayerInherit, motionRenderOptions{rootCoordinateMode: state.rootCoordinateMode, parentFrameLoopTime: state.frameLoopTime, hasParentFrameLoopTime: true, frameLastTime: state.frameLastTime, anyTimelinePlaying: len(state.playingTimelineLabels) > 0, rootState: state.rootState, hasRootState: state.hasRootState, anchorOutputs: motionAnchorOutputs(state.anchorStates)})
+		frame, err = renderPSBMotionOptionsZFactorInherit(resource, state.chara, state.motion, state.clampedEvalTime, 0, params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, state.independentLayerInherit, renderOptions)
 	}
 	if err != nil {
 		return err
 	}
+	state.processedMeshVerticesNum += int64(renderStats.meshVertices)
 	// Camera nodes offset prepared items in final draw space, so the offset
 	// joins the draw matrix translation (PlayerRenderItems.cpp:1174-1215).
 	baseDrawMatrix := drawMatrix
-	drawMatrix = motionCameraDrawMatrixZFactorInherit(resource, state.chara, state.motion, state.clampedEvalTime, params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, drawMatrix, state.independentLayerInherit, motionRenderOptions{rootCoordinateMode: state.rootCoordinateMode, emoteMode: motionResourceEmoteMode(resource), parentFrameLoopTime: state.frameLoopTime, hasParentFrameLoopTime: true, frameLastTime: state.frameLastTime, anyTimelinePlaying: len(state.playingTimelineLabels) > 0, rootState: state.rootState, hasRootState: state.hasRootState, anchorOutputs: motionAnchorOutputs(state.anchorStates)})
+	drawMatrix = motionCameraDrawMatrixZFactorInherit(resource, state.chara, state.motion, state.clampedEvalTime, params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, drawMatrix, state.independentLayerInherit, renderOptions)
 	cameraOffsetX := drawMatrix.tx - baseDrawMatrix.tx
 	cameraOffsetY := drawMatrix.ty - baseDrawMatrix.ty
 	s.mu.Lock()

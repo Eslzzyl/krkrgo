@@ -347,7 +347,12 @@ func installEmotePlayerNative(vm *tjs.VM) error {
 	if err := vm.RegisterNativeMethod(emote, "progress", "Motion.EmotePlayer.progress"); err != nil {
 		return err
 	}
-	return nil
+	// emoteplayer.dll also registers two module-scope classes alongside
+	// EmotePlayer (main.cpp:565-687).
+	if err := installD3DEmoteModuleNative(vm); err != nil {
+		return err
+	}
+	return installD3DEmotePlayerNative(vm)
 }
 
 // emotePlayerStateFor resolves the shared player state and its EmotePlayer
@@ -369,7 +374,7 @@ func (s *Services) motionEmotePlayerNative(vm *tjs.VM, context tjs.Value, operat
 	}
 	id := context.ObjectRef().Object
 	switch operation {
-	case "@initialize", "EmotePlayer":
+	case "@initialize", "EmotePlayer", "D3DEmotePlayer":
 		state, _ := s.emotePlayerStateFor(id)
 		// Reference EmotePlayer(ResourceManager) only stores the manager; it
 		// does not bind whichever module the manager happened to load.
@@ -2015,7 +2020,9 @@ func (s *Services) emoteStartTimeline(emote *emotePlayerState, label string, fla
 	if !emoteContainsString(emote.playingOrder, label) {
 		emote.playingOrder = append(emote.playingOrder, label)
 	}
-	timeline.flags = flags
+	// The reference stores the play flags without the stealth bit
+	// (PlayerMotionLoad.cpp:120-124).
+	timeline.flags = flags &^ motionPlayFlagStealth
 	timeline.playing = true
 	timeline.blendRatio = 1
 	if flags&motionPlayFlagChain == 0 {

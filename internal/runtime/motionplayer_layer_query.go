@@ -321,6 +321,10 @@ func (s *Services) motionPlayerLayerParticles(vm *tjs.VM, parent *motionPlayerSt
 		childState := s.motionPlayer(child.ObjectRef().Object)
 		childState.resourceManager = parent.resourceManager
 		childState.randomGenerator = parent.randomGenerator
+		// Particle children inherit the parent's stealth state, which the
+		// reference copies after loading the template (PlayerUpdateParticles.cpp:564-570).
+		childState.stealthChara = parent.stealthChara
+		childState.stealthMotion = parent.stealthMotion
 		childState.attached = parent.attached
 		childState.x, childState.y = 0, 0
 		childState.rootState = motionPlayerRootStateFromContext(particleContext)
@@ -369,7 +373,7 @@ func motionLayerGetterValues(vm *tjs.VM, resource *motionResource, attached []*m
 		"label":         tjs.StringValue(psbLabel(node)),
 		"visible":       tjs.IntegerValue(boolInt(visible)),
 		"branchVisible": tjs.IntegerValue(boolInt(branchVisible)),
-		"layerVisible":  tjs.IntegerValue(boolInt(motionNodeAllowed(node, completion))),
+		"layerVisible":  tjs.IntegerValue(boolInt(motionNodeAllowed(node, completion, false))),
 		"x":             tjs.RealValue(ctx.x),
 		"y":             tjs.RealValue(ctx.y),
 		"left":          tjs.RealValue(ctx.x),

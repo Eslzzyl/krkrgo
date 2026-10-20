@@ -92,7 +92,7 @@ func (s *Services) drawMotionSeparateLayerAdaptor(vm *tjs.VM, player *motionPlay
 		resource, player.chara, player.motion, player.clampedEvalTime, 0, drawMatrix,
 		1, params, freezeBody, maskMode, player.completionType,
 		motionPlayerZFactor(player), attached, player.independentLayerInherit,
-		motionRenderOptions{rootCoordinateMode: player.rootCoordinateMode, parentFrameLoopTime: player.frameLoopTime, hasParentFrameLoopTime: true, rootState: player.rootState, hasRootState: player.hasRootState})
+		motionRenderOptions{rootCoordinateMode: player.rootCoordinateMode, parentFrameLoopTime: player.frameLoopTime, hasParentFrameLoopTime: true, frameLastTime: player.frameLastTime, anyTimelinePlaying: len(player.playingTimelineLabels) > 0, rootState: player.rootState, hasRootState: player.hasRootState, anchorOutputs: motionAnchorOutputs(player.anchorStates), preview: player.preview})
 	if err != nil {
 		return err
 	}
