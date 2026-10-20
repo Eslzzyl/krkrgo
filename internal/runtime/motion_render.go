@@ -298,7 +298,7 @@ func collectMotionValue(resource *motionResource, root map[string]assets.Value, 
 		ctx := parent
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
 			nodeTick := motionNodeTick(node, tick, eval)
-			content, visible := psbMotionResolvedContent(frameList, nodeTick, psbMotionInt(node, "type", 0))
+			content, visible := psbMotionResolvedContent(frameList, nodeTick, psbMotionInt(node, "type", 0), psbMotionInt(node, "coordinate", 0))
 			if !visible {
 				return nil
 			}
@@ -543,7 +543,7 @@ func motionValueBounds(resource *motionResource, root map[string]assets.Value, v
 		ctx := parent
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
 			nodeTick := motionNodeTick(node, tick, eval)
-			content, visible := psbMotionResolvedContent(frameList, nodeTick, psbMotionInt(node, "type", 0))
+			content, visible := psbMotionResolvedContent(frameList, nodeTick, psbMotionInt(node, "type", 0), psbMotionInt(node, "coordinate", 0))
 			if !visible {
 				return
 			}
@@ -862,7 +862,7 @@ func collectGPUMotionValue(resource *motionResource, root map[string]assets.Valu
 		ctx := parent
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
 			nodeTick := motionNodeTick(node, tick, eval)
-			content, visible := psbMotionResolvedContent(frameList, nodeTick, psbMotionInt(node, "type", 0))
+			content, visible := psbMotionResolvedContent(frameList, nodeTick, psbMotionInt(node, "type", 0), psbMotionInt(node, "coordinate", 0))
 			if !visible {
 				return nil
 			}
@@ -1542,7 +1542,7 @@ func psbMotionKeyframeIndex(frames []assets.Value, tick float64) (int, bool) {
 // that carries content. Coordinates ease through the entry's ccc curve, zoom
 // through zcc, angle through acc, and slant through scc, while opacity
 // interpolates linearly, matching the reference's dual-slot evaluation.
-func psbMotionResolvedContent(frames []assets.Value, tick float64, nodeType int) (map[string]assets.Value, bool) {
+func psbMotionResolvedContent(frames []assets.Value, tick float64, nodeType, coordinateMode int) (map[string]assets.Value, bool) {
 	index, ok := psbMotionKeyframeIndex(frames, tick)
 	if !ok {
 		return nil, false
@@ -1585,12 +1585,12 @@ func psbMotionResolvedContent(frames []assets.Value, tick float64, nodeType int)
 	angleRatio := psbMotionCurveRatio(content["acc"], ratio)
 	slantRatio := psbMotionCurveRatio(content["scc"], ratio)
 	if values := psbMotionCoordValues(content["coord"]); len(values) > 0 {
-		interpolated["coord"] = psbMotionBlendList(values, psbMotionCoordValues(nextContent["coord"]), coordRatio)
+		interpolated["coord"] = psbMotionInterpolateCoord(values, psbMotionCoordValues(nextContent["coord"]), coordRatio, content["cp"], coordinateMode)
 	} else if values := psbMotionCoordValues(nextContent["coord"]); len(values) > 0 {
-		interpolated["coord"] = psbMotionBlendList([]float64{0, 0, 0}, values, coordRatio)
+		interpolated["coord"] = psbMotionInterpolateCoord([]float64{0, 0, 0}, values, coordRatio, content["cp"], coordinateMode)
 	}
 	if _, ok := content["opa"]; ok || nextContent["opa"] != nil {
-		interpolated["opa"] = psbMotionBlendFloat(content["opa"], nextContent["opa"], 255, ratio)
+		interpolated["opa"] = psbMotionRoundLikeReference(psbMotionBlendFloat(content["opa"], nextContent["opa"], 255, ratio))
 	}
 	for _, key := range []string{"zx", "zy", "sx", "sy", "ox", "oy", "fx", "fy"} {
 		if content[key] == nil && nextContent[key] == nil {
@@ -1715,20 +1715,122 @@ func psbMotionBlendFloat(value, next assets.Value, fallback, ratio float64) floa
 	return from*(1-ratio) + to*ratio
 }
 
-func psbMotionBlendList(value, next []float64, ratio float64) []assets.Value {
-	length := max(len(value), len(next))
-	blended := make([]assets.Value, length)
-	for index := range length {
-		from, to := 0.0, 0.0
-		if index < len(value) {
-			from = value[index]
-		}
-		if index < len(next) {
-			to = next[index]
-		}
-		blended[index] = from*(1-ratio) + to*ratio
+func psbMotionRoundLikeReference(value float64) float64 {
+	if value < 0 {
+		return math.Ceil(value - 0.5)
 	}
-	return blended
+	return math.Floor(value + 0.5)
+}
+
+func psbMotionInterpolateCoord(from, to []float64, ratio float64, curveValue assets.Value, coordinateMode int) []assets.Value {
+	positions := make([]assets.Value, 3)
+	var start, end [3]float64
+	for i := range 3 {
+		if i < len(from) {
+			start[i] = from[i]
+		}
+		if i < len(to) {
+			end[i] = to[i]
+		}
+	}
+	if start == end {
+		for i := range positions {
+			positions[i] = start[i]
+		}
+		return positions
+	}
+	cosine, sine, ok := psbMotionControlPointAt(curveValue, ratio)
+	if !ok {
+		for i := range positions {
+			positions[i] = start[i]*(1-ratio) + end[i]*ratio
+		}
+		return positions
+	}
+	switch coordinateMode {
+	case 0:
+		dx, dy := end[0]-start[0], end[1]-start[1]
+		positions[0] = start[0] + dx*cosine - dy*sine
+		positions[1] = start[1] + dx*sine + dy*cosine
+		positions[2] = start[2]*(1-ratio) + end[2]*ratio
+	case 1:
+		dx, dz := end[0]-start[0], end[2]-start[2]
+		positions[0] = start[0] + dx*cosine - dz*sine
+		positions[1] = start[1]*(1-ratio) + end[1]*ratio
+		positions[2] = start[2] + dz*cosine + dx*sine
+	default:
+		for i := range positions {
+			positions[i] = start[i]
+		}
+	}
+	return positions
+}
+
+func psbMotionControlPointAt(value assets.Value, input float64) (float64, float64, bool) {
+	curve, ok := value.(map[string]assets.Value)
+	if !ok {
+		return 1, 0, false
+	}
+	x, y, knots := psbMotionList(curve["x"]), psbMotionList(curve["y"]), psbMotionList(curve["t"])
+	segments, _ := curve["s"].([]assets.Value)
+	if len(knots) < 2 || len(x) < 4 || len(y) < 4 {
+		return 1, 0, false
+	}
+	segmentIndex, mainIndex := 0, 0
+	for i := 1; i < len(knots); i++ {
+		mainIndex += 3
+		segmentIndex = i - 1
+		if knots[i] >= input {
+			break
+		}
+	}
+	if segmentIndex < 0 || segmentIndex >= len(segments) {
+		return 1, 0, false
+	}
+	start, end := knots[segmentIndex], knots[segmentIndex+1]
+	local := 0.0
+	if end != start {
+		local = (input - start) / (end - start)
+	}
+	param := local
+	if segment, ok := segments[segmentIndex].(map[string]assets.Value); ok {
+		sx, sy, sp := psbMotionList(segment["x"]), psbMotionList(segment["y"]), psbMotionList(segment["p"])
+		if len(sx) > 0 && len(sx) == len(sy) {
+			if sx[0] >= local {
+				param = sy[0]
+			} else if sx[len(sx)-1] <= local {
+				param = sy[len(sy)-1]
+			} else {
+				subIndex := 0
+				for i := 1; i < len(sx); i++ {
+					if sx[i] >= local {
+						subIndex = i - 1
+						break
+					}
+					subIndex = i - 1
+				}
+				dx := sx[subIndex+1] - sx[subIndex]
+				if dx != 0 {
+					u := (local - sx[subIndex]) / dx
+					p0, p1 := 0.0, 0.0
+					if subIndex < len(sp) {
+						p0 = sp[subIndex]
+					}
+					if subIndex+1 < len(sp) {
+						p1 = sp[subIndex+1]
+					}
+					v := 1 - u
+					param = dx*dx*((u*u*u-u)*p1+(v*v*v-v)*p0)/6 + u*sy[subIndex+1] + v*sy[subIndex]
+				}
+			}
+		}
+	}
+	if mainIndex < 3 || mainIndex >= len(x) || mainIndex >= len(y) {
+		return 1, 0, false
+	}
+	u := 1 - param
+	cosine := u*u*u*x[mainIndex-3] + 3*u*u*param*x[mainIndex-2] + 3*u*param*param*x[mainIndex-1] + param*param*param*x[mainIndex]
+	sine := u*u*u*y[mainIndex-3] + 3*u*u*param*y[mainIndex-2] + 3*u*param*param*y[mainIndex-1] + param*param*param*y[mainIndex]
+	return cosine, sine, true
 }
 
 // psbMotionCoordValues reads the list and dictionary coordinate encodings
@@ -1936,7 +2038,7 @@ func hitTestMotionValue(scene motionHitTestScene, value assets.Value, tick float
 	case map[string]assets.Value:
 		ctx := parent
 		if frames, ok := node["frameList"].([]assets.Value); ok {
-			content, visible := psbMotionResolvedContent(frames, motionNodeTick(node, tick, eval), psbMotionInt(node, "type", 0))
+			content, visible := psbMotionResolvedContent(frames, motionNodeTick(node, tick, eval), psbMotionInt(node, "type", 0), psbMotionInt(node, "coordinate", 0))
 			if !visible {
 				return false, false
 			}
@@ -2200,7 +2302,7 @@ func motionCameraOffsetValue(value assets.Value, tick float64, eval motionRender
 		// ancestor is active (PlayerUpdateLayerEval.cpp:875-880).
 		acc.active = false
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
-			if content, visible := psbMotionResolvedContent(frameList, motionNodeTick(node, tick, eval), psbMotionInt(node, "type", 0)); visible {
+			if content, visible := psbMotionResolvedContent(frameList, motionNodeTick(node, tick, eval), psbMotionInt(node, "type", 0), psbMotionInt(node, "coordinate", 0)); visible {
 				// A sync node copies the parent state and stays inactive
 				// (PlayerUpdateLayerEval.cpp:857-880).
 				sync, hasSync := psbNumber(content["sync"])
