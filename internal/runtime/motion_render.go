@@ -1100,6 +1100,7 @@ type motionMeshControlNet struct {
 	centerX, centerY float64
 	invM11, invM12   float64
 	invM21, invM22   float64
+	flags            int
 }
 
 // evaluate returns the Bezier patch surface point at normalized (u,v).
@@ -1123,11 +1124,14 @@ func (net *motionMeshControlNet) evaluate(u, v float64) (float64, float64) {
 // and back through the ancestor's deformed surface
 // (PlayerUpdateGeometry.cpp:479-508).
 func (net *motionMeshControlNet) deform(x, y float64) (float64, float64) {
+	u, v := net.normalized(x, y)
+	return net.evaluate(u, v)
+}
+
+func (net *motionMeshControlNet) normalized(x, y float64) (float64, float64) {
 	tx := x - net.originX
 	ty := y - net.originY
-	u := net.invM11*tx + net.invM12*ty
-	v := net.invM21*tx + net.invM22*ty
-	return net.evaluate(u, v)
+	return net.invM11*tx + net.invM12*ty, net.invM21*tx + net.invM22*ty
 }
 
 // deformOffset applies the control net to a node position stored relative to
@@ -1136,6 +1140,38 @@ func (net *motionMeshControlNet) deform(x, y float64) (float64, float64) {
 func (net *motionMeshControlNet) deformOffset(x, y float64) (float64, float64) {
 	px, py := net.deform(net.centerX+x, net.centerY+y)
 	return px - net.centerX, py - net.centerY
+}
+
+func (net *motionMeshControlNet) childAngleScale(x, y float64, inheritMask int) (float64, float64) {
+	u, v := net.normalized(net.centerX+x, net.centerY+y)
+	deformedX, deformedY := net.evaluate(u, v)
+	deformedU, deformedV := net.normalized(deformedX, deformedY)
+	angle, scale := 0.0, 1.0
+	evaluate := func(u, v float64) (float64, float64) {
+		return net.evaluate(u, v)
+	}
+	if net.flags&2 != 0 && inheritMask&0x10 != 0 {
+		const epsilon = 0.0001
+		x1, y1 := evaluate(deformedU-epsilon, deformedV)
+		x2, y2 := evaluate(deformedU+epsilon, deformedV)
+		x3, y3 := evaluate(deformedU, deformedV-epsilon)
+		x4, y4 := evaluate(deformedU, deformedV+epsilon)
+		a1 := math.Atan2(y3-y4, x4-x3)
+		a2 := math.Atan2(x2-x1, y2-y1)
+		angle = (a1 + a2) * 0.5 * 180 / math.Pi
+	}
+	if net.flags&4 != 0 && inheritMask&0x60 != 0 {
+		const epsilon = 0.0001
+		x1, y1 := evaluate(deformedU-epsilon, deformedV)
+		x2, y2 := evaluate(deformedU+epsilon, deformedV)
+		x3, y3 := evaluate(deformedU, deformedV-epsilon)
+		x4, y4 := evaluate(deformedU, deformedV+epsilon)
+		dx, dy := x2-x1, y2-y1
+		area1 := math.Abs(dx*(y4-y1)-dy*(x4-x1)) * 0.5
+		area2 := math.Abs(dx*(y3-y1)-dy*(x3-x1)) * 0.5
+		scale = math.Sqrt(area1+area2+area2+area1) / 0.0002
+	}
+	return angle, scale
 }
 
 // motionMeshControlNetAt builds the control net declared by content.mesh.bp.
@@ -1189,12 +1225,11 @@ func motionMeshControlNetAt(content map[string]assets.Value, ctx motionRenderCon
 	return net, true
 }
 
-// motionMeshAncestorContext appends a node's control net to the context its
-// descendants inherit. The reference enables this combination only for
-// meshType 1 nodes with the meshSyncChildMask bit 0 set
-// (meshCombineEnabled, PlayerUpdateGeometry.cpp:195-198).
+// motionMeshAncestorContext carries the node's mesh sync mask to direct
+// children and adds its surface to the descendant mesh chain when bit 0 is set.
 func motionMeshAncestorContext(resource *motionResource, root map[string]assets.Value, node map[string]assets.Value, content map[string]assets.Value, eval motionRenderEval, ctx motionRenderContext, width, height int) motionRenderContext {
-	if psbMotionInt(node, "meshTransform", 0) != 1 || psbMotionInt(node, "meshSyncChildMask", 0)&1 == 0 {
+	flags := int(psbMotionInt(node, "meshSyncChildMask", 0)) & 7
+	if psbMotionInt(node, "meshTransform", 0) != 1 || flags == 0 {
 		return ctx
 	}
 	source, _ := content["src"].(string)
@@ -1216,10 +1251,13 @@ func motionMeshAncestorContext(resource *motionResource, root map[string]assets.
 	if !ok {
 		return ctx
 	}
-	ancestors := make([]motionMeshControlNet, len(ctx.meshAncestors)+1)
-	copy(ancestors, ctx.meshAncestors)
-	ancestors[len(ctx.meshAncestors)] = net
-	ctx.meshAncestors = ancestors
+	net.flags = flags
+	if flags&1 != 0 {
+		ancestors := make([]motionMeshControlNet, len(ctx.meshAncestors)+1)
+		copy(ancestors, ctx.meshAncestors)
+		ancestors[len(ctx.meshAncestors)] = net
+		ctx.meshAncestors = ancestors
+	}
 	ctx.meshChildDeform = &net
 	return ctx
 }
@@ -1928,12 +1966,44 @@ func psbMotionContext(parent motionRenderContext, content map[string]assets.Valu
 		ctx.z = transformParent.z + coordZ
 	}
 	if parent.meshChildDeform != nil {
+		net := parent.meshChildDeform
 		projectedY := motionProjectedY(ctx)
-		ctx.x, projectedY = parent.meshChildDeform.deformOffset(ctx.x, projectedY)
-		if parent.coordinateMode != 0 {
-			ctx.z = projectedY - ctx.y
-		} else {
-			ctx.y = projectedY - ctx.z
+		positionX, positionY := ctx.x, projectedY
+		if net.flags&1 != 0 {
+			ctx.x, projectedY = net.deformOffset(ctx.x, projectedY)
+			if parent.coordinateMode != 0 {
+				ctx.z = projectedY - ctx.y
+			} else {
+				ctx.y = projectedY - ctx.z
+			}
+		}
+		angleDelta, scaleFactor := net.childAngleScale(positionX, positionY, flags)
+		if angleDelta != 0 || scaleFactor != 1 {
+			ctx.transform.angle += angleDelta
+			if flags&0x20 != 0 {
+				ctx.transform.scaleX *= scaleFactor
+			}
+			if flags&0x40 != 0 {
+				ctx.transform.scaleY *= scaleFactor
+			}
+			if flags&0x1FC == 0x1FC {
+				adjusted := make(map[string]assets.Value, len(content)+3)
+				for key, value := range content {
+					adjusted[key] = value
+				}
+				if angleDelta != 0 {
+					adjusted["angle"] = psbMotionFloat(content, "angle", 0) + angleDelta
+				}
+				if flags&0x20 != 0 {
+					adjusted["zx"] = psbMotionFloat(content, "zx", 1) * scaleFactor
+				}
+				if flags&0x40 != 0 {
+					adjusted["zy"] = psbMotionFloat(content, "zy", 1) * scaleFactor
+				}
+				ctx.matrix = multiplyMotionMatrix(transformParent.matrix, psbMotionLocalMatrix(layer, adjusted))
+			} else {
+				ctx.matrix = multiplyMotionMatrix(transformParent.rootMatrix, psbMotionLocalMatrixState(layer, ctx.transform))
+			}
 		}
 	}
 	if opacity, ok := content["opa"]; ok {
