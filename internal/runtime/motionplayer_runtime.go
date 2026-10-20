@@ -493,27 +493,26 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		transition, ease := 0.0, 0.0
+		mode := int64(0)
 		if len(args) > 2 && args[2].Kind() != tjs.KindVoid {
-			transition, err = args[2].Real()
-			if err != nil {
-				return tjs.VoidValue, err
-			}
-		}
-		if len(args) > 3 && args[3].Kind() != tjs.KindVoid {
-			ease, err = args[3].Real()
+			mode, err = args[2].Int()
 			if err != nil {
 				return tjs.VoidValue, err
 			}
 		}
 		emote := s.motionPlayerEmote(state)
-		s.emoteSetVariable(emote, args[0].Text(), value, transition, ease)
+		s.emoteWriteEvalMode(emote, args[0].Text(), mode, value)
 		return tjs.VoidValue, nil
 	case "getVariable":
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.Player.getVariable requires a label")
 		}
 		return tjs.RealValue(emoteVariableValue(s.motionPlayerEmote(state), args[0].Text())), nil
+	case "countVariables", "getVariableLabelAt", "countVariableFrameAt",
+		"getVariableFrameLabelAt", "getVariableFrameValueAt", "getVariableRange",
+		"getVariableFrameList":
+		s.motionPlayerEmote(state)
+		return s.motionEmotePlayerNative(vm, context, operation, args)
 	default:
 		return tjs.VoidValue, fmt.Errorf("unsupported Motion.Player operation %q", operation)
 	}

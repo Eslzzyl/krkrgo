@@ -68,7 +68,13 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 	if err := class.Set("Player", player); err != nil {
 		return err
 	}
-	for _, method := range []string{"@initialize", "@invalidate", "Player", "finalize", "play", "stop", "progress", "clear", "draw", "setVariable", "getVariable", "skipToSync", "setDrawAffineTranslateMatrix"} {
+	for _, method := range []string{
+		"@initialize", "@invalidate", "Player", "finalize", "play", "stop",
+		"progress", "clear", "draw", "setVariable", "getVariable",
+		"countVariables", "getVariableLabelAt", "countVariableFrameAt",
+		"getVariableFrameLabelAt", "getVariableFrameValueAt", "getVariableRange",
+		"getVariableFrameList", "skipToSync", "setDrawAffineTranslateMatrix",
+	} {
 		if err := vm.RegisterNativeMethod(player, method, "Motion.Player."+method); err != nil {
 			return err
 		}

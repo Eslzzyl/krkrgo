@@ -65,6 +65,9 @@ type emoteParameterEntry struct {
 	rangeBegin     float64
 	rangeEnd       float64
 	rangeScale     float64
+	value          float64
+	mode           int64
+	bound          bool
 }
 
 // emoteControllerBinding mirrors VariableControllerBinding: type 0..8, source
@@ -1596,6 +1599,26 @@ func (s *Services) emoteWriteEval(emote *emotePlayerState, label string, value f
 	variable.set = true
 }
 
+func (s *Services) emoteWriteEvalMode(emote *emotePlayerState, label string, mode int64, value float64) {
+	s.emoteWriteEval(emote, label, value)
+	if label == "" {
+		return
+	}
+	suffix := label
+	if index := strings.LastIndex(label, "::"); index >= 0 {
+		suffix = label[index+2:]
+	} else if index := strings.LastIndex(label, "/"); index >= 0 {
+		suffix = label[index+1:]
+	}
+	for _, parameter := range emote.parameters {
+		if parameter.id == label || (suffix != "" && parameter.id == suffix) {
+			parameter.value = emoteNormalizeParameter(parameter, value)
+			parameter.mode = mode
+			parameter.bound = true
+		}
+	}
+}
+
 func (e *emotePlayerState) ensureEvalSlot(label string) {
 	if _, ok := e.evalResults[label]; !ok {
 		e.evalResults[label] = 0
@@ -1619,6 +1642,10 @@ func (e *emotePlayerState) renderParameters() []float64 {
 	}
 	values := make([]float64, len(e.parameters))
 	for index, parameter := range e.parameters {
+		if parameter.bound {
+			values[index] = parameter.value
+			continue
+		}
 		raw, _ := emoteVariableLookup(e, parameter.id)
 		values[index] = emoteNormalizeParameter(parameter, raw)
 	}
