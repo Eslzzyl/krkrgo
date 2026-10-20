@@ -86,6 +86,7 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 		"requireLayerId", "releaseLayerId", "isPlaying",
 		"isExistMotion", "findMotion",
 		"unload", "unloadAll",
+		"releaseSyncWait", "getLayerNames",
 	} {
 		if err := vm.RegisterNativeMethod(player, method, "Motion.Player."+method); err != nil {
 			return err

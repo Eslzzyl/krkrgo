@@ -2468,6 +2468,24 @@ func motionLayerList(resource *motionResource, chara, motion string) []assets.Va
 	return layers
 }
 
+func collectMotionLayerNames(value assets.Value, names map[string]struct{}) {
+	switch node := value.(type) {
+	case []assets.Value:
+		for _, child := range node {
+			collectMotionLayerNames(child, names)
+		}
+	case map[string]assets.Value:
+		if label := psbLabel(node); label != "" {
+			names[label] = struct{}{}
+		}
+		for _, key := range []string{"children", "layer"} {
+			if child, found := node[key]; found {
+				collectMotionLayerNames(child, names)
+			}
+		}
+	}
+}
+
 func motionCameraOffsetValue(value assets.Value, tick float64, eval motionRenderEval, parent motionCameraAccumulated, drawMatrix motionDrawMatrix) (float64, float64, bool) {
 	switch node := value.(type) {
 	case []assets.Value:

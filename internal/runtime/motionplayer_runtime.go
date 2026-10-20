@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
@@ -676,6 +677,25 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 			}
 		}
 		return tjs.VoidValue, nil
+	case "releaseSyncWait":
+		state.syncWaiting = false
+		state.syncActive = false
+		return tjs.VoidValue, nil
+	case "getLayerNames":
+		resource := s.playerResource(state)
+		layers := motionLayerList(resource, state.chara, state.motion)
+		labels := make(map[string]struct{})
+		collectMotionLayerNames(layers, labels)
+		names := make([]string, 0, len(labels))
+		for name := range labels {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		values := make([]tjs.Value, len(names))
+		for index, name := range names {
+			values[index] = tjs.StringValue(name)
+		}
+		return vm.NewArray(values)
 	case "requireLayerId":
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.Player.requireLayerId requires a layer name")
