@@ -394,6 +394,7 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 			if flags&motionPlayFlagChain == 0 {
 				state.frameTick = 0
 				state.frameLoopTime = 0
+				state.queuing = true
 			}
 			state.playing = state.motion != ""
 			state.held = false
@@ -410,6 +411,7 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		if flags&motionPlayFlagChain == 0 {
 			state.frameTick = 0
 			state.frameLoopTime = 0
+			state.queuing = true
 		}
 		state.playing = true
 		state.held = false
@@ -440,9 +442,15 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		}
 		frames := float64(interval) * motionFramesPerMillisecond
 		state.frameLastTime = frames
-		if state.emote != nil {
-			s.emoteStepControllerBuckets(state.emote, frames)
-			s.emoteApplyEvalPostProcess(state.emote)
+		emote := s.motionPlayerEmote(state)
+		if emote != nil {
+			s.emoteStepControllerBuckets(emote, frames)
+			s.emoteApplyEvalPostProcess(emote)
+		}
+		if state.queuing && !emote.freezeBodyMotion() {
+			state.queuing = false
+			state.syncActive = state.syncWaiting && state.playing
+			return tjs.VoidValue, nil
 		}
 		state.frameLoopTime += frames
 		state.frameTick += frames
