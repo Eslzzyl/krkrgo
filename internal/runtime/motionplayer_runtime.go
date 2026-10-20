@@ -83,6 +83,16 @@ type motionPlayerState struct {
 	cameraFOV                float64
 	cameraOffsetX            float64
 	cameraOffsetY            float64
+	canvasCaptureEnabled     bool
+	clearEnabled             bool
+	d3dDrawMode              bool
+	hitThreshold             float64
+	preview                  bool
+	outsideFactor            float64
+	stealthChara             string
+	project                  tjs.Value
+	meshline                 string
+	busy                     bool
 	// held marks a one-shot motion that reached its last time: the reference
 	// stops advancing the timeline at that point and keeps the evaluated pose,
 	// and the layer keeps drawing the clamped frame. A repeat apply of the same
@@ -400,6 +410,19 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 			state.stealthMotion = motion
 			return tjs.VoidValue, nil
 		}
+		if state.resource == nil && state.project.Kind() == tjs.KindObject && !state.project.IsNull() {
+			s.mu.RLock()
+			state.resource = s.MotionModules[state.project.ObjectRef().Object]
+			s.mu.RUnlock()
+			if state.resource != nil {
+				if state.chara == "" {
+					state.chara = motionResourceMetadataString(state.resource, "chara")
+					if state.chara == "" {
+						state.chara = motionResourceDefaultChara(state.resource)
+					}
+				}
+			}
+		}
 		if motion == "" {
 			// Empty request restarts the loaded motion from its origin unless
 			// the chain flag keeps the current position.
@@ -562,6 +585,12 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		position, err := vm.NewArray(values)
 		state.cameraPosition = position
 		return tjs.VoidValue, err
+	case "modifyRoot":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.modifyRoot requires data")
+		}
+		state.project = args[0]
+		return tjs.VoidValue, nil
 	case "skipToSync":
 		if resource := s.playerResource(state); resource != nil {
 			if last := motionLastTime(resource, state.chara, state.motion); last >= 0 {
@@ -726,6 +755,31 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 		return tjs.RealValue(state.cameraFOV), nil
 	case "cameraAlive":
 		return tjs.IntegerValue(boolInt(state.cameraAlive)), nil
+	case "canvasCaptureEnabled":
+		return tjs.IntegerValue(boolInt(state.canvasCaptureEnabled)), nil
+	case "clearEnabled":
+		return tjs.IntegerValue(boolInt(state.clearEnabled)), nil
+	case "hitThreshold":
+		return tjs.RealValue(state.hitThreshold), nil
+	case "preview":
+		return tjs.IntegerValue(boolInt(state.preview)), nil
+	case "outsideFactor":
+		return tjs.RealValue(state.outsideFactor), nil
+	case "resourceManager":
+		if state.resourceManager == 0 {
+			return tjs.NullValue, nil
+		}
+		return tjs.ObjectIDValue(state.resourceManager), nil
+	case "stealthChara":
+		return tjs.StringValue(state.stealthChara), nil
+	case "project":
+		return state.project, nil
+	case "useD3D":
+		return tjs.IntegerValue(boolInt(state.d3dDrawMode)), nil
+	case "meshline":
+		return tjs.StringValue(state.meshline), nil
+	case "busy":
+		return tjs.IntegerValue(boolInt(state.busy)), nil
 	case "loopTime":
 		if state.loopTimeSet {
 			return tjs.RealValue(state.loopTime), nil
@@ -869,6 +923,38 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 		state.cameraFOV = n
 	case "cameraAlive":
 		state.cameraAlive = motionPlayerBool(value)
+	case "canvasCaptureEnabled":
+		state.canvasCaptureEnabled = motionPlayerBool(value)
+	case "clearEnabled":
+		state.clearEnabled = motionPlayerBool(value)
+	case "hitThreshold":
+		n, err := value.Real()
+		if err != nil {
+			return err
+		}
+		state.hitThreshold = n
+	case "preview":
+		state.preview = motionPlayerBool(value)
+	case "outsideFactor":
+		n, err := value.Real()
+		if err != nil {
+			return err
+		}
+		state.outsideFactor = n
+	case "resourceManager":
+		if value.Kind() == tjs.KindObject && !value.IsNull() {
+			state.resourceManager = value.ObjectRef().Object
+		} else {
+			state.resourceManager = 0
+		}
+	case "stealthChara":
+		state.stealthChara = value.Text()
+	case "project":
+		state.project = value
+	case "useD3D":
+		state.d3dDrawMode = motionPlayerBool(value)
+	case "meshline":
+		state.meshline = value.Text()
 	case "loopTime":
 		n, err := value.Real()
 		if err != nil {

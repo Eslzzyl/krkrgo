@@ -81,7 +81,7 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 		"stopTimeline", "setTimelineBlendRatio", "getTimelineBlendRatio",
 		"fadeInTimeline", "fadeOutTimeline", "getPlayingTimelineInfoList",
 		"getCameraOffset", "setCameraOffset", "setStereovisionCameraPosition",
-		"skipToSync", "setDrawAffineTranslateMatrix",
+		"modifyRoot", "skipToSync", "setDrawAffineTranslateMatrix",
 	} {
 		if err := vm.RegisterNativeMethod(player, method, "Motion.Player."+method); err != nil {
 			return err
@@ -95,12 +95,15 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 		"selectorEnabled", "syncWaiting", "syncActive", "hasCamera",
 		"cameraActive", "stereovisionActive", "cameraTarget", "cameraPosition",
 		"cameraFOV", "cameraAlive", "speed", "playing", "allplaying",
+		"canvasCaptureEnabled", "clearEnabled", "hitThreshold", "preview",
+		"outsideFactor", "resourceManager", "stealthChara", "project",
+		"useD3D", "meshline", "busy",
 		"tags", "variableKeys", "completionType", "maskMode", "zFactor",
 		"outline", "onAction",
 	} {
 		setter := "Motion.Player.set:" + property
 		switch property {
-		case "playing", "allplaying":
+		case "playing", "allplaying", "busy":
 			setter = ""
 		}
 		if err := vm.RegisterNativeProperty(player, property, "Motion.Player.get:"+property, setter); err != nil {
