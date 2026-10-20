@@ -462,7 +462,11 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 	case "stop":
 		state.playing = false
 		state.held = false
-		return tjs.VoidValue, nil
+		return tjs.IntegerValue(1), nil
+	case "isPlaying":
+		playing := state.emote != nil && len(state.emote.playingOrder) > 0
+		state.playing = playing
+		return tjs.IntegerValue(boolInt(playing)), nil
 	case "progress":
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.Player.progress requires an interval")
