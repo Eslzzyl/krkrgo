@@ -368,7 +368,11 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.Player.%s requires a value", strings.TrimPrefix(operation, "set:"))
 		}
-		return tjs.VoidValue, s.motionPlayerSet(state, strings.TrimPrefix(operation, "set:"), args[0])
+		property := strings.TrimPrefix(operation, "set:")
+		if property == "motion" || property == "motionKey" {
+			return tjs.VoidValue, s.motionPlayerSetMotion(vm, context, state, args[0])
+		}
+		return tjs.VoidValue, s.motionPlayerSet(state, property, args[0])
 	}
 	switch operation {
 	case "play":
@@ -555,6 +559,50 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 	default:
 		return tjs.VoidValue, fmt.Errorf("unsupported Motion.Player operation %q", operation)
 	}
+}
+
+func (s *Services) motionPlayerSetMotion(vm *tjs.VM, context tjs.Value, state *motionPlayerState, value tjs.Value) error {
+	motion := value.Text()
+	if state.motion == motion {
+		return nil
+	}
+	request, err := vm.NewDictionary()
+	if err != nil {
+		return err
+	}
+	if err := tjs.SetMember(vm.Objects, request, "chara", tjs.StringValue(state.chara)); err != nil {
+		return err
+	}
+	if err := tjs.SetMember(vm.Objects, request, "motion", tjs.StringValue(motion)); err != nil {
+		return err
+	}
+	handler, found, err := vm.GetMemberIfPresent(context, "onFindMotion", s, nil)
+	if err == nil && found && !handler.IsVoid() {
+		result, callErr := vm.CallFunction(handler, context, []tjs.Value{request}, s, nil)
+		if callErr == nil && result.Kind() == tjs.KindObject && !result.IsNull() {
+			if chara, present, getErr := vm.GetMemberIfPresent(result, "chara", s, nil); getErr == nil && present && !chara.IsVoid() {
+				state.chara = chara.Text()
+			}
+			if resolved, present, getErr := vm.GetMemberIfPresent(result, "motion", s, nil); getErr == nil && present && !resolved.IsVoid() {
+				motion = resolved.Text()
+			}
+		}
+	}
+	state.motion = motion
+	state.frameTick = 0
+	state.frameLastTime = 0
+	state.frameLoopTime = 0
+	state.loopTimeSet = false
+	state.playing = motion != ""
+	state.held = false
+	state.queuing = motion != ""
+	state.drawMatrix = identityMotionDrawMatrix()
+	state.metadataResource = nil
+	if state.emote != nil {
+		s.emoteResetRuntime(state.emote)
+	}
+	state.variableKeys, err = vm.NewArray(nil)
+	return err
 }
 
 func (s *Services) motionPlayer(id tjs.ObjectID) *motionPlayerState {
