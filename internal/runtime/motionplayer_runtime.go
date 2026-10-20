@@ -55,6 +55,8 @@ type motionPlayerState struct {
 	motion           string
 	stealthMotion    string
 	frameTick        float64
+	frameLastTime    float64
+	frameLoopTime    float64
 	loopTime         float64
 	loopTimeSet      bool
 	speed            bool
@@ -382,6 +384,7 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 			// the chain flag keeps the current position.
 			if flags&motionPlayFlagChain == 0 {
 				state.frameTick = 0
+				state.frameLoopTime = 0
 			}
 			state.playing = state.motion != ""
 			state.held = false
@@ -397,6 +400,7 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		state.loopTimeSet = false
 		if flags&motionPlayFlagChain == 0 {
 			state.frameTick = 0
+			state.frameLoopTime = 0
 		}
 		state.playing = true
 		state.held = false
@@ -425,11 +429,14 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		if !motionPlayerSpeed(state) {
 			return tjs.VoidValue, nil
 		}
+		frames := float64(interval) * motionFramesPerMillisecond
+		state.frameLastTime = frames
 		if state.emote != nil {
-			s.emoteStepControllerBuckets(state.emote, float64(interval)*motionFramesPerMillisecond)
+			s.emoteStepControllerBuckets(state.emote, frames)
 			s.emoteApplyEvalPostProcess(state.emote)
 		}
-		state.frameTick += float64(interval) * motionFramesPerMillisecond
+		state.frameLoopTime += frames
+		state.frameTick += frames
 		if resource := s.playerResource(state); resource != nil {
 			last := motionLastTime(resource, state.chara, state.motion)
 			if last >= 0 && state.frameTick >= last {
@@ -540,6 +547,10 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 		return tjs.RealValue(0), nil
 	case "frameTickCount":
 		return tjs.RealValue(state.frameTick), nil
+	case "frameLastTime":
+		return tjs.RealValue(state.frameLastTime), nil
+	case "frameLoopTime":
+		return tjs.RealValue(state.frameLoopTime), nil
 	case "loopTime":
 		if state.loopTimeSet {
 			return tjs.RealValue(state.loopTime), nil
@@ -617,6 +628,18 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 		}
 		state.frameTick = n
 		state.held = false
+	case "frameLastTime":
+		n, err := value.Real()
+		if err != nil {
+			return err
+		}
+		state.frameLastTime = n
+	case "frameLoopTime":
+		n, err := value.Real()
+		if err != nil {
+			return err
+		}
+		state.frameLoopTime = n
 	case "loopTime":
 		n, err := value.Real()
 		if err != nil {

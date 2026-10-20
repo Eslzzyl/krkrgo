@@ -73,10 +73,15 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 			return err
 		}
 	}
-	for _, property := range []string{"chara", "motion", "stealthMotion", "tickCount", "speed", "playing", "allplaying", "tags", "completionType", "outline", "onAction"} {
+	for _, property := range []string{
+		"chara", "motion", "stealthMotion", "tickCount", "frameTickCount",
+		"frameLastTime", "frameLoopTime", "loopTime", "speed", "playing",
+		"allplaying", "tags", "variableKeys", "completionType", "maskMode",
+		"zFactor", "outline", "onAction",
+	} {
 		setter := "Motion.Player.set:" + property
 		switch property {
-		case "playing", "allplaying", "tags":
+		case "playing", "allplaying":
 			setter = ""
 		}
 		if err := vm.RegisterNativeProperty(player, property, "Motion.Player.get:"+property, setter); err != nil {
