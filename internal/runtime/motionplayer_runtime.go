@@ -93,6 +93,7 @@ type motionPlayerState struct {
 	project                  tjs.Value
 	meshline                 string
 	busy                     bool
+	colorWeight              uint32
 	// held marks a one-shot motion that reached its last time: the reference
 	// stops advancing the timeline at that point and keeps the evaluated pose,
 	// and the layer keeps drawing the clamped frame. A repeat apply of the same
@@ -694,7 +695,7 @@ func (s *Services) motionPlayer(id tjs.ObjectID) *motionPlayerState {
 	defer s.mu.Unlock()
 	state := s.MotionPlayers[id]
 	if state == nil {
-		state = &motionPlayerState{speed: true, speedSet: true, zFactor: 1, zFactorSet: true, cameraFOV: 60, drawMatrix: identityMotionDrawMatrix()}
+		state = &motionPlayerState{speed: true, speedSet: true, zFactor: 1, zFactorSet: true, cameraFOV: 60, colorWeight: 0xFF808080, drawMatrix: identityMotionDrawMatrix()}
 		s.MotionPlayers[id] = state
 	}
 	return state
@@ -814,6 +815,8 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 		return tjs.IntegerValue(state.completionType), nil
 	case "maskMode":
 		return tjs.IntegerValue(state.maskMode), nil
+	case "colorWeight":
+		return tjs.IntegerValue(int64(motionSwapPackedRB(state.colorWeight))), nil
 	case "outline":
 		return tjs.StringValue(state.outline), nil
 	case "onAction":
@@ -988,6 +991,12 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 			return err
 		}
 		state.maskMode = n
+	case "colorWeight":
+		n, err := value.Int()
+		if err != nil {
+			return err
+		}
+		state.colorWeight = motionSwapPackedRB(uint32(n))
 	case "outline":
 		state.outline = value.Text()
 	case "onAction":
@@ -1153,6 +1162,10 @@ func motionPlayerSpeed(state *motionPlayerState) bool {
 func motionPlayerBool(value tjs.Value) bool {
 	n, err := value.Int()
 	return err == nil && n != 0
+}
+
+func motionSwapPackedRB(color uint32) uint32 {
+	return color&0xFF00FF00 | (color>>16)&0xFF | (color&0xFF)<<16
 }
 
 func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value tjs.Value) error {

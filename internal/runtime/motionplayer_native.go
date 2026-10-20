@@ -98,7 +98,7 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 		"canvasCaptureEnabled", "clearEnabled", "hitThreshold", "preview",
 		"outsideFactor", "resourceManager", "stealthChara", "project",
 		"useD3D", "meshline", "busy",
-		"tags", "variableKeys", "completionType", "maskMode", "zFactor",
+		"tags", "variableKeys", "completionType", "maskMode", "colorWeight", "zFactor",
 		"outline", "onAction",
 	} {
 		setter := "Motion.Player.set:" + property
