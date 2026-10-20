@@ -53,6 +53,8 @@ type motionPlayerState struct {
 	metadataResource         *motionResource
 	chara                    string
 	motion                   string
+	x                        float64
+	y                        float64
 	stealthMotion            string
 	frameTick                float64
 	frameLastTime            float64
@@ -572,6 +574,10 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 		return tjs.StringValue(state.chara), nil
 	case "motion", "motionKey":
 		return tjs.StringValue(state.motion), nil
+	case "x", "left":
+		return tjs.RealValue(state.x), nil
+	case "y", "top":
+		return tjs.RealValue(state.y), nil
 	case "metadata":
 		return state.metadata, nil
 	case "stealthMotion":
@@ -656,6 +662,18 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 	switch property {
 	case "chara":
 		state.chara = value.Text()
+	case "x", "left":
+		n, err := value.Real()
+		if err != nil {
+			return err
+		}
+		state.x = n
+	case "y", "top":
+		n, err := value.Real()
+		if err != nil {
+			return err
+		}
+		state.y = n
 	case "stealthMotion":
 		state.stealthMotion = value.Text()
 	case "motion", "motionKey":
@@ -952,6 +970,8 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 		maskMode = state.emote.maskMode
 		freezeBody = state.emote.freezeBodyMotion()
 	}
+	drawMatrix.tx += drawMatrix.a*state.x + drawMatrix.b*state.y
+	drawMatrix.ty += drawMatrix.c*state.x + drawMatrix.d*state.y
 	if s.gpuCapture && layerHasCanvas(layer) && layer.Type == LayerAlpha {
 		key := motionPlayerGPUKey{
 			resource: resource, chara: state.chara, motion: state.motion,
