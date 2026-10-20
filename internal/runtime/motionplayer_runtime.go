@@ -48,19 +48,20 @@ type motionPlayerState struct {
 	// attached holds the secondary snapshots MultiCache linked to the primary
 	// (EmotePlayer::play calls addEmoteFile for every non-primary cached
 	// module); source and nested-motion lookup falls back to them.
-	attached      []*motionResource
-	emote         *emotePlayerState
-	chara         string
-	motion        string
-	stealthMotion string
-	frameTick     float64
-	loopTime      float64
-	loopTimeSet   bool
-	speed         bool
-	speedSet      bool
-	zFactor       float64
-	zFactorSet    bool
-	playing       bool
+	attached         []*motionResource
+	emote            *emotePlayerState
+	metadataResource *motionResource
+	chara            string
+	motion           string
+	stealthMotion    string
+	frameTick        float64
+	loopTime         float64
+	loopTimeSet      bool
+	speed            bool
+	speedSet         bool
+	zFactor          float64
+	zFactorSet       bool
+	playing          bool
 	// held marks a one-shot motion that reached its last time: the reference
 	// stops advancing the timeline at that point and keeps the evaluated pose,
 	// and the layer keeps drawing the clamped frame. A repeat apply of the same
@@ -424,6 +425,10 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		if !motionPlayerSpeed(state) {
 			return tjs.VoidValue, nil
 		}
+		if state.emote != nil {
+			s.emoteStepControllerBuckets(state.emote, float64(interval)*motionFramesPerMillisecond)
+			s.emoteApplyEvalPostProcess(state.emote)
+		}
 		state.frameTick += float64(interval) * motionFramesPerMillisecond
 		if resource := s.playerResource(state); resource != nil {
 			last := motionLastTime(resource, state.chara, state.motion)
@@ -477,9 +482,31 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		if len(args) < 2 {
 			return tjs.VoidValue, fmt.Errorf("Motion.Player.setVariable requires name and value")
 		}
+		value, err := args[1].Real()
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		transition, ease := 0.0, 0.0
+		if len(args) > 2 && args[2].Kind() != tjs.KindVoid {
+			transition, err = args[2].Real()
+			if err != nil {
+				return tjs.VoidValue, err
+			}
+		}
+		if len(args) > 3 && args[3].Kind() != tjs.KindVoid {
+			ease, err = args[3].Real()
+			if err != nil {
+				return tjs.VoidValue, err
+			}
+		}
+		emote := s.motionPlayerEmote(state)
+		s.emoteSetVariable(emote, args[0].Text(), value, transition, ease)
 		return tjs.VoidValue, nil
 	case "getVariable":
-		return tjs.VoidValue, nil
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.getVariable requires a label")
+		}
+		return tjs.RealValue(emoteVariableValue(s.motionPlayerEmote(state), args[0].Text())), nil
 	default:
 		return tjs.VoidValue, fmt.Errorf("unsupported Motion.Player operation %q", operation)
 	}
@@ -655,6 +682,19 @@ func (s *Services) playerResource(state *motionPlayerState) *motionResource {
 	// keep that fallback only for players that did not bind an explicit module,
 	// while EmotePlayer always pins its own resource.
 	return cache.lastLoaded
+}
+
+func (s *Services) motionPlayerEmote(state *motionPlayerState) *emotePlayerState {
+	if state.emote == nil {
+		state.emote = newEmotePlayerState()
+	}
+	resource := s.playerResource(state)
+	if resource != nil && state.metadataResource != resource {
+		s.emoteResetRuntime(state.emote)
+		s.emoteApplyResourceMetadata(state.emote, resource)
+		state.metadataResource = resource
+	}
+	return state.emote
 }
 
 // motionField reads one numeric field of a motion entry, returning fallback
