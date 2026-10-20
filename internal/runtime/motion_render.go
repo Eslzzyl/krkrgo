@@ -30,6 +30,7 @@ type motionResource struct {
 	canvasCompletion int64
 	canvasFreeze     bool
 	canvasAttached   string
+	canvasZFactor    float64
 	canvasValid      bool
 }
 
@@ -120,6 +121,8 @@ type motionRenderContext struct {
 	// meshChildDeform is the current node's own mesh mapping for its direct
 	// children. Earlier ancestors already contribute to this node's position.
 	meshChildDeform *motionMeshControlNet
+	zFactor         float64
+	hasZFactor      bool
 }
 
 func renderPSBMotion(resource *motionResource, chara, motion string, tick float64, filter int64) (*assets.Image, error) {
@@ -141,6 +144,8 @@ type motionRenderEval struct {
 	// inParticle suppresses emitter recursion while a particle template is
 	// being drawn.
 	inParticle bool
+	zFactor    float64
+	hasZFactor bool
 }
 
 // renderPSBMotionVariables renders a motion with parameterized layers resolved
@@ -169,6 +174,10 @@ func motionAttachmentsSignature(attached []*motionResource) string {
 }
 
 func renderPSBMotionOptions(resource *motionResource, chara, motion string, tick float64, filter int64, params []float64, freezeBody bool, maskMode int64, completion int64, attached []*motionResource) (*assets.Image, error) {
+	return renderPSBMotionOptionsZFactor(resource, chara, motion, tick, filter, params, freezeBody, maskMode, completion, 1, attached)
+}
+
+func renderPSBMotionOptionsZFactor(resource *motionResource, chara, motion string, tick float64, filter int64, params []float64, freezeBody bool, maskMode int64, completion int64, zFactor float64, attached []*motionResource) (*assets.Image, error) {
 	if resource == nil || resource.doc == nil {
 		return nil, fmt.Errorf("motion resource is unavailable")
 	}
@@ -187,6 +196,7 @@ func renderPSBMotionOptions(resource *motionResource, chara, motion string, tick
 		resource.canvas.Width == uint32(width) && resource.canvas.Height == uint32(height) &&
 		resource.canvasChara == chara && resource.canvasMotion == motion &&
 		resource.canvasTick == tick && resource.canvasFilter == filter &&
+		resource.canvasZFactor == zFactor &&
 		resource.canvasVariables == paramsKey && resource.canvasMask == maskMode &&
 		resource.canvasCompletion == completion &&
 		resource.canvasFreeze == freezeBody &&
@@ -215,6 +225,7 @@ func renderPSBMotionOptions(resource *motionResource, chara, motion string, tick
 		resource.canvasCompletion = completion
 		resource.canvasFreeze = freezeBody
 		resource.canvasAttached = attachedKey
+		resource.canvasZFactor = zFactor
 		resource.canvasValid = true
 		return canvas, nil
 	}
@@ -226,8 +237,9 @@ func renderPSBMotionOptions(resource *motionResource, chara, motion string, tick
 	eval := motionRenderEval{
 		filter: filter, params: params, freezeBody: freezeBody,
 		maskMode: maskMode, completion: completion, attached: attached,
+		zFactor: zFactor, hasZFactor: true,
 	}
-	ctx := motionRenderContext{opacity: 255, blendMode: 16, matrix: identityMotionMatrix, rootMatrix: identityMotionMatrix, transform: identityMotionTransform}
+	ctx := motionRenderContext{opacity: 255, blendMode: 16, matrix: identityMotionMatrix, rootMatrix: identityMotionMatrix, transform: identityMotionTransform, zFactor: zFactor, hasZFactor: true}
 	if err := renderMotionValue(resource, root, layers, tick, eval, ctx, pixels, width, height, resource.stack); err != nil {
 		return nil, err
 	}
@@ -237,6 +249,7 @@ func renderPSBMotionOptions(resource *motionResource, chara, motion string, tick
 	resource.canvasFreeze = freezeBody
 	resource.canvasCompletion = completion
 	resource.canvasAttached = attachedKey
+	resource.canvasZFactor = zFactor
 	resource.canvasValid = true
 	return canvas, nil
 }
@@ -685,6 +698,10 @@ func buildGPUMotion(resource *motionResource, chara, motion string, tick float64
 }
 
 func buildGPUMotionVariables(resource *motionResource, chara, motion string, tick float64, filter int64, drawMatrix motionDrawMatrix, scale int32, params []float64, freezeBody bool, maskMode int64, completion int64, attached []*motionResource) (*RenderMotion, error) {
+	return buildGPUMotionVariablesZFactor(resource, chara, motion, tick, filter, drawMatrix, scale, params, freezeBody, maskMode, completion, 1, attached)
+}
+
+func buildGPUMotionVariablesZFactor(resource *motionResource, chara, motion string, tick float64, filter int64, drawMatrix motionDrawMatrix, scale int32, params []float64, freezeBody bool, maskMode int64, completion int64, zFactor float64, attached []*motionResource) (*RenderMotion, error) {
 	if resource == nil || resource.doc == nil {
 		return nil, fmt.Errorf("motion resource is unavailable")
 	}
@@ -713,6 +730,7 @@ func buildGPUMotionVariables(resource *motionResource, chara, motion string, tic
 	eval := motionRenderEval{
 		filter: filter, params: params, freezeBody: freezeBody,
 		maskMode: maskMode, completion: completion, attached: attached,
+		zFactor: zFactor, hasZFactor: true,
 	}
 	// The reference adds the camera offset to prepared item corners after
 	// drawAffineMatrix * vertex has already been computed, i.e. it is a
@@ -727,7 +745,7 @@ func buildGPUMotionVariables(resource *motionResource, chara, motion string, tic
 		// application; mesh nodes need a triangle grid. Bake the tree at
 		// canvas resolution and hand the result to the GPU as one transformed
 		// draw so CPU and GPU execute the same pixels.
-		frame, err := renderPSBMotionOptions(resource, chara, motion, tick, filter, params, freezeBody, maskMode, completion, attached)
+		frame, err := renderPSBMotionOptionsZFactor(resource, chara, motion, tick, filter, params, freezeBody, maskMode, completion, zFactor, attached)
 		if err != nil {
 			return nil, err
 		}
@@ -744,7 +762,7 @@ func buildGPUMotionVariables(resource *motionResource, chara, motion string, tic
 		// drawMatrix.tx/ty, so shift the baked source by its transformed center.
 		centerX, centerY := float64(source.Width)/2, float64(source.Height)/2
 		result.Draws = append(result.Draws, RenderMotionDraw{
-			SourceKey: motionBakedSourceKeyWithMatrix(resource, chara, motion, tick, filter, params, freezeBody, maskMode, completion, attached, drawMatrix),
+			SourceKey: motionBakedSourceKeyWithMatrix(resource, chara, motion, tick, filter, params, freezeBody, maskMode, completion, zFactor, attached, drawMatrix),
 			RGBA:      source.RGBA,
 			Width:     int32(source.Width),
 			Height:    int32(source.Height),
@@ -764,7 +782,8 @@ func buildGPUMotionVariables(resource *motionResource, chara, motion string, tic
 	} else {
 		clear(resource.stack)
 	}
-	ctx := motionRenderContext{opacity: 255, blendMode: 16, matrix: identityMotionMatrix, rootMatrix: identityMotionMatrix, transform: identityMotionTransform}
+	ctx := motionRenderContext{opacity: 255, blendMode: 16, matrix: identityMotionMatrix, rootMatrix: identityMotionMatrix, transform: identityMotionTransform, zFactor: zFactor, hasZFactor: true}
+	eval.zFactor, eval.hasZFactor = zFactor, true
 	if err := collectGPUMotionValue(resource, root, layers, tick, eval, ctx, drawMatrix, result, resource.stack); err != nil {
 		return nil, err
 	}
@@ -787,10 +806,10 @@ func motionBakedSourceKey(resource *motionResource, chara, motion string, tick f
 // motionBakedSourceKeyWithMatrix extends the baked source identity with the
 // draw affine because the camera-node offset is rounded through that affine
 // and folded into the draw translation the baked source uses.
-func motionBakedSourceKeyWithMatrix(resource *motionResource, chara, motion string, tick float64, filter int64, params []float64, freezeBody bool, maskMode, completion int64, attached []*motionResource, drawMatrix motionDrawMatrix) string {
-	return fmt.Sprintf("%s\x00%g,%g,%g,%g,%g,%g",
+func motionBakedSourceKeyWithMatrix(resource *motionResource, chara, motion string, tick float64, filter int64, params []float64, freezeBody bool, maskMode, completion int64, zFactor float64, attached []*motionResource, drawMatrix motionDrawMatrix) string {
+	return fmt.Sprintf("%s\x00%g,%g,%g,%g,%g,%g,%g",
 		motionBakedSourceKey(resource, chara, motion, tick, filter, params, freezeBody, maskMode, completion, attached),
-		drawMatrix.a, drawMatrix.b, drawMatrix.c, drawMatrix.d, drawMatrix.tx, drawMatrix.ty)
+		drawMatrix.a, drawMatrix.b, drawMatrix.c, drawMatrix.d, drawMatrix.tx, drawMatrix.ty, zFactor)
 }
 
 func motionTreeNeedsBakedGPU(resource *motionResource, attached []*motionResource, value assets.Value, stack map[string]bool) bool {
@@ -1876,6 +1895,8 @@ func psbMotionContext(parent motionRenderContext, content map[string]assets.Valu
 		viewport:       parent.viewport,
 		hasViewport:    parent.hasViewport,
 		meshAncestors:  parent.meshAncestors,
+		zFactor:        parent.zFactor,
+		hasZFactor:     parent.hasZFactor,
 	}
 	// A sync node copies the parent's state and contributes no transform of
 	// its own (PlayerUpdateLayerEval.cpp:856-881).
@@ -1941,7 +1962,7 @@ func motionShapeAABBContext(ctx motionRenderContext, layer, content map[string]a
 	extentY := (ctx.matrix.c + ctx.matrix.d) * 16
 	offsetX := ox*ctx.matrix.a + oy*ctx.matrix.b
 	offsetY := ox*ctx.matrix.c + oy*ctx.matrix.d
-	centerY := ctx.y + ctx.z
+	centerY := motionProjectedY(ctx)
 	clip := motionViewport{
 		minX: ctx.x - extentX - offsetX,
 		maxX: ctx.x + extentX - offsetX,
@@ -1968,7 +1989,18 @@ func motionShapeAABBContext(ctx motionRenderContext, layer, content map[string]a
 // motionProjectedY applies Player::_zFactor's default value of 1 when a node
 // position reaches the 2D render plane (PlayerUpdateGeometry.cpp:270-273).
 func motionProjectedY(ctx motionRenderContext) float64 {
-	return ctx.y + ctx.z
+	factor := 1.0
+	if ctx.hasZFactor {
+		factor = ctx.zFactor
+	}
+	return ctx.y + ctx.z*factor
+}
+
+func motionEvalZFactor(eval motionRenderEval) float64 {
+	if eval.hasZFactor {
+		return eval.zFactor
+	}
+	return 1
 }
 
 func motionTransformFromContent(content map[string]assets.Value) motionTransformState {
@@ -2037,7 +2069,9 @@ func hitTestMotionLayer(resource *motionResource, root map[string]assets.Value, 
 		width:    psbMotionInt(root["screenSize"], "width", 640),
 		height:   psbMotionInt(root["screenSize"], "height", 480),
 	}
-	return hitTestMotionValue(scene, layers, tick, eval, motionRenderContext{opacity: 255, blendMode: 16, matrix: identityMotionMatrix, rootMatrix: identityMotionMatrix, transform: identityMotionTransform}, label, x, y)
+	zFactor := motionEvalZFactor(eval)
+	context := motionRenderContext{opacity: 255, blendMode: 16, matrix: identityMotionMatrix, rootMatrix: identityMotionMatrix, transform: identityMotionTransform, zFactor: zFactor, hasZFactor: true}
+	return hitTestMotionValue(scene, layers, tick, eval, context, label, x, y)
 }
 
 func hitTestMotionValue(scene motionHitTestScene, value assets.Value, tick float64, eval motionRenderEval, parent motionRenderContext, label string, x, y float64) (bool, bool) {
@@ -2227,11 +2261,6 @@ func invertMotionMatrix(matrix motionMatrix) motionMatrix {
 	}
 }
 
-// motionCameraZFactor is Player::_zFactor's default before the TJS property
-// changes it (Player.h:627). The Go player exposes no zFactor script property,
-// so the reference default is the only reachable value.
-const motionCameraZFactor = 1.0
-
 // motionCameraAccumulated is the subset of MotionNode::AccumulatedState that
 // the camera-node pass reads. Positions are world-space after the parent chain
 // has been composed exactly as PlayerUpdateLayerEval.cpp:899-930 does.
@@ -2260,6 +2289,10 @@ func motionCameraOffset(layers assets.Value, tick float64, eval motionRenderEval
 // folds its offset into the draw-matrix translation, which is where the
 // reference applies _cameraOffset (PlayerRenderItems.cpp:1174-1215).
 func motionCameraDrawMatrix(resource *motionResource, chara, motion string, tick float64, params []float64, freezeBody bool, maskMode, completion int64, attached []*motionResource, drawMatrix motionDrawMatrix) motionDrawMatrix {
+	return motionCameraDrawMatrixZFactor(resource, chara, motion, tick, params, freezeBody, maskMode, completion, 1, attached, drawMatrix)
+}
+
+func motionCameraDrawMatrixZFactor(resource *motionResource, chara, motion string, tick float64, params []float64, freezeBody bool, maskMode, completion int64, zFactor float64, attached []*motionResource, drawMatrix motionDrawMatrix) motionDrawMatrix {
 	layers := motionLayerList(resource, chara, motion)
 	if len(layers) == 0 {
 		return drawMatrix
@@ -2267,6 +2300,7 @@ func motionCameraDrawMatrix(resource *motionResource, chara, motion string, tick
 	eval := motionRenderEval{
 		params: params, freezeBody: freezeBody, maskMode: maskMode,
 		completion: completion, attached: attached,
+		zFactor: zFactor, hasZFactor: true,
 	}
 	offsetX, offsetY, ok := motionCameraOffset(layers, tick, eval, drawMatrix)
 	if !ok {
@@ -2356,7 +2390,7 @@ func motionCameraOffsetValue(value assets.Value, tick float64, eval motionRender
 		acc.coordinateMode = psbMotionInt(node, "coordinate", 0)
 		if psbMotionInt(node, "type", -1) == 5 && acc.active {
 			dx := -acc.x
-			dy := -(acc.y*motionCameraZFactor + acc.z)
+			dy := -(acc.y*motionEvalZFactor(eval) + acc.z)
 			// static_cast<int>(value + 0.5) truncates toward zero, unlike
 			// math.Round, and the stored offset is float32 in the reference.
 			return float64(int(drawMatrix.a*dx + drawMatrix.b*dy + 0.5)),

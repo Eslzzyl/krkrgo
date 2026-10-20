@@ -55,6 +55,8 @@ type motionPlayerState struct {
 	stealthMotion string
 	frameTick     float64
 	speed         float64
+	zFactor       float64
+	zFactorSet    bool
 	playing       bool
 	// held marks a one-shot motion that reached its last time: the reference
 	// stops advancing the timeline at that point and keeps the evaluated pose,
@@ -78,6 +80,7 @@ type motionPlayerGPUKey struct {
 	resource      *motionResource
 	chara, motion string
 	tick          float64
+	zFactor       float64
 	matrix        motionDrawMatrix
 	scale         int32
 	maskMode      int64
@@ -477,7 +480,7 @@ func (s *Services) motionPlayer(id tjs.ObjectID) *motionPlayerState {
 	defer s.mu.Unlock()
 	state := s.MotionPlayers[id]
 	if state == nil {
-		state = &motionPlayerState{speed: 1, drawMatrix: identityMotionDrawMatrix()}
+		state = &motionPlayerState{speed: 1, zFactor: 1, zFactorSet: true, drawMatrix: identityMotionDrawMatrix()}
 		s.MotionPlayers[id] = state
 	}
 	return state
@@ -500,6 +503,8 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 		return tjs.RealValue(0), nil
 	case "speed":
 		return tjs.RealValue(state.speed), nil
+	case "zFactor":
+		return tjs.RealValue(motionPlayerZFactor(state)), nil
 	case "playing", "allplaying":
 		if state.playing {
 			return tjs.IntegerValue(1), nil
@@ -550,6 +555,13 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 			return err
 		}
 		state.speed = n
+	case "zFactor":
+		n, err := value.Real()
+		if err != nil {
+			return err
+		}
+		state.zFactor = n
+		state.zFactorSet = true
 	case "completionType":
 		n, err := value.Int()
 		if err != nil {
@@ -680,6 +692,13 @@ func (s *Services) clearMotionTarget(vm *tjs.VM, value tjs.Value) error {
 
 func motionTraceEnabled() bool { return os.Getenv("KRKRGO_MOTION_TRACE") != "" }
 
+func motionPlayerZFactor(state *motionPlayerState) float64 {
+	if state == nil || (!state.zFactorSet && state.zFactor == 0) {
+		return 1
+	}
+	return state.zFactor
+}
+
 func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value tjs.Value) error {
 	resource := s.playerResource(state)
 	if resource == nil {
@@ -708,14 +727,15 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 		key := motionPlayerGPUKey{
 			resource: resource, chara: state.chara, motion: state.motion,
 			tick: state.frameTick, matrix: drawMatrix,
-			scale: layer.RenderScale(), maskMode: maskMode,
+			zFactor: motionPlayerZFactor(state),
+			scale:   layer.RenderScale(), maskMode: maskMode,
 			completion: state.completionType, freezeBody: freezeBody,
 			variables: motionVariablesSignature(params) + "\x00" + motionAttachmentsSignature(attached),
 		}
 		motion := state.gpuMotion
 		if !state.gpuMotionValid || state.gpuMotionKey != key {
 			var err error
-			motion, err = buildGPUMotionVariables(resource, state.chara, state.motion, state.frameTick, 0, drawMatrix, layer.RenderScale(), params, freezeBody, maskMode, state.completionType, attached)
+			motion, err = buildGPUMotionVariablesZFactor(resource, state.chara, state.motion, state.frameTick, 0, drawMatrix, layer.RenderScale(), params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached)
 			if err != nil {
 				return err
 			}
@@ -735,14 +755,14 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 		}
 		return nil
 	}
-	frame, err := renderPSBMotionOptions(resource, state.chara, state.motion, state.frameTick, 0, params, freezeBody, maskMode, state.completionType, attached)
+	frame, err := renderPSBMotionOptionsZFactor(resource, state.chara, state.motion, state.frameTick, 0, params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached)
 	if err != nil {
 		return err
 	}
 	// Camera nodes offset prepared items in final draw space, so the offset
 	// joins the draw matrix translation (PlayerRenderItems.cpp:1174-1215).
 	baseDrawMatrix := drawMatrix
-	drawMatrix = motionCameraDrawMatrix(resource, state.chara, state.motion, state.frameTick, params, freezeBody, maskMode, state.completionType, attached, drawMatrix)
+	drawMatrix = motionCameraDrawMatrixZFactor(resource, state.chara, state.motion, state.frameTick, params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, drawMatrix)
 	cameraOffsetX := drawMatrix.tx - baseDrawMatrix.tx
 	cameraOffsetY := drawMatrix.ty - baseDrawMatrix.ty
 	s.mu.Lock()
