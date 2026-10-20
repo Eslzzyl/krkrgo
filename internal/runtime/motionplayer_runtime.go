@@ -450,6 +450,8 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		return tjs.VoidValue, nil
 	case "initPhysics":
 		return tjs.VoidValue, nil
+	case "copyRect", "adjustGamma", "unloadUnusedTextures", "doAlphaMaskOperation":
+		return tjs.VoidValue, nil
 	}
 	state := s.motionPlayer(id)
 	if strings.HasPrefix(operation, "get:") {
