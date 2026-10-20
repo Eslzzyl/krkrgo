@@ -67,6 +67,7 @@ type motionPlayerState struct {
 	syncWaiting    bool
 	syncActive     bool
 	completionType int64
+	maskMode       int64
 	outline        string
 	onAction       tjs.Value
 	drawMatrix     motionDrawMatrix
@@ -514,6 +515,8 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 		return vm.NewArray(nil)
 	case "completionType":
 		return tjs.IntegerValue(state.completionType), nil
+	case "maskMode":
+		return tjs.IntegerValue(state.maskMode), nil
 	case "outline":
 		return tjs.StringValue(state.outline), nil
 	case "onAction":
@@ -568,6 +571,12 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 			return err
 		}
 		state.completionType = n
+	case "maskMode":
+		n, err := value.Int()
+		if err != nil {
+			return err
+		}
+		state.maskMode = n
 	case "outline":
 		state.outline = value.Text()
 	case "onAction":
@@ -714,7 +723,7 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 	drawMatrix := state.drawMatrix
 	var params []float64
 	var attached []*motionResource
-	maskMode := int64(0)
+	maskMode := state.maskMode
 	freezeBody := false
 	if state.emote != nil {
 		drawMatrix = state.emote.drawMatrixFor(drawMatrix)
