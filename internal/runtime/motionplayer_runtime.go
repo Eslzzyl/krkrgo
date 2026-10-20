@@ -73,6 +73,8 @@ type motionPlayerState struct {
 	maskMode       int64
 	outline        string
 	onAction       tjs.Value
+	tags           tjs.Value
+	variableKeys   tjs.Value
 	drawMatrix     motionDrawMatrix
 	playerID       tjs.ObjectID
 	gpuMotion      *RenderMotion
@@ -532,7 +534,15 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 		}
 		return tjs.IntegerValue(0), nil
 	case "tags":
-		return vm.NewArray(nil)
+		if state.tags.IsVoid() {
+			return vm.NewArray(nil)
+		}
+		return state.tags, nil
+	case "variableKeys":
+		if state.variableKeys.IsVoid() {
+			return vm.NewArray(nil)
+		}
+		return state.variableKeys, nil
 	case "completionType":
 		return tjs.IntegerValue(state.completionType), nil
 	case "maskMode":
@@ -617,6 +627,10 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 		state.outline = value.Text()
 	case "onAction":
 		state.onAction = value
+	case "tags":
+		state.tags = value
+	case "variableKeys":
+		state.variableKeys = value
 	default:
 		return fmt.Errorf("unsupported Motion.Player property %q", property)
 	}
