@@ -117,6 +117,9 @@ type motionRenderContext struct {
 	// Descendant mesh points are evaluated through this chain
 	// (PlayerUpdateGeometry.cpp:448-531).
 	meshAncestors []motionMeshControlNet
+	// meshChildDeform is the current node's own mesh mapping for its direct
+	// children. Earlier ancestors already contribute to this node's position.
+	meshChildDeform *motionMeshControlNet
 }
 
 func renderPSBMotion(resource *motionResource, chara, motion string, tick float64, filter int64) (*assets.Image, error) {
@@ -1198,6 +1201,7 @@ func motionMeshAncestorContext(resource *motionResource, root map[string]assets.
 	copy(ancestors, ctx.meshAncestors)
 	ancestors[len(ctx.meshAncestors)] = net
 	ctx.meshAncestors = ancestors
+	ctx.meshChildDeform = &net
 	return ctx
 }
 
@@ -1902,8 +1906,8 @@ func psbMotionContext(parent motionRenderContext, content map[string]assets.Valu
 		ctx.y = worldY + transformParent.y
 		ctx.z = transformParent.z + coordZ
 	}
-	for index := len(parent.meshAncestors) - 1; index >= 0; index-- {
-		ctx.x, ctx.y = parent.meshAncestors[index].deformOffset(ctx.x, ctx.y)
+	if parent.meshChildDeform != nil {
+		ctx.x, ctx.y = parent.meshChildDeform.deformOffset(ctx.x, ctx.y)
 	}
 	if opacity, ok := content["opa"]; ok {
 		value := psbMotionFloatValue(opacity, 255)
