@@ -679,6 +679,31 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		}
 		s.releaseMotionLayerID(state.resourceManager, id)
 		return tjs.VoidValue, nil
+	case "isExistMotion":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.isExistMotion requires a motion key")
+		}
+		resource := s.motionResource(args[0].Text(), state.resourceManager)
+		return tjs.IntegerValue(boolInt(resource != nil)), nil
+	case "findMotion":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.findMotion requires a motion key")
+		}
+		resource := s.motionResource(args[0].Text(), state.resourceManager)
+		if resource == nil {
+			return tjs.VoidValue, nil
+		}
+		module, found, err := s.motionModuleValueForResource(vm, state.resourceManager, resource)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		if !found {
+			return tjs.VoidValue, nil
+		}
+		state.resource = resource
+		state.metadataResource = nil
+		s.motionPlayerEmote(state)
+		return module, nil
 	case "setVariable":
 		if len(args) < 2 {
 			return tjs.VoidValue, fmt.Errorf("Motion.Player.setVariable requires name and value")

@@ -84,6 +84,7 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 		"getCameraOffset", "setCameraOffset", "setStereovisionCameraPosition",
 		"modifyRoot", "skipToSync", "setDrawAffineTranslateMatrix",
 		"requireLayerId", "releaseLayerId", "isPlaying",
+		"isExistMotion", "findMotion",
 	} {
 		if err := vm.RegisterNativeMethod(player, method, "Motion.Player."+method); err != nil {
 			return err
