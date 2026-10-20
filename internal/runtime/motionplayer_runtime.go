@@ -1752,7 +1752,12 @@ func (s *Services) motionPlayerInitMotionProperty(vm *tjs.VM, state *motionPlaye
 	emote := s.motionPlayerEmote(state)
 	runtime := s.motionPlayerTimelineRuntime(state, emote)
 	state.playingTimelineLabels = nil
-	state.playing = true
+	// PlayerCore.cpp:402-405: assigning the motion property starts the
+	// requested clip, so the KAG layer that copies motion/tickCount through
+	// properties (MotionAffineSourceLayer.clone) resumes playback without a
+	// separate play() call.
+	started := s.emoteStartMotion(state, runtime, motion, 0)
+	state.playing = started
 	state.motionClockActive = motion != ""
 	state.queuing = true
 	state.frameLoopTime = 0
@@ -2673,6 +2678,9 @@ func motionPlayerLoopTime(state *motionPlayerState, resource *motionResource) fl
 }
 
 func motionPlayerCalcViewParam(vm *tjs.VM, state *motionPlayerState) error {
+	if vm == nil {
+		return nil
+	}
 	view, err := vm.NewDictionary()
 	if err != nil {
 		return err

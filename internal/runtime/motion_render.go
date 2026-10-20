@@ -1184,6 +1184,9 @@ func reserveGPUMotionLayerIDs(value assets.Value, nextLayerID *int) {
 }
 
 func collectGPUMotionFrame(resource *motionResource, root map[string]assets.Value, content map[string]assets.Value, layer map[string]assets.Value, eval motionRenderEval, ctx motionRenderContext, drawMatrix motionDrawMatrix, tick float64, result *RenderMotion, stack map[string]bool) error {
+	if psbMotionInt(layer, "type", 0) == 4 {
+		return collectGPUMotionParticles(resource, layer, content, ctx, eval, drawMatrix, tick, result, stack)
+	}
 	source, _ := content["src"].(string)
 	if source == "" {
 		return nil
@@ -1305,6 +1308,11 @@ func motionGPUTransform(drawMatrix motionDrawMatrix, ctx motionRenderContext, or
 // motions expand into the same list, matching the reference's flattened item
 // list (PlayerRenderItems.cpp:500-530).
 func collectMotionFrame(resource *motionResource, root map[string]assets.Value, content map[string]assets.Value, layer map[string]assets.Value, eval motionRenderEval, ctx motionRenderContext, tick float64, list *motionDrawList, width, height int, stack map[string]bool) error {
+	if psbMotionInt(layer, "type", 0) == 4 {
+		// A particle emitter contributes spawned particles only, never its own
+		// source image (PlayerRenderItems.cpp:240-250).
+		return collectMotionParticles(resource, layer, content, ctx, eval, tick, list, width, height, stack)
+	}
 	source, _ := content["src"].(string)
 	if source == "" {
 		return nil
@@ -1631,7 +1639,6 @@ func drawMotionSourceFrame(resource *motionResource, root map[string]assets.Valu
 type motionMeshControlNet struct {
 	points           [16][2]float64
 	originX, originY float64
-	centerX, centerY float64
 	invM11, invM12   float64
 	invM21, invM22   float64
 	flags            int
@@ -1668,16 +1675,15 @@ func (net *motionMeshControlNet) normalized(x, y float64) (float64, float64) {
 	return net.invM11*tx + net.invM12*ty, net.invM21*tx + net.invM22*ty
 }
 
-// deformOffset applies the control net to a node position stored relative to
-// the canvas center, matching the reference's parent mesh deformation of
-// child positions (PlayerUpdateLayersInternal.h:362-407).
+// deformOffset applies the control net to an absolute canvas position,
+// matching the reference's parent mesh deformation of child positions
+// (PlayerUpdateLayersInternal.h:362-407).
 func (net *motionMeshControlNet) deformOffset(x, y float64) (float64, float64) {
-	px, py := net.deform(net.centerX+x, net.centerY+y)
-	return px - net.centerX, py - net.centerY
+	return net.deform(x, y)
 }
 
 func (net *motionMeshControlNet) childAngleScale(x, y float64, inheritMask int) (float64, float64) {
-	u, v := net.normalized(net.centerX+x, net.centerY+y)
+	u, v := net.normalized(x, y)
 	deformedX, deformedY := net.evaluate(u, v)
 	deformedU, deformedV := net.normalized(deformedX, deformedY)
 	angle, scale := 0.0, 1.0
@@ -1746,8 +1752,6 @@ func motionMeshControlNetAt(content map[string]assets.Value, ctx motionRenderCon
 	net.invM12 = -mw12 / det
 	net.invM21 = -mw21 / det
 	net.invM22 = mw11 / det
-	net.centerX = width / 2
-	net.centerY = height / 2
 	net.originX = centerX - (ctx.matrix.a*originX + ctx.matrix.b*originY)
 	net.originY = centerY - (ctx.matrix.c*originX + ctx.matrix.d*originY)
 	for index := range 16 {
@@ -2214,6 +2218,21 @@ func psbMotionFrameContent(content map[string]assets.Value, nodeType int) map[st
 	for key, value := range content {
 		filtered[key] = value
 	}
+	// PSB frames carry a mask field that selects the attributes stored in this
+	// frame. A fixture or frame without that field keeps every attribute; the
+	// reference source reads typed fields directly and has no mask-based
+	// rejection, so an absent mask means "all attributes present".
+	if _, hasMask := content["mask"]; !hasMask {
+		sourceEnabled := nodeType >= 0 && nodeType < 63 && (uint64(0x1849)&(uint64(1)<<uint(nodeType))) != 0
+		// Particle emitters (type 4) keep their template source; they spawn
+		// particles instead of drawing it (PlayerRenderItems.cpp:240-250).
+		if !sourceEnabled && nodeType != 4 {
+			delete(filtered, "src")
+			delete(filtered, "icon")
+			delete(filtered, "srcList")
+		}
+		return filtered
+	}
 	mask := psbMotionInt(content, "mask", 0)
 	for key, bit := range map[string]int{
 		"ox": 0x001, "oy": 0x001, "coord": 0x002,
@@ -2228,7 +2247,10 @@ func psbMotionFrameContent(content map[string]assets.Value, nodeType int) map[st
 		}
 	}
 	sourceEnabled := nodeType >= 0 && nodeType < 63 && (uint64(0x1849)&(uint64(1)<<uint(nodeType))) != 0
-	if !sourceEnabled {
+	// Particle emitters (type 4) keep their template source: the reference
+	// spawns particles for those nodes without drawing the source itself
+	// (PlayerRenderItems.cpp:240-250).
+	if !sourceEnabled && nodeType != 4 {
 		delete(filtered, "src")
 		delete(filtered, "icon")
 		delete(filtered, "srcList")
@@ -2540,7 +2562,11 @@ func psbMotionContext(parent motionRenderContext, content map[string]assets.Valu
 		net := parent.meshChildDeform
 		projectedY := motionProjectedY(ctx)
 		positionX, positionY := ctx.x, projectedY
-		if net.flags&1 != 0 {
+		// Only shape (1) and camera (5) nodes take their position through the
+		// parent mesh chain; image nodes deform their vertices instead
+		// (PlayerUpdateGeometry.cpp:218-256, 406-420).
+		nodeType := psbMotionInt(layer, "type", 0)
+		if net.flags&1 != 0 && (nodeType == 1 || nodeType == 5) {
 			ctx.x, projectedY = net.deformOffset(ctx.x, projectedY)
 			if parent.coordinateMode != 0 {
 				ctx.z = projectedY - ctx.y
@@ -2767,7 +2793,11 @@ func hitTestMotionValue(scene motionHitTestScene, value assets.Value, tick float
 				return false, false
 			}
 			ctx = motionEvalNodeContext(parent, content, node, motionNodeTick(node, tick, eval), tick)
-			if psbMotionInt(node, "type", -1) == 1 && psbLabel(node) == label {
+			// The reference resolves a label through the node label map and hit
+			// tests that node's shape geometry, regardless of the node type
+			// (PlayerLayerQuery.cpp:217-273); non-shape containers carry type 0
+			// geometry and fall through to the default miss.
+			if psbLabel(node) == label {
 				insideViewport := !ctx.hasViewport || (x >= ctx.viewport.minX && x <= ctx.viewport.maxX && y >= ctx.viewport.minY && y <= ctx.viewport.maxY)
 				found, hit = true, insideViewport && hitMotionShape(psbMotionInt(node, "shape", 0), ctx, content, x, y)
 			}
@@ -2784,15 +2814,12 @@ func hitTestMotionValue(scene motionHitTestScene, value assets.Value, tick float
 }
 
 func hitMotionShape(shape int, ctx motionRenderContext, content map[string]assets.Value, x, y float64) bool {
-	// Shape nodes inherit the combination meshes of their ancestors: the
-	// reference deforms the node position through every mesh-enabled parent
-	// before applying the shape type (PlayerUpdateGeometry.cpp:210-253,
-	// 927-983). The shape extent and orientation stay those of the node's own
-	// accumulated affine transform.
+	// Shape nodes inherit the combination meshes of their ancestors through
+	// the node position computed in psbMotionContext, which applies the parent
+	// chain once for types 1 and 5 (PlayerUpdateGeometry.cpp:218-256). The
+	// shape extent and orientation stay those of the node's own accumulated
+	// affine transform.
 	centerX, centerY := ctx.x, motionProjectedY(ctx)
-	for index := len(ctx.meshAncestors) - 1; index >= 0; index-- {
-		centerX, centerY = ctx.meshAncestors[index].deformOffset(centerX, centerY)
-	}
 	dx, dy := x-centerX, y-centerY
 	scaleX := math.Hypot(ctx.matrix.a, ctx.matrix.c)
 	scaleY := math.Hypot(ctx.matrix.b, ctx.matrix.d)

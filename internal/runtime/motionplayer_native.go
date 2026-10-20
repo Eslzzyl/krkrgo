@@ -53,7 +53,7 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 			return err
 		}
 	}
-	for _, method := range []string{"setEmotePSBDecryptSeed", "setEmotePSBDecryptFunc"} {
+	for _, method := range []string{"getEmotePSBDecryptSeed", "setEmotePSBDecryptSeed", "setEmotePSBDecryptFunc"} {
 		if err := vm.RegisterNativeStaticMethod(resourceManager, method, "Motion.ResourceManager."+method); err != nil {
 			return err
 		}

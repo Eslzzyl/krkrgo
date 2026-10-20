@@ -335,7 +335,10 @@ func TestMotionNestedMotionAdvancesWithParentTime(t *testing.T) {
 	root := resource.doc.Root.(map[string]assets.Value)
 	objects := root["object"].(map[string]assets.Value)
 	motions := objects["chara"].(map[string]assets.Value)["motion"].(map[string]assets.Value)
+	// A nested motion carries its own length; the reference clamps the child
+	// tick to the clip's total frames (PlayerUpdateChildMotion.cpp:300-340).
 	motions["nested"] = map[string]assets.Value{
+		"lastTime": int64(4),
 		"layer": []assets.Value{
 			map[string]assets.Value{
 				"type": int64(0),
@@ -492,59 +495,35 @@ func TestMotionSortsDrawsByAccumulatedZ(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The 4x4 sprite lands at canvas (4,4) in the 8x8 test screen.
-	if got := frame.RGBA[(4*8+4)*4:]; got[2] != 255 || got[0] != 0 {
+	// Each 4x4 sprite is centered at canvas (4,4); the z=1 sprite also shifts
+	// one row down through the z projection, so (4,5) is covered by both and
+	// shows the last drawn sprite.
+	if got := frame.RGBA[(5*8+4)*4:]; got[2] != 255 || got[0] != 0 {
 		t.Fatalf("pixel = %v, want the z=1 blue sprite on top", got[:4])
 	}
 }
 
 // A parent in coordinateMode 1 places children through the parent matrix in
-// the x/z plane, leaving y literal (PlayerUpdateLayerEval.cpp:912-920). The
-// same tree in mode 0 puts the child at y = 10, outside the 8px canvas.
+// the x/z plane, leaving y literal; mode 0 rotates the same coordinates into
+// x/y (PlayerUpdateLayerEval.cpp:912-920). The z=1 projection maps the child
+// back onto the same row, so the two modes are distinguished by the context
+// fields rather than by drawn pixels.
 func TestMotionCoordinateModePlacesChildrenInXZ(t *testing.T) {
-	render := func(coordinate int64) []byte {
-		resource := emotePlayerTestResource("coordinate.psb")
-		child := map[string]assets.Value{
-			"type": int64(0),
-			"frameList": []assets.Value{map[string]assets.Value{
-				"time": float64(0),
-				"content": map[string]assets.Value{
-					"src":   "src/chara/mouth0",
-					"coord": []assets.Value{float64(10), float64(0), float64(0)},
-				},
-			}},
+	build := func(coordinate int64) motionRenderContext {
+		root := motionRootRenderContext(motionRenderEval{zFactor: 1, hasZFactor: true}, 1)
+		parentContent := map[string]assets.Value{"angle": float64(90)}
+		parentLayer := map[string]assets.Value{"type": int64(0), "coordinate": coordinate}
+		parent := psbMotionContext(root, parentContent, parentLayer)
+		childContent := map[string]assets.Value{
+			"coord": []assets.Value{float64(10), float64(0), float64(0)},
 		}
-		motionTestIdle(resource)["layer"] = []assets.Value{
-			map[string]assets.Value{
-				"type":       int64(3),
-				"coordinate": coordinate,
-				"frameList": []assets.Value{map[string]assets.Value{
-					"time":    float64(0),
-					"content": map[string]assets.Value{"angle": float64(90)},
-				}},
-				"children": []assets.Value{child},
-			},
-		}
-		frame, err := renderPSBMotionOptions(resource, "chara", "idle", 0, 0, nil, false, 0, 0, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return frame.RGBA
+		return psbMotionContext(parent, childContent, map[string]assets.Value{"type": int64(0)})
 	}
-	opaque := func(pixels []byte) int {
-		count := 0
-		for offset := 3; offset < len(pixels); offset += 4 {
-			if pixels[offset] != 0 {
-				count++
-			}
-		}
-		return count
+	if got := build(1); got.y != 0 || got.z != 10 {
+		t.Fatalf("coordinate mode 1 child context = y %.3f z %.3f, want y 0 z 10", got.y, got.z)
 	}
-	if got := opaque(render(1)); got == 0 {
-		t.Fatal("coordinate mode 1 drew no pixels for a child on the x/z plane")
-	}
-	if got := opaque(render(0)); got != 0 {
-		t.Fatalf("coordinate mode 0 drew %d pixels, want the child off-canvas at y = 10", got)
+	if got := build(0); got.y != 10 || got.z != 0 {
+		t.Fatalf("coordinate mode 0 child context = y %.3f z %.3f, want y 10 z 0", got.y, got.z)
 	}
 }
 

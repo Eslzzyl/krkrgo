@@ -458,7 +458,7 @@ func TestEmotePlayerTimelineControlCrossingChangesPixels(t *testing.T) {
 		emote.motionKey = "synthetic.psb";
 		emote.play("idle");
 		before = new Layer(); emote.draw(before);
-		emote.progress(34);
+		emote.progress(25);
 		after = new Layer(); emote.draw(after);
 		mouth = emote.getVariable("mouth");
 	`, false); err != nil {
@@ -643,11 +643,11 @@ func TestEmotePlayerSkipToSyncSeeksTimelines(t *testing.T) {
 	}
 	emote := newEmotePlayerState()
 	looping := &emoteTimelineState{
-		label: "loop", playing: true, loop: true,
+		label: "loop", playing: true, loop: true, control: true,
 		lastTime: 10, totalFrames: 10, loopBegin: 0, loopEnd: 9,
 	}
 	oneShot := &emoteTimelineState{
-		label: "once", playing: true,
+		label: "once", playing: true, control: true,
 		lastTime: 5, totalFrames: 5, loopBegin: -1, loopEnd: -1,
 	}
 	emote.timelines = map[string]*emoteTimelineState{
@@ -671,7 +671,7 @@ func TestEmotePlayerSkipToSyncSeeksTimelines(t *testing.T) {
 		t.Fatalf("sync flags remained set: waiting=%v active=%v", state.syncWaiting, state.syncActive)
 	}
 }
-func TestEmoteTimelineChainPreservesCurrentTimeAndControlState(t *testing.T) {
+func TestEmoteTimelineChainFlagResetsPositionAndControlState(t *testing.T) {
 	services := DefaultServices()
 	emote := newEmotePlayerState()
 	timeline := &emoteTimelineState{
@@ -683,10 +683,12 @@ func TestEmoteTimelineChainPreservesCurrentTimeAndControlState(t *testing.T) {
 	}
 	emote.timelines["idle"] = timeline
 	services.emotePlayTimeline(emote, "idle", motionPlayFlagChain)
-	if timeline.time != 17 || !timeline.controlInit || timeline.controlLast != 16 ||
-		timeline.controlCursor[0] != 2 || timeline.controlValues[0] != 0.75 ||
-		timeline.controlAnims[0].currentValue != 0.75 {
-		t.Fatalf("chain reset timeline state: %+v", timeline)
+	// Player::playTimeline resets the position and control window for every
+	// call, the chain flag included (PlayerTimeline.cpp:236-251).
+	if timeline.time != 0 || !timeline.controlInit || timeline.controlLast != 0 ||
+		len(timeline.controlCursor) != 0 || len(timeline.controlValues) != 0 ||
+		len(timeline.controlAnims) != 0 {
+		t.Fatalf("playTimeline retained timeline position: %+v", timeline)
 	}
 	if !timeline.playing || timeline.blendRatio != 1 ||
 		timeline.flags != motionPlayFlagChain {

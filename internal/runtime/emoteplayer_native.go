@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
@@ -1173,6 +1174,7 @@ func (s *Services) emotePlayerBindMotionKey(vm *tjs.VM, state *motionPlayerState
 	emote.module = module
 	s.emoteResetRuntime(emote)
 	s.emoteApplyResourceMetadata(emote, resource)
+	state.metadataResource = resource
 	state.chara = motionResourceMetadataString(resource, "chara")
 	if state.chara == "" {
 		state.chara = motionResourceDefaultChara(resource)
@@ -3215,15 +3217,31 @@ func motionResourceEmoteMetadata(resource *motionResource) emoteMetadata {
 		}
 	}
 	// Clip totals/loop flags for getTimelineTotalFrameCount/getLoopTimeline.
+	// Clip-derived timelines mirror RuntimeSupport.cpp:1041-1047: every motion
+	// clip is a main timeline carrying its own totalFrames and loop time. PSB
+	// modules without timelineControl (KAG motion layers such as yuzulogo.psb)
+	// are driven entirely through these entries; timelineControl metadata
+	// replaces them when present.
+	clipDriven := len(metadata.mainTimelines) == 0 && len(metadata.diffTimelines) == 0
 	if objects, ok := root["object"].(map[string]assets.Value); ok {
-		for _, characterValue := range objects {
-			character, ok := characterValue.(map[string]assets.Value)
+		characters := make([]string, 0, len(objects))
+		for name := range objects {
+			characters = append(characters, name)
+		}
+		sort.Strings(characters)
+		for _, name := range characters {
+			character, ok := objects[name].(map[string]assets.Value)
 			if !ok {
 				continue
 			}
 			motions, _ := character["motion"].(map[string]assets.Value)
-			for label, motionValue := range motions {
-				motionDict, ok := motionValue.(map[string]assets.Value)
+			labels := make([]string, 0, len(motions))
+			for label := range motions {
+				labels = append(labels, label)
+			}
+			sort.Strings(labels)
+			for _, label := range labels {
+				motionDict, ok := motions[label].(map[string]assets.Value)
 				if !ok {
 					continue
 				}
@@ -3235,15 +3253,41 @@ func motionResourceEmoteMetadata(resource *motionResource) emoteMetadata {
 					}
 				}
 				metadata.timelineTotals[label] = total
-				if loopTime, ok := psbNumber(motionDict["loopTime"]); ok {
-					metadata.timelineLoops[label] = loopTime >= 0
-				} else if loop, ok := motionDict["loop"]; ok {
-					metadata.timelineLoops[label] = psbBool(loop)
-				} else if loop, ok := motionDict["repeat"]; ok {
-					metadata.timelineLoops[label] = psbBool(loop)
-				} else if loop, ok := motionDict["is_loop"]; ok {
-					metadata.timelineLoops[label] = psbBool(loop)
+				loop := false
+				loopTime := -1.0
+				if value, ok := psbNumber(motionDict["loopTime"]); ok {
+					loopTime = value
+					loop = value >= 0
+				} else if value, ok := motionDict["loop"]; ok {
+					loop = psbBool(value)
+				} else if value, ok := motionDict["repeat"]; ok {
+					loop = psbBool(value)
+				} else if value, ok := motionDict["is_loop"]; ok {
+					loop = psbBool(value)
 				}
+				if loop {
+					loopTime = math.Max(loopTime, 0)
+				}
+				metadata.timelineLoops[label] = loop
+				if !clipDriven {
+					continue
+				}
+				if _, exists := metadata.timelines[label]; exists {
+					continue
+				}
+				metadata.timelines[label] = &emoteTimelineState{
+					label: label, blendRatio: 1,
+					loopBegin: -1, loopEnd: -1, lastTime: -1,
+					loop: loop, loopTime: loopTime, totalFrames: total,
+				}
+				metadata.mainTimelines = append(metadata.mainTimelines, label)
+			}
+		}
+	}
+	if clipDriven {
+		for _, label := range metadata.mainTimelines {
+			if !emoteContainsString(metadata.timelineOrder, label) {
+				metadata.timelineOrder = append(metadata.timelineOrder, label)
 			}
 		}
 	}

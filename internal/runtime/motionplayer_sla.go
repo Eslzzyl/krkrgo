@@ -63,6 +63,7 @@ func (s *Services) drawMotionSeparateLayerAdaptor(vm *tjs.VM, player *motionPlay
 		canvasHeight = int(targetLayer.ImageHeight)
 	}
 	if canvasWidth <= 0 || canvasHeight <= 0 {
+		motionTrace("sla-draw skipped id=%d layer=%d bounds=%dx%d image=%dx%d (no canvas)", player.playerID, targetLayer.ID, targetLayer.Bounds.Width, targetLayer.Bounds.Height, targetLayer.ImageWidth, targetLayer.ImageHeight)
 		return nil
 	}
 	resource := s.playerResource(player)
