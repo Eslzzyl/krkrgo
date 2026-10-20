@@ -2046,7 +2046,7 @@ func hitTestMotionValue(scene motionHitTestScene, value assets.Value, tick float
 				return false, false
 			}
 			ctx = psbMotionContext(parent, content, node)
-			if psbLabel(node) == label {
+			if psbMotionInt(node, "type", -1) == 1 && psbLabel(node) == label {
 				insideViewport := !ctx.hasViewport || (x >= ctx.viewport.minX && x <= ctx.viewport.maxX && y >= ctx.viewport.minY && y <= ctx.viewport.maxY)
 				found, hit = true, insideViewport && hitMotionShape(psbMotionInt(node, "shape", 0), ctx, content, x, y)
 			}
