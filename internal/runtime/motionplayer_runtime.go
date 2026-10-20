@@ -94,6 +94,7 @@ type motionPlayerState struct {
 	meshline                 string
 	busy                     bool
 	colorWeight              uint32
+	independentLayerInherit  bool
 	// held marks a one-shot motion that reached its last time: the reference
 	// stops advancing the timeline at that point and keeps the evaluated pose,
 	// and the layer keeps drawing the clamped frame. A repeat apply of the same
@@ -114,16 +115,17 @@ type motionPlayerState struct {
 }
 
 type motionPlayerGPUKey struct {
-	resource      *motionResource
-	chara, motion string
-	tick          float64
-	zFactor       float64
-	matrix        motionDrawMatrix
-	scale         int32
-	maskMode      int64
-	completion    int64
-	freezeBody    bool
-	variables     string
+	resource                *motionResource
+	chara, motion           string
+	tick                    float64
+	zFactor                 float64
+	matrix                  motionDrawMatrix
+	scale                   int32
+	maskMode                int64
+	completion              int64
+	freezeBody              bool
+	variables               string
+	independentLayerInherit bool
 }
 
 func (s *Services) loadMotionResource(path string) (*motionResource, error) {
@@ -819,6 +821,8 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 		return tjs.IntegerValue(state.maskMode), nil
 	case "colorWeight":
 		return tjs.IntegerValue(int64(motionSwapPackedRB(state.colorWeight))), nil
+	case "independentLayerInherit":
+		return tjs.IntegerValue(boolInt(state.independentLayerInherit)), nil
 	case "outline":
 		return tjs.StringValue(state.outline), nil
 	case "onAction":
@@ -999,6 +1003,8 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 			return err
 		}
 		state.colorWeight = motionSwapPackedRB(uint32(n))
+	case "independentLayerInherit":
+		state.independentLayerInherit = motionPlayerBool(value)
 	case "outline":
 		state.outline = value.Text()
 	case "onAction":
@@ -1205,12 +1211,13 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 			zFactor: motionPlayerZFactor(state),
 			scale:   layer.RenderScale(), maskMode: maskMode,
 			completion: state.completionType, freezeBody: freezeBody,
-			variables: motionVariablesSignature(params) + "\x00" + motionAttachmentsSignature(attached),
+			independentLayerInherit: state.independentLayerInherit,
+			variables:               motionVariablesSignature(params) + "\x00" + motionAttachmentsSignature(attached),
 		}
 		motion := state.gpuMotion
 		if !state.gpuMotionValid || state.gpuMotionKey != key {
 			var err error
-			motion, err = buildGPUMotionVariablesZFactor(resource, state.chara, state.motion, state.frameTick, 0, drawMatrix, layer.RenderScale(), params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached)
+			motion, err = buildGPUMotionVariablesZFactorInherit(resource, state.chara, state.motion, state.frameTick, 0, drawMatrix, layer.RenderScale(), params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, state.independentLayerInherit)
 			if err != nil {
 				return err
 			}
@@ -1230,14 +1237,14 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 		}
 		return nil
 	}
-	frame, err := renderPSBMotionOptionsZFactor(resource, state.chara, state.motion, state.frameTick, 0, params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached)
+	frame, err := renderPSBMotionOptionsZFactorInherit(resource, state.chara, state.motion, state.frameTick, 0, params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, state.independentLayerInherit)
 	if err != nil {
 		return err
 	}
 	// Camera nodes offset prepared items in final draw space, so the offset
 	// joins the draw matrix translation (PlayerRenderItems.cpp:1174-1215).
 	baseDrawMatrix := drawMatrix
-	drawMatrix = motionCameraDrawMatrixZFactor(resource, state.chara, state.motion, state.frameTick, params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, drawMatrix)
+	drawMatrix = motionCameraDrawMatrixZFactorInherit(resource, state.chara, state.motion, state.frameTick, params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, drawMatrix, state.independentLayerInherit)
 	cameraOffsetX := drawMatrix.tx - baseDrawMatrix.tx
 	cameraOffsetY := drawMatrix.ty - baseDrawMatrix.ty
 	s.mu.Lock()
