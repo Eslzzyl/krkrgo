@@ -172,6 +172,11 @@ type Services struct {
 	prerenderedFonts         map[string]*prerenderedFont
 	prerenderedFontMappings  map[prerenderedFontMapKey]string
 	Pads                     map[tjs.ObjectID]*padState
+	win32Dialogs             map[tjs.ObjectID]*win32DialogState
+	win32DialogBlobs         map[tjs.ObjectID]*win32DialogBlobState
+	win32DialogRevision      uint64
+	win32DialogPresentation  win32DialogPresentation
+	win32DialogSuppressClick bool
 	xp3ExtractionFilter      tjs.Value
 	Roots                    []tjs.Value
 	scriptsInitialized       bool
@@ -430,6 +435,12 @@ func (s *Services) ensureInit() {
 	}
 	if s.MotionModules == nil {
 		s.MotionModules = make(map[tjs.ObjectID]*motionResource)
+	}
+	if s.win32Dialogs == nil {
+		s.win32Dialogs = make(map[tjs.ObjectID]*win32DialogState)
+	}
+	if s.win32DialogBlobs == nil {
+		s.win32DialogBlobs = make(map[tjs.ObjectID]*win32DialogBlobState)
 	}
 	if s.sessionPreprocessors == nil {
 		s.sessionPreprocessors = make(map[*tjs.VM]*tjs.Preprocessor)
@@ -2313,7 +2324,7 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		return s.padNative(context, strings.TrimPrefix(name, "Pad."), args)
 	}
 	if strings.HasPrefix(name, "WIN32Dialog.") {
-		return s.win32DialogNative(strings.TrimPrefix(name, "WIN32Dialog."), args)
+		return s.win32DialogNative(vm, context, strings.TrimPrefix(name, "WIN32Dialog."), args, budget)
 	}
 	if strings.HasPrefix(name, "System.") {
 		op := strings.TrimPrefix(name, "System.")

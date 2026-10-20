@@ -3,7 +3,6 @@ package runtime
 import (
 	"fmt"
 	"github.com/eslzzyl/krkrgo/internal/tjs"
-	"strings"
 )
 
 // installGetAboutNative confirms the session-registered getabout.dll export.
@@ -38,20 +37,34 @@ func installWin32DialogNative(vm *tjs.VM) error {
 		return err
 	}
 	for name, value := range map[string]int64{
+		"ICC_USEREX_CLASSES": 512,
+		"WS_POPUP":           2147483648, "WS_CAPTION": 12582912, "WS_DLGFRAME": 4194304,
+		"WS_THICKFRAME": 262144, "WS_MINIMIZEBOX": 131072, "WS_MAXIMIZEBOX": 65536,
+		"WS_SYSMENU": 524288, "WS_GROUP": 131072, "WS_DISABLED": 134217728,
+		"WS_CLIPCHILDREN": 33554432, "WS_CLIPSIBLINGS": 67108864, "WS_CHILDWINDOW": 1073741824,
+		"WS_OVERLAPPEDWINDOW": 13565952, "WS_EX_TOOLWINDOW": 128,
+		"WS_EX_APPWINDOW": 262144, "WS_EX_ACCEPTFILES": 16, "WS_EX_DLGMODALFRAME": 1, "WS_EX_WINDOWEDGE": 256,
+		"WS_EX_CLIENTEDGE": 512, "DS_SETFONT": 64, "DS_SHELLFONT": 72,
+		"DS_MODALFRAME": 128, "DS_CENTER": 2048, "FW_NORMAL": 400, "FW_BOLD": 700,
 		"ES_LEFT": 0, "ES_CENTER": 1, "ES_RIGHT": 2, "ES_MULTILINE": 4,
 		"ES_AUTOVSCROLL": 64, "ES_AUTOHSCROLL": 128, "ES_READONLY": 2048,
 		"ES_WANTRETURN": 4096, "ES_NOHIDESEL": 256, "ES_NUMBER": 8192,
 		"WS_BORDER": 8388608, "WS_TABSTOP": 65536, "WS_VSCROLL": 2097152,
 		"WS_HSCROLL": 1048576, "WS_CHILD": 1073741824, "WS_VISIBLE": 268435456,
+		"BUTTON": 128, "EDIT": 129, "STATIC": 130, "LISTBOX": 131, "SCROLLBAR": 132,
+		"COMBOBOX":   133,
 		"LBS_NOTIFY": 1, "CBS_DROPDOWN": 2, "CBS_DROPDOWNLIST": 3, "CBS_AUTOHSCROLL": 64,
 		"CBS_HASSTRINGS": 512, "CBS_SORT": 256, "CBN_SELCHANGE": 1, "CBN_EDITCHANGE": 5,
+		"CB_DELETESTRING": 324, "CB_GETCOUNT": 326, "CB_GETCURSEL": 327, "CB_SETCURSEL": 334,
+		"EM_SETSEL": 177, "EM_SCROLLCARET": 183, "EN_CHANGE": 768, "BN_CLICKED": 0,
 		"LVS_REPORT": 1, "LVS_SINGLESEL": 4, "LVS_SHOWSELALWAYS": 8,
 		"LVS_EX_FULLROWSELECT": 32, "LVS_EX_GRIDLINES": 1, "TBS_HORZ": 0, "TBS_VERT": 2,
 		"TBS_AUTOTICKS": 1, "TBS_NOTICKS": 16, "TBS_ENABLESELRANGE": 32,
 		"TCS_TABS": 0, "TCS_BUTTONS": 256, "TCS_SINGLELINE": 0, "TCS_MULTILINE": 512,
 		"TVS_HASLINES": 2, "TVS_LINESATROOT": 4, "TVS_HASBUTTONS": 1,
-		"SS_LEFT": 0, "SS_CENTER": 1, "SS_RIGHT": 2, "BS_PUSHBUTTON": 0,
-		"BS_DEFPUSHBUTTON": 1, "IDOK": 1, "IDCANCEL": 2, "MB_OK": 0,
+		"SS_LEFT": 0, "SS_CENTER": 1, "SS_RIGHT": 2, "SS_CENTERIMAGE": 512,
+		"SS_SUNKEN": 4096, "BS_PUSHBUTTON": 0, "BS_DEFPUSHBUTTON": 1, "BS_FLAT": 32768,
+		"IDOK": 1, "IDCANCEL": 2, "MB_OK": 0,
 		"MB_OKCANCEL": 1, "MB_YESNO": 4, "SW_SHOW": 5, "SW_HIDE": 0,
 		"TCIF_TEXT": 1, "TCIF_IMAGE": 2, "TCIF_PARAM": 8, "TCM_INSERTITEM": 4926,
 		"TCM_DELETEITEM": 4872, "TCM_GETCURSEL": 4875, "TCM_SETCURSEL": 4876,
@@ -60,6 +73,20 @@ func installWin32DialogNative(vm *tjs.VM) error {
 		value := tjs.IntegerValue(value)
 		vm.Globals[name] = value
 		if err := vm.RegisterNativeStaticValue(class, name, value); err != nil {
+			return err
+		}
+	}
+	comboBoxEx := tjs.StringValue("ComboBoxEx32")
+	vm.Globals["COMBOBOXEX"] = comboBoxEx
+	if err := vm.RegisterNativeStaticValue(class, "COMBOBOXEX", comboBoxEx); err != nil {
+		return err
+	}
+	for _, property := range []string{"left", "top", "width", "height", "title", "visible", "isValid"} {
+		setter := "WIN32Dialog.set:" + property
+		if property == "isValid" {
+			setter = ""
+		}
+		if err := vm.RegisterNativeProperty(class, property, "WIN32Dialog.get:"+property, setter); err != nil {
 			return err
 		}
 	}
@@ -96,7 +123,7 @@ func installWin32DialogNative(vm *tjs.VM) error {
 		{"SolidBrush", []string{"SolidBrush", "finalize"}},
 		{"DrawItem", []string{"DrawItem", "draw", "finalize"}},
 		{"Notify", []string{"Notify", "finalize", "getByte", "getDWord", "getWord"}},
-		{"Blob", []string{"Blob", "ReferPointer", "finalize", "getByte", "getDWord", "getText", "getWord", "setByte", "setDWord", "setText", "setWord"}},
+		{"Blob", []string{"Blob", "ReferPointer", "finalize", "getByte", "getDWord", "getText", "getWord", "setByte", "setDWord", "setDWordLong", "setText", "setWord"}},
 	} {
 		nested, err := vm.NewNativeClass(spec.name, "WIN32Dialog."+spec.name+".@initialize")
 		if err != nil {
@@ -118,38 +145,6 @@ func installWin32DialogNative(vm *tjs.VM) error {
 		return err
 	}
 	return vm.RegisterNative("getBookMarkFileNameAtNum")
-}
-
-func (s *Services) win32DialogNative(operation string, args []tjs.Value) (tjs.Value, error) {
-	if operation == "construct" || operation == "WIN32Dialog" || strings.HasSuffix(operation, ".@initialize") {
-		return tjs.VoidValue, nil
-	}
-	if operation == "add" {
-		if len(args) != 1 {
-			return tjs.VoidValue, fmt.Errorf("WIN32Dialog.add accepts one item")
-		}
-		return tjs.IntegerValue(0), nil
-	}
-	if operation != "messageBox" {
-		return tjs.VoidValue, fmt.Errorf("unsupported WIN32Dialog operation %q with %d arguments", operation, len(args))
-	}
-	if len(args) > 3 {
-		return tjs.VoidValue, fmt.Errorf("WIN32Dialog.messageBox accepts message, caption, and type")
-	}
-	message, caption := "", ""
-	if len(args) > 0 && !args[0].IsVoid() {
-		message = args[0].Text()
-	}
-	if len(args) > 1 && !args[1].IsVoid() {
-		caption = args[1].Text()
-	}
-	if s.Dialogs == nil {
-		return tjs.VoidValue, ErrDialogUnavailable
-	}
-	if _, err := s.Dialogs.ShowMessage(caption, message); err != nil {
-		return tjs.VoidValue, err
-	}
-	return tjs.IntegerValue(1), nil
 }
 
 // installFFTGraphNative installs the C++ plugin's drawFFTGraph global but

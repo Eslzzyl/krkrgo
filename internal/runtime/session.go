@@ -1997,6 +1997,14 @@ func (s *Session) Input(window any, event any) error {
 		return nil
 	}
 	s.Services.updateInputState(id, ev)
+	if handled, inputErr := s.Services.handleWin32DialogInput(s.VM, ev, &s.Budget); inputErr != nil {
+		return inputErr
+	} else if handled {
+		if ev.Kind == InputPointerUp && ev.Button == 0 {
+			s.Services.win32DialogSuppressClick = true
+		}
+		return nil
+	}
 	context := tjs.ObjectValue(tjs.NewObjectRef(tjs.ObjectID(id)))
 	if _, ok := s.VM.Objects.Lookup(tjs.ObjectID(id)); ok {
 		fn, lookupErr := s.VM.GetMember(context, name, s.Services, &s.Budget)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/exp/textinput"
 
 	runtime "github.com/eslzzyl/krkrgo/internal/runtime"
 )
@@ -51,6 +52,14 @@ type Game struct {
 	startupFirstDraw     bool
 
 	image                   *ebiten.Image
+	win32DialogImage        *ebiten.Image
+	win32DialogRevision     uint64
+	win32DialogWidth        int
+	win32DialogHeight       int
+	textComposer            textinput.Composer
+	textIMEContext          runtime.Win32DialogTextInputContext
+	textIMEContextValid     bool
+	textIMECommits          []win32DialogIMECommit
 	imageWidth              int
 	imageHeight             int
 	pixels                  []byte
@@ -74,6 +83,12 @@ type Game struct {
 	postStateHash         uint64
 	postStateValid        bool
 	outputScale           int
+}
+
+type win32DialogIMECommit struct {
+	context     runtime.Win32DialogTextInputContext
+	text        string
+	replacement *runtime.Win32DialogTextReplacement
 }
 
 // renderStats is opt-in to keep clock reads and logging out of normal runs.
@@ -324,7 +339,99 @@ func newGameWithRenderer(session *runtime.Session, mode rendererMode) *Game {
 		game.windowID = session.Services.MainWindow
 		game.poller.scale = session.Services.RenderScale
 	}
+	game.initTextComposer()
 	return game
+}
+
+func (g *Game) initTextComposer() {
+	g.textComposer.OnNewSession = func() *textinput.SessionOptions {
+		if g == nil || g.session == nil || g.session.Services == nil || len(g.textIMECommits) != 0 {
+			return nil
+		}
+		width, height := g.Layout(0, 0)
+		context, ok := g.session.Services.Win32DialogTextInputContext(width, height)
+		if !ok {
+			g.textIMEContextValid = false
+			return nil
+		}
+		g.textIMEContext = context
+		g.textIMEContextValid = true
+		return &textinput.SessionOptions{
+			CaretBounds:     context.CaretBounds,
+			TextBeforeCaret: context.TextBeforeCaret,
+			TextAfterCaret:  context.TextAfterCaret,
+		}
+	}
+	g.textComposer.OnComposition = func(composition *textinput.Composition) {
+		if g == nil || g.session == nil || g.session.Services == nil || composition == nil {
+			return
+		}
+		selectionStart, _ := composition.SelectionRangeInBytes()
+		g.session.Services.Win32DialogSetComposition(composition.Text(), selectionStart)
+	}
+	g.textComposer.OnCommit = func(commit *textinput.Commit) {
+		if g == nil || commit == nil || !g.textIMEContextValid {
+			return
+		}
+		pending := win32DialogIMECommit{context: g.textIMEContext, text: commit.Text()}
+		if replaceBefore, replaceAfter := commit.IsSurroundingTextReplaced(); replaceBefore || replaceAfter {
+			before, after := commit.SurroundingText()
+			pending.replacement = &runtime.Win32DialogTextReplacement{Before: before, After: after}
+		}
+		g.textIMECommits = append(g.textIMECommits, pending)
+	}
+}
+
+func (g *Game) updateWin32DialogTextInput(events []runtime.InputEvent) (active, handled bool, err error) {
+	if g == nil || g.session == nil || g.session.Services == nil {
+		return false, false, nil
+	}
+	width, height := g.Layout(0, 0)
+	_, active = g.session.Services.Win32DialogTextInputContext(width, height)
+	if !active {
+		g.textComposer.Cancel()
+		g.textIMEContextValid = false
+	}
+	handled, err = g.textComposer.Update()
+	if err != nil {
+		return active, handled, fmt.Errorf("update text input composer: %w", err)
+	}
+	confirm := false
+	for _, event := range events {
+		switch event.Kind {
+		case runtime.InputPointerDown:
+			confirm = true
+		case runtime.InputFocus:
+			if !event.Focused {
+				confirm = true
+			}
+		case runtime.InputKeyDown:
+			if !handled {
+				confirm = true
+			}
+		}
+	}
+	if confirm {
+		g.textComposer.Confirm()
+	}
+	if err := g.flushWin32DialogIMECommits(); err != nil {
+		return active, handled, err
+	}
+	return active, handled, nil
+}
+
+func (g *Game) flushWin32DialogIMECommits() error {
+	if g == nil || g.session == nil {
+		return nil
+	}
+	pending := g.textIMECommits
+	g.textIMECommits = nil
+	for _, commit := range pending {
+		if err := g.session.ApplyWin32DialogTextInputCommit(commit.context, commit.text, commit.replacement); err != nil {
+			return fmt.Errorf("apply text input commit: %w", err)
+		}
+	}
+	return nil
 }
 
 // Session returns the runtime owned by the game. The returned pointer must not
@@ -397,7 +504,17 @@ func (g *Game) Update() error {
 	if g.windowID == 0 {
 		return fmt.Errorf("runtime session has no input window")
 	}
+	textInputActive, composerHandled, inputErr := g.updateWin32DialogTextInput(g.runtimeEvents)
+	if inputErr != nil {
+		return inputErr
+	}
 	for _, event := range g.runtimeEvents {
+		if textInputActive && event.Kind == runtime.InputText {
+			continue
+		}
+		if composerHandled && event.Kind == runtime.InputKeyDown {
+			continue
+		}
 		if err := g.session.Input(g.windowID, event); err != nil {
 			return fmt.Errorf("dispatch input: %w", err)
 		}
@@ -998,9 +1115,34 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		started := time.Now()
 		screen.DrawImage(surface, options)
 		g.renderStats.recordDraw(g.frameSerial, time.Since(started))
+		g.drawWin32DialogOverlay(screen)
 		return
 	}
 	screen.DrawImage(surface, options)
+	g.drawWin32DialogOverlay(screen)
+}
+
+func (g *Game) drawWin32DialogOverlay(screen *ebiten.Image) {
+	if g == nil || screen == nil || g.session == nil || g.session.Services == nil {
+		return
+	}
+	width, height := g.Layout(0, 0)
+	frame, revision := g.session.Services.Win32DialogFrame(width, height)
+	if frame == nil {
+		g.win32DialogImage = nil
+		g.win32DialogRevision = revision
+		g.win32DialogWidth, g.win32DialogHeight = 0, 0
+		return
+	}
+	bounds := frame.Bounds()
+	if g.win32DialogImage == nil || revision != g.win32DialogRevision ||
+		bounds.Dx() != g.win32DialogWidth || bounds.Dy() != g.win32DialogHeight {
+		g.win32DialogImage = ebiten.NewImage(bounds.Dx(), bounds.Dy())
+		g.win32DialogImage.WritePixels(frame.Pix)
+		g.win32DialogRevision = revision
+		g.win32DialogWidth, g.win32DialogHeight = bounds.Dx(), bounds.Dy()
+	}
+	screen.DrawImage(g.win32DialogImage, nil)
 }
 
 // Layout supplies the stable logical canvas dimensions. Runtime frame sizes
