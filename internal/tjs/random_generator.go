@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -23,7 +24,8 @@ type RandomGeneratorState struct {
 
 type RandomGenerator struct {
 	state [mtN]uint32
-	index int
+	left  int
+	next  int
 	ready bool
 }
 
@@ -52,7 +54,7 @@ func (r *RandomGenerator) initSeed(seed uint32) {
 	for i := 1; i < mtN; i++ {
 		r.state[i] = 1812433253*(r.state[i-1]^(r.state[i-1]>>30)) + uint32(i)
 	}
-	r.index, r.ready = mtN, true
+	r.left, r.next, r.ready = 1, 0, true
 }
 func (r *RandomGenerator) initArray(keys []uint32) {
 	r.initSeed(19650218)
@@ -82,7 +84,7 @@ func (r *RandomGenerator) initArray(keys []uint32) {
 		}
 	}
 	r.state[0] = 0x80000000
-	r.index, r.ready = mtN, true
+	r.left, r.next, r.ready = 1, 0, true
 }
 
 // Randomize accepts an integer seed or a RandomGeneratorState (and its pointer).
@@ -108,7 +110,7 @@ func (r *RandomGenerator) Randomize(seeds ...any) error {
 		r.initArray([]uint32{uint32(v), uint32(uint64(v) >> 32)})
 		return nil
 	case uint32:
-		r.initSeed(v)
+		r.initArray([]uint32{v, 0})
 		return nil
 	case int:
 		return r.Randomize(int64(v))
@@ -129,17 +131,18 @@ func (r *RandomGenerator) twist() {
 			r.state[i] ^= 0x9908b0df
 		}
 	}
-	r.index = 0
+	r.left, r.next = mtN, 0
 }
 func (r *RandomGenerator) Uint32() uint32 {
 	if r == nil || !r.ready {
 		return 0
 	}
-	if r.index >= mtN {
+	r.left--
+	if r.left == 0 {
 		r.twist()
 	}
-	y := r.state[r.index]
-	r.index++
+	y := r.state[r.next]
+	r.next++
 	y ^= y >> 11
 	y ^= (y << 7) & 0x9d2c5680
 	y ^= (y << 15) & 0xefc60000
@@ -148,9 +151,8 @@ func (r *RandomGenerator) Uint32() uint32 {
 }
 func (r *RandomGenerator) Random32() uint32 { return r.Uint32() }
 func (r *RandomGenerator) Random() float64 {
-	a := r.Uint32() >> 5
-	b := r.Uint32() >> 6
-	return (float64(a)*67108864.0 + float64(b)) / 9007199254740992.0
+	bits := uint64(r.Uint32()) | uint64(r.Uint32())<<32
+	return math.Float64frombits((bits&0x000fffffffffffff)|0x3ff0000000000000) - 1
 }
 func (r *RandomGenerator) Float64() float64 { return r.Random() }
 func (r *RandomGenerator) Random63() int64 {
@@ -169,10 +171,11 @@ func (r *RandomGenerator) Serialize() RandomGeneratorState {
 		buf[i*4+2] = byte(n >> 8)
 		buf[i*4+3] = byte(n)
 	}
-	return RandomGeneratorState{State: hex.EncodeToString(buf), Left: mtN - r.index, Next: r.index}
+	return RandomGeneratorState{State: hex.EncodeToString(buf), Left: r.left, Next: r.next}
 }
 func (r *RandomGenerator) restore(s RandomGeneratorState) error {
-	if len(s.State) != mtN*8 || s.Next < 0 || s.Next > mtN || s.Left < 0 || s.Left > mtN {
+	if len(s.State) != mtN*8 || s.Next < 0 || s.Next > mtN || s.Left < 1 || s.Left > mtN ||
+		!(s.Next == 0 && s.Left == 1) && s.Left+s.Next != mtN+1 {
 		return ErrNotReconstructiveRandomizeData
 	}
 	buf, err := hex.DecodeString(s.State)
@@ -182,7 +185,7 @@ func (r *RandomGenerator) restore(s RandomGeneratorState) error {
 	for i := range r.state {
 		r.state[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
 	}
-	r.index, r.ready = s.Next, true
+	r.left, r.next, r.ready = s.Left, s.Next, true
 	return nil
 }
 func (r *RandomGenerator) State() RandomGeneratorState { return r.Serialize() }

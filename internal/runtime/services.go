@@ -1715,6 +1715,9 @@ func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, 
 		return tjs.VoidValue, nil
 	}
 	if operation == "@invalidate" || operation == "finalize" || operation == "close" {
+		if err := s.invalidateWaveSoundLabels(vm, context, budget); err != nil {
+			return tjs.VoidValue, err
+		}
 		s.mu.Lock()
 		sound := s.Sounds[id]
 		delete(s.Sounds, id)
@@ -1770,18 +1773,33 @@ func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, 
 			return tjs.VoidValue, e
 		}
 		var data []byte
+		var storage string
 		if x.Kind() == tjs.KindOctet {
 			data = x.Octets()
 		} else if operation == "openBytes" {
 			return tjs.VoidValue, fmt.Errorf("WaveSoundBuffer.openBytes requires octets")
 		} else {
-			data, e = s.readStorage(strings.SplitN(x.Text(), "?", 2)[0])
+			storage = strings.SplitN(x.Text(), "?", 2)[0]
+			data, e = s.readStorage(storage)
 			if e != nil {
 				return tjs.VoidValue, e
 			}
 		}
-		if e = sound.OpenBytes(data, assets.LoopInfo{}); e != nil {
+		info := assets.LoopInfo{}
+		if storage != "" {
+			info, e = parseWaveSoundLoopInfo(s, storage)
+			if e != nil {
+				return tjs.VoidValue, e
+			}
+		}
+		previousStream := sound.Stream()
+		if e = sound.OpenBytes(data, info); e != nil {
 			return tjs.VoidValue, e
+		}
+		if sound.Stream() != previousStream {
+			if e := s.invalidateWaveSoundLabels(vm, context, budget); e != nil {
+				return tjs.VoidValue, e
+			}
 		}
 		sound.positionClock = s.TimeMS
 		return queue()
@@ -1903,15 +1921,7 @@ func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, 
 		sound.sampleAhead = int(n)
 		return tjs.VoidValue, nil
 	case "get:labels":
-		if vm == nil {
-			return tjs.VoidValue, fmt.Errorf("WaveSoundBuffer labels require VM")
-		}
-		labels := sound.Labels()
-		values := make([]tjs.Value, len(labels))
-		for i, label := range labels {
-			values[i] = tjs.StringValue(label.Name)
-		}
-		return vm.NewArray(values)
+		return s.waveSoundLabels(vm, context, sound, budget)
 	case "get:flags":
 		if vm == nil || s.waveFlagsClass.Kind() != tjs.KindObject {
 			return tjs.VoidValue, fmt.Errorf("WaveSoundBuffer flags require VM")

@@ -74,6 +74,7 @@ type vmObject struct {
 	arrayLength             int64
 	arrayMethods            map[string]Value
 	stringMethods           map[string]Value
+	randomGenerator         *RandomGenerator
 	methodContext           Value
 	methodContextSet        bool
 	superContext            ObjectID
@@ -304,6 +305,12 @@ func NewVM() *VM {
 	}
 	for _, property := range []string{"E", "LOG2E", "LOG10E", "LN10", "LN2", "PI", "SQRT1_2", "SQRT2"} {
 		_ = vm.RegisterNativeStaticProperty(mathClass, property, "Math.get:"+property, "")
+	}
+	randomGenerator, _ := vm.RegisterNativeClass("RandomGenerator")
+	delete(vm.Globals, "RandomGenerator")
+	_ = vm.RegisterNativeStaticValue(mathClass, "RandomGenerator", randomGenerator)
+	for _, method := range []string{"RandomGenerator", "@invalidate", "finalize", "randomize", "random", "random32", "random63", "random64", "serialize"} {
+		_ = vm.RegisterNativeMethod(randomGenerator, method, "RandomGenerator."+method)
 	}
 	_, _ = vm.RegisterNativeClass("Exception")
 	_ = vm.RegisterSerialization(false)
@@ -4087,6 +4094,9 @@ func (v *VM) nativeCall(name string, context Value, args []Value, h Host, b *uin
 	}
 	if strings.HasPrefix(name, "Serialization.") {
 		return v.serializationCall(strings.TrimPrefix(name, "Serialization."), context, args, h, b, needed)
+	}
+	if strings.HasPrefix(name, "RandomGenerator.") {
+		return v.randomGeneratorCall(context, strings.TrimPrefix(name, "RandomGenerator."), args, h, b, needed)
 	}
 	switch name {
 	case "Array.assignStruct":
