@@ -2072,7 +2072,7 @@ func hitMotionShape(shape int, ctx motionRenderContext, content map[string]asset
 	// accumulated affine transform.
 	centerX, centerY := ctx.x, ctx.y
 	for index := len(ctx.meshAncestors) - 1; index >= 0; index-- {
-		centerX, centerY = ctx.meshAncestors[index].deform(centerX, centerY)
+		centerX, centerY = ctx.meshAncestors[index].deformOffset(centerX, centerY)
 	}
 	dx, dy := x-centerX, y-centerY
 	scaleX := math.Hypot(ctx.matrix.a, ctx.matrix.c)
