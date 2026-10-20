@@ -185,7 +185,7 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 	currentLocal := identityMotionMatrix
 	currentX, currentY, currentZ := 0.0, 0.0, 0.0
 	if len(frames) > 0 {
-		if content, visible := psbMotionResolvedContent(frames, tick); visible {
+		if content, visible := psbMotionResolvedContent(frames, tick, psbMotionInt(node, "type", 0)); visible {
 			currentX, currentY, currentZ = motionNodeCoord(content)
 			currentLocal = psbMotionLocalMatrix(node, content)
 		}
@@ -260,7 +260,7 @@ func motionParticles(resource *motionResource, attached []*motionResource, node 
 			birthLocal := currentLocal
 			birthX, birthY, birthZ := currentX, currentY, currentZ
 			if len(frames) > 0 {
-				if content, visible := psbMotionResolvedContent(frames, birth); visible {
+				if content, visible := psbMotionResolvedContent(frames, birth, psbMotionInt(node, "type", 0)); visible {
 					birthX, birthY, birthZ = motionNodeCoord(content)
 					birthLocal = psbMotionLocalMatrix(node, content)
 				}
@@ -428,8 +428,9 @@ func motionNodeLocalDelta(node map[string]assets.Value, tick float64) (float64, 
 	if !ok || len(frames) == 0 {
 		return 0, 0, 0
 	}
-	now, nowVisible := psbMotionResolvedContent(frames, tick)
-	previous, previousVisible := psbMotionResolvedContent(frames, tick-1)
+	nodeType := psbMotionInt(node, "type", 0)
+	now, nowVisible := psbMotionResolvedContent(frames, tick, nodeType)
+	previous, previousVisible := psbMotionResolvedContent(frames, tick-1, nodeType)
 	if !nowVisible || !previousVisible {
 		return 0, 0, 0
 	}

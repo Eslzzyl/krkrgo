@@ -75,6 +75,22 @@ type motionMatrix struct {
 
 var identityMotionMatrix = motionMatrix{a: 1, d: 1}
 
+type motionTransformState struct {
+	flipX, flipY bool
+	angle        float64
+	scaleX       float64
+	scaleY       float64
+	slantX       float64
+	slantY       float64
+}
+
+var identityMotionTransform = motionTransformState{scaleX: 1, scaleY: 1}
+
+type motionViewport struct {
+	minX, minY float64
+	maxX, maxY float64
+}
+
 type motionRenderContext struct {
 	x, y      float64
 	opacity   uint8
@@ -90,6 +106,12 @@ type motionRenderContext struct {
 	// (PlayerUpdateLayerEval.cpp:905-925).
 	coordinateMode int
 	matrix         motionMatrix
+	rootMatrix     motionMatrix
+	transform      motionTransformState
+	inheritMask    int
+	inheritParent  *motionRenderContext
+	viewport       motionViewport
+	hasViewport    bool
 	// meshAncestors carries the control nets of every visible mesh ancestor
 	// whose meshSyncChildMask combines with children, nearest ancestor last.
 	// Descendant mesh points are evaluated through this chain
@@ -202,7 +224,7 @@ func renderPSBMotionOptions(resource *motionResource, chara, motion string, tick
 		filter: filter, params: params, freezeBody: freezeBody,
 		maskMode: maskMode, completion: completion, attached: attached,
 	}
-	ctx := motionRenderContext{opacity: 255, blendMode: 16, matrix: identityMotionMatrix}
+	ctx := motionRenderContext{opacity: 255, blendMode: 16, matrix: identityMotionMatrix, rootMatrix: identityMotionMatrix, transform: identityMotionTransform}
 	if err := renderMotionValue(resource, root, layers, tick, eval, ctx, pixels, width, height, resource.stack); err != nil {
 		return nil, err
 	}
@@ -276,18 +298,19 @@ func collectMotionValue(resource *motionResource, root map[string]assets.Value, 
 		ctx := parent
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
 			nodeTick := motionNodeTick(node, tick, eval)
-			content, visible := psbMotionResolvedContent(frameList, nodeTick)
-			if visible {
-				ctx = psbMotionContext(parent, content, node)
-				if motionNestedMotionSource(content) {
-					ctx.childTick = motionNestedTick(node, content, tick)
+			content, visible := psbMotionResolvedContent(frameList, nodeTick, psbMotionInt(node, "type", 0))
+			if !visible {
+				return nil
+			}
+			ctx = psbMotionContext(parent, content, node)
+			if motionNestedMotionSource(content) {
+				ctx.childTick = motionNestedTick(node, content, tick)
+			}
+			if drawFrame || motionNestedMotionSource(content) || motionParticleSource(content) {
+				if err := collectMotionFrame(resource, root, content, node, eval, ctx, nodeTick, list, width, height, stack); err != nil {
+					return err
 				}
-				if drawFrame || motionNestedMotionSource(content) || motionParticleSource(content) {
-					if err := collectMotionFrame(resource, root, content, node, eval, ctx, nodeTick, list, width, height, stack); err != nil {
-						return err
-					}
-					ctx = motionMeshAncestorContext(resource, root, node, content, eval, ctx, width, height)
-				}
+				ctx = motionMeshAncestorContext(resource, root, node, content, eval, ctx, width, height)
 			}
 		}
 		if maskGroup := motionStencilGroup(node); maskGroup {
@@ -520,15 +543,16 @@ func motionValueBounds(resource *motionResource, root map[string]assets.Value, v
 		ctx := parent
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
 			nodeTick := motionNodeTick(node, tick, eval)
-			content, visible := psbMotionResolvedContent(frameList, nodeTick)
-			if visible {
-				ctx = psbMotionContext(parent, content, node)
-				if motionNestedMotionSource(content) {
-					ctx.childTick = motionNestedTick(node, content, tick)
-				}
-				if drawFrame || motionNestedMotionSource(content) || motionParticleSource(content) {
-					motionFrameBounds(resource, root, content, node, ctx, eval, nodeTick, width, height, bounds, stack)
-				}
+			content, visible := psbMotionResolvedContent(frameList, nodeTick, psbMotionInt(node, "type", 0))
+			if !visible {
+				return
+			}
+			ctx = psbMotionContext(parent, content, node)
+			if motionNestedMotionSource(content) {
+				ctx.childTick = motionNestedTick(node, content, tick)
+			}
+			if drawFrame || motionNestedMotionSource(content) || motionParticleSource(content) {
+				motionFrameBounds(resource, root, content, node, ctx, eval, nodeTick, width, height, bounds, stack)
 			}
 		}
 		for _, key := range []string{"children", "layer"} {
@@ -545,6 +569,12 @@ func motionFrameBounds(resource *motionResource, root map[string]assets.Value, c
 		return
 	}
 	if strings.HasPrefix(source, "src/") {
+		// A deformed ancestor can move this source outside its affine image
+		// bounds. Stencil groups must cover the resulting geometry.
+		if psbMotionInt(layer, "meshTransform", 0) == 1 || len(ctx.meshAncestors) != 0 {
+			bounds.add(0, 0, width, height)
+			return
+		}
 		_, image, originX, originY, err := motionSourceImageAny(resource, eval.attached, root, source)
 		if err != nil {
 			return
@@ -603,11 +633,10 @@ func motionVariablesSignature(params []float64) string {
 // emote-like motions freeze non-parameterized nodes at time 0
 // (PlayerUpdateLayerEval.cpp:313-326,730-738).
 
-// motionClipStartTime returns the time the node's active frame source became
-// current. The reference starts a child player at
-// parentLoopTime - clipStartTime + timeOffset (PlayerUpdateChildMotion.cpp:
-// 170-205); deriving the start from the src changes in the frame list keeps the
-// walk stateless.
+// motionClipStartTime returns the selected frame's timestamp. The reference
+// stores frameA.time in the active slot and starts a child at
+// parentLoopTime - clipStartTime + timeOffset (PlayerInternal.h:1485,
+// PlayerUpdateChildMotion.cpp:170-205).
 func motionClipStartTime(node map[string]assets.Value, tick float64) float64 {
 	frames, ok := node["frameList"].([]assets.Value)
 	if !ok {
@@ -617,24 +646,11 @@ func motionClipStartTime(node map[string]assets.Value, tick float64) float64 {
 	if !ok {
 		return 0
 	}
-	start := 0.0
-	previous := ""
-	for i := 0; i <= index && i < len(frames); i++ {
-		frame, ok := frames[i].(map[string]assets.Value)
-		if !ok {
-			continue
-		}
-		content, _ := frame["content"].(map[string]assets.Value)
-		source, _ := content["src"].(string)
-		if source == "" {
-			continue
-		}
-		if previous != "" && source != previous {
-			start = psbMotionFloat(frame, "time", 0)
-		}
-		previous = source
+	frame, ok := frames[index].(map[string]assets.Value)
+	if !ok {
+		return 0
 	}
-	return start
+	return psbMotionFloat(frame, "time", 0)
 }
 
 // motionNestedTick advances a child motion from the parent timeline, matching
@@ -703,7 +719,7 @@ func buildGPUMotionVariables(resource *motionResource, chara, motion string, tic
 	if offsetX, offsetY, ok := motionCameraOffset(layers, tick, eval, drawMatrix); ok {
 		drawMatrix = motionDrawMatrixWithCameraOffset(drawMatrix, offsetX, offsetY)
 	}
-	if motionHasStencilGroup(layers) || motionHasMesh(layers) {
+	if motionHasStencilGroup(layers) || motionHasMesh(layers) || motionHasShapeAABB(layers) {
 		// A stencil composite needs a private group buffer and alpha mask
 		// application; mesh nodes need a triangle grid. Bake the tree at
 		// canvas resolution and hand the result to the GPU as one transformed
@@ -720,6 +736,10 @@ func buildGPUMotionVariables(resource *motionResource, chara, motion string, tic
 				RGBA:   scaleRGBA(frame.RGBA, int32(frame.Width), int32(frame.Height), scale),
 			}
 		}
+		// RenderMotionDraw translations identify the source image's top-left
+		// corner. The CPU canvas compositor maps the motion canvas center to
+		// drawMatrix.tx/ty, so shift the baked source by its transformed center.
+		centerX, centerY := float64(source.Width)/2, float64(source.Height)/2
 		result.Draws = append(result.Draws, RenderMotionDraw{
 			SourceKey: motionBakedSourceKeyWithMatrix(resource, chara, motion, tick, filter, params, freezeBody, maskMode, completion, attached, drawMatrix),
 			RGBA:      source.RGBA,
@@ -729,8 +749,8 @@ func buildGPUMotionVariables(resource *motionResource, chara, motion string, tic
 			B:         drawMatrix.b,
 			C:         drawMatrix.c,
 			D:         drawMatrix.d,
-			TX:        drawMatrix.tx * float64(scale),
-			TY:        drawMatrix.ty * float64(scale),
+			TX:        drawMatrix.tx*float64(scale) - drawMatrix.a*centerX - drawMatrix.b*centerY,
+			TY:        drawMatrix.ty*float64(scale) - drawMatrix.c*centerX - drawMatrix.d*centerY,
 			Opacity:   255,
 			Baked:     true,
 		})
@@ -741,7 +761,7 @@ func buildGPUMotionVariables(resource *motionResource, chara, motion string, tic
 	} else {
 		clear(resource.stack)
 	}
-	ctx := motionRenderContext{opacity: 255, blendMode: 16, matrix: identityMotionMatrix}
+	ctx := motionRenderContext{opacity: 255, blendMode: 16, matrix: identityMotionMatrix, rootMatrix: identityMotionMatrix, transform: identityMotionTransform}
 	if err := collectGPUMotionValue(resource, root, layers, tick, eval, ctx, drawMatrix, result, resource.stack); err != nil {
 		return nil, err
 	}
@@ -812,6 +832,23 @@ func motionHasStencilGroup(value assets.Value) bool {
 	return false
 }
 
+func motionHasShapeAABB(value assets.Value) bool {
+	switch node := value.(type) {
+	case []assets.Value:
+		for _, child := range node {
+			if motionHasShapeAABB(child) {
+				return true
+			}
+		}
+	case map[string]assets.Value:
+		if psbMotionInt(node, "type", -1) == 7 {
+			return true
+		}
+		return motionHasShapeAABB(node["children"]) || motionHasShapeAABB(node["layer"])
+	}
+	return false
+}
+
 func collectGPUMotionValue(resource *motionResource, root map[string]assets.Value, value assets.Value, tick float64, eval motionRenderEval, parent motionRenderContext, drawMatrix motionDrawMatrix, result *RenderMotion, stack map[string]bool) error {
 	switch node := value.(type) {
 	case []assets.Value:
@@ -825,16 +862,17 @@ func collectGPUMotionValue(resource *motionResource, root map[string]assets.Valu
 		ctx := parent
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
 			nodeTick := motionNodeTick(node, tick, eval)
-			content, visible := psbMotionResolvedContent(frameList, nodeTick)
-			if visible {
-				ctx = psbMotionContext(parent, content, node)
-				if motionNestedMotionSource(content) {
-					ctx.childTick = motionNestedTick(node, content, tick)
-				}
-				if drawFrame || motionNestedMotionSource(content) || motionParticleSource(content) {
-					if err := collectGPUMotionFrame(resource, root, content, node, eval, ctx, drawMatrix, nodeTick, result, stack); err != nil {
-						return err
-					}
+			content, visible := psbMotionResolvedContent(frameList, nodeTick, psbMotionInt(node, "type", 0))
+			if !visible {
+				return nil
+			}
+			ctx = psbMotionContext(parent, content, node)
+			if motionNestedMotionSource(content) {
+				ctx.childTick = motionNestedTick(node, content, tick)
+			}
+			if drawFrame || motionNestedMotionSource(content) || motionParticleSource(content) {
+				if err := collectGPUMotionFrame(resource, root, content, node, eval, ctx, drawMatrix, nodeTick, result, stack); err != nil {
+					return err
 				}
 			}
 		}
@@ -1001,6 +1039,7 @@ func collectMotionFrame(resource *motionResource, root map[string]assets.Value, 
 // offset, which the reference applies to the child player rather than to each
 // of its layers (PlayerUpdateChildMotion.cpp:454-470).
 func motionChildOriginContext(ctx motionRenderContext, content map[string]assets.Value) motionRenderContext {
+	ctx.rootMatrix = ctx.matrix
 	originX := psbMotionFloat(content, "ox", 0)
 	originY := psbMotionFloat(content, "oy", 0)
 	if originX == 0 && originY == 0 {
@@ -1236,8 +1275,8 @@ func renderMotionMeshFrame(layer map[string]assets.Value, content map[string]ass
 			p1 := points[gy*divX+gx+1]
 			p2 := points[(gy+1)*divX+gx]
 			p3 := points[(gy+1)*divX+gx+1]
-			rasterMotionTriangle(pixels, width, height, image, p0, p1, p2, ctx.opacity, motionBlendMode(ctx.blendMode))
-			rasterMotionTriangle(pixels, width, height, image, p1, p2, p3, ctx.opacity, motionBlendMode(ctx.blendMode))
+			rasterMotionTriangle(pixels, width, height, image, p0, p1, p2, ctx.opacity, motionBlendMode(ctx.blendMode), ctx.viewport, ctx.hasViewport)
+			rasterMotionTriangle(pixels, width, height, image, p1, p2, p3, ctx.opacity, motionBlendMode(ctx.blendMode), ctx.viewport, ctx.hasViewport)
 		}
 	}
 }
@@ -1247,7 +1286,7 @@ type motionPoint struct {
 	u, v float64
 }
 
-func rasterMotionTriangle(dst []byte, width, height int, image *assets.Image, p0, p1, p2 motionPoint, opacity uint8, blend MotionBlendMode) {
+func rasterMotionTriangle(dst []byte, width, height int, image *assets.Image, p0, p1, p2 motionPoint, opacity uint8, blend MotionBlendMode, viewport motionViewport, hasViewport bool) {
 	area := (p1.x-p0.x)*(p2.y-p0.y) - (p2.x-p0.x)*(p1.y-p0.y)
 	if math.Abs(area) < 1e-9 || opacity == 0 {
 		return
@@ -1256,6 +1295,11 @@ func rasterMotionTriangle(dst []byte, width, height int, image *assets.Image, p0
 	maxX := min(width, int(math.Ceil(math.Max(p0.x, math.Max(p1.x, p2.x)))))
 	minY := max(0, int(math.Floor(math.Min(p0.y, math.Min(p1.y, p2.y)))))
 	maxY := min(height, int(math.Ceil(math.Max(p0.y, math.Max(p1.y, p2.y)))))
+	if hasViewport {
+		clipLeft, clipTop, clipRight, clipBottom := motionViewportPixels(viewport, width, height)
+		minX, minY = max(minX, clipLeft), max(minY, clipTop)
+		maxX, maxY = min(maxX, clipRight), min(maxY, clipBottom)
+	}
 	if minX >= maxX || minY >= maxY {
 		return
 	}
@@ -1267,11 +1311,10 @@ func rasterMotionTriangle(dst []byte, width, height int, image *assets.Image, p0
 			e0 := (p1.x-px)*(p2.y-py) - (p2.x-px)*(p1.y-py)
 			e1 := (p2.x-px)*(p0.y-py) - (p0.x-px)*(p2.y-py)
 			e2 := (p0.x-px)*(p1.y-py) - (p1.x-px)*(p0.y-py)
-			if area > 0 {
-				if e0 < 0 || e1 < 0 || e2 < 0 {
-					continue
-				}
-			} else if e0 > 0 || e1 > 0 || e2 > 0 {
+			positive := area > 0
+			if !motionTriangleEdgeCovered(e0, p1, p2, positive) ||
+				!motionTriangleEdgeCovered(e1, p2, p0, positive) ||
+				!motionTriangleEdgeCovered(e2, p0, p1, positive) {
 				continue
 			}
 			w0, w1, w2 := e0/area, e1/area, e2/area
@@ -1295,6 +1338,35 @@ func rasterMotionTriangle(dst []byte, width, height int, image *assets.Image, p0
 			blendMotionPixel(dst[(y*width+x)*4:], source, uint8(alpha), blend)
 		}
 	}
+}
+
+// motionTriangleEdgeCovered applies the top-left fill rule used by hardware
+// triangle rasterizers. Shared mesh edges then contribute each pixel once,
+// preventing translucent texels from being blended twice along grid seams.
+func motionTriangleEdgeCovered(value float64, start, end motionPoint, positive bool) bool {
+	if positive {
+		if value < 0 {
+			return false
+		}
+	} else {
+		if value > 0 {
+			return false
+		}
+		start, end = end, start
+	}
+	if value == 0 {
+		dx, dy := end.x-start.x, end.y-start.y
+		return dy < 0 || (dy == 0 && dx > 0)
+	}
+	return true
+}
+
+func motionViewportPixels(viewport motionViewport, width, height int) (int, int, int, int) {
+	centerX, centerY := float64(width)/2, float64(height)/2
+	return int(math.Floor(centerX + viewport.minX)),
+		int(math.Floor(centerY + viewport.minY)),
+		int(math.Ceil(centerX + viewport.maxX)),
+		int(math.Ceil(centerY + viewport.maxY))
 }
 
 // motionLookupMotion resolves a motion/ source in the primary snapshot first,
@@ -1470,7 +1542,7 @@ func psbMotionKeyframeIndex(frames []assets.Value, tick float64) (int, bool) {
 // that carries content. Coordinates ease through the entry's ccc curve, zoom
 // through zcc, angle through acc, and slant through scc, while opacity
 // interpolates linearly, matching the reference's dual-slot evaluation.
-func psbMotionResolvedContent(frames []assets.Value, tick float64) (map[string]assets.Value, bool) {
+func psbMotionResolvedContent(frames []assets.Value, tick float64, nodeType int) (map[string]assets.Value, bool) {
 	index, ok := psbMotionKeyframeIndex(frames, tick)
 	if !ok {
 		return nil, false
@@ -1479,10 +1551,11 @@ func psbMotionResolvedContent(frames []assets.Value, tick float64) (map[string]a
 	if !ok {
 		return nil, false
 	}
-	content, _ := active["content"].(map[string]assets.Value)
-	if content == nil {
+	activeContent, _ := active["content"].(map[string]assets.Value)
+	if activeContent == nil {
 		return nil, false
 	}
+	content := psbMotionFrameContent(activeContent, nodeType)
 	if index+1 >= len(frames) || int(psbMotionFloat(active, "type", 0)) != 3 {
 		return content, true
 	}
@@ -1490,10 +1563,11 @@ func psbMotionResolvedContent(frames []assets.Value, tick float64) (map[string]a
 	if !ok {
 		return content, true
 	}
-	nextContent, _ := next["content"].(map[string]assets.Value)
-	if nextContent == nil {
+	nextFrameContent, _ := next["content"].(map[string]assets.Value)
+	if nextFrameContent == nil {
 		return content, true
 	}
+	nextContent := psbMotionFrameContent(nextFrameContent, nodeType)
 	ratio := psbMotionBlendRatio(active, next, tick)
 	interpolated := make(map[string]assets.Value, len(content)+len(nextContent))
 	for key, value := range content {
@@ -1510,15 +1584,15 @@ func psbMotionResolvedContent(frames []assets.Value, tick float64) (map[string]a
 	zoomRatio := psbMotionCurveRatio(content["zcc"], ratio)
 	angleRatio := psbMotionCurveRatio(content["acc"], ratio)
 	slantRatio := psbMotionCurveRatio(content["scc"], ratio)
-	if values := psbMotionList(content["coord"]); len(values) > 0 {
-		interpolated["coord"] = psbMotionBlendList(values, psbMotionList(nextContent["coord"]), coordRatio)
-	} else if values := psbMotionList(nextContent["coord"]); len(values) > 0 {
+	if values := psbMotionCoordValues(content["coord"]); len(values) > 0 {
+		interpolated["coord"] = psbMotionBlendList(values, psbMotionCoordValues(nextContent["coord"]), coordRatio)
+	} else if values := psbMotionCoordValues(nextContent["coord"]); len(values) > 0 {
 		interpolated["coord"] = psbMotionBlendList([]float64{0, 0, 0}, values, coordRatio)
 	}
 	if _, ok := content["opa"]; ok || nextContent["opa"] != nil {
 		interpolated["opa"] = psbMotionBlendFloat(content["opa"], nextContent["opa"], 255, ratio)
 	}
-	for _, key := range []string{"zx", "zy", "angle", "sx", "sy", "ox", "oy", "fx", "fy"} {
+	for _, key := range []string{"zx", "zy", "sx", "sy", "ox", "oy", "fx", "fy"} {
 		if content[key] == nil && nextContent[key] == nil {
 			continue
 		}
@@ -1538,7 +1612,56 @@ func psbMotionResolvedContent(frames []assets.Value, tick float64) (map[string]a
 		}
 		interpolated[key] = psbMotionBlendFloat(content[key], nextContent[key], defaultValue, iratio)
 	}
+	if content["angle"] != nil || nextContent["angle"] != nil {
+		interpolated["angle"] = psbMotionBlendAngle(content["angle"], nextContent["angle"], angleRatio)
+	}
 	return interpolated, true
+}
+
+func psbMotionFrameContent(content map[string]assets.Value, nodeType int) map[string]assets.Value {
+	filtered := make(map[string]assets.Value, len(content))
+	for key, value := range content {
+		filtered[key] = value
+	}
+	mask := psbMotionInt(content, "mask", 0)
+	for key, bit := range map[string]int{
+		"ox": 0x001, "oy": 0x001, "coord": 0x002,
+		"fx": 0x004, "fy": 0x008, "angle": 0x010,
+		"zx": 0x020, "zy": 0x040, "sx": 0x080, "sy": 0x100,
+		"color": 0x200, "opa": 0x400, "ccc": 0x800,
+		"acc": 0x1000, "zcc": 0x2000, "scc": 0x4000,
+		"occ": 0x8000, "motion": 0x80000,
+	} {
+		if mask&bit == 0 {
+			delete(filtered, key)
+		}
+	}
+	sourceEnabled := nodeType >= 0 && nodeType < 63 && (uint64(0x1849)&(uint64(1)<<uint(nodeType))) != 0
+	if !sourceEnabled {
+		delete(filtered, "src")
+		delete(filtered, "icon")
+		delete(filtered, "srcList")
+	}
+	return filtered
+}
+
+func psbMotionBlendAngle(value, next assets.Value, ratio float64) float64 {
+	from := psbMotionFloatValue(value, 0)
+	to := psbMotionFloatValue(next, 0)
+	if from >= to {
+		if from-to > 180 {
+			to += 360
+		}
+	} else if to-from > 180 {
+		to -= 360
+	}
+	angle := from*(1-ratio) + to*ratio
+	if angle < 0 {
+		angle += 360
+	} else if angle >= 360 {
+		angle -= 360
+	}
+	return angle
 }
 
 func psbMotionBlendRatio(active, next map[string]assets.Value, tick float64) float64 {
@@ -1608,25 +1731,48 @@ func psbMotionBlendList(value, next []float64, ratio float64) []assets.Value {
 	return blended
 }
 
+// psbMotionCoordValues reads the list and dictionary coordinate encodings
+// accepted by the reference frame parser (PlayerInternal.h:942-960).
+func psbMotionCoordValues(value assets.Value) []float64 {
+	if values := psbMotionList(value); len(values) > 0 {
+		return values
+	}
+	dictionary, ok := value.(map[string]assets.Value)
+	if !ok {
+		return nil
+	}
+	return []float64{
+		psbMotionFloatValue(dictionary["0"], 0),
+		psbMotionFloatValue(dictionary["1"], 0),
+		psbMotionFloatValue(dictionary["2"], 0),
+	}
+}
+
 func psbMotionContext(parent motionRenderContext, content map[string]assets.Value, layer map[string]assets.Value) motionRenderContext {
-	coord := psbMotionList(content["coord"])
-	x, y := 0.0, 0.0
-	if len(coord) > 0 {
-		x = coord[0]
+	x, y, coordZ := motionNodeCoord(content)
+	flags := psbMotionInt(layer, "inheritMask", 0x1FC)
+	transformParent := parent
+	for transformParent.inheritMask&0x00400000 != 0 && transformParent.inheritParent != nil {
+		transformParent = *transformParent.inheritParent
 	}
-	if len(coord) > 1 {
-		y = coord[1]
-	}
-	coordZ := 0.0
-	if len(coord) > 2 {
-		coordZ = coord[2]
+	localTransform := motionTransformFromContent(content)
+	transform := inheritMotionTransform(transformParent.transform, localTransform, flags)
+	matrix := multiplyMotionMatrix(transformParent.matrix, psbMotionLocalMatrix(layer, content))
+	if flags&0x1FC != 0x1FC {
+		matrix = multiplyMotionMatrix(transformParent.rootMatrix, psbMotionLocalMatrixState(layer, transform))
 	}
 	ctx := motionRenderContext{
-		opacity:        parent.opacity,
-		blendMode:      parent.blendMode,
+		opacity:        transformParent.opacity,
+		blendMode:      transformParent.blendMode,
 		childTick:      parent.childTick,
 		coordinateMode: psbMotionInt(layer, "coordinate", 0),
-		matrix:         multiplyMotionMatrix(parent.matrix, psbMotionLocalMatrix(layer, content)),
+		matrix:         matrix,
+		rootMatrix:     transformParent.rootMatrix,
+		transform:      transform,
+		inheritMask:    flags,
+		inheritParent:  &parent,
+		viewport:       parent.viewport,
+		hasViewport:    parent.hasViewport,
 		meshAncestors:  parent.meshAncestors,
 	}
 	// A sync node copies the parent's state and contributes no transform of
@@ -1634,27 +1780,29 @@ func psbMotionContext(parent motionRenderContext, content map[string]assets.Valu
 	sync := false
 	if value, ok := psbNumber(content["sync"]); ok && value != 0 {
 		sync = true
-		ctx.x, ctx.y, ctx.z = parent.x, parent.y, parent.z
-		ctx.matrix = parent.matrix
+		ctx.x, ctx.y, ctx.z = transformParent.x, transformParent.y, transformParent.z
+		ctx.matrix = transformParent.matrix
+		ctx.rootMatrix = transformParent.rootMatrix
+		ctx.transform = transformParent.transform
 	}
 	if sync {
 		ctx.meshAncestors = parent.meshAncestors
 		return ctx
 	}
-	if parent.coordinateMode != 0 {
+	if transformParent.coordinateMode != 0 {
 		// 3D placement: child x and z pass through the parent matrix and y
 		// stays literal (PlayerUpdateLayerEval.cpp:912-920).
-		worldX := parent.matrix.a*x + parent.matrix.b*coordZ
-		worldZ := parent.matrix.c*x + parent.matrix.d*coordZ
-		ctx.x = worldX + parent.x
-		ctx.y = y + parent.y
-		ctx.z = worldZ + parent.z
+		worldX := transformParent.matrix.a*x + transformParent.matrix.b*coordZ
+		worldZ := transformParent.matrix.c*x + transformParent.matrix.d*coordZ
+		ctx.x = worldX + transformParent.x
+		ctx.y = y + transformParent.y
+		ctx.z = worldZ + transformParent.z
 	} else {
-		worldX := parent.matrix.a*x + parent.matrix.b*y
-		worldY := parent.matrix.c*x + parent.matrix.d*y
-		ctx.x = worldX + parent.x
-		ctx.y = worldY + parent.y
-		ctx.z = parent.z + coordZ
+		worldX := transformParent.matrix.a*x + transformParent.matrix.b*y
+		worldY := transformParent.matrix.c*x + transformParent.matrix.d*y
+		ctx.x = worldX + transformParent.x
+		ctx.y = worldY + transformParent.y
+		ctx.z = transformParent.z + coordZ
 	}
 	if opacity, ok := content["opa"]; ok {
 		value := psbMotionFloatValue(opacity, 255)
@@ -1664,12 +1812,96 @@ func psbMotionContext(parent motionRenderContext, content map[string]assets.Valu
 		if value > 255 {
 			value = 255
 		}
-		ctx.opacity = uint8(float64(parent.opacity) * value / 255)
+		ctx.opacity = uint8(float64(transformParent.opacity) * value / 255)
 	}
 	if blendMode, ok := psbNumber(content["bm"]); ok {
 		ctx.blendMode = int64(blendMode)
 	}
+	ctx = motionShapeAABBContext(ctx, layer, content)
 	return ctx
+}
+
+func motionShapeAABBContext(ctx motionRenderContext, layer, content map[string]assets.Value) motionRenderContext {
+	if psbMotionInt(layer, "type", -1) != 7 {
+		return ctx
+	}
+	ox, oy := psbMotionFloat(content, "ox", 0), psbMotionFloat(content, "oy", 0)
+	extentX := (ctx.matrix.a + ctx.matrix.b) * 16
+	extentY := (ctx.matrix.c + ctx.matrix.d) * 16
+	offsetX := ox*ctx.matrix.a + oy*ctx.matrix.b
+	offsetY := ox*ctx.matrix.c + oy*ctx.matrix.d
+	centerY := ctx.y + ctx.z
+	clip := motionViewport{
+		minX: ctx.x - extentX - offsetX,
+		maxX: ctx.x + extentX - offsetX,
+		minY: centerY - extentY - offsetY,
+		maxY: centerY + extentY - offsetY,
+	}
+	if clip.minX > clip.maxX {
+		clip.minX, clip.maxX = clip.maxX, clip.minX
+	}
+	if clip.minY > clip.maxY {
+		clip.minY, clip.maxY = clip.maxY, clip.minY
+	}
+	if ctx.hasViewport {
+		clip.minX = math.Max(clip.minX, ctx.viewport.minX)
+		clip.minY = math.Max(clip.minY, ctx.viewport.minY)
+		clip.maxX = math.Min(clip.maxX, ctx.viewport.maxX)
+		clip.maxY = math.Min(clip.maxY, ctx.viewport.maxY)
+	}
+	ctx.viewport = clip
+	ctx.hasViewport = true
+	return ctx
+}
+
+func motionTransformFromContent(content map[string]assets.Value) motionTransformState {
+	return motionTransformState{
+		flipX:  psbMotionInt(content, "fx", 0) != 0,
+		flipY:  psbMotionInt(content, "fy", 0) != 0,
+		angle:  psbMotionFloat(content, "angle", 0),
+		scaleX: psbMotionFloat(content, "zx", 1),
+		scaleY: psbMotionFloat(content, "zy", 1),
+		slantX: psbMotionFloat(content, "sx", 0),
+		slantY: psbMotionFloat(content, "sy", 0),
+	}
+}
+
+func inheritMotionTransform(parent, local motionTransformState, flags int) motionTransformState {
+	if flags&0x004 != 0 {
+		local.flipX = local.flipX != parent.flipX
+	}
+	if flags&0x008 != 0 {
+		local.flipY = local.flipY != parent.flipY
+	}
+	if flags&0x010 != 0 {
+		local.angle += parent.angle
+	}
+	if flags&0x020 != 0 {
+		local.scaleX *= parent.scaleX
+	}
+	if flags&0x040 != 0 {
+		local.scaleY *= parent.scaleY
+	}
+	if flags&0x080 != 0 {
+		local.slantX += parent.slantX
+	}
+	if flags&0x100 != 0 {
+		local.slantY += parent.slantY
+	}
+	return local
+}
+
+func psbMotionLocalMatrixState(layer map[string]assets.Value, state motionTransformState) motionMatrix {
+	return psbMotionLocalMatrixStateOrder(layer, state, []int{0, 3, 2, 1})
+}
+
+func psbMotionLocalMatrixStateOrder(layer map[string]assets.Value, state motionTransformState, defaultOrder []int) motionMatrix {
+	content := map[string]assets.Value{
+		"fx": float64(boolInt(state.flipX)), "fy": float64(boolInt(state.flipY)),
+		"angle": state.angle, "zx": state.scaleX, "zy": state.scaleY,
+		"sx": state.slantX, "sy": state.slantY,
+	}
+	return psbMotionLocalMatrixOrder(layer, content, defaultOrder)
 }
 
 // motionHitTestScene carries the resource and canvas dimensions the hit test
@@ -1688,7 +1920,7 @@ func hitTestMotionLayer(resource *motionResource, root map[string]assets.Value, 
 		width:    psbMotionInt(root["screenSize"], "width", 640),
 		height:   psbMotionInt(root["screenSize"], "height", 480),
 	}
-	return hitTestMotionValue(scene, layers, tick, eval, motionRenderContext{opacity: 255, blendMode: 16, matrix: identityMotionMatrix}, label, x, y)
+	return hitTestMotionValue(scene, layers, tick, eval, motionRenderContext{opacity: 255, blendMode: 16, matrix: identityMotionMatrix, rootMatrix: identityMotionMatrix, transform: identityMotionTransform}, label, x, y)
 }
 
 func hitTestMotionValue(scene motionHitTestScene, value assets.Value, tick float64, eval motionRenderEval, parent motionRenderContext, label string, x, y float64) (bool, bool) {
@@ -1704,13 +1936,16 @@ func hitTestMotionValue(scene motionHitTestScene, value assets.Value, tick float
 	case map[string]assets.Value:
 		ctx := parent
 		if frames, ok := node["frameList"].([]assets.Value); ok {
-			if content, visible := psbMotionResolvedContent(frames, motionNodeTick(node, tick, eval)); visible {
-				ctx = psbMotionContext(parent, content, node)
-				if psbLabel(node) == label {
-					found, hit = true, hitMotionShape(psbMotionInt(node, "shape", 0), ctx, content, x, y)
-				}
-				ctx = motionMeshAncestorContext(scene.resource, scene.root, node, content, eval, ctx, scene.width, scene.height)
+			content, visible := psbMotionResolvedContent(frames, motionNodeTick(node, tick, eval), psbMotionInt(node, "type", 0))
+			if !visible {
+				return false, false
 			}
+			ctx = psbMotionContext(parent, content, node)
+			if psbLabel(node) == label {
+				insideViewport := !ctx.hasViewport || (x >= ctx.viewport.minX && x <= ctx.viewport.maxX && y >= ctx.viewport.minY && y <= ctx.viewport.maxY)
+				found, hit = true, insideViewport && hitMotionShape(psbMotionInt(node, "shape", 0), ctx, content, x, y)
+			}
+			ctx = motionMeshAncestorContext(scene.resource, scene.root, node, content, eval, ctx, scene.width, scene.height)
 		}
 		for _, key := range []string{"children", "layer"} {
 			if children, ok := node[key]; ok {
@@ -1886,6 +2121,10 @@ const motionCameraZFactor = 1.0
 type motionCameraAccumulated struct {
 	x, y, z        float64
 	matrix         motionMatrix
+	rootMatrix     motionMatrix
+	transform      motionTransformState
+	inheritMask    int
+	inheritParent  *motionCameraAccumulated
 	active         bool
 	coordinateMode int
 }
@@ -1896,7 +2135,7 @@ type motionCameraAccumulated struct {
 // draw affine with a truncating +0.5 rounding before being applied to every
 // prepared render item (PlayerRenderItems.cpp:1174-1215).
 func motionCameraOffset(layers assets.Value, tick float64, eval motionRenderEval, drawMatrix motionDrawMatrix) (float64, float64, bool) {
-	root := motionCameraAccumulated{matrix: identityMotionMatrix, active: true}
+	root := motionCameraAccumulated{matrix: identityMotionMatrix, rootMatrix: identityMotionMatrix, transform: identityMotionTransform, active: true}
 	return motionCameraOffsetValue(layers, tick, eval, root, drawMatrix)
 }
 
@@ -1948,35 +2187,50 @@ func motionCameraOffsetValue(value assets.Value, tick float64, eval motionRender
 		}
 	case map[string]assets.Value:
 		acc := parent
+		transformParent := parent
+		for transformParent.inheritMask&0x00400000 != 0 && transformParent.inheritParent != nil {
+			transformParent = *transformParent.inheritParent
+		}
 		acc.x, acc.y, acc.z = parent.x, parent.y, parent.z
 		acc.matrix = parent.matrix
+		acc.rootMatrix = transformParent.rootMatrix
 		acc.coordinateMode = parent.coordinateMode
+		acc.inheritMask = psbMotionInt(node, "inheritMask", 0x1FC)
 		// A node only stays active when it resolves visible content and every
 		// ancestor is active (PlayerUpdateLayerEval.cpp:875-880).
 		acc.active = false
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
-			if content, visible := psbMotionResolvedContent(frameList, motionNodeTick(node, tick, eval)); visible {
+			if content, visible := psbMotionResolvedContent(frameList, motionNodeTick(node, tick, eval), psbMotionInt(node, "type", 0)); visible {
 				// A sync node copies the parent state and stays inactive
 				// (PlayerUpdateLayerEval.cpp:857-880).
 				sync, hasSync := psbNumber(content["sync"])
 				if hasSync && sync != 0 {
-					acc.x, acc.y, acc.z = parent.x, parent.y, parent.z
-					acc.matrix = parent.matrix
+					acc.x, acc.y, acc.z = transformParent.x, transformParent.y, transformParent.z
+					acc.matrix = transformParent.matrix
+					acc.transform = transformParent.transform
 				} else {
 					x, y, z := motionNodeCoord(content)
-					acc.matrix = multiplyMotionMatrix(parent.matrix, psbMotionLocalMatrixOrder(node, content, motionCameraTransformOrder))
-					if parent.coordinateMode != 0 {
-						worldX := parent.matrix.a*x + parent.matrix.b*z
-						worldZ := parent.matrix.c*x + parent.matrix.d*z
-						acc.x = worldX + parent.x
-						acc.y = y + parent.y
-						acc.z = worldZ + parent.z
+					flags := psbMotionInt(node, "inheritMask", 0x1FC)
+					acc.transform = inheritMotionTransform(transformParent.transform, motionTransformFromContent(content), flags)
+					acc.inheritMask = flags
+					acc.inheritParent = &parent
+					if flags&0x1FC == 0x1FC {
+						acc.matrix = multiplyMotionMatrix(transformParent.matrix, psbMotionLocalMatrixOrder(node, content, motionCameraTransformOrder))
 					} else {
-						worldX := parent.matrix.a*x + parent.matrix.b*y
-						worldY := parent.matrix.c*x + parent.matrix.d*y
-						acc.x = worldX + parent.x
-						acc.y = worldY + parent.y
-						acc.z = z + parent.z
+						acc.matrix = multiplyMotionMatrix(transformParent.rootMatrix, psbMotionLocalMatrixStateOrder(node, acc.transform, motionCameraTransformOrder))
+					}
+					if transformParent.coordinateMode != 0 {
+						worldX := transformParent.matrix.a*x + transformParent.matrix.b*z
+						worldZ := transformParent.matrix.c*x + transformParent.matrix.d*z
+						acc.x = worldX + transformParent.x
+						acc.y = y + transformParent.y
+						acc.z = worldZ + transformParent.z
+					} else {
+						worldX := transformParent.matrix.a*x + transformParent.matrix.b*y
+						worldY := transformParent.matrix.c*x + transformParent.matrix.d*y
+						acc.x = worldX + transformParent.x
+						acc.y = worldY + transformParent.y
+						acc.z = z + transformParent.z
 					}
 					acc.active = parent.active
 				}
@@ -2003,16 +2257,7 @@ func motionCameraOffsetValue(value assets.Value, tick float64, eval motionRender
 // motionNodeCoord reads "coord" [x,y,z] with the reference's list-or-dict
 // fallback (PlayerInternal.h:942-960).
 func motionNodeCoord(content map[string]assets.Value) (float64, float64, float64) {
-	values := psbMotionList(content["coord"])
-	if len(values) == 0 {
-		if dictionary, ok := content["coord"].(map[string]assets.Value); ok {
-			values = []float64{
-				psbMotionFloatValue(dictionary["0"], 0),
-				psbMotionFloatValue(dictionary["1"], 0),
-				psbMotionFloatValue(dictionary["2"], 0),
-			}
-		}
-	}
+	values := psbMotionCoordValues(content["coord"])
 	var x, y, z float64
 	if len(values) > 0 {
 		x = values[0]
@@ -2303,7 +2548,7 @@ func blendMotionImage(dst []byte, width, height int, src *assets.Image, originX,
 	centerX := float64(width)/2 + ctx.x
 	centerY := float64(height)/2 + ctx.y
 	blend := motionBlendMode(ctx.blendMode)
-	if matrix.a == 1 && matrix.b == 0 && matrix.c == 0 && matrix.d == 1 {
+	if !ctx.hasViewport && matrix.a == 1 && matrix.b == 0 && matrix.c == 0 && matrix.d == 1 {
 		offsetXFloat := centerX - originX
 		offsetYFloat := centerY - originY
 		offsetX, offsetY := int(math.Round(offsetXFloat)), int(math.Round(offsetYFloat))
@@ -2358,6 +2603,14 @@ func blendMotionImage(dst []byte, width, height int, src *assets.Image, originX,
 	top := maxInt(0, int(math.Floor(minY)))
 	right := minInt(width, int(math.Ceil(maxX)))
 	bottom := minInt(height, int(math.Ceil(maxY)))
+	if ctx.hasViewport {
+		clipLeft, clipTop, clipRight, clipBottom := motionViewportPixels(ctx.viewport, width, height)
+		left, top = maxInt(left, clipLeft), maxInt(top, clipTop)
+		right, bottom = minInt(right, clipRight), minInt(bottom, clipBottom)
+	}
+	if left >= right || top >= bottom {
+		return nil
+	}
 	inverse := motionMatrix{
 		a: matrix.d / determinant,
 		b: -matrix.b / determinant,
