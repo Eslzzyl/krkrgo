@@ -1345,12 +1345,15 @@ func (s *Services) emotePlayerProgress(state *motionPlayerState, emote *emotePla
 	frames := interval * motionFramesPerMillisecond
 	emote.progress += interval
 	emote.frameLastTime = frames
-	if interval > 0 {
+	if !motionPlayerSpeed(state) && !emote.freezeBodyMotion() {
+		return tjs.VoidValue, nil
+	}
+	if interval > 0 && motionPlayerSpeed(state) {
 		if state.playing {
-			state.frameTick += frames * state.speed
+			state.frameTick += frames
 			if resource := s.playerResource(state); resource != nil {
 				if last := motionLastTime(resource, state.chara, state.motion); last >= 0 && state.frameTick >= last {
-					advanceMotionClock(state, last, motionLoopTime(resource, state.chara, state.motion))
+					advanceMotionClock(state, last, motionPlayerLoopTime(state, resource))
 				}
 			}
 		}
@@ -2325,7 +2328,7 @@ func (s *Services) emotePlayerSerialize(vm *tjs.VM, state *motionPlayerState, em
 		"chara":     tjs.StringValue(state.chara),
 		"motion":    tjs.StringValue(state.motion),
 		"tickcount": tjs.RealValue(tickCount),
-		"speed":     tjs.RealValue(state.speed),
+		"speed":     tjs.IntegerValue(boolInt(motionPlayerSpeed(state))),
 		"outline":   tjs.StringValue(state.outline),
 	}
 	for key, value := range fields {
@@ -2427,7 +2430,12 @@ func (s *Services) emotePlayerUnserialize(vm *tjs.VM, state *motionPlayerState, 
 	tickCount := 0.0
 	readReal("tickcount", &tickCount)
 	state.frameTick = tickCount * motionFramesPerMillisecond
-	readReal("speed", &state.speed)
+	if value, ok := read("speed"); ok && value.Kind() != tjs.KindVoid {
+		if n, err := value.Real(); err == nil {
+			state.speed = n != 0
+			state.speedSet = true
+		}
+	}
 	state.held = false
 	if value, ok := read("variables"); ok && value.Kind() == tjs.KindObject && !value.IsNull() {
 		if object, ok := vm.Objects.Lookup(value.ObjectRef().Object); ok {
@@ -2525,7 +2533,8 @@ func (s *Services) emotePlayerClone(vm *tjs.VM, state *motionPlayerState, emote 
 	cloneState, cloneEmote := s.emotePlayerStateFor(instance.ObjectRef().Object)
 	cloneState.resourceManager = state.resourceManager
 	cloneState.resource = state.resource
-	cloneState.speed = 1
+	cloneState.speed = true
+	cloneState.speedSet = true
 	cloneState.drawMatrix = identityMotionDrawMatrix()
 	copyEmotePlayerState(cloneEmote, emote)
 	s.emoteResetRuntime(cloneEmote)

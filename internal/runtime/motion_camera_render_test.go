@@ -104,7 +104,7 @@ func motionCameraTestDraw(t *testing.T, resource *motionResource, drawMatrix mot
 		chara:      "chara",
 		motion:     "idle",
 		drawMatrix: drawMatrix,
-		speed:      1,
+		speed:      true,
 	}
 	value := tjs.ObjectValue(tjs.NewObjectRef(tjs.ObjectID(1)))
 	if err := services.drawMotionTarget(nil, state, value); err != nil {
@@ -126,7 +126,7 @@ func motionCameraTestDrawAdopt(t *testing.T, resource *motionResource, drawMatri
 		chara:      "chara",
 		motion:     "idle",
 		drawMatrix: drawMatrix,
-		speed:      1,
+		speed:      true,
 	}
 	value := tjs.ObjectValue(tjs.NewObjectRef(tjs.ObjectID(1)))
 	if err := services.drawMotionTarget(nil, state, value); err != nil {

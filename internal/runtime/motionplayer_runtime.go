@@ -56,7 +56,8 @@ type motionPlayerState struct {
 	frameTick     float64
 	loopTime      float64
 	loopTimeSet   bool
-	speed         float64
+	speed         bool
+	speedSet      bool
 	zFactor       float64
 	zFactorSet    bool
 	playing       bool
@@ -418,7 +419,10 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		if !state.playing {
 			return tjs.VoidValue, nil
 		}
-		state.frameTick += float64(interval) * motionFramesPerMillisecond * state.speed
+		if !motionPlayerSpeed(state) {
+			return tjs.VoidValue, nil
+		}
+		state.frameTick += float64(interval) * motionFramesPerMillisecond
 		if resource := s.playerResource(state); resource != nil {
 			last := motionLastTime(resource, state.chara, state.motion)
 			if last >= 0 && state.frameTick >= last {
@@ -484,7 +488,7 @@ func (s *Services) motionPlayer(id tjs.ObjectID) *motionPlayerState {
 	defer s.mu.Unlock()
 	state := s.MotionPlayers[id]
 	if state == nil {
-		state = &motionPlayerState{speed: 1, zFactor: 1, zFactorSet: true, drawMatrix: identityMotionDrawMatrix()}
+		state = &motionPlayerState{speed: true, speedSet: true, zFactor: 1, zFactorSet: true, drawMatrix: identityMotionDrawMatrix()}
 		s.MotionPlayers[id] = state
 	}
 	return state
@@ -516,7 +520,10 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 		}
 		return tjs.RealValue(0), nil
 	case "speed":
-		return tjs.RealValue(state.speed), nil
+		if motionPlayerSpeed(state) {
+			return tjs.IntegerValue(1), nil
+		}
+		return tjs.IntegerValue(0), nil
 	case "zFactor":
 		return tjs.RealValue(motionPlayerZFactor(state)), nil
 	case "playing", "allplaying":
@@ -585,7 +592,8 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 		if err != nil {
 			return err
 		}
-		state.speed = n
+		state.speed = n != 0
+		state.speedSet = true
 	case "zFactor":
 		n, err := value.Real()
 		if err != nil {
@@ -744,6 +752,10 @@ func motionPlayerZFactor(state *motionPlayerState) float64 {
 		return 1
 	}
 	return state.zFactor
+}
+
+func motionPlayerSpeed(state *motionPlayerState) bool {
+	return state == nil || (!state.speedSet && !state.speed) || state.speed
 }
 
 func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value tjs.Value) error {
