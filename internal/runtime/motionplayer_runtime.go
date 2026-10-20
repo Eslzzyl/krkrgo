@@ -77,6 +77,12 @@ type motionPlayerState struct {
 	hasCamera                bool
 	cameraActive             bool
 	stereovisionActive       bool
+	cameraAlive              bool
+	cameraTarget             tjs.Value
+	cameraPosition           tjs.Value
+	cameraFOV                float64
+	cameraOffsetX            float64
+	cameraOffsetY            float64
 	// held marks a one-shot motion that reached its last time: the reference
 	// stops advancing the timeline at that point and keeps the evaluated pose,
 	// and the layer keeps drawing the clamped frame. A repeat apply of the same
@@ -521,6 +527,41 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		motionTrace("draw-affine id=%d a=%.4f c=%.4f b=%.4f d=%.4f tx=%.4f ty=%.4f",
 			id, values[0], values[1], values[2], values[3], values[4], values[5])
 		return tjs.VoidValue, nil
+	case "getCameraOffset":
+		return state.cameraPosition, nil
+	case "setCameraOffset":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.setCameraOffset requires a point")
+		}
+		state.cameraPosition = args[0]
+		if args[0].Kind() == tjs.KindObject && !args[0].IsNull() {
+			if x, found, err := vm.GetMemberIfPresent(args[0], "x", s, nil); err == nil && found {
+				if n, err := x.Real(); err == nil {
+					state.cameraOffsetX = float64(float32(n))
+				}
+			}
+			if y, found, err := vm.GetMemberIfPresent(args[0], "y", s, nil); err == nil && found {
+				if n, err := y.Real(); err == nil {
+					state.cameraOffsetY = float64(float32(n))
+				}
+			}
+		}
+		return tjs.VoidValue, nil
+	case "setStereovisionCameraPosition":
+		if len(args) < 3 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.setStereovisionCameraPosition requires x, y, z")
+		}
+		values := make([]tjs.Value, 3)
+		for i := range 3 {
+			n, err := args[i].Real()
+			if err != nil {
+				return tjs.VoidValue, err
+			}
+			values[i] = tjs.RealValue(n)
+		}
+		position, err := vm.NewArray(values)
+		state.cameraPosition = position
+		return tjs.VoidValue, err
 	case "skipToSync":
 		if resource := s.playerResource(state); resource != nil {
 			if last := motionLastTime(resource, state.chara, state.motion); last >= 0 {
@@ -624,7 +665,7 @@ func (s *Services) motionPlayer(id tjs.ObjectID) *motionPlayerState {
 	defer s.mu.Unlock()
 	state := s.MotionPlayers[id]
 	if state == nil {
-		state = &motionPlayerState{speed: true, speedSet: true, zFactor: 1, zFactorSet: true, drawMatrix: identityMotionDrawMatrix()}
+		state = &motionPlayerState{speed: true, speedSet: true, zFactor: 1, zFactorSet: true, cameraFOV: 60, drawMatrix: identityMotionDrawMatrix()}
 		s.MotionPlayers[id] = state
 	}
 	return state
@@ -677,6 +718,14 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 		return tjs.IntegerValue(boolInt(state.cameraActive)), nil
 	case "stereovisionActive":
 		return tjs.IntegerValue(boolInt(state.stereovisionActive)), nil
+	case "cameraTarget":
+		return state.cameraTarget, nil
+	case "cameraPosition":
+		return state.cameraPosition, nil
+	case "cameraFOV":
+		return tjs.RealValue(state.cameraFOV), nil
+	case "cameraAlive":
+		return tjs.IntegerValue(boolInt(state.cameraAlive)), nil
 	case "loopTime":
 		if state.loopTimeSet {
 			return tjs.RealValue(state.loopTime), nil
@@ -808,6 +857,18 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 		state.cameraActive = motionPlayerBool(value)
 	case "stereovisionActive":
 		state.stereovisionActive = motionPlayerBool(value)
+	case "cameraTarget":
+		state.cameraTarget = value
+	case "cameraPosition":
+		state.cameraPosition = value
+	case "cameraFOV":
+		n, err := value.Real()
+		if err != nil {
+			return err
+		}
+		state.cameraFOV = n
+	case "cameraAlive":
+		state.cameraAlive = motionPlayerBool(value)
 	case "loopTime":
 		n, err := value.Real()
 		if err != nil {
@@ -1034,6 +1095,8 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 	}
 	drawMatrix.tx += drawMatrix.a*state.x + drawMatrix.b*state.y
 	drawMatrix.ty += drawMatrix.c*state.x + drawMatrix.d*state.y
+	drawMatrix.tx += state.cameraOffsetX
+	drawMatrix.ty += state.cameraOffsetY
 	if s.gpuCapture && layerHasCanvas(layer) && layer.Type == LayerAlpha {
 		key := motionPlayerGPUKey{
 			resource: resource, chara: state.chara, motion: state.motion,

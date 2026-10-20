@@ -80,6 +80,7 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 		"getPlayingTimelineFlagsAt", "getTimelineTotalFrameCount", "playTimeline",
 		"stopTimeline", "setTimelineBlendRatio", "getTimelineBlendRatio",
 		"fadeInTimeline", "fadeOutTimeline", "getPlayingTimelineInfoList",
+		"getCameraOffset", "setCameraOffset", "setStereovisionCameraPosition",
 		"skipToSync", "setDrawAffineTranslateMatrix",
 	} {
 		if err := vm.RegisterNativeMethod(player, method, "Motion.Player."+method); err != nil {
@@ -92,7 +93,8 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 		"frameLoopTime", "loopTime",
 		"priorDraw", "processedMeshVerticesNum", "queuing", "directEdit",
 		"selectorEnabled", "syncWaiting", "syncActive", "hasCamera",
-		"cameraActive", "stereovisionActive", "speed", "playing", "allplaying",
+		"cameraActive", "stereovisionActive", "cameraTarget", "cameraPosition",
+		"cameraFOV", "cameraAlive", "speed", "playing", "allplaying",
 		"tags", "variableKeys", "completionType", "maskMode", "zFactor",
 		"outline", "onAction",
 	} {
