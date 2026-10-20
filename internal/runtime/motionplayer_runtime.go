@@ -54,6 +54,8 @@ type motionPlayerState struct {
 	motion        string
 	stealthMotion string
 	frameTick     float64
+	loopTime      float64
+	loopTimeSet   bool
 	speed         float64
 	zFactor       float64
 	zFactorSet    bool
@@ -388,6 +390,7 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 			return tjs.VoidValue, nil
 		}
 		state.motion = motion
+		state.loopTimeSet = false
 		if flags&motionPlayFlagChain == 0 {
 			state.frameTick = 0
 		}
@@ -419,7 +422,7 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		if resource := s.playerResource(state); resource != nil {
 			last := motionLastTime(resource, state.chara, state.motion)
 			if last >= 0 && state.frameTick >= last {
-				advanceMotionClock(state, last, motionLoopTime(resource, state.chara, state.motion))
+				advanceMotionClock(state, last, motionPlayerLoopTime(state, resource))
 				if !state.playing {
 					motionTrace("progress-stop id=%d motion=%q frame=%.2f last=%.2f", id, state.motion, state.frameTick, last)
 				}
@@ -502,6 +505,16 @@ func (s *Services) motionPlayerGet(vm *tjs.VM, state *motionPlayerState, propert
 			return tjs.RealValue(state.frameTick * 1000 / 60), nil
 		}
 		return tjs.RealValue(0), nil
+	case "frameTickCount":
+		return tjs.RealValue(state.frameTick), nil
+	case "loopTime":
+		if state.loopTimeSet {
+			return tjs.RealValue(state.loopTime), nil
+		}
+		if resource := s.playerResource(state); resource != nil {
+			return tjs.RealValue(motionLoopTime(resource, state.chara, state.motion)), nil
+		}
+		return tjs.RealValue(0), nil
 	case "speed":
 		return tjs.RealValue(state.speed), nil
 	case "zFactor":
@@ -541,6 +554,7 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 		// load path; a repeat of the loaded key only reselects it.
 		state.motion = motion
 		state.frameTick = 0
+		state.loopTimeSet = false
 		state.playing = motion != ""
 		state.held = false
 	case "tickCount":
@@ -552,6 +566,20 @@ func (s *Services) motionPlayerSet(state *motionPlayerState, property string, va
 		// An explicit seek moves the pose, so a later repeat of the same
 		// motion starts over instead of holding.
 		state.held = false
+	case "frameTickCount":
+		n, err := value.Real()
+		if err != nil {
+			return err
+		}
+		state.frameTick = n
+		state.held = false
+	case "loopTime":
+		n, err := value.Real()
+		if err != nil {
+			return err
+		}
+		state.loopTime = n
+		state.loopTimeSet = true
 	case "speed":
 		n, err := value.Real()
 		if err != nil {
@@ -630,6 +658,16 @@ func motionLastTime(resource *motionResource, chara, motion string) float64 {
 
 func motionLoopTime(resource *motionResource, chara, motion string) float64 {
 	return motionField(resource, chara, motion, "loopTime", -1)
+}
+
+func motionPlayerLoopTime(state *motionPlayerState, resource *motionResource) float64 {
+	if state == nil {
+		return -1
+	}
+	if state.loopTimeSet {
+		return state.loopTime
+	}
+	return motionLoopTime(resource, state.chara, state.motion)
 }
 
 // advanceMotionClock moves the frame clock by one interval and applies the
