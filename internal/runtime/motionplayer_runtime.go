@@ -203,12 +203,12 @@ func (s *Services) motionResourceStoreForLocked(manager tjs.ObjectID) *motionRes
 	return cache
 }
 
-func (s *Services) requireMotionLayerID(manager tjs.ObjectID, name string) int64 {
+func (s *Services) requireMotionLayerID(manager tjs.ObjectID, name string, named bool) int64 {
 	s.ensureInit()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cache := s.motionResourceStoreForLocked(manager)
-	if name != "" {
+	if named {
 		if id := cache.layerIDsByName[name]; id != 0 {
 			return id
 		}
@@ -225,7 +225,7 @@ func (s *Services) requireMotionLayerID(manager tjs.ObjectID, name string) int64
 	id := cache.nextLayerID
 	cache.nextLayerID++
 	cache.usedLayerIDs[id] = struct{}{}
-	if name != "" {
+	if named {
 		cache.layerIDsByName[name] = id
 		cache.layerNamesByID[id] = name
 	}
@@ -668,7 +668,7 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.Player.requireLayerId requires a layer name")
 		}
-		return tjs.IntegerValue(s.requireMotionLayerID(state.resourceManager, args[0].Text())), nil
+		return tjs.IntegerValue(s.requireMotionLayerID(state.resourceManager, args[0].Text(), true)), nil
 	case "releaseLayerId":
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.Player.releaseLayerId requires an id")

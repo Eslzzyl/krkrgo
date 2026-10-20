@@ -101,6 +101,7 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 		"outsideFactor", "resourceManager", "stealthChara", "project",
 		"useD3D", "meshline", "busy",
 		"tags", "variableKeys", "completionType", "maskMode", "colorWeight", "zFactor",
+		"independentLayerInherit",
 		"outline", "onAction",
 	} {
 		setter := "Motion.Player.set:" + property
@@ -155,7 +156,7 @@ func (s *Services) motionResourceManagerNative(vm *tjs.VM, context tjs.Value, op
 		if len(args) != 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.ResourceManager.requireLayerId takes no arguments")
 		}
-		return tjs.IntegerValue(s.requireMotionLayerID(context.ObjectRef().Object, "")), nil
+		return tjs.IntegerValue(s.requireMotionLayerID(context.ObjectRef().Object, "", false)), nil
 	case "releaseLayerId":
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.ResourceManager.releaseLayerId requires an id")
