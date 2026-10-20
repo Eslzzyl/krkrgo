@@ -626,6 +626,49 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		s.emoteStartMotion(state, emote, motion, flags)
 		motionTrace("play id=%d chara=%q motion=%q flags=%d", id, state.chara, state.motion, flags)
 		return tjs.VoidValue, nil
+	case "serialize":
+		return s.emotePlayerSerialize(vm, state, s.motionPlayerEmote(state))
+	case "unserialize":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.unserialize requires data")
+		}
+		emote := s.motionPlayerEmote(state)
+		if err := s.emotePlayerUnserialize(vm, state, emote, args[0]); err != nil {
+			return tjs.VoidValue, err
+		}
+		state.playing = len(emote.playingOrder) > 0
+		state.syncActive = state.syncWaiting && state.playing
+		return tjs.VoidValue, nil
+	case "motionList":
+		paths := make([]tjs.Value, 0)
+		seen := make(map[string]struct{})
+		s.mu.RLock()
+		cache := s.MotionResources[state.resourceManager]
+		if cache != nil {
+			for _, resource := range cache.order {
+				if resource == nil || resource.path == "" {
+					continue
+				}
+				if _, exists := seen[resource.path]; exists {
+					continue
+				}
+				seen[resource.path] = struct{}{}
+				paths = append(paths, tjs.StringValue(resource.path))
+			}
+		}
+		s.mu.RUnlock()
+		return vm.NewArray(paths)
+	case "getD3DAvailable":
+		return tjs.IntegerValue(1), nil
+	case "debugPrint":
+		motionTrace("debug id=%d motion=%q frame=%.3f", id, state.motion, state.frameTick)
+		return tjs.VoidValue, nil
+	case "emoteEdit":
+		state.directEdit = true
+		if len(args) > 0 {
+			state.tags = args[0]
+		}
+		return tjs.VoidValue, nil
 	case "stop":
 		state.playing = false
 		state.held = false
@@ -1486,13 +1529,6 @@ func (s *Services) drawMotionTarget(vm *tjs.VM, state *motionPlayerState, value 
 	layer, err := s.motionLayerFromValue(vm, value)
 	if err != nil {
 		return err
-	}
-	if !state.viewVisible {
-		s.mu.Lock()
-		layer.Visible = false
-		layer.gpuMotion = nil
-		s.mu.Unlock()
-		return nil
 	}
 	resource := s.playerResource(state)
 	if resource == nil {

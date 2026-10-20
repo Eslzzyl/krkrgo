@@ -93,6 +93,8 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 		"removeAllCaption", "registerBg", "registerCaption", "alphaOpAdd",
 		"setSize", "calcViewParam", "setFlip", "setOpacity", "setVisible",
 		"setSlant", "setZoom",
+		"serialize", "unserialize", "motionList", "getD3DAvailable",
+		"debugPrint", "emoteEdit",
 	} {
 		if err := vm.RegisterNativeMethod(player, method, "Motion.Player."+method); err != nil {
 			return err
