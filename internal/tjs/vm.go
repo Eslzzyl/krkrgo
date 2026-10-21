@@ -3358,11 +3358,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			}
 			for i := range definition.Methods {
 				function := definition.Methods[i].Clone()
-				lexicalContext := f.lexicalContext
-				if lexicalContext == 0 {
-					lexicalContext = f.context
-				}
-				method, methodID, allocErr := v.newFunctionValue(function, f.scopes, f.withs, lexicalContext)
+				method, methodID, allocErr := v.newFunctionValue(function, nil, nil, 0)
 				if allocErr != nil {
 					e = allocErr
 					break

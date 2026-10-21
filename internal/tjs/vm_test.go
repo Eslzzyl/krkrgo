@@ -1527,6 +1527,27 @@ return c.callback()();
 		t.Fatalf("closure lookup = %v, want 17", got)
 	}
 }
+
+func TestVMNestedClassMethodUsesInstanceContext(t *testing.T) {
+	got := executeVMSource(t, `
+class Outer {
+	function setPos() { return "outer"; }
+	function create() {
+		class Inner {
+			function setPos() { return "inner"; }
+			function read() { return setPos(); }
+		}
+		return new Inner();
+	}
+}
+return (new Outer()).create().read() == "inner";
+`)
+	truth, err := got.Truth()
+	if err != nil || !truth {
+		t.Fatalf("nested class method context = %v, %v; want true", got, err)
+	}
+}
+
 func TestVMContextAssignmentUpdatesDeclaredGlobal(t *testing.T) {
 	got := executeVMSource(t, `
 var errorLog;
