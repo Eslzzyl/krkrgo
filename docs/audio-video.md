@@ -16,7 +16,7 @@ Linking `getSample.dll` installs the source-backed `WaveSoundBuffer.sampleValue`
 
 Non-AJPM sources are opened through the FFmpeg shared-library sidecar. `VideoOverlay.Open` selects the first decodable video and audio streams, reports stream metadata, converts video frames to RGBA, and queues bounded audio blocks. Decoder errors are returned with the source name and operation context. When the sidecar is missing or ABI-incompatible, the first failure is logged once and the open, transport, and seek calls become no-ops so the runtime keeps running. AlphaMovie (`AJPM`) sources remain on the repository decoder in [`assets/amv.go`](../internal/assets/amv.go).
 
-The runtime requires `avutil`, `avcodec`, `avformat`, and `swscale` from the deployed FFmpeg 9.0.2 ABI. The loader searches `KRKRGO_FFMPEG_DIR`, `lib/ffmpeg`, and the executable directory; the deployment workflow installs the libraries beside the application.
+The runtime requires `avutil`, `avcodec`, `avformat`, and `swscale` from the deployed FFmpeg 9.0.2 ABI. The loader searches `KRKRGO_FFMPEG_DIR`, `lib/ffmpeg`, and the executable directory; the deployment workflow installs the libraries beside the application. On Windows, dependency lookup includes the directory containing each loaded FFmpeg DLL.
 
 The current video model retains headless transport and frame/audio queue semantics. Audio-stream selection beyond the first decodable stream, movie color/effect controls, and OS video-device parity remain outside this runtime contract.
 
