@@ -7,6 +7,7 @@ require (
 	github.com/ebitengine/purego v0.11.2
 	github.com/egoist/mygo v0.5.5
 	github.com/hajimehoshi/ebiten/v2 v2.10.5
+	github.com/pierrec/lz4/v4 v4.1.33
 	golang.org/x/image v0.47.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/text v0.43.0

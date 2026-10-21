@@ -24,9 +24,9 @@ These project-relative and executable-relative XP3 names are the resource paths 
 
 ### Storage gaps
 
-- Only local `file` media with domain `.` is available. Other media schemes return `assets.ErrUnsupportedStorageMedia`; non-current file domains and C++ media backends are not implemented.
+- Local `file` media with domain `.` and the linked `lzfs.dll` media are available. LZFS reads unwrap `lzfs://` names into project/save storage, pass ordinary contents through, and decode valid LZ4 frames with the configured file-size limit; malformed frame headers pass through as ordinary content, and frame decode failures return `assets.ErrLZFSDecompress`. Other media schemes return `assets.ErrUnsupportedStorageMedia`; non-current file domains and other C++ media backends are not implemented. The LZFS behavior follows the [public Kirikiroid2 reconstruction](https://github.com/fenghengzhi/kirikiroid2-web/blob/web/cpp/plugins/lzfs.cpp).
 - Dynamic current-domain/path state and platform-specific drive/UNC mapping are unavailable.
-- `getFullPath` and successful `getPlacedPath` use normalized `file://.` names, not OS filesystem paths. Absolute project paths round-trip through storage resolution, including the case-normalized spelling returned by `getFullPath`; they are converted back to project-relative virtual names only when contained by the active project, with symlink containment enforced during lookup. Internal resource reads continue through secured filesystem/archive resolution.
+- `getFullPath` and successful `getPlacedPath` use normalized `file://.` names, not OS filesystem paths; LZFS paths retain their `lzfs://` spelling. Absolute project paths round-trip through storage resolution, including the case-normalized spelling returned by `getFullPath`; they are converted back to project-relative virtual names only when contained by the active project, with symlink containment enforced during lookup. Internal resource reads continue through secured filesystem/archive resolution.
 
 ## Resource and text formats
 

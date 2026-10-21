@@ -739,6 +739,16 @@ func (s *Services) inputKeyState(key uint32, current bool) bool {
 }
 
 func (s *Services) readStorage(name string) ([]byte, error) {
+	if source, ok := lzfsStorageSource(name); ok {
+		if !s.lzfsPluginLinked() {
+			return nil, fmt.Errorf("lzfs storage %q is unavailable until lzfs.dll is linked", name)
+		}
+		data, err := s.readStorage(source)
+		if err != nil {
+			return nil, err
+		}
+		return assets.DecodeLZFS(data, s.Limits.FileBytes)
+	}
 	if isVarStorage(name) {
 		if s.varStorageVM == nil {
 			return nil, fmt.Errorf("varfile storage %q is unavailable until varfile.dll is linked", name)

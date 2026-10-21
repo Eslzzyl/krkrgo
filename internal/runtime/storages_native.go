@@ -56,6 +56,12 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 		if storage == nil {
 			return tjs.VoidValue, UnsupportedDevice("storage")
 		}
+		if _, ok := lzfsStorageSource(name); ok {
+			if !s.lzfsPluginLinked() {
+				return tjs.VoidValue, lzfsUnavailable(name)
+			}
+			return tjs.StringValue(""), nil
+		}
 		local, err := storage.LocalName(name)
 		if err != nil {
 			return tjs.VoidValue, err
@@ -71,6 +77,13 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 		storage := storagesStorage(s)
 		if storage == nil {
 			return tjs.VoidValue, UnsupportedDevice("storage")
+		}
+		if _, ok := lzfsStorageSource(name); ok {
+			data, err := s.readStorage(name)
+			if err != nil {
+				return tjs.VoidValue, err
+			}
+			return makeStorageSizeInfo(vm, uint64(len(data)))
 		}
 		size, err := storage.StatSize(name)
 		if err != nil {
@@ -170,6 +183,12 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 		if err != nil {
 			return tjs.VoidValue, err
 		}
+		if _, ok := lzfsStorageSource(name); ok {
+			if !s.lzfsPluginLinked() {
+				return tjs.VoidValue, lzfsUnavailable(name)
+			}
+			return vm.NewArray(nil)
+		}
 		if !isVarStorage(name) || s == nil || s.varStorageVM == nil {
 			return tjs.VoidValue, fmt.Errorf("Storages.getListAt supports only linked varfile storage paths")
 		}
@@ -199,12 +218,27 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 	case "removeAutoPath":
 		return tjs.VoidValue, storage.RemoveSearchPath(name)
 	case "getFullPath":
+		if _, ok := lzfsStorageSource(name); ok {
+			if !s.lzfsPluginLinked() {
+				return tjs.VoidValue, lzfsUnavailable(name)
+			}
+			return tjs.StringValue(name), nil
+		}
 		fullPath, err := storage.FullPath(name)
 		if err != nil {
 			return tjs.VoidValue, err
 		}
 		return tjs.StringValue(fullPath), nil
 	case "getPlacedPath":
+		if source, ok := lzfsStorageSource(name); ok {
+			if !s.lzfsPluginLinked() {
+				return tjs.VoidValue, lzfsUnavailable(name)
+			}
+			if s.lzfsExists(source, true) {
+				return tjs.StringValue(name), nil
+			}
+			return tjs.StringValue(""), nil
+		}
 		placedPath, err := storage.PlacedPath(name)
 		if errors.Is(err, assets.ErrNotFound) {
 			return tjs.StringValue(""), nil
@@ -214,6 +248,12 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 		}
 		return tjs.StringValue(placedPath), nil
 	case "isExistentStorage":
+		if source, ok := lzfsStorageSource(name); ok {
+			if s.lzfsExists(source, true) {
+				return tjs.IntegerValue(1), nil
+			}
+			return tjs.IntegerValue(0), nil
+		}
 		if isVarStorage(name) {
 			if s == nil || s.varStorageVM == nil {
 				return tjs.IntegerValue(0), nil
@@ -260,6 +300,20 @@ const (
 	storageAttribRegular   = 0x8000
 )
 
+func makeStorageSizeInfo(vm *tjs.VM, size uint64) (tjs.Value, error) {
+	if size > uint64(^uint64(0)>>1) {
+		return tjs.VoidValue, fmt.Errorf("Storages.fstat size exceeds TJS integer range")
+	}
+	info, err := tjsDictionary(vm)
+	if err != nil {
+		return tjs.VoidValue, err
+	}
+	if err := info.Set("size", tjs.IntegerValue(int64(size))); err != nil {
+		return tjs.VoidValue, err
+	}
+	return tjs.ObjectValue(info.Ref()), nil
+}
+
 // storagesDirList implements the read-only directory enumeration of fstat.dll.
 // Both methods require a directory name ending in a separator, resolve it
 // inside the local file-media storage space, and return the direct children of
@@ -278,6 +332,12 @@ func (s *Services) storagesDirList(vm *tjs.VM, operation string, args []tjs.Valu
 	storage := storagesStorage(s)
 	if storage == nil {
 		return tjs.VoidValue, UnsupportedDevice("storage")
+	}
+	if _, ok := lzfsStorageSource(name); ok {
+		if !s.lzfsPluginLinked() {
+			return tjs.VoidValue, lzfsUnavailable(name)
+		}
+		return vm.NewArray(nil)
 	}
 	if operation == "dirlist" {
 		names, err := storage.ReadDirNames(name)
@@ -503,6 +563,12 @@ func (s *Services) storagesLocalSource(name string) (normalized, path string, ar
 	storage, err := s.storagesRequireStorage()
 	if err != nil {
 		return "", "", false, err
+	}
+	if _, ok := lzfsStorageSource(name); ok {
+		if !s.lzfsPluginLinked() {
+			return "", "", false, lzfsUnavailable(name)
+		}
+		return name, "", false, nil
 	}
 	normalized, err = storage.NormalizeStorageName(name)
 	if err != nil {
@@ -1671,6 +1737,12 @@ func (s *Services) storagesIsExistentStorageNoSearchNoNormalize(args []tjs.Value
 	storage, err := s.storagesRequireStorage()
 	if err != nil {
 		return tjs.VoidValue, err
+	}
+	if source, ok := lzfsStorageSource(name); ok {
+		if s.lzfsExists(source, false) {
+			return tjs.IntegerValue(1), nil
+		}
+		return tjs.IntegerValue(0), nil
 	}
 	if s.SaveDir != "" {
 		save := s.storagesOverlaySave()
