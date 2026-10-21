@@ -43,7 +43,7 @@ const (
 )
 
 func ParseLaunchArgs(args []string) (LaunchOptions, error) {
-	opts := LaunchOptions{Budget: unlimitedBudget, Renderer: rendererGPU, RenderScale: 0}
+	opts := LaunchOptions{Budget: unlimitedBudget, Renderer: rendererGPU, RenderScale: 1}
 	var gameArgs []string
 	fs := flag.NewFlagSet("krkrgo run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -51,7 +51,7 @@ func ParseLaunchArgs(args []string) (LaunchOptions, error) {
 	fs.StringVar(&opts.SaveDir, "save-dir", "", "save-data directory")
 	fs.Uint64Var(&opts.Budget, "budget", unlimitedBudget, "diagnostic session instruction limit (default: unlimited)")
 	fs.StringVar(&opts.Renderer, "renderer", rendererGPU, "renderer backend: gpu or cpu (default: gpu)")
-	fs.IntVar(&opts.RenderScale, "render-scale", 0, "rendering pixel density: 1-4, or 0 for the monitor scale (default: 0)")
+	fs.IntVar(&opts.RenderScale, "render-scale", 1, "rendering pixel density: 1-4, or 0 for the monitor scale (default: 1)")
 	fs.StringVar(&opts.Upscaler, "upscaler", "off", "frame upscaler: off, bilinear, bicubic, anime4k (requires -render-scale 2)")
 	fs.BoolVar(&opts.Anime4K, "anime4k", false, "alias for -upscaler anime4k")
 	fs.Func("game-arg", "pass a command-line option to the game's System.getArgument", func(value string) error {

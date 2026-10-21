@@ -25,7 +25,8 @@ The GPU compositor reuses its current target for stable hashes; changing hashes
 and dynamic plans retain the full composition path.
 
 Rendering density is independent of layer coordinates. `Services.RenderScale`
-(fixed per session from `-render-scale` or the monitor device scale factor) makes
+(fixed per session from `-render-scale`, defaulting to 1; value 0 selects the
+monitor device scale factor) makes
 layer RGBA buffers, root composition, and transition buffers device-sized while
 `Bounds`, image sizes, draw coordinates, clips, hit testing, and script-visible
 dimensions remain logical. Image loads, text rasterization, and bitmap operations

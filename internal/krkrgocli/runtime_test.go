@@ -2,6 +2,16 @@ package krkrgocli
 
 import "testing"
 
+func TestParseLaunchArgsDefaultsToLogicalRenderScale(t *testing.T) {
+	opts, err := ParseLaunchArgs(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.RenderScale != 1 {
+		t.Fatalf("default render scale = %d, want 1", opts.RenderScale)
+	}
+}
+
 func TestParseLaunchArgsAnime4K(t *testing.T) {
 	opts, err := ParseLaunchArgs([]string{"-anime4k", "-render-scale", "2"})
 	if err != nil {
