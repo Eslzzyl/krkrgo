@@ -65,6 +65,7 @@ var nativePluginProviders = map[string]string{
 	"getabout.dll":       "System.getAboutString (system_native.go; cpp/plugins/getabout.cpp)",
 	"getsample.dll":      "WaveSoundBuffer sample extensions (sample_native.go; cpp/plugins/getSample.cpp)",
 	"kagparser.dll":      "built-in KAGParser; KAGParserEx.dll resolves here (kag_native.go; cpp/plugins/KAGParser/kagparserex.cpp)",
+	"kirikiroid2.dll":    "Kirikiroid2 text-encoding alias: Storages.setTextEncoding updates Scripts.textEncoding (reference/krkrz/base/ScriptMgnIntf.cpp:1436-1451)",
 	"krmovie.dll":        "link-only: the module backs the core VideoOverlay class and registers no TJS names, so the link installs nothing on top of the runtime's own VideoOverlay and ASF/AMV decoders (video.go, assets/amv.go; krkrz/movie/win32/krmovie.cpp, cpp/core/movie/ffmpeg)",
 	"layerexbtoa.dll":    "link-only: callers guard on the missing Layer method, and Layer's built-in pixel operations (layer_image.go) are all the runtime claims; other extension operations report ErrUnsupportedNative",
 	"layerexdraw.dll":    "link-only: the module's GDI+ surface is not implemented, so Layer reports the missing operations instead of fabricating them (layer_native.go, image_function_native.go)",

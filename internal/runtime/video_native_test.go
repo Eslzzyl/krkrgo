@@ -2,8 +2,33 @@ package runtime
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/eslzzyl/krkrgo/internal/assets"
+	"github.com/eslzzyl/krkrgo/internal/core"
 )
+
+func TestReadVideoStorageFindsMPEGWithoutExtension(t *testing.T) {
+	project := t.TempDir()
+	want := []byte("MPEG data")
+	if err := os.WriteFile(filepath.Join(project, "logo.mpg"), want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := assets.OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	services := NewServices(storage, "", core.DefaultLimits())
+	name, got, err := services.readVideoStorage("logo")
+	if err != nil {
+		t.Fatalf("read extensionless video: %v", err)
+	}
+	if name != "logo.mpg" || string(got) != string(want) {
+		t.Fatalf("resolved video = %q / %q, want logo.mpg / %q", name, got, want)
+	}
+}
 
 func TestInvalidWMVReportsSourceContext(t *testing.T) {
 	requireFFmpegSidecar(t)

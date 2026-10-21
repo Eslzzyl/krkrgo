@@ -14,16 +14,38 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 	if vm == nil {
 		return fmt.Errorf("motionplayer.dll requires a VM")
 	}
-	if _, installed := vm.Globals["Motion"]; installed {
-		return nil
+	globalObject, ok := vm.Objects.Lookup(0)
+	if !ok {
+		return fmt.Errorf("motionplayer.dll requires the TJS global object")
 	}
-	motion, err := vm.RegisterNativeClass("Motion")
-	if err != nil {
-		return err
+	motion, installed := globalObject.Get("Motion")
+	if !installed {
+		motion, installed = vm.Globals["Motion"]
 	}
+	if !installed {
+		var err error
+		motion, err = vm.RegisterNativeClass("Motion")
+		if err != nil {
+			return err
+		}
+		if err := globalObject.Set("Motion", motion); err != nil {
+			return err
+		}
+	}
+	if motion.Kind() != tjs.KindObject || motion.IsNull() {
+		return fmt.Errorf("motionplayer.dll requires Motion to be a class object")
+	}
+	vm.Globals["Motion"] = motion
 	class, ok := vm.Objects.Lookup(motion.ObjectRef().Object)
 	if !ok {
 		return fmt.Errorf("Motion native namespace is not registered")
+	}
+	if resourceManager, exists := class.Get("ResourceManager"); exists && resourceManager.Kind() == tjs.KindObject && !resourceManager.IsNull() {
+		if object, ok := vm.Objects.Lookup(resourceManager.ObjectRef().Object); ok {
+			if _, hasNativeLoad := object.Get("load"); hasNativeLoad {
+				return nil
+			}
+		}
 	}
 	for name, value := range map[string]int64{
 		"LayerTypeObj": 0, "LayerTypeShape": 1, "LayerTypeLayout": 2,

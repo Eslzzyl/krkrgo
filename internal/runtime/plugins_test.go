@@ -73,6 +73,22 @@ func TestMigratedPluginLinksExposeTheirSurfaces(t *testing.T) {
 	}
 }
 
+func TestKirikiroid2TextEncodingPatch(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+
+	if _, err := session.Evaluate(`Plugins.link("kirikiroid2.dll"); Storages.setTextEncoding("gbk");`); err != nil {
+		t.Fatalf("Kirikiroid2 encoding patch: %v", err)
+	}
+	value, err := session.Evaluate(`Scripts.textEncoding`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value.Text(); got != "gbk" {
+		t.Fatalf("Scripts.textEncoding = %q, want gbk", got)
+	}
+}
+
 func TestPackinOnePluginLinkIsIdempotentAndListed(t *testing.T) {
 	services := DefaultServices()
 	session := NewSession(services, 100_000)

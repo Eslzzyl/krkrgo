@@ -2987,13 +2987,15 @@ func compile_with_preprocessor(storage, source string, expression bool, state *P
 		} else {
 			if p.at().kind == "name" {
 				switch p.at().text {
-				case "switch", "do", "octet":
+				case "switch", "do", "octet", "with":
 					return Program{}, fmt.Errorf("%s:%d:%d: unsupported TJS construct %s", storage, p.at().loc.Line, p.at().loc.Column, p.at().text)
 				}
 			}
 			x, e := p.full()
 			if e != nil {
 				return Program{}, fmt.Errorf("%s:%d:%d: %w", storage, p.at().loc.Line, p.at().loc.Column, e)
+			}
+			for p.eat(";") {
 			}
 			if p.at().kind != "eof" {
 				return Program{}, fmt.Errorf("%s:%d:%d: unexpected tokens after TJS expression", storage, p.at().loc.Line, p.at().loc.Column)

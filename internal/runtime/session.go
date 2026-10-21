@@ -993,6 +993,13 @@ func (s *Session) Evaluate(source string) (tjs.Value, error) {
 	if err := s.checkOpen(); err != nil {
 		return tjs.VoidValue, err
 	}
+	if strings.HasSuffix(strings.TrimSpace(source), ";") {
+		program, err := tjs.CompileWithPreprocessor("<tool>", source, false, s.preprocessor)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		return s.VM.Execute(&program, s.Services, &s.Budget)
+	}
 	program, expressionErr := tjs.CompileWithPreprocessor("<tool>", source, true, s.preprocessor)
 	if expressionErr == nil {
 		return s.VM.Execute(&program, s.Services, &s.Budget)

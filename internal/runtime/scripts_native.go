@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log"
@@ -1344,13 +1345,36 @@ func decodeScriptText(data []byte, encoding string) (string, error) {
 func decodeScriptEncoding(data []byte, decoder transform.Transformer, name string) (string, error) {
 	decoded, _, err := transform.Bytes(decoder, data)
 	if err != nil {
+		if source, ok := recoverLegacyScriptTail(data, decoder); ok {
+			return source, nil
+		}
 		return "", fmt.Errorf("invalid %s script text: %w", name, err)
 	}
 	text := string(decoded)
 	for _, r := range text {
 		if r == utf8.RuneError {
+			if source, ok := recoverLegacyScriptTail(data, decoder); ok {
+				return source, nil
+			}
 			return "", fmt.Errorf("invalid %s script text: unmapped character", name)
 		}
 	}
 	return text, nil
+}
+
+func recoverLegacyScriptTail(data []byte, decoder transform.Transformer) (string, bool) {
+	nul := bytes.IndexByte(data, 0)
+	if nul < 0 {
+		return "", false
+	}
+	lineEnd := bytes.LastIndexAny(data[:nul], "\r\n")
+	if lineEnd < 0 {
+		return "", false
+	}
+	decoder.Reset()
+	decoded, _, err := transform.Bytes(decoder, data[:lineEnd+1])
+	if err != nil || !utf8.Valid(decoded) || bytes.ContainsRune(decoded, utf8.RuneError) {
+		return "", false
+	}
+	return string(decoded), true
 }

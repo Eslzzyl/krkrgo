@@ -2657,6 +2657,11 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 				}
 			}
 		}
+		if module == "kirikiroid2.dll" {
+			if e := installKirikiroid2Native(vm); e != nil {
+				return tjs.VoidValue, e
+			}
+		}
 		if strings.HasSuffix(key, "alphamovie.dll") {
 			if e := installAlphaMovieNative(vm); e != nil {
 				return tjs.VoidValue, e

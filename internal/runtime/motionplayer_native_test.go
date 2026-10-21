@@ -42,6 +42,21 @@ func TestMotionPlayerLinkInstallsPortableResourceManagerSurface(t *testing.T) {
 	}
 }
 
+func TestMotionPlayerLinkExtendsExistingMotionNamespace(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+
+	if _, err := session.executeSource("<motionplayer-existing-namespace-test>", `
+		class Motion { class ResourceManager {} }
+		Plugins.link("motionplayer.dll");
+		resourceManager = new Motion.ResourceManager(null, 1024);
+		layerID = resourceManager.requireLayerId();
+		resourceManager.releaseLayerId(layerID);
+	`, false); err != nil {
+		t.Fatalf("extend existing Motion namespace: %v", err)
+	}
+}
+
 func TestMotionPlayerPlayPreservesActiveMotionProgress(t *testing.T) {
 	session := NewSession(DefaultServices(), 100_000)
 	defer session.Close()

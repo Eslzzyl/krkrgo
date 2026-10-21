@@ -55,6 +55,19 @@ func scriptsTestUTF16LE(source string) []byte {
 	return data
 }
 
+func TestDecodeGBKScriptIgnoresInvalidNULTerminatedTailLine(t *testing.T) {
+	script := []byte("var configReady = true;\r\n")
+	data := append(append([]byte(nil), script...), 'T', 0x8c, '0', '\t', 0, '\t', 0)
+
+	got, err := decodeScriptText(data, "gbk")
+	if err != nil {
+		t.Fatalf("decode script with NUL-terminated tail: %v", err)
+	}
+	if got != string(script) {
+		t.Fatalf("decoded source = %q, want %q", got, script)
+	}
+}
+
 func TestScriptsInlineExecutionAndContext(t *testing.T) {
 	session := NewSession(DefaultServices(), 100_000)
 	defer session.Close()
@@ -573,7 +586,7 @@ func TestLegacyClassConstantBindsClassAndMemberMethod(t *testing.T) {
 				ContextType:   1,
 				ArgumentCount: 1,
 				Code:          []int16{118, -3, 119},
-				Properties:   []tjs.BytecodeProperty{{Name: 2, Object: 2}},
+				Properties:    []tjs.BytecodeProperty{{Name: 2, Object: 2}},
 			},
 		},
 	}

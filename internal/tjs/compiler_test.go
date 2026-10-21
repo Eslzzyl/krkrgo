@@ -26,6 +26,23 @@ func TestCompileExpressionEmitsReturnAndLocations(t *testing.T) {
 	}
 }
 
+func TestCompileEvalAcceptsExpressionTerminators(t *testing.T) {
+	for _, source := range []string{"40 + 2;", "40 + 2;;"} {
+		program, err := CompileEval("eval-terminator.tjs", source)
+		if err != nil {
+			t.Fatalf("compile %q: %v", source, err)
+		}
+		budget := uint64(100)
+		value, err := NewVM().Execute(&program, vmTestHost{}, &budget)
+		if err != nil {
+			t.Fatalf("execute %q: %v", source, err)
+		}
+		if got := value.Text(); got != "42" {
+			t.Errorf("execute %q = %q, want 42", source, got)
+		}
+	}
+}
+
 func TestCompileEvalAnimationLayerInlineWithProperties(t *testing.T) {
 	source := "with (this) .clipleft=0,.cliptop=0,.clipwidth=50,.clipheight=50;"
 	program, err := CompileEval("<eval operator>", source)

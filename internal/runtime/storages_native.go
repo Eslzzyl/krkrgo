@@ -23,6 +23,13 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 	if operation == "@initialize" {
 		return tjs.VoidValue, fmt.Errorf("Storages cannot be instantiated")
 	}
+	if operation == "setTextEncoding" {
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Storages.setTextEncoding requires an encoding")
+		}
+		s.setScriptTextEncoding(args[0].Text())
+		return tjs.VoidValue, nil
+	}
 
 	if operation == "extractStorageExt" || operation == "extractStorageName" || operation == "extractStoragePath" || operation == "chopStorageExt" {
 		name, err := storagesPathArg(args, operation)

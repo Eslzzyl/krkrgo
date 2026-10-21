@@ -1041,11 +1041,11 @@ func (s *Services) VideoNative(vm *tjs.VM, context tjs.Value, operation string, 
 			return tjs.VoidValue, err
 		}
 		name := x.Text()
-		data, err := s.readStorage(strings.SplitN(name, "?", 2)[0])
+		storageName, data, err := s.readVideoStorage(name)
 		if err != nil {
 			return tjs.VoidValue, videoErr(name, err)
 		}
-		if err := v.Open(name, data); err != nil {
+		if err := v.Open(storageName, data); err != nil {
 			return tjs.VoidValue, err
 		}
 		v.SetClock(s.TimeMS)
@@ -1337,6 +1337,23 @@ func (s *Services) VideoNative(vm *tjs.VM, context tjs.Value, operation string, 
 	default:
 		return tjs.VoidValue, fmt.Errorf("unknown VideoOverlay operation: %s", operation)
 	}
+}
+
+func (s *Services) readVideoStorage(name string) (string, []byte, error) {
+	storageName := strings.SplitN(name, "?", 2)[0]
+	data, err := s.readStorage(storageName)
+	if err == nil || !errors.Is(err, assets.ErrNotFound) || extractStorageExt(storageName) != "" {
+		return storageName, data, err
+	}
+	for _, ext := range []string{".mpg", ".mpeg"} {
+		candidate := storageName + ext
+		if data, candidateErr := s.readStorage(candidate); candidateErr == nil {
+			return candidate, data, nil
+		} else if !errors.Is(candidateErr, assets.ErrNotFound) {
+			return storageName, nil, candidateErr
+		}
+	}
+	return storageName, nil, err
 }
 func (s *Services) dispatchVideoEvents(vm *tjs.VM, id tjs.ObjectID, budget *uint64) error {
 	video := s.Video(id)
