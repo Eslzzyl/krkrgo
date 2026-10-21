@@ -317,7 +317,8 @@ func NewVM() *VM {
 	for _, method := range []string{"RandomGenerator", "@invalidate", "finalize", "randomize", "random", "random32", "random63", "random64", "serialize"} {
 		_ = vm.RegisterNativeMethod(randomGenerator, method, "RandomGenerator."+method)
 	}
-	_, _ = vm.RegisterNativeClass("Exception")
+	exception, _ := vm.RegisterNativeClass("Exception")
+	_ = vm.RegisterNativeMethod(exception, "Exception", "Exception.construct")
 	_ = vm.RegisterSerialization(false)
 	return vm
 }
@@ -646,7 +647,7 @@ func (v *VM) resolveLegacyClassBases(classID ObjectID, host Host, budget *uint64
 }
 
 func (v *VM) bindClassMember(value Value, context ObjectID) Value {
-	if value.Kind() != KindObject || value.IsNull() {
+	if value.Kind() != KindObject || value.ObjectRef().HasBoundContext() {
 		return value
 	}
 	if contextMeta := v.meta[context]; contextMeta != nil &&
@@ -1442,9 +1443,6 @@ func (v *VM) RegisterNativeClass(name string) (Value, error) {
 	v.meta[id].classObject = id
 	v.meta[id].nativeClass = true
 	v.meta[id].nativeConstructor = constructorID
-	if err := v.setMember(id, StringValue(name), ObjectValue(NewObjectRef(constructorID))); err != nil {
-		return VoidValue, err
-	}
 	v.Globals[name] = x
 	v.roots[x.ObjectRef()] = struct{}{}
 	return x, nil
@@ -2731,6 +2729,7 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			return VoidValue, vmAbortError(fmt.Errorf("%s:%d:%d: execution budget exhausted after %d instructions", ins.Location.Storage, ins.Location.Line, ins.Location.Column, v.Executed))
 		}
 		*b--
+		v.Executed++
 		if v.executionProfile != nil {
 			v.executionProfile.Instructions++
 		}
@@ -4071,7 +4070,9 @@ func (v *VM) constructWithMemberTarget(callee Value, args []Value, targetObject,
 			}
 		}
 		if ok {
-			constructor = v.bindClassMember(constructor, instanceID)
+			if constructor.Kind() == KindObject && !constructor.IsNull() {
+				constructor = ObjectValue(NewObjectRef(constructor.ObjectRef().Object, instanceID))
+			}
 			if _, err = v.invoke(constructor, instance, args, h, b, true); err != nil {
 				return VoidValue, err
 			}

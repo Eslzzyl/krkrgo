@@ -1348,6 +1348,14 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			if e != nil {
 				return VoidValue, e
 			}
+			constantIndex := int(in.Operands[2])
+			if constantIndex < 0 || constantIndex >= len(o.Constants) {
+				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: constant index %d out of range", object, in.Offset, constantIndex)
+			}
+			if o.Constants[constantIndex].Value.IsVoid() {
+				regs[dst] = StringValue("undefined")
+				break
+			}
 			name, e := directName(in.Operands[2], in.Offset)
 			if e != nil {
 				return VoidValue, e
