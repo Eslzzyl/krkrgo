@@ -67,6 +67,8 @@ func TestNativeLayerPiledCopyComposesSourceChildren(t *testing.T) {
 	source.visible = false; source.opacity = 0;
 	destination.setImageSize(2, 1);
 	destination.piledCopy(0, 0, source, 0, 0, 2, 1);
+	child.setMainPixel(0, 0, 0x00ffff);
+	destination.piledCopy(0, 0, source, 0, 0, 2, 1);
 	`, false); err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +77,7 @@ func TestNativeLayerPiledCopyComposesSourceChildren(t *testing.T) {
 		want       int64
 	}{
 		{`destination.getMainPixel(0, 0)`, 0xff0000},
-		{`destination.getMainPixel(1, 0)`, 0x0000ff},
+		{`destination.getMainPixel(1, 0)`, 0x00ffff},
 		{`destination.getMaskPixel(1, 0)`, 255},
 	} {
 		value, err := session.Evaluate(tc.expression)

@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"strings"
 
+	"github.com/eslzzyl/krkrgo/internal/simd"
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
@@ -198,8 +199,15 @@ func layerCompleteRegion(layer *Layer, rect Rect, depth int, livePixels uint64, 
 	if err := chargeLayerPixels(budget, pixels); err != nil {
 		return nil, err
 	}
-	out := make([]byte, int(pixels)*4)
 	scale := layer.RenderScale()
+	fullWidth, fullHeight := layer.Bounds.Width*scale, layer.Bounds.Height*scale
+	cacheable := rect.X == 0 && rect.Y == 0 && rect.Width == fullWidth && rect.Height == fullHeight
+	if cacheable && layer.completionRevision == layer.subtreeRevision &&
+		layer.completionWidth == rect.Width && layer.completionHeight == rect.Height &&
+		layer.completionScale == scale && len(layer.completionRGBA) == int(pixels)*4 {
+		return layer.completionRGBA, nil
+	}
+	out := make([]byte, int(pixels)*4)
 
 	// The main image is copied without applying this layer's visibility,
 	// opacity, face, or clip. ImageLeft/ImageTop position it in layer space.
@@ -241,6 +249,13 @@ func layerCompleteRegion(layer *Layer, rect Rect, depth int, livePixels uint64, 
 		}
 		blendLayerPiece(out, rect, left, top, piece, childRect.Width, childRect.Height, clampLayerOpacity(child.Opacity), child.Type, layer.Type)
 	}
+	if cacheable {
+		layer.completionRGBA = out
+		layer.completionRevision = layer.subtreeRevision
+		layer.completionWidth = rect.Width
+		layer.completionHeight = rect.Height
+		layer.completionScale = scale
+	}
 	return out, nil
 }
 
@@ -280,9 +295,29 @@ func layerCompositeBinderChildren(target []byte, targetRect Rect, targetType Lay
 }
 
 func blendLayerPiece(target []byte, targetRect Rect, x, y int64, piece []byte, width, height int32, opacity uint8, typ, targetType LayerType) {
+	rowBytes := int(width) * 4
 	for row := int32(0); row < height; row++ {
 		targetStart := (int(y-int64(targetRect.Y)+int64(row))*int(targetRect.Width) + int(x-int64(targetRect.X))) * 4
 		sourceStart := int(row) * int(width) * 4
+		destinationRow := target[targetStart : targetStart+rowBytes]
+		sourceRow := piece[sourceStart : sourceStart+rowBytes]
+		if opacity == 255 && typ == LayerAlpha {
+			if rowAllOpaque(sourceRow) {
+				copy(destinationRow, sourceRow)
+				continue
+			}
+			if targetType != LayerOpaque && rowAllOpaque(destinationRow) {
+				simd.AlphaOverOpaqueRow(destinationRow, sourceRow)
+				continue
+			}
+		}
+		if opacity == 255 && typ == LayerOpaque {
+			copy(destinationRow, sourceRow)
+			for alpha := 3; alpha < len(destinationRow); alpha += 4 {
+				destinationRow[alpha] = 255
+			}
+			continue
+		}
 		for column := int32(0); column < width; column++ {
 			dst := targetStart + int(column)*4
 			src := sourceStart + int(column)*4

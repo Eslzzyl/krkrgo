@@ -233,6 +233,11 @@ type Layer struct {
 	imageModified         bool
 	imageRevision         uint64
 	subtreeRevision       uint64
+	completionRGBA        []byte
+	completionRevision    uint64
+	completionWidth       int32
+	completionHeight      int32
+	completionScale       int32
 	dirtyRect             Rect
 	dirtyRectValid        bool
 	windowID              uint64
