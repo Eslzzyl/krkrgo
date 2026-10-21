@@ -1385,6 +1385,11 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 			}
 		}
 		syncTime = math.Max(syncTime, motionField(state.resource, state.chara, state.motion, "totalFrames", 0))
+		for _, label := range runtime.playingOrder {
+			if timeline := runtime.timelines[label]; timeline != nil && timeline.totalFrames > 0 {
+				syncTime = math.Max(syncTime, timeline.totalFrames)
+			}
+		}
 		for _, timeline := range runtime.timelines {
 			timeline.time = syncTime
 			if timeline.control {
@@ -2329,15 +2334,7 @@ func (s *Services) motionPlayerAllPlaying(state *motionPlayerState) bool {
 			return true
 		}
 	}
-	resource := s.playerResource(state)
-	if resource == nil {
-		return false
-	}
-	var params []float64
-	if state.emote != nil {
-		params = state.emote.renderParameters()
-	}
-	return motionNestedTreePlaying(resource, state.attached, state.chara, state.motion, state.clampedEvalTime, state.frameLoopTime, state.frameLastTime, params, make(map[string]bool))
+	return false
 }
 
 func motionNestedTreePlaying(resource *motionResource, attached []*motionResource, chara, motion string, tick, frameLoopTime, frameLastTime float64, params []float64, stack map[string]bool) bool {
