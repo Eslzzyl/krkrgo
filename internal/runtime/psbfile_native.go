@@ -2,6 +2,9 @@ package runtime
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
 	"github.com/eslzzyl/krkrgo/internal/tjs"
@@ -73,7 +76,41 @@ func (s *Services) loadPSBRoot(vm *tjs.VM, source tjs.Value) (tjs.Value, error) 
 	if err != nil {
 		return tjs.VoidValue, err
 	}
+	if source.Kind() == tjs.KindString && s != nil && s.Storage != nil {
+		if err := s.Storage.RegisterPSBMediaResources(source.Text(), psbResourceData(doc.Root, data)); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
 	return psbValueToTJS(vm, doc.Root, data, 0)
+}
+
+func psbResourceData(root assets.Value, data []byte) map[string][]byte {
+	resources := make(map[string][]byte)
+	var visit func(assets.Value, []string)
+	visit = func(value assets.Value, path []string) {
+		switch item := value.(type) {
+		case assets.Resource:
+			if len(path) != 0 && item.Offset >= 0 && item.Length >= 0 &&
+				item.Offset <= len(data) && item.Length <= len(data)-item.Offset {
+				resources[strings.Join(path, "/")] = data[item.Offset : item.Offset+item.Length]
+			}
+		case []assets.Value:
+			for index, child := range item {
+				visit(child, append(append([]string(nil), path...), strconv.Itoa(index)))
+			}
+		case map[string]assets.Value:
+			keys := make([]string, 0, len(item))
+			for key := range item {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				visit(item[key], append(append([]string(nil), path...), key))
+			}
+		}
+	}
+	visit(root, nil)
+	return resources
 }
 
 func psbValueToTJS(vm *tjs.VM, value assets.Value, data []byte, depth int) (tjs.Value, error) {

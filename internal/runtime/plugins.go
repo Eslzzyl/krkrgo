@@ -55,6 +55,7 @@ var nativePluginProviders = map[string]string{
 	"addfont.dll":        "System.addFont registers storage font data (system_native.go; cpp/plugins/addFont.cpp)",
 	"alphamovie.dll":     "AlphaMovie path/rectangle playback (alpha_movie_native.go; assets/amv_decode.go)",
 	"csvparser.dll":      "CSVParser (csv_parser_native.go; cpp/plugins/csvParser.cpp)",
+	"drawdeviced2d.dll":  "link-only: the bundled main/ddd2d.tjs installs the D2D draw-device factory only when a DrawDeviceD2D global exists; the Go host keeps its current drawing device",
 	"drawdeviced3d.dll":  "D3DImage, D3DPicture, D3DLayer, D3D, and DrawDeviceD3D CPU image/layer composition (drawdevice_d3d_native.go)",
 	"drawdeviced3dz.dll": "D3DImage, D3DPicture, D3DLayer, D3D, and DrawDeviceD3D CPU image/layer composition (drawdevice_d3d_native.go)",
 	"emoteplayer.dll":    "Motion.EmotePlayer and shared Motion.ResourceManager API (motionplayer_native.go; cpp/plugins/EmotePlayer.cpp)",

@@ -172,7 +172,7 @@ type Layer struct {
 	Name             string
 	Bounds           Rect
 	Scale            int32
-	Opacity          uint8
+	Opacity          int
 	Visible          bool
 	Enabled          bool
 	EventTransparent bool
@@ -913,12 +913,19 @@ func (l *Layer) SetVisible(visible bool) {
 }
 func (l *Layer) SetEnabled(enabled bool) { l.Enabled = enabled }
 func (l *Layer) SetOpacity(opacity int) error {
-	if opacity < 0 || opacity > 255 {
-		return fmt.Errorf("%w: opacity %d", ErrInvalidLayer, opacity)
-	}
-	l.Opacity = uint8(opacity)
+	l.Opacity = opacity
 	l.markRenderDirty()
 	return nil
+}
+
+func clampLayerOpacity(opacity int) uint8 {
+	if opacity <= 0 {
+		return 0
+	}
+	if opacity >= 255 {
+		return 255
+	}
+	return uint8(opacity)
 }
 func (l *Layer) SetHitType(hit HitType) { l.Hit = hit }
 func (l *Layer) SetHitThreshold(threshold int) error {

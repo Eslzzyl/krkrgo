@@ -137,9 +137,8 @@ func (s *Services) csvParserNative(vm *tjs.VM, context tjs.Value, operation stri
 			if !ok {
 				break
 			}
-			if _, e = vm.CallFunction(method, state.target, []tjs.Value{row, tjs.IntegerValue(state.records)}, s, budget); e != nil {
-				return tjs.VoidValue, fmt.Errorf("CSVParser.%s doLine record %d: %w", operation, state.records, e)
-			}
+			// The reference plugin invokes doLine and ignores its returned HRESULT.
+			_, _ = vm.CallFunction(method, state.target, []tjs.Value{row, tjs.IntegerValue(state.records)}, s, budget)
 		}
 		return tjs.VoidValue, nil
 	case "get:currentLineNumber":

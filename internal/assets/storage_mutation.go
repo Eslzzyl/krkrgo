@@ -18,6 +18,12 @@ func (s *Storage) ExistsNoSearch(name string) (bool, error) {
 	if name == "" {
 		return false, nil
 	}
+	if _, found, handled, err := s.resolvePSBMedia(name); handled {
+		return found, err
+	}
+	if _, found, handled, err := s.resolvePSDMedia(name); handled {
+		return found, err
+	}
 	normalized, err := s.normalize(name, false)
 	if err != nil {
 		return false, err

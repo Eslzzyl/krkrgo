@@ -471,6 +471,67 @@ func TestLegacyClassInstanceMembersRegisterAndMaterialize(t *testing.T) {
 	}
 }
 
+func TestLegacyREGMEMBERBindsCurrentObjectMembers(t *testing.T) {
+	vm := NewVM()
+	class, err := vm.RegisterLegacyClass("LegacyREGMEMBERTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, instanceID, err := vm.alloc(CategoryInstance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm.Objects.RegisterClassInstance(instanceID, class.ObjectRef().Object)
+	instanceObject, ok := vm.Objects.Lookup(instanceID)
+	if !ok {
+		t.Fatal("constructed instance missing")
+	}
+	classObject, ok := vm.Objects.Lookup(class.ObjectRef().Object)
+	if !ok {
+		t.Fatal("registered class object missing")
+	}
+	nested := vm.Objects.New(CategoryDictionary)
+	classOnly := vm.Objects.New(CategoryDictionary)
+	if err := classObject.Set("templateOnly", ObjectValue(NewObjectRef(classOnly.ID))); err != nil {
+		t.Fatal(err)
+	}
+	if err := instanceObject.Set("nested", ObjectValue(NewObjectRef(nested.ID, nested.ID))); err != nil {
+		t.Fatal(err)
+	}
+	if err := instanceObject.SetFlags("nested", HiddenMember); err != nil {
+		t.Fatal(err)
+	}
+	if err := instanceObject.Set("staticValue", ObjectValue(NewObjectRef(classOnly.ID, classOnly.ID))); err != nil {
+		t.Fatal(err)
+	}
+	if err := instanceObject.SetFlags("staticValue", StaticMember); err != nil {
+		t.Fatal(err)
+	}
+	if err := instanceObject.Set("classOnly", ObjectValue(NewObjectRef(classOnly.ID))); err != nil {
+		t.Fatal(err)
+	}
+	bytecode := &DecodedBytecode{Objects: []BytecodeObject{{Code: []int16{126, 119}}}}
+	global := ObjectValue(NewObjectRef(0, 0))
+	if _, err := bytecode.ExecuteLegacyWithContextAndConstructionAndPropertyResolver(
+		0, global, instance, nil, nil, nil, nil, vm.Objects,
+	); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := instanceObject.Get("nested")
+	if !ok || got.Kind() != KindObject || got.ObjectRef().Object != nested.ID || !got.ObjectRef().HasBoundContext() || got.ObjectRef().Context != instanceID {
+		t.Fatalf("nested member after REGMEMBER = %v, want object %d bound to instance %d", got, nested.ID, instanceID)
+	}
+	if got, ok := instanceObject.Get("staticValue"); !ok || got.ObjectRef().Context != classOnly.ID {
+		t.Fatalf("static member after REGMEMBER = %v, present %t", got, ok)
+	}
+	if _, ok := instanceObject.Get("classOnly"); !ok {
+		t.Fatal("REGMEMBER removed an existing destination member")
+	}
+	if _, ok := instanceObject.Get("templateOnly"); ok {
+		t.Fatal("REGMEMBER copied a class-object member onto its destination")
+	}
+}
+
 func TestExecuteLegacyResolvesNativeStaticPropertyOnConstructorMethod(t *testing.T) {
 	vm := NewVM()
 	class, err := vm.RegisterNativeClass("LegacyStatic")
@@ -521,11 +582,13 @@ func TestExecuteLegacyTYPEOFDDirectMember(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		value   Value
+		key     Value
 		present bool
 		want    string
 	}{
-		{name: "existing member", value: IntegerValue(42), present: true, want: "Integer"},
-		{name: "missing member", want: "undefined"},
+		{name: "existing member", value: IntegerValue(42), key: StringValue("value"), present: true, want: "Integer"},
+		{name: "missing member", key: StringValue("value"), want: "undefined"},
+		{name: "void member name", want: "undefined"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			table := NewObjectTable()
@@ -541,7 +604,7 @@ func TestExecuteLegacyTYPEOFDDirectMember(t *testing.T) {
 				Code:         []int16{1, 0, 0, 84, 1, 0, 1, 104, -1, 2, 1, 119},
 				Constants: []BytecodeConstant{
 					{Value: ObjectValue(target.Ref())},
-					{Value: StringValue("value")},
+					{Value: test.key},
 					{Value: StringValue("result")},
 				},
 			}}}
@@ -1023,6 +1086,68 @@ func TestExecuteLegacyCALLDZeroResultRegisterDiscardsReturn(t *testing.T) {
 		t.Fatalf("discarded CALLD overwrote r0: got %v, want preserved string", got)
 	}
 }
+
+func TestExecuteLegacyGlobalEvalUsesOptionalContextArgument(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		withCtx bool
+	}{
+		{name: "default global context"},
+		{name: "explicit context", withCtx: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			table := NewObjectTable()
+			global := table.New(CategoryDictionary)
+			caller := table.New(CategoryDictionary)
+			evalContext := table.New(CategoryDictionary)
+			wantContext := VoidValue
+			if test.withCtx {
+				wantContext = ObjectValue(evalContext.Ref())
+			}
+			code := []int16{
+				1, 0, 0, // CONST r0, source
+				1, 1, 1, // CONST r1, script name
+				1, 2, 2, // CONST r2, line offset
+				1, 3, 3, // CONST r3, context
+				100, 4, -2, 4, 3, 0, 1, 2, // CALLD r4, global.eval(source, name, line)
+			}
+			if test.withCtx {
+				code[16] = 4
+				code = append(code, 3)
+			}
+			code = append(code, 118, 4, 119)
+			bytecode := &DecodedBytecode{Objects: []BytecodeObject{{
+				MaxVariables: 5,
+				Code:         code,
+				Constants: []BytecodeConstant{
+					{Value: StringValue("42")},
+					{Value: StringValue("eval-context.tjs")},
+					{Value: IntegerValue(0)},
+					{Value: ObjectValue(evalContext.Ref())},
+					{Value: StringValue("eval")},
+				},
+			}}}
+			var gotContext Value
+			evaluate := func(source string, context Value, needed bool) (Value, error) {
+				if source != "42" || !needed {
+					t.Fatalf("eval call = %q, result needed %v; want source 42 and result", source, needed)
+				}
+				gotContext = context
+				return IntegerValue(42), nil
+			}
+			got, err := bytecode.ExecuteLegacyWithContextAndConstruction(
+				0, ObjectValue(global.Ref()), ObjectValue(caller.Ref()), evaluate, nil, nil, table,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.StrictEqual(IntegerValue(42)) || !gotContext.StrictEqual(wantContext) {
+				t.Fatalf("eval result/context = %v/%v; want 42/%v", got, gotContext, wantContext)
+			}
+		})
+	}
+}
+
 func TestDecodeLegacyCALLArgumentWidths(t *testing.T) {
 	bytecode := &DecodedBytecode{Objects: []BytecodeObject{{
 		Code: []int16{

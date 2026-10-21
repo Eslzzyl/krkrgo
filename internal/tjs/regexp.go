@@ -279,6 +279,34 @@ func (r *Regexp) replace(s, replacement string, limit int) string {
 	b.WriteString(s[pos:])
 	return b.String()
 }
+
+func (r *Regexp) replaceFunc(s string, replacement func(RegexpMatch) (string, error)) (string, error) {
+	if r == nil || r.re == nil {
+		return s, nil
+	}
+	limit := 1
+	if r.global {
+		limit = -1
+	}
+	matches := r.re.FindAllStringSubmatchIndex(s, limit)
+	if len(matches) == 0 {
+		return s, nil
+	}
+	var result strings.Builder
+	position := 0
+	for _, indices := range matches {
+		result.WriteString(s[position:indices[0]])
+		text, err := replacement(makeRegexpMatch(s, indices, r.re.NumSubexp()))
+		if err != nil {
+			return "", err
+		}
+		result.WriteString(text)
+		position = indices[1]
+	}
+	result.WriteString(s[position:])
+	return result.String(), nil
+}
+
 func expandReplacement(s, repl string, m []int, groups int) string {
 	var b strings.Builder
 	for i := 0; i < len(repl); i++ {

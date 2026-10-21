@@ -43,7 +43,7 @@ func TestVMStringSprintfErrors(t *testing.T) {
 		{"%q", []Value{IntegerValue(1)}, errInvalidFormatString},
 		{"%", nil, errInvalidFormatString},
 	} {
-		if _, err := vm.callStringMethod(StringValue(tc.format), "sprintf", tc.args); !errors.Is(err, tc.want) {
+		if _, err := vm.callStringMethod(StringValue(tc.format), "sprintf", tc.args, nil, nil); !errors.Is(err, tc.want) {
 			t.Errorf("sprintf(%q) error = %v, want %v", tc.format, err, tc.want)
 		}
 	}

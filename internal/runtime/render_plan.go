@@ -296,7 +296,7 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		n := &p.Nodes[i]
 		n.ID = l.ID
 		n.Bounds = Rect{X: px + l.Bounds.X*scale, Y: py + l.Bounds.Y*scale, Width: l.Bounds.Width * scale, Height: l.Bounds.Height * scale}
-		n.Opacity = l.Opacity
+		n.Opacity = clampLayerOpacity(l.Opacity)
 		n.Visible = l.Visible
 		n.TransitionHidden = l.transitionHidden
 		n.Type = l.Type

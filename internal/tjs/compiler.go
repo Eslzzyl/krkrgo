@@ -956,7 +956,12 @@ func (p *cparser) at() ctoken {
 	}
 	return p.ts[p.p]
 }
-func (p *cparser) is(x string) bool { return p.at().text == x }
+func (p *cparser) is(x string) bool {
+	if x == "," && p.at().text == "=>" {
+		return true
+	}
+	return p.at().text == x
+}
 func (p *cparser) eat(x string) bool {
 	if p.is(x) {
 		if p.p < len(p.ts) {
@@ -1075,7 +1080,7 @@ func (p *cparser) functionDescriptor(name string) (*Function, error) {
 	}
 	// withMember reads p.c.withDepth, so point it at the compiler parsing this body.
 	activeCompiler := p.c
-	sub := &compiler{program: Program{Storage: p.c.program.Storage}, p: p, withDepth: p.c.withDepth, forwardArgsFrom: unnamedRest}
+	sub := &compiler{program: Program{Storage: p.c.program.Storage}, p: p, withDepth: p.c.withDepth, forwardArgsFrom: unnamedRest, functionBody: true}
 	p.c = sub
 	defer func() { p.c = activeCompiler }()
 	for i, n := range params {
@@ -1107,7 +1112,7 @@ func (p *cparser) functionDescriptor(name string) (*Function, error) {
 			return nil, err
 		}
 	}
-	return &Function{Name: name, Parameters: params, Rest: rest, Program: sub.program}, nil
+	return &Function{Name: name, Parameters: params, Rest: rest, Members: sub.localFunctions, Properties: sub.localProperties, Program: sub.program}, nil
 }
 
 func (p *cparser) propertyFunctionDescriptor(name string, setter bool) (*Function, error) {
@@ -1137,7 +1142,7 @@ func (p *cparser) propertyFunctionDescriptor(name string, setter bool) (*Functio
 		return nil, err
 	}
 	// Keep withMember's lexical with-depth lookup aligned with this body.
-	sub := &compiler{program: Program{Storage: p.c.program.Storage}, p: p}
+	sub := &compiler{program: Program{Storage: p.c.program.Storage}, p: p, functionBody: true}
 	activeCompiler := p.c
 	p.c = sub
 	defer func() { p.c = activeCompiler }()
@@ -1155,7 +1160,7 @@ func (p *cparser) propertyFunctionDescriptor(name string, setter bool) (*Functio
 	if sub.program.Code == nil {
 		sub.program.Code = []Instruction{}
 	}
-	return &Function{Name: name, Parameters: params, Program: sub.program}, nil
+	return &Function{Name: name, Parameters: params, Members: sub.localFunctions, Properties: sub.localProperties, Program: sub.program}, nil
 }
 
 func (p *cparser) propertyDescriptor() (*Property, error) {
@@ -1559,6 +1564,9 @@ type compiler struct {
 	withDepth             int
 	forwardArgsFrom       int
 	hoisted               []Instruction
+	functionBody          bool
+	localFunctions        []Function
+	localProperties       []Property
 	constructTargetExpr   *cexpr
 	constructTargetObject int
 	constructTargetKey    int
@@ -2452,6 +2460,9 @@ func (c *compiler) statement() error {
 		if err != nil {
 			return err
 		}
+		if c.functionBody && c.scopeDepth == 0 && c.withDepth == 0 {
+			c.localProperties = append(c.localProperties, property.Clone())
+		}
 		r := c.reg()
 		c.emit(t.loc, Op{Code: OpProperty, Out: r, extra: &opExtra{property: property}})
 		c.emit(t.loc, Op{Code: OpDeclare, Name: property.Name, Input: r})
@@ -2470,6 +2481,9 @@ func (c *compiler) statement() error {
 		fn, err := c.p.functionDescriptor(name)
 		if err != nil {
 			return err
+		}
+		if c.functionBody {
+			c.localFunctions = append(c.localFunctions, fn.Clone())
 		}
 		r := c.reg()
 		c.emit(t.loc, Op{Code: OpFunction, Out: r, extra: &opExtra{function: fn}})

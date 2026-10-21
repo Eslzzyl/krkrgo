@@ -40,6 +40,23 @@ func TestSessionEvaluateAndBudget(t *testing.T) {
 	}
 }
 
+func TestSessionRegistersDefaultFontFaceGlobals(t *testing.T) {
+	services := DefaultServices()
+	services.FontSystem.DefaultFont = "Configured Default"
+	session := NewSession(services, 100_000)
+	defer session.Close()
+
+	for _, name := range []string{"SystemDefaultFontFace", "MessageDefaultFontFace"} {
+		value, err := session.Evaluate(name)
+		if err != nil {
+			t.Fatalf("evaluate %s: %v", name, err)
+		}
+		if got, want := value.Text(), "Configured Default"; got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+}
+
 func TestStartupTimingIsScopedToStartup(t *testing.T) {
 	t.Setenv("KRKRGO_STARTUP_TIMING", "1")
 	session := newScriptsTestSession(t, map[string][]byte{

@@ -119,6 +119,74 @@ func TestLegacyClassCallDispatchesBodyWithCurrentContext(t *testing.T) {
 	}
 }
 
+func TestLegacyClassConstructionRunsBodyOnEachInstance(t *testing.T) {
+	vm := NewVM()
+	class, err := vm.RegisterLegacyClass("LegacyClassConstructionBodyTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contexts []ObjectID
+	if err := vm.SetLegacyClassBody(class, func(context Value, args []Value, _ Host, _ *uint64, needed bool) (Value, error) {
+		if context.Kind() != KindObject || context.IsNull() {
+			t.Fatalf("class body context = %v; want an instance", context)
+		}
+		if len(args) != 0 {
+			t.Fatalf("class body args = %v; want none", args)
+		}
+		if needed {
+			t.Fatal("class body result-needed flag = true; want false")
+		}
+		contexts = append(contexts, context.ObjectRef().Object)
+		return VoidValue, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := vm.Construct(class, nil, vmTestHost{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := vm.Construct(class, nil, vmTestHost{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contexts) != 2 {
+		t.Fatalf("class body calls = %d; want 2", len(contexts))
+	}
+	if contexts[0] != first.ObjectRef().Object || contexts[1] != second.ObjectRef().Object || contexts[0] == contexts[1] {
+		t.Fatalf("class body contexts = %v; want instances %d and %d", contexts, first.ObjectRef().Object, second.ObjectRef().Object)
+	}
+}
+
+func TestLegacyClassConstructorRebindsClassClosureToInstance(t *testing.T) {
+	vm := NewVM()
+	class, err := vm.RegisterLegacyClass("LegacyBoundConstructorTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var constructorContext ObjectID
+	constructor, err := vm.RegisterLegacyFunction("LegacyBoundConstructorTest", func(context Value, _ []Value, _ Host, _ *uint64, _ bool) (Value, error) {
+		constructorContext = context.ObjectRef().Object
+		return VoidValue, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	classObject, err := vm.obj(class.ObjectRef().Object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := classObject.Set("LegacyBoundConstructorTest", ObjectValue(NewObjectRef(constructor.ObjectRef().Object, class.ObjectRef().Object))); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := vm.Construct(class, nil, vmTestHost{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if constructorContext != instance.ObjectRef().Object {
+		t.Fatalf("constructor context = %d; want instance %d", constructorContext, instance.ObjectRef().Object)
+	}
+}
+
 func TestLegacyClassCallKeepsNonCallableObjectsNonCallable(t *testing.T) {
 	vm := NewVM()
 	object, _, err := vm.alloc(CategoryDictionary)
@@ -679,6 +747,63 @@ return item.amount * 100 + item.total +
 	}
 }
 
+func TestVMClassInitializationSkipsRepeatedAncestor(t *testing.T) {
+	program, err := compile("class-initialization-duplicate-ancestor.tjs", `
+class Base {
+	var onTag = function() { return -1; };
+}
+class Conductor extends Base {
+	var onTag = function() { return 1; };
+}
+class Main extends Conductor {}
+return 0;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm := NewVM()
+	budget := uint64(10000)
+	if _, err := vm.Execute(&program, vmTestHost{}, &budget); err != nil {
+		t.Fatal(err)
+	}
+	mainClass, ok, err := vm.getMember(0, StringValue("Main"))
+	if err != nil || !ok {
+		t.Fatalf("Main class lookup = (%v, %v)", ok, err)
+	}
+	baseClass, ok, err := vm.getMember(0, StringValue("Base"))
+	if err != nil || !ok {
+		t.Fatalf("Base class lookup = (%v, %v)", ok, err)
+	}
+	mainID := mainClass.ObjectRef().Object
+	baseID := baseClass.ObjectRef().Object
+	vm.meta[mainID].classBases = append(vm.meta[mainID].classBases, baseID)
+
+	instance, err := vm.Construct(mainClass, nil, vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	method, err := vm.GetMember(instance, "onTag", vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := vm.CallFunction(method, instance, nil, vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := got.Int(); value != 1 {
+		t.Fatalf("derived onTag result = %v, want 1", got)
+	}
+
+	names, err := vm.ClassNames(instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantNames := []string{"Main", "Conductor", "Base"}
+	if !reflect.DeepEqual(names, wantNames) {
+		t.Fatalf("class names = %v, want %v", names, wantNames)
+	}
+}
+
 func TestVMClassAndFunctionDefaultParameters(t *testing.T) {
 	got := executeVMSource(t, `
 function standalone(value = 4) { return value; }
@@ -812,6 +937,30 @@ return problem.message;
 `)
 	if got.Text() != "native base" {
 		t.Fatalf("native base constructor message = %q, want %q", got.Text(), "native base")
+	}
+}
+
+func TestVMNativeClassRegistersNamedConstructorMethod(t *testing.T) {
+	vm := NewVM()
+	budget := uint64(10000)
+	class := vm.Globals["Exception"]
+	instance, err := vm.Construct(class, []Value{StringValue("initial")}, vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	constructor, err := vm.GetMember(class, "Exception", vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.CallFunction(constructor, instance, []Value{StringValue("updated")}, vmTestHost{}, &budget); err != nil {
+		t.Fatal(err)
+	}
+	message, err := vm.GetMember(instance, "message", vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Text() != "updated" {
+		t.Fatalf("native constructor message = %q, want %q", message.Text(), "updated")
 	}
 }
 
@@ -1346,6 +1495,22 @@ func TestVMClosuresCaptureAndMutateLexicalBindings(t *testing.T) {
 		t.Fatalf("closure value = %v, want 3", got)
 	}
 }
+
+func TestVMNestedFunctionDeclarationIsAStableParentMember(t *testing.T) {
+	got := executeVMSource(t, `
+function outer() {
+	function local {}
+	return local.items.count;
+}
+outer.local.items = [19, 23];
+return outer() == 2 && outer.local.items.count == 2;
+`)
+	truth, err := got.Truth()
+	if err != nil || !truth {
+		t.Fatalf("nested function member result = %v, %v; want true", got, err)
+	}
+}
+
 func TestVMClosureCapturesLexicalMethodContextForNameLookup(t *testing.T) {
 	got := executeVMSource(t, `
 class C {

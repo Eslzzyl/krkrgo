@@ -4,12 +4,7 @@ package runtime
 // psdclass.cpp exposes the PSD class, psdclass_loadstream.cpp reads the file
 // through storage, and psdclass.cpp getBlend/getLayerData write the decoded
 // planes into a Layer. The reference also registers a "psd://" storage media
-// (main.cpp) whose layer images are exposed as BMP files. That media is
-// deliberately deferred for this milestone: none of the exercised PSD methods
-// need it, and registering media requires storage-level path enumeration that
-// belongs to a later cutover. PSD.load therefore accepts a storage name (read
-// through Services.readStorage) and falls back to a local filesystem path, as
-// PSD::load does when TVPGetPlacedPath finds no entry.
+// (main.cpp), exposing normal layers as BMP files through the storage APIs.
 
 import (
 	"errors"
@@ -28,9 +23,15 @@ type psdDocumentKey struct {
 }
 
 var (
-	psdInstallSequence atomic.Uint64
-	psdDocuments       sync.Map // psdDocumentKey -> *assets.PSD
+	psdInstallSequence    atomic.Uint64
+	psdDocuments          sync.Map // psdDocumentKey -> *assets.PSD
+	psdMediaRegistrations sync.Map // psdDocumentKey -> psdMediaRegistration
 )
+
+type psdMediaRegistration struct {
+	storage  *assets.Storage
+	document *assets.PSD
+}
 
 // installPSDNative registers the portable PSD class for psd.dll. The native
 // operations carry a per-install suffix so two VMs sharing one Services
@@ -159,9 +160,10 @@ func (s *Services) psdNative(vm *tjs.VM, context tjs.Value, operation string, ar
 	case "@initialize", "PSD":
 		return tjs.VoidValue, nil
 	case "@invalidate", "finalize":
-		psdDocuments.Delete(key)
+		removePSDDocument(key)
 		return tjs.VoidValue, nil
 	case "load":
+		removePSDDocument(key)
 		if len(args) == 0 {
 			return tjs.IntegerValue(0), nil
 		}
@@ -170,13 +172,17 @@ func (s *Services) psdNative(vm *tjs.VM, context tjs.Value, operation string, ar
 		}
 		data, err := s.readPSDData(args[0].Text())
 		if err != nil {
-			psdDocuments.Delete(key)
 			return tjs.IntegerValue(0), nil
 		}
 		doc, err := assets.ParsePSD(data)
 		if err != nil {
-			psdDocuments.Delete(key)
 			return tjs.IntegerValue(0), nil
+		}
+		if s.Storage != nil {
+			if err := s.Storage.RegisterPSDMedia(args[0].Text(), doc); err != nil {
+				return tjs.VoidValue, err
+			}
+			psdMediaRegistrations.Store(key, psdMediaRegistration{storage: s.Storage, document: doc})
 		}
 		psdDocuments.Store(key, doc)
 		return tjs.IntegerValue(1), nil
@@ -282,8 +288,9 @@ func (s *Services) psdNative(vm *tjs.VM, context tjs.Value, operation string, ar
 		}
 		return tjs.VoidValue, nil
 	case "clearStorageCache":
-		// The psd:// storage media is deferred with the rest of main.cpp's
-		// storage layer; there is no PSD layer cache to clear yet.
+		if s.Storage != nil {
+			s.Storage.ClearPSDMediaCache()
+		}
 		return tjs.VoidValue, nil
 	default:
 		return tjs.VoidValue, fmt.Errorf("unsupported PSD operation %q", operation)
@@ -516,10 +523,18 @@ func clearPSDDocuments(vm *tjs.VM) {
 	}
 	psdDocuments.Range(func(key, _ any) bool {
 		if key.(psdDocumentKey).vm == vm {
-			psdDocuments.Delete(key)
+			removePSDDocument(key.(psdDocumentKey))
 		}
 		return true
 	})
+}
+
+func removePSDDocument(key psdDocumentKey) {
+	psdDocuments.Delete(key)
+	if value, ok := psdMediaRegistrations.LoadAndDelete(key); ok {
+		registration := value.(psdMediaRegistration)
+		registration.storage.UnregisterPSDMedia(registration.document)
+	}
 }
 
 func (s *Services) readPSDData(name string) ([]byte, error) {

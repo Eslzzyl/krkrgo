@@ -166,7 +166,7 @@ func DecodeBytecode(data []byte) (*DecodedBytecode, error) {
 			case 5:
 				c.Value = RealValue(d.Reals[ix])
 			case 6:
-				c.Value = IntegerValue(int64(d.Bytes[ix]))
+				c.Value = IntegerValue(int64(int8(d.Bytes[ix])))
 			case 7:
 				c.Value = IntegerValue(int64(d.Shorts[ix]))
 			case 8:

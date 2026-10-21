@@ -45,6 +45,61 @@ func newScriptsTestSession(t *testing.T, resources map[string][]byte) *Session {
 	return session
 }
 
+func TestLegacyMemberAccessUsesVMArrayElements(t *testing.T) {
+	session := newScriptsTestSession(t, nil)
+	array, err := session.Evaluate(`new Array()`)
+	if err != nil {
+		t.Fatalf("create array: %v", err)
+	}
+
+	for index, value := range []string{"s", "y"} {
+		if err := setLegacyMemberWithRuntime(session.VM, array, strconv.Itoa(index), tjs.StringValue(value), tjs.MemberEnsure|tjs.IgnoreProperty, session.Services, &session.Budget); err != nil {
+			t.Fatalf("write array element %d: %v", index, err)
+		}
+		arrayValue, exists, err := session.VM.ArrayElement(array, int64(index))
+		if err != nil || !exists || arrayValue.Text() != value {
+			t.Fatalf("VM array element %d = %q, exists=%t, err=%v; want %q", index, arrayValue.Text(), exists, err, value)
+		}
+		got, found, err := resolveLegacyMemberWithRuntime(session.VM, array, strconv.Itoa(index), 0, session.Services, &session.Budget)
+		if err != nil || !found || got.Text() != value {
+			t.Fatalf("read array element %d = %q, found=%t, err=%v; want %q", index, got.Text(), found, err, value)
+		}
+	}
+
+	global, ok := session.VM.Objects.Lookup(0)
+	if !ok {
+		t.Fatal("TJS global object is unavailable")
+	}
+	if err := global.Set("legacyArrayAccess", array); err != nil {
+		t.Fatalf("publish array for join: %v", err)
+	}
+	joined, err := session.Evaluate(`global.legacyArrayAccess.join("")`)
+	if err != nil || joined.Text() != "sy" {
+		t.Fatalf("array join = %q, err=%v; want sy", joined.Text(), err)
+	}
+}
+
+func TestEvaluateLegacySourceDefaultsToGlobalContext(t *testing.T) {
+	session := newScriptsTestSession(t, nil)
+	value, err := evaluateLegacySource(session.VM, "40 + 2", tjs.VoidValue, session.Services, &session.Budget, true)
+	if err != nil {
+		t.Fatalf("evaluate source without explicit context: %v", err)
+	}
+	if got, err := value.Int(); err != nil || got != 42 {
+		t.Fatalf("eval result = %v, err=%v; want 42", value, err)
+	}
+	if _, err := evaluateLegacySource(session.VM, "global.legacy_eval_result = 17", tjs.VoidValue, session.Services, &session.Budget, false); err != nil {
+		t.Fatalf("evaluate side effect without explicit context: %v", err)
+	}
+	stored, err := session.Evaluate("global.legacy_eval_result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := stored.Int(); err != nil || got != 17 {
+		t.Fatalf("global eval side effect = %v, err=%v; want 17", stored, err)
+	}
+}
+
 func scriptsTestUTF16LE(source string) []byte {
 	units := utf16.Encode([]rune(source))
 	data := make([]byte, 2+2*len(units))

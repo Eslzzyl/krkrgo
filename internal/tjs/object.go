@@ -36,6 +36,8 @@ type Function struct {
 	Name       string
 	Parameters []string
 	Rest       string
+	Members    []Function
+	Properties []Property
 	Program    Program
 }
 
@@ -54,7 +56,16 @@ type Class struct {
 }
 
 func (f Function) Clone() Function {
-	return Function{Name: f.Name, Parameters: append([]string(nil), f.Parameters...), Rest: f.Rest, Program: f.Program}
+	clone := Function{Name: f.Name, Parameters: append([]string(nil), f.Parameters...), Rest: f.Rest, Program: f.Program}
+	clone.Members = make([]Function, len(f.Members))
+	for i := range f.Members {
+		clone.Members[i] = f.Members[i].Clone()
+	}
+	clone.Properties = make([]Property, len(f.Properties))
+	for i := range f.Properties {
+		clone.Properties[i] = f.Properties[i].Clone()
+	}
+	return clone
 }
 func (p Property) Clone() Property {
 	var g, s *Function
@@ -577,6 +588,58 @@ func (t *ObjectTable) RegisterClassInstanceMembers(objectID ObjectID) error {
 		return errors.New("TJS class instance metadata target is unavailable")
 	}
 	t.registeredClassInfo[objectID] = true
+	return nil
+}
+
+// BindObjectMemberClosures applies the object-this binding performed by the
+// legacy VM's RegisterObjectMember callback to the members currently stored on
+// the destination object. Class bodies may add more members after REGMEMBER,
+// so this operation only visits the destination's current entries.
+func (t *ObjectTable) BindObjectMemberClosures(objectID ObjectID) error {
+	if t == nil {
+		return errInvalidObject
+	}
+	object, ok := t.Lookup(objectID)
+	if !ok {
+		return errInvalidObject
+	}
+	for _, entry := range object.Entries() {
+		if !entry.Valid || entry.Flags&StaticMember != 0 || entry.Value.Kind() != KindObject || entry.Value.IsNull() {
+			continue
+		}
+		if err := object.SetUnits(entry.Key, ObjectValue(NewObjectRef(entry.Value.ObjectRef().Object, objectID))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *ObjectTable) CopyClassInstanceMembers(classID, instanceID ObjectID) error {
+	if t == nil {
+		return errInvalidObject
+	}
+	t.mu.RLock()
+	classObject := t.objects[classID]
+	instance := t.objects[instanceID]
+	t.mu.RUnlock()
+	if classObject == nil || instance == nil || classID == instanceID {
+		return errInvalidObject
+	}
+	for _, entry := range classObject.Entries() {
+		if !entry.Valid || entry.Flags&StaticMember != 0 {
+			continue
+		}
+		value := entry.Value
+		if value.Kind() == KindObject && !value.IsNull() {
+			value = ObjectValue(NewObjectRef(value.ObjectRef().Object, instanceID))
+		}
+		if err := instance.Set(entry.Name, value); err != nil {
+			return err
+		}
+		if err := instance.SetFlags(entry.Name, entry.Flags); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

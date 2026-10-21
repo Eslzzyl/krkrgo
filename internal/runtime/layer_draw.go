@@ -120,7 +120,7 @@ func (d *drawContext) drawLayerTo(l *Layer, parentX, parentY int32, targetType L
 						dx := ax + localX
 						si := sourceRowOffset + int(sx)*4
 						di := (destinationRowOffset + int(dx)) * 4
-						blendPixelForTarget(d.rgba[di:di+4], pixels[si:si+4], l.Opacity, l.Type, targetType)
+						blendPixelForTarget(d.rgba[di:di+4], pixels[si:si+4], clampLayerOpacity(l.Opacity), l.Type, targetType)
 						if provinceMatchesImage {
 							provinceID := l.Province[(int(l.ImageTop)+int(sy)/int(scale))*int(l.ImageWidth)+int(l.ImageLeft)+int(sx)/int(scale)]
 							if provinceID != 0 && pixels[si+3] != 0 {

@@ -24,13 +24,19 @@ var ErrUnsupportedStorageMedia = errors.New("unsupported storage media")
 // Storage resolves loose files and mounted XP3 archives. Later archives and
 // later search paths override earlier ones; loose files override archives.
 type Storage struct {
-	Project      string
-	Archives     []*Archive
-	Catalog      map[string]int
-	limits       core.Limits
-	searchPaths  []string
-	imageCache   imageDecodeCache
-	graphicCache graphicCache
+	Project           string
+	Archives          []*Archive
+	Catalog           map[string]int
+	limits            core.Limits
+	searchPaths       []string
+	imageCache        imageDecodeCache
+	graphicCache      graphicCache
+	psbMediaMu        sync.RWMutex
+	psbMediaDomains   map[string]struct{}
+	psbMediaResources map[string][]byte
+	psdMediaMu        sync.RWMutex
+	psdMediaLoadMu    sync.Mutex
+	psdMediaDocuments map[string]*psdMediaDocument
 
 	filterMu         sync.RWMutex
 	extractionFilter ExtractionFilter
@@ -303,6 +309,7 @@ func (s *Storage) ClearCache() {
 	}
 	s.imageCache.clear()
 	s.graphicCache.clear()
+	s.ClearPSDMediaCache()
 	s.clearDirectoryIndexes()
 }
 
@@ -613,6 +620,24 @@ func (s *Storage) archiveLocation(name string) (int, string, bool) {
 }
 
 func (s *Storage) Resolve(name string) (string, error) {
+	if resolved, found, handled, err := s.resolvePSBMedia(name); handled {
+		if err != nil {
+			return "", err
+		}
+		if !found {
+			return "", fmt.Errorf("%w: %s", ErrNotFound, name)
+		}
+		return resolved, nil
+	}
+	if resolved, found, handled, err := s.resolvePSDMedia(name); handled {
+		if err != nil {
+			return "", err
+		}
+		if !found {
+			return "", fmt.Errorf("%w: %s", ErrNotFound, name)
+		}
+		return resolved, nil
+	}
 	n, err := s.normalize(name, false)
 	if err != nil {
 		return "", err
@@ -754,6 +779,12 @@ func within(root, path string) bool {
 }
 
 func (s *Storage) Read(name string) ([]byte, error) {
+	if data, handled, err := s.readPSBMedia(name); handled {
+		return data, err
+	}
+	if data, handled, err := s.readPSDMedia(name); handled {
+		return data, err
+	}
 	// The common project-root path avoids resolving a loose file once in
 	// Resolve and then repeating the same filesystem checks to open/read it.
 	// Search paths and archive-qualified names retain the general resolver,
@@ -793,6 +824,12 @@ func (s *Storage) Read(name string) ([]byte, error) {
 func (s *Storage) ReadNoSearch(name string) ([]byte, error) {
 	if s == nil {
 		return nil, fmt.Errorf("nil storage")
+	}
+	if data, handled, err := s.readPSBMedia(name); handled {
+		return data, err
+	}
+	if data, handled, err := s.readPSDMedia(name); handled {
+		return data, err
 	}
 	normalized, err := s.normalize(name, false)
 	if err != nil {
@@ -1148,6 +1185,21 @@ func (s *Storage) StatSize(name string) (uint64, error) {
 	if s == nil {
 		return 0, fmt.Errorf("nil storage")
 	}
+	if _, data, found, handled, err := s.lookupPSBMedia(name); handled {
+		if err != nil {
+			return 0, err
+		}
+		if !found {
+			return 0, fmt.Errorf("%w: %s", ErrNotFound, name)
+		}
+		return uint64(len(data)), nil
+	}
+	if data, handled, err := s.readPSDMedia(name); handled {
+		if err != nil {
+			return 0, err
+		}
+		return uint64(len(data)), nil
+	}
 	if strings.ContainsRune(name, ':') {
 		outer, member, qualified := name, "", false
 		if i := strings.IndexByte(name, '>'); i >= 0 {
@@ -1212,6 +1264,15 @@ type DirEntry struct {
 // their on-disk spelling, sorted by name. Archive-qualified directories are
 // rejected because only the local file-media storage can be enumerated.
 func (s *Storage) ReadDirNames(name string) ([]string, error) {
+	if names, found, handled, err := s.readPSDMediaDir(name); handled {
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
+		}
+		return names, nil
+	}
 	dir, err := s.readDirPath(name)
 	if err != nil {
 		return nil, err
@@ -1232,6 +1293,19 @@ func (s *Storage) ReadDirNames(name string) ([]string, error) {
 // read are omitted rather than failing the whole listing, matching the
 // reference plugin's stat-based enumeration.
 func (s *Storage) ReadDirEntries(name string) ([]DirEntry, error) {
+	if names, found, handled, err := s.readPSDMediaDir(name); handled {
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
+		}
+		entries := make([]DirEntry, 0, len(names))
+		for _, itemName := range names {
+			entries = append(entries, DirEntry{Name: itemName, Mode: 0444})
+		}
+		return entries, nil
+	}
 	dir, err := s.readDirPath(name)
 	if err != nil {
 		return nil, err

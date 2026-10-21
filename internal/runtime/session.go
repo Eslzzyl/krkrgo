@@ -100,8 +100,34 @@ func NewSession(services *Services, budget uint64) *Session {
 	s := &Session{VM: vm, Services: services, Budget: budget, preprocessor: preprocessor}
 	services.bindSessionPreprocessor(vm, preprocessor)
 	s.initErr = registerCoreConstants(vm)
+	if s.initErr == nil {
+		s.initErr = registerDefaultFontFaceGlobals(vm, services)
+	}
 	_ = s.registerNatives()
 	return s
+}
+
+func registerDefaultFontFaceGlobals(vm *tjs.VM, services *Services) error {
+	if vm == nil || services == nil {
+		return nil
+	}
+	defaultFace := defaultFontFaceName
+	if services.FontSystem != nil && strings.TrimSpace(services.FontSystem.DefaultFont) != "" {
+		defaultFace = services.FontSystem.DefaultFont
+	}
+	global, ok := vm.Objects.Lookup(0)
+	if !ok {
+		return fmt.Errorf("TJS global object is unavailable")
+	}
+	for _, name := range []string{"SystemDefaultFontFace", "MessageDefaultFontFace"} {
+		if _, exists := global.Get(name); exists {
+			continue
+		}
+		if err := global.Set(name, tjs.StringValue(defaultFace)); err != nil {
+			return fmt.Errorf("register global %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func New(services *Services, budget uint64) *Session { return NewSession(services, budget) }
@@ -813,6 +839,7 @@ func (s *Session) executeStartupScripts() (tjs.Value, error) {
 
 	startupValue, startupErr := s.executeStorage("startup.tjs", true)
 	if startupErr != nil {
+		log.Printf("krkrgo: startup primary failure: %v", startupErr)
 		if _, err := s.Services.Storage.Resolve("system/Initialize.tjs"); err != nil {
 			return tjs.VoidValue, startupErr
 		}

@@ -239,7 +239,7 @@ func layerCompleteRegion(layer *Layer, rect Rect, depth int, livePixels uint64, 
 		if err != nil {
 			return nil, err
 		}
-		blendLayerPiece(out, rect, left, top, piece, childRect.Width, childRect.Height, child.Opacity, child.Type, layer.Type)
+		blendLayerPiece(out, rect, left, top, piece, childRect.Width, childRect.Height, clampLayerOpacity(child.Opacity), child.Type, layer.Type)
 	}
 	return out, nil
 }
@@ -274,7 +274,7 @@ func layerCompositeBinderChildren(target []byte, targetRect Rect, targetType Lay
 		if err != nil {
 			return err
 		}
-		blendLayerPiece(target, targetRect, left, top, piece, childRect.Width, childRect.Height, child.Opacity, child.Type, targetType)
+		blendLayerPiece(target, targetRect, left, top, piece, childRect.Width, childRect.Height, clampLayerOpacity(child.Opacity), child.Type, targetType)
 	}
 	return nil
 }

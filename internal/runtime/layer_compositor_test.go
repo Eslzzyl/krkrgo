@@ -602,6 +602,29 @@ func TestLayerHitThresholdRejectsOutOfRangeValues(t *testing.T) {
 	}
 }
 
+func TestLayerOpacityPreservesValueAndClampsRendering(t *testing.T) {
+	layer := NewLayer(1)
+	for _, test := range []struct {
+		value int
+		want  uint8
+	}{
+		{value: -12694, want: 0},
+		{value: 0, want: 0},
+		{value: 128, want: 128},
+		{value: 512, want: 255},
+	} {
+		if err := layer.SetOpacity(test.value); err != nil {
+			t.Fatalf("SetOpacity(%d) = %v", test.value, err)
+		}
+		if layer.Opacity != test.value {
+			t.Errorf("stored opacity = %d, want %d", layer.Opacity, test.value)
+		}
+		if got := clampLayerOpacity(layer.Opacity); got != test.want {
+			t.Errorf("render opacity for %d = %d, want %d", test.value, got, test.want)
+		}
+	}
+}
+
 func TestComposeRejectsAdvancedLayerType(t *testing.T) {
 	root := NewRootLayer(1, 1, 1)
 	child := NewLayer(2)

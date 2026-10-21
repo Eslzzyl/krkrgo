@@ -78,6 +78,9 @@ func (v *VM) markObject(id ObjectID, seen map[ObjectID]struct{}, pending *[]Obje
 			markValue(m.legacyProperty.getter, seen, pending)
 			markValue(m.legacyProperty.setter, seen, pending)
 		}
+		if m.variantProperty != nil {
+			markValue(*m.variantProperty, seen, pending)
+		}
 		for _, scope := range m.capturedScopes {
 			for _, x := range scope {
 				markValue(x, seen, pending)

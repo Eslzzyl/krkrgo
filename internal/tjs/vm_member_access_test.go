@@ -2,6 +2,81 @@ package tjs
 
 import "testing"
 
+func TestVMMissingMemberDispatch(t *testing.T) {
+	vm := NewVM()
+	program, err := compile("missing-member-dispatch.tjs", `
+class MissingMemberDispatchProbe {
+	var stored = %[];
+	function missing(setting, name, prop) {
+		if (setting) {
+			stored[name] = *prop;
+			return true;
+		}
+		if (name == "virtual") {
+			*prop = 37;
+			return true;
+		}
+		return false;
+	}
+}
+return new MissingMemberDispatchProbe();
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := uint64(10000)
+	proxy, err := vm.Execute(&program, vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetCallMissing(proxy); err != nil {
+		t.Fatal(err)
+	}
+	vm.Globals["proxy"] = proxy
+
+	budget = 10000
+	got, found, err := vm.GetMemberIfPresent(proxy, "virtual", vmTestHost{}, &budget)
+	if err != nil || !found || got.IntegerValue() != 37 {
+		t.Fatalf("missing member API read = %v, %v, %v; want 37", got, found, err)
+	}
+	budget = 10000
+	if err := vm.SetMemberWithRuntime(proxy, "capturedByAPI", IntegerValue(23), 0, vmTestHost{}, &budget); err != nil {
+		t.Fatal(err)
+	}
+	stored, found, err := vm.GetMemberIfPresent(proxy, "stored", vmTestHost{}, &budget)
+	if err != nil || !found {
+		t.Fatalf("stored member = %v, %v, %v", stored, found, err)
+	}
+	got, found, err = vm.GetMemberIfPresent(stored, "capturedByAPI", vmTestHost{}, &budget)
+	if err != nil || !found || got.IntegerValue() != 23 {
+		t.Fatalf("missing member API write = %v, %v, %v; want 23", got, found, err)
+	}
+
+	readProgram, err := compile("missing-member-read.tjs", `return proxy.virtual;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget = 10000
+	budget = 10000
+	got, err = vm.Execute(&readProgram, vmTestHost{}, &budget)
+	if err != nil || got.IntegerValue() != 37 {
+		t.Fatalf("missing member read = %v, %v; want 37", got, err)
+	}
+
+	writeProgram, err := compile("missing-member-write.tjs", `
+proxy.captured = 19;
+return proxy.stored.captured;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget = 10000
+	got, err = vm.Execute(&writeProgram, vmTestHost{}, &budget)
+	if err != nil || got.IntegerValue() != 19 {
+		t.Fatalf("missing member write = %v, %v; want 19", got, err)
+	}
+}
+
 func TestVMMemberAccessPreservesUTF16Keys(t *testing.T) {
 	vm := NewVM()
 	object, err := vm.NewDictionary()

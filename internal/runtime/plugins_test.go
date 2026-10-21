@@ -247,3 +247,24 @@ func TestKrmovieLinkInstallsNoFabricatedMovieClass(t *testing.T) {
 		}
 	}
 }
+
+func TestDrawDeviceD2DLinkKeepsTheCurrentHostDevice(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+
+	if _, err := session.Evaluate(`Plugins.link("DrawDeviceD2D.dll")`); err != nil {
+		t.Fatalf("DrawDeviceD2D link: %v", err)
+	}
+	for _, source := range []string{
+		`typeof global.DrawDeviceD2D == "undefined"`,
+		`typeof global.KAGWindow_createDrawDevice == "undefined"`,
+	} {
+		value, err := session.Evaluate(source)
+		if err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+		if ok, err := value.Truth(); err != nil || !ok {
+			t.Errorf("%s = %v, err=%v; want true", source, value, err)
+		}
+	}
+}

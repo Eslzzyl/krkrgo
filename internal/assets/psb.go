@@ -22,7 +22,7 @@ type Resource struct {
 	Length        int    `json:"length"`
 }
 
-// Document is a PSB v2 structured-data document.
+// Document is a PSB v2 or v3 structured-data document.
 type Document struct {
 	Version uint16      `json:"version"`
 	Root    Value       `json:"root"`
@@ -171,7 +171,7 @@ func decryptEmotePSB(data []byte, seed uint32) ([]byte, error) {
 	return out, nil
 }
 
-// ParsePSB decodes a bounded PSB v2 document.
+// ParsePSB decodes a bounded PSB v2 or v3 document.
 func ParsePSB(data []byte) (*Document, error) {
 	magic, err := psbSlice(data, 0, 4)
 	if err != nil || string(magic) != "PSB\x00" {
@@ -181,7 +181,7 @@ func ParsePSB(data []byte) (*Document, error) {
 	if err != nil {
 		return nil, err
 	}
-	if version != 2 {
+	if version != 2 && version != 3 {
 		return nil, psbErr("unsupported version %d", version)
 	}
 	encrypted, err := psbUint(data, 6, 2)
@@ -190,6 +190,10 @@ func ParsePSB(data []byte) (*Document, error) {
 	}
 	if encrypted != 0 {
 		return nil, psbErr("encrypted headers are unsupported")
+	}
+	headerLength := uint64(40)
+	if version == 3 {
+		headerLength = 44
 	}
 	var offsets [8]int
 	for i := range offsets {
@@ -200,7 +204,7 @@ func ParsePSB(data []byte) (*Document, error) {
 		if i == 0 && n == 0 {
 			continue
 		}
-		if n > uint64(len(data)) || n < 40 {
+		if n > uint64(len(data)) || n < headerLength {
 			return nil, psbErr("invalid header offset")
 		}
 		offsets[i] = int(n)
@@ -210,63 +214,21 @@ func ParsePSB(data []byte) (*Document, error) {
 	if err != nil {
 		return nil, err
 	}
-	bases, next, err := psbArray(metadata, offsets[1])
+	charset, next, err := psbArray(metadata, offsets[1])
 	if err != nil {
 		return nil, err
 	}
-	parents, _, err := psbArray(metadata, next)
+	nameData, next, err := psbArray(metadata, next)
 	if err != nil {
 		return nil, err
 	}
-	if len(bases) != len(parents) {
-		return nil, psbErr("name table lengths disagree")
+	nameIndexes, _, err := psbArray(metadata, next)
+	if err != nil {
+		return nil, err
 	}
-	names := make(map[uint32]string, len(bases))
-	if len(bases) != 0 {
-		type node struct {
-			index  int
-			prefix []byte
-		}
-		pending := []node{{index: 0}}
-		seen := make(map[int]bool)
-		nameBytes := 64 << 20
-		for len(pending) > 0 {
-			current := pending[0]
-			pending = pending[1:]
-			if len(current.prefix) > 4096 || seen[current.index] {
-				return nil, psbErr("cyclic or excessive name trie")
-			}
-			seen[current.index] = true
-			if current.index < 0 || current.index >= len(bases) {
-				return nil, psbErr("name trie node out of range")
-			}
-			base := uint64(bases[current.index])
-			for c := 0; c < 256; c++ {
-				index64 := base + uint64(c)
-				if index64 >= uint64(len(parents)) || parents[index64] != uint32(current.index) {
-					continue
-				}
-				index := int(index64)
-				if c == 0 {
-					id := bases[index]
-					name := string(current.prefix)
-					if _, exists := names[id]; exists {
-						return nil, psbErr("duplicate name ID")
-					}
-					names[id] = name
-				} else {
-					cost := len(current.prefix) + 1
-					if cost > nameBytes {
-						return nil, psbErr("name trie allocation budget exceeded")
-					}
-					nameBytes -= cost
-					prefix := make([]byte, len(current.prefix)+1)
-					copy(prefix, current.prefix)
-					prefix[len(current.prefix)] = byte(c)
-					pending = append(pending, node{index: index, prefix: prefix})
-				}
-			}
-		}
+	names, err := psbDecodeNames(charset, nameData, nameIndexes)
+	if err != nil {
+		return nil, err
 	}
 	stringsTable, _, err := psbArray(metadata, offsets[2])
 	if err != nil {
@@ -300,6 +262,47 @@ func ParsePSB(data []byte) (*Document, error) {
 		return nil, err
 	}
 	return &Document{Version: uint16(version), Root: root, Objects: parser.objects}, nil
+}
+
+func psbDecodeNames(charset, nameData, nameIndexes []uint32) (map[uint32]string, error) {
+	names := make(map[uint32]string, len(nameIndexes))
+	remainingNameBytes := 64 << 20
+	for id, start := range nameIndexes {
+		if uint64(start) >= uint64(len(nameData)) {
+			return nil, psbErr("name index outside name data")
+		}
+		nameBytes := make([]byte, 0, 32)
+		seen := make(map[uint32]struct{})
+		index := nameData[start]
+		for index != 0 {
+			if uint64(index) >= uint64(len(nameData)) {
+				return nil, psbErr("name reference outside name data")
+			}
+			if _, exists := seen[index]; exists {
+				return nil, psbErr("cyclic name data")
+			}
+			seen[index] = struct{}{}
+			if len(nameBytes) >= 4096 {
+				return nil, psbErr("name exceeds length limit")
+			}
+			code := nameData[index]
+			if uint64(code) >= uint64(len(charset)) {
+				return nil, psbErr("name character outside charset")
+			}
+			delta := charset[code]
+			nameBytes = append(nameBytes, byte(index-delta))
+			index = code
+		}
+		for left, right := 0, len(nameBytes)-1; left < right; left, right = left+1, right-1 {
+			nameBytes[left], nameBytes[right] = nameBytes[right], nameBytes[left]
+		}
+		if len(nameBytes) > remainingNameBytes {
+			return nil, psbErr("name table allocation budget exceeded")
+		}
+		remainingNameBytes -= len(nameBytes)
+		names[uint32(id)] = string(nameBytes)
+	}
+	return names, nil
 }
 
 func (p *psbParser) allocate(n int) error {

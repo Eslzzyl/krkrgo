@@ -341,6 +341,13 @@ func TestCompileAndRunArrayAssociativeEntries(t *testing.T) {
 	}
 }
 
+func TestCompileAndRunCallArgumentCommaAlias(t *testing.T) {
+	got := executeVMSource(t, `function add(left, right) { return left + right; } return add(19 => 23);`)
+	if value, err := got.Int(); err != nil || value != 42 {
+		t.Fatalf("call arguments separated by => = %v, %v; want 42", got, err)
+	}
+}
+
 func TestCompileRejectsMalformedNumberLiterals(t *testing.T) {
 	for _, test := range []struct {
 		source string

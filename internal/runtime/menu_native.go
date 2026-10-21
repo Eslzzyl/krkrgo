@@ -548,6 +548,15 @@ func (s *Services) menuNative(vm *tjs.VM, context tjs.Value, operation string, a
 	}
 	id := context.ObjectRef().Object
 	if operation == "construct" || operation == "MenuItem" {
+		if len(args) == 0 || args[0].IsVoid() {
+			item, exists := model.items[id]
+			if !exists {
+				item = &menuItemState{actionOwner: tjs.NullValue, window: tjs.NullValue, caption: tjs.StringValue(""), enabled: true, visible: true, group: -1, arrayDirty: true}
+				model.items[id] = item
+			}
+			item.constructed = true
+			return tjs.VoidValue, nil
+		}
 		model.items[id] = &menuItemState{actionOwner: tjs.NullValue, window: tjs.NullValue, caption: tjs.StringValue(""), enabled: true, visible: true, group: -1, arrayDirty: true}
 		return tjs.VoidValue, s.constructMenuItem(id, args)
 	}

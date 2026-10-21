@@ -29,6 +29,8 @@ func TestMenuPluginInstallsHeadlessMenuSurface(t *testing.T) {
 
 	for _, source := range []string{
 		`window = new Window()`,
+		`bare = new MenuItem()`,
+		`bare.MenuItem(void, "")`,
 		`clicks = 0; clickType = ""; window.action = function(event) { clicks = clicks + 1; clickType = event.type; clickedTarget = event.target; }`,
 		`root = window.menu`,
 		`first = new MenuItem(window, "first")`,
@@ -76,6 +78,9 @@ func TestMenuPluginInstallsHeadlessMenuSurface(t *testing.T) {
 	}
 	if !evalTruth(`root === window.menu && root.window === window && first.root === root && first.window === null && first.parent === root && second.parent === root && first.index == 1 && second.index == 0`) {
 		t.Fatal("menu root or child tree relationships are incorrect")
+	}
+	if !evalTruth(`bare.caption == "" && bare.enabled && bare.visible`) {
+		t.Fatal("zero-argument MenuItem constructor did not preserve the native default state")
 	}
 	if !evalTruth(`root.children.count == 3 && root.children === root.children`) {
 		t.Fatal("menu children array was not stable or complete")

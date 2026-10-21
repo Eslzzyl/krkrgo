@@ -3,7 +3,9 @@ package tjs
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
+	"strings"
 )
 
 const LegacyPropertySetFlag uint32 = 1 << 31
@@ -291,6 +293,9 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		var err error
 		if target == registerBase-2 {
 			value, err = read(thisContext, name, flags|MemberMustExist)
+			if os.Getenv("KRKRGO_LEGACY_PROPERTY_TRACE") == "1" && errors.Is(err, ErrMemberNotFound) {
+				fmt.Printf("[legacy-property-read-miss] object=%d receiver=%v property=%q\n", object, thisContext, name)
+			}
 			if errors.Is(err, ErrMemberNotFound) || (err == nil && name == "kag" && (value.IsVoid() || value.IsNull())) {
 				value, err = read(global, name, flags)
 			}
@@ -300,6 +305,9 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 				return VoidValue, err
 			}
 			value, err = read(receiver, name, flags)
+			if os.Getenv("KRKRGO_LEGACY_PROPERTY_TRACE") == "1" && errors.Is(err, ErrMemberNotFound) {
+				fmt.Printf("[legacy-property-read-miss] object=%d receiver=%v property=%q\n", object, receiver, name)
+			}
 		}
 		if err != nil {
 			return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: get property %q: %w", object, pc, name, err)
@@ -328,6 +336,9 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			err = set(receiver, name, value, flags)
 		} else {
 			err = dispatcher.Set(receiver, name, value, flags)
+		}
+		if os.Getenv("KRKRGO_LEGACY_PROPERTY_TRACE") == "1" && flags&MemberEnsure != 0 {
+			fmt.Printf("[legacy-property-set] object=%d receiver=%v property=%q flags=%d value=%s err=%v\n", object, receiver, name, flags, value.TypeName(), err)
 		}
 		if err != nil {
 			return fmt.Errorf("legacy intercode object %d code offset %d: set property %q: %w", object, pc, name, err)
@@ -768,9 +779,38 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		return true
 	}
 	// ENTRY/THROW/EXTRY mirror the reference VM's protected execution flow.
+	traceName := ""
+	if int(o.Name) >= 0 && int(o.Name) < len(d.Strings) {
+		traceName = d.Strings[o.Name]
+	}
+	traceFunction := false
+	for _, filter := range strings.Split(os.Getenv("KRKRGO_LEGACY_INSTRUCTION_TRACE"), ",") {
+		filter = strings.TrimSpace(filter)
+		if filter != "" && (filter == "1" || filter == traceName) {
+			traceFunction = true
+			break
+		}
+	}
 	for ip := startIP; ip < len(instructions); {
 		in := &instructions[ip]
 		nextIP := ip + 1
+		if traceFunction {
+			slots := []string{}
+			for _, address := range []int16{-3, -4, -5, -6, -7, -8, -9} {
+				index := registerBase + int(address)
+				if index >= 0 && index < len(regs) {
+					slots = append(slots, fmt.Sprintf("%d=%s:%s", address, regs[index].TypeName(), regs[index].Text()))
+				}
+			}
+			locals := []string{}
+			for _, address := range []int16{1, 2, 3, 4, 5, 6, 7} {
+				index := registerBase + int(address)
+				if index >= 0 && index < len(regs) {
+					locals = append(locals, fmt.Sprintf("%d=%s:%s", address, regs[index].TypeName(), regs[index].Text()))
+				}
+			}
+			fmt.Printf("[legacy-instruction] object=%d name=%q offset=%d opcode=%s flag=%t slots=%v locals=%v\n", object, traceName, in.Offset, in.Name, flag, slots, locals)
+		}
 		switch in.Opcode {
 		case 15, 16, 17: // Jump operands are relative offsets in 16-bit code units.
 			take := in.Opcode == 17 || (in.Opcode == 15 && flag) || (in.Opcode == 16 && !flag)
@@ -1337,6 +1377,10 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			if e != nil {
 				return VoidValue, e
 			}
+			if regs[key].IsVoid() {
+				regs[dst] = StringValue("undefined")
+				break
+			}
 			name, e := memberName(regs[key], in.Offset)
 			if e != nil {
 				return VoidValue, e
@@ -1451,6 +1495,9 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 				}
 			}
 			if err := table.RegisterClassInstanceMembers(classID); err != nil {
+				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: REGMEMBER: %w", object, in.Offset, err)
+			}
+			if err := table.BindObjectMemberClosures(target.ObjectRef().Object); err != nil {
 				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: REGMEMBER: %w", object, in.Offset, err)
 			}
 		case 127: // DEBUGGER -- the reference VM calls TJSNativeDebuggerBreak, which
@@ -1728,12 +1775,23 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			if callee == registerBase-2 {
 				receiver = thisContext
 			}
+			if os.Getenv("KRKRGO_LEGACY_PROPERTY_TRACE") == "1" {
+				argSummary := make([]string, len(callArgs))
+				for index, argument := range callArgs {
+					argSummary[index] = argument.TypeName() + ":" + argument.Text()
+				}
+				fmt.Printf("[legacy-call] object=%d offset=%d name=%q receiver=%v args=%v\n", object, in.Offset, name, receiver, argSummary)
+			}
 			var value Value
 			// The global eval function is a VM hook rather than a real member,
 			// so only the direct-call form binds it here.
 			if in.Opcode == 100 && name == "eval" && evaluate != nil {
 				if len(callArgs) != 0 {
-					value, e = evaluate(callArgs[0].Text(), thisContext, hasResult)
+					evalContext := VoidValue
+					if len(callArgs) >= 4 {
+						evalContext = callArgs[3]
+					}
+					value, e = evaluate(callArgs[0].Text(), evalContext, hasResult)
 				}
 				if e != nil {
 					callErr := fmt.Errorf("legacy intercode object %d code offset %d: CALLD %q: %w", object, in.Offset, name, e)

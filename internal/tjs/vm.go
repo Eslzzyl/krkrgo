@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +56,7 @@ type vmObject struct {
 	legacyClassBody         LegacyFunction
 	legacyClassInitializer  func(Host, *uint64) error
 	callMissing             bool
+	processingMissing       bool
 	legacyClassInitializing bool
 	legacyClassInitialized  bool
 	legacySuperclassGetter  func(int, Host, *uint64) (Value, error)
@@ -86,6 +88,7 @@ type vmObject struct {
 	finalizer               string
 	scriptFinalizer         ObjectID
 	finalizing              bool
+	variantProperty         *Value
 }
 
 // RegisterLegacyFunction creates a VM-owned callable backed by TJS2 intercode.
@@ -222,6 +225,7 @@ type vmFrame struct {
 	pending        *vmCompletion
 	functionName   string
 	function       bool
+	functionObject ObjectID
 }
 
 type vmTraceFrame struct {
@@ -254,32 +258,33 @@ type vmFrameRoots struct {
 // explicit table; collection removes unreachable entries but IDs are allocated
 // from the process-wide monotonic counter and are never reused.
 type VM struct {
-	mu                 sync.RWMutex
-	Objects            *ObjectTable
-	Globals            map[string]Value
-	Executed           uint64
-	allocationsSinceGC uint64
-	collecting         bool
-	gcSafeDepth        int
-	depth              int
-	roots              map[ObjectRef]struct{}
-	frameRoots         []vmFrameRoots
-	legacyRoots        []vmLegacyFrameRoots
-	transientRoots     []Value
-	meta               map[ObjectID]*vmObject
-	literals           map[ObjectID]Value
-	nativeSave         bool
-	nativeSavePlugin   bool
-	traceStack         []vmTraceFrame
-	constructing       []ObjectID
-	idOrder            []ObjectID
-	registerScratch    []Value
-	gcSeen             map[ObjectID]struct{}
-	gcPending          []ObjectID
-	gcHosts            []Host
-	gcIDs              []ObjectID
-	gcRemoved          []ObjectID
-	executionProfile   *ExecutionProfile
+	mu                                 sync.RWMutex
+	Objects                            *ObjectTable
+	Globals                            map[string]Value
+	Executed                           uint64
+	allocationsSinceGC                 uint64
+	collecting                         bool
+	gcSafeDepth                        int
+	depth                              int
+	roots                              map[ObjectRef]struct{}
+	frameRoots                         []vmFrameRoots
+	legacyRoots                        []vmLegacyFrameRoots
+	transientRoots                     []Value
+	legacyClassInitializationDeferrals int
+	meta                               map[ObjectID]*vmObject
+	literals                           map[ObjectID]Value
+	nativeSave                         bool
+	nativeSavePlugin                   bool
+	traceStack                         []vmTraceFrame
+	constructing                       []ObjectID
+	idOrder                            []ObjectID
+	registerScratch                    []Value
+	gcSeen                             map[ObjectID]struct{}
+	gcPending                          []ObjectID
+	gcHosts                            []Host
+	gcIDs                              []ObjectID
+	gcRemoved                          []ObjectID
+	executionProfile                   *ExecutionProfile
 }
 
 func NewVM() *VM {
@@ -389,6 +394,59 @@ func (v *VM) alloc(category ObjectCategory) (Value, ObjectID, error) {
 	}
 	return value, id, nil
 }
+
+func (v *VM) newFunctionValue(function Function, scopes []map[string]Value, withs []Value, lexicalContext ObjectID) (Value, ObjectID, error) {
+	value, id, err := v.alloc(CategoryFunction)
+	if err != nil {
+		return VoidValue, 0, err
+	}
+	definition := function.Clone()
+	meta := v.meta[id]
+	meta.function = &definition
+	meta.capturedScopes = append([]map[string]Value(nil), scopes...)
+	meta.capturedWiths = append([]Value(nil), withs...)
+	meta.lexicalContext = lexicalContext
+	for i := range definition.Members {
+		member := definition.Members[i]
+		memberValue, _, memberErr := v.newFunctionValue(member, scopes, withs, lexicalContext)
+		if memberErr != nil {
+			return VoidValue, 0, memberErr
+		}
+		if memberErr = v.setMemberString(id, member.Name, memberValue); memberErr != nil {
+			return VoidValue, 0, memberErr
+		}
+	}
+	for i := range definition.Properties {
+		property := definition.Properties[i].Clone()
+		propertyValue, propertyID, propertyErr := v.alloc(CategoryProperty)
+		if propertyErr != nil {
+			return VoidValue, 0, propertyErr
+		}
+		propertyMeta := v.meta[propertyID]
+		propertyMeta.property = &property
+		propertyMeta.owner = id
+		propertyMeta.capturedScopes = append([]map[string]Value(nil), scopes...)
+		propertyMeta.capturedWiths = append([]Value(nil), withs...)
+		propertyMeta.lexicalContext = lexicalContext
+		if propertyErr = v.setMemberString(id, property.Name, propertyValue); propertyErr != nil {
+			return VoidValue, 0, propertyErr
+		}
+	}
+	return value, id, nil
+}
+
+func (v *VM) hasNestedFunction(id ObjectID, name string) bool {
+	meta := v.meta[id]
+	if meta == nil || meta.function == nil {
+		return false
+	}
+	for i := range meta.function.Members {
+		if meta.function.Members[i].Name == name {
+			return true
+		}
+	}
+	return false
+}
 func (v *VM) ObjectsSize() int {
 	if v == nil || v.Objects == nil {
 		return 0
@@ -443,9 +501,6 @@ func (v *VM) setMemberString(id ObjectID, name string, val Value) error {
 func (v *VM) lookupClassMemberWithRuntime(classID ObjectID, name string, depth int, skipStatic bool, host Host, budget *uint64) (Value, bool, error) {
 	if depth >= 128 {
 		return VoidValue, false, errors.New("class inheritance depth exceeded")
-	}
-	if err := v.ensureLegacyClassInitialized(classID, host, budget); err != nil {
-		return VoidValue, false, err
 	}
 	classObject, err := v.obj(classID)
 	if err != nil {
@@ -591,7 +646,7 @@ func (v *VM) resolveLegacyClassBases(classID ObjectID, host Host, budget *uint64
 }
 
 func (v *VM) bindClassMember(value Value, context ObjectID) Value {
-	if value.Kind() != KindObject || value.ObjectRef().HasBoundContext() {
+	if value.Kind() != KindObject || value.IsNull() {
 		return value
 	}
 	if contextMeta := v.meta[context]; contextMeta != nil &&
@@ -606,6 +661,9 @@ func (v *VM) linkClassBase(receiver Value, baseID ObjectID) {
 	}
 	meta := v.meta[receiver.ObjectRef().Object]
 	if meta != nil && meta.category == CategoryInstance {
+		if meta.classObject == baseID {
+			return
+		}
 		meta = v.meta[meta.classObject]
 	}
 	if meta == nil || meta.category != CategoryClass {
@@ -829,7 +887,16 @@ func (v *VM) GetMemberIfPresent(receiver Value, name string, host Host, budget *
 	if !ok {
 		member, ok, err = v.vmRegexpMethod(id, name)
 		if err != nil || !ok {
-			return VoidValue, ok, err
+			if err != nil {
+				return VoidValue, false, err
+			}
+			if !ok {
+				value, handled, missingErr := v.missingMember(receiver, key, nil, host, budget)
+				if missingErr != nil || !handled {
+					return value, handled, missingErr
+				}
+				return value, true, nil
+			}
 		}
 	}
 	value, err := v.getValue(receiver, member, false, host, budget)
@@ -847,8 +914,15 @@ func (v *VM) GetMemberRawIfPresent(receiver Value, name string, host Host, budge
 		return VoidValue, false, err
 	}
 	member, ok, err := v.getMemberWithRuntime(id, StringValue(name), host, budget)
-	if err != nil || !ok {
-		return VoidValue, ok, err
+	if err != nil {
+		return VoidValue, false, err
+	}
+	if !ok {
+		value, handled, missingErr := v.missingMember(receiver, StringValue(name), nil, host, budget)
+		if missingErr != nil || !handled {
+			return value, handled, missingErr
+		}
+		return value, true, nil
 	}
 	value, err := v.getValue(receiver, member, true, host, budget)
 	return value, true, err
@@ -908,6 +982,11 @@ func (v *VM) SetMemberWithRuntime(receiver Value, name string, value Value, flag
 			return err
 		}
 		return object.ChangeFlags(name, flags&(HiddenMember|StaticMember), 0)
+	}
+	if _, handled, missingErr := v.missingMember(receiver, StringValue(name), &value, host, budget); missingErr != nil {
+		return missingErr
+	} else if handled {
+		return nil
 	}
 	if flags&MemberMustExist != 0 && object.Category == CategoryDictionary {
 		return ErrMemberNotFound
@@ -981,6 +1060,13 @@ func (v *VM) GetMemberByKey(receiver, key Value, flags uint32, host Host, budget
 		member, found, err = v.vmArrayMethod(id, name)
 		if err != nil {
 			return VoidValue, false, err
+		}
+	}
+	if !found {
+		if value, handled, missingErr := v.missingMember(receiver, key, nil, host, budget); missingErr != nil {
+			return VoidValue, false, missingErr
+		} else if handled {
+			return value, true, nil
 		}
 	}
 	if !found {
@@ -1074,7 +1160,17 @@ func (v *VM) SetMemberByKey(receiver, key, value Value, flags uint32, host Host,
 		return object.ChangeFlagsUnits(units, flags&(HiddenMember|StaticMember), 0)
 	}
 	if flags&MemberEnsure == 0 {
+		if _, handled, missingErr := v.missingMember(receiver, key, &value, host, budget); missingErr != nil {
+			return missingErr
+		} else if handled {
+			return nil
+		}
 		return ErrMemberNotFound
+	}
+	if _, handled, missingErr := v.missingMember(receiver, key, &value, host, budget); missingErr != nil {
+		return missingErr
+	} else if handled {
+		return nil
 	}
 	if err := v.setMember(id, key, value); err != nil {
 		return err
@@ -1156,6 +1252,9 @@ func (v *VM) propertyAccessorPresent(property Value, getter bool) bool {
 			accessor = meta.legacyProperty.setter
 		}
 		return accessor.Kind() == KindObject && !accessor.IsNull()
+	}
+	if meta.variantProperty != nil {
+		return true
 	}
 	if meta.property == nil {
 		return false
@@ -1343,6 +1442,9 @@ func (v *VM) RegisterNativeClass(name string) (Value, error) {
 	v.meta[id].classObject = id
 	v.meta[id].nativeClass = true
 	v.meta[id].nativeConstructor = constructorID
+	if err := v.setMember(id, StringValue(name), ObjectValue(NewObjectRef(constructorID))); err != nil {
+		return VoidValue, err
+	}
 	v.Globals[name] = x
 	v.roots[x.ObjectRef()] = struct{}{}
 	return x, nil
@@ -1403,7 +1505,35 @@ func (v *VM) SetLegacyClassInitializer(class Value, initializer func(Host, *uint
 	return nil
 }
 
+// DeferLegacyClassInitialization postpones lazy compiled class setup until the
+// returned release function is called. Top-level bytecode uses this while it
+// installs class-level values that class bodies may read during setup.
+func (v *VM) DeferLegacyClassInitialization() func() {
+	if v == nil {
+		return func() {}
+	}
+	v.legacyClassInitializationDeferrals++
+	return func() {
+		if v.legacyClassInitializationDeferrals > 0 {
+			v.legacyClassInitializationDeferrals--
+		}
+	}
+}
+
 func (v *VM) ensureLegacyClassInitialized(classID ObjectID, host Host, budget *uint64) error {
+	if v != nil && v.legacyClassInitializationDeferrals > 0 {
+		return nil
+	}
+	return v.initializeLegacyClassNow(classID, host, budget)
+}
+
+func (v *VM) initializeLegacyClassNow(classID ObjectID, host Host, budget *uint64) error {
+	if v == nil {
+		return nil
+	}
+	deferrals := v.legacyClassInitializationDeferrals
+	v.legacyClassInitializationDeferrals = 0
+	defer func() { v.legacyClassInitializationDeferrals = deferrals }()
 	meta := v.meta[classID]
 	if meta == nil || meta.legacyClassInitializer == nil || meta.legacyClassInitialized {
 		return nil
@@ -1846,7 +1976,7 @@ func (v *VM) getValue(receiver, x Value, raw bool, h Host, b *uint64) (Value, er
 	}
 	return x, nil
 }
-func (v *VM) invokePropertyFunction(function *Function, context Value, args []Value, owner ObjectID, h Host, b *uint64) (Value, error) {
+func (v *VM) invokePropertyFunction(function *Function, context Value, args []Value, owner, propertyID ObjectID, h Host, b *uint64) (Value, error) {
 	rootDepth := v.pushCallRoots(VoidValue, context, args)
 	defer v.popTransientRoots(rootDepth)
 	context = v.propertyContext(context)
@@ -1857,13 +1987,25 @@ func (v *VM) invokePropertyFunction(function *Function, context Value, args []Va
 	if err != nil {
 		return VoidValue, err
 	}
+	meta := v.meta[propertyID]
+	var scopes []map[string]Value
+	var withs []Value
+	var lexicalContext ObjectID
+	if meta != nil {
+		scopes = append(scopes, meta.capturedScopes...)
+		withs = append(withs, meta.capturedWiths...)
+		lexicalContext = meta.lexicalContext
+	}
+	scopes = append(scopes, make(map[string]Value))
 	frame := vmFrame{
-		context:      id,
-		owner:        owner,
-		args:         args,
-		scopes:       []map[string]Value{make(map[string]Value)},
-		functionName: function.Name,
-		function:     true,
+		context:        id,
+		lexicalContext: lexicalContext,
+		owner:          owner,
+		args:           args,
+		scopes:         scopes,
+		withs:          withs,
+		functionName:   function.Name,
+		function:       true,
 	}
 	return v.run(&function.Program, h, b, frame)
 }
@@ -1882,13 +2024,16 @@ func (v *VM) getProperty(id ObjectID, receiver Value, h Host, b *uint64) (Value,
 	if m == nil {
 		return VoidValue, nil
 	}
+	if m.variantProperty != nil {
+		return *m.variantProperty, nil
+	}
 	if m.legacyProperty != nil {
 		return v.invokeLegacyPropertyAccessor(m.legacyProperty.getter, receiver, nil, h, b, true)
 	}
 	if m.property == nil || m.property.Getter == nil {
 		return VoidValue, nil
 	}
-	return v.invokePropertyFunction(m.property.Getter, receiver, nil, m.owner, h, b)
+	return v.invokePropertyFunction(m.property.Getter, receiver, nil, m.owner, id, h, b)
 }
 func vmArrayIndex(key Value) (int64, bool) {
 	switch key.Kind() {
@@ -2873,6 +3018,9 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 						if e == nil && !ok {
 							x, ok, e = v.vmArrayMethod(id, key.Text())
 						}
+						if e == nil && !ok {
+							x, ok, e = v.missingMember(receiver, key, nil, h, b)
+						}
 						if e == nil && ok {
 							x, e = v.getValue(receiver, x, op.Raw, h, b)
 							r[op.Out] = x
@@ -2890,6 +3038,9 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 					if e == nil && !ok {
 						x, ok, e = v.vmRegexpMethod(id, key.Text())
 					}
+					if e == nil && !ok {
+						x, ok, e = v.missingMember(receiver, key, nil, h, b)
+					}
 					if e == nil && ok {
 						x, e = v.getValue(receiver, x, op.Raw, h, b)
 						r[op.Out] = x
@@ -2902,6 +3053,45 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 					} else if !ok && !op.Optional && e == nil && (key.Text() == "_resolutionx" || key.Text() == "_resolutiony") {
 						r[op.Out] = IntegerValue(100)
 					} else if !ok && !op.Optional && e == nil && !missingIsVoid {
+						if key.Text() == "enabled" && os.Getenv("KRKRGO_MISSING_MEMBER_TRACE") != "" {
+							object, _ := v.Objects.Lookup(id)
+							meta := v.meta[id]
+							var objectCategory, vmCategory ObjectCategory
+							var classObject, owner ObjectID
+							var classBases, superclassBases []ObjectID
+							className := ""
+							functionName := ""
+							functionMembers := 0
+							if meta != nil {
+								vmCategory = meta.category
+								classObject = meta.classObject
+								owner = meta.owner
+								classBases = meta.classBases
+								superclassBases = meta.superclassBases
+								classID := meta.classObject
+								if classID == 0 {
+									classID = meta.owner
+								}
+								if classMeta := v.meta[classID]; classMeta != nil && classMeta.class != nil {
+									className = classMeta.class.Name
+								}
+								if meta.function != nil {
+									functionName = meta.function.Name
+									functionMembers = len(meta.function.Members)
+								}
+							}
+							names := make([]string, 0)
+							if object != nil {
+								objectCategory = object.Category
+								for _, entry := range object.Entries() {
+									names = append(names, entry.Name)
+									if len(names) == 64 {
+										break
+									}
+								}
+							}
+							fmt.Printf("[missing-member] id=%d object-category=%d class=%q function=%q function-members=%d vm-category=%d class-object=%d owner=%d bases=%v super-bases=%v members=%q\n", id, objectCategory, className, functionName, functionMembers, vmCategory, classObject, owner, classBases, superclassBases, names)
+						}
 						e = fmt.Errorf("member not found: %s (receiver=%d)", key.Text(), id)
 					} else if e == nil {
 						r[op.Out] = VoidValue
@@ -2951,9 +3141,15 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 							if e == nil && !ok {
 								x, ok, e = v.vmArrayMethod(id, key.Text())
 							}
+							if e == nil && !ok {
+								x, ok, e = v.missingMember(receiver, key, nil, h, b)
+							}
 						}
 					} else {
 						x, ok, e = v.getMemberWithRuntime(id, key, h, b)
+						if e == nil && !ok {
+							x, ok, e = v.missingMember(receiver, key, nil, h, b)
+						}
 					}
 					if e == nil {
 						if !ok {
@@ -3015,7 +3211,11 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 							e = v.setMember(id, key, value)
 						}
 					} else {
-						e = v.setMember(id, key, value)
+						_, handled, missingErr := v.missingMember(receiver, key, &value, h, b)
+						e = missingErr
+						if e == nil && !handled {
+							e = v.setMember(id, key, value)
+						}
 					}
 				}
 			} else {
@@ -3029,7 +3229,11 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 						e = v.setMember(id, key, value)
 					}
 				} else {
-					e = v.setMember(id, key, value)
+					_, handled, missingErr := v.missingMember(receiver, key, &value, h, b)
+					e = missingErr
+					if e == nil && !handled {
+						e = v.setMember(id, key, value)
+					}
 				}
 			}
 		case OpArray:
@@ -3058,17 +3262,32 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			if op.function() == nil {
 				e = errors.New("nil function descriptor")
 			} else {
-				x, id, er := v.alloc(CategoryFunction)
-				e = er
-				if e == nil {
-					v.meta[id].function = op.function()
-					v.meta[id].capturedScopes = append([]map[string]Value(nil), f.scopes...)
-					v.meta[id].capturedWiths = append([]Value(nil), f.withs...)
-					v.meta[id].lexicalContext = f.lexicalContext
-					if v.meta[id].lexicalContext == 0 {
-						v.meta[id].lexicalContext = f.context
+				function := op.function()
+				if f.functionObject != 0 && function.Name != "" && v.hasNestedFunction(f.functionObject, function.Name) {
+					if existing, ok, memberErr := v.getMemberString(f.functionObject, function.Name); memberErr != nil {
+						e = memberErr
+					} else if ok {
+						if memberID, handleErr := v.handle(existing); handleErr == nil && v.meta[memberID] != nil && v.meta[memberID].category == CategoryFunction {
+							put(op.Out, existing)
+							break
+						}
 					}
-					put(op.Out, x)
+				}
+				if e == nil {
+					lexicalContext := f.lexicalContext
+					if lexicalContext == 0 {
+						lexicalContext = f.context
+					}
+					functionValue, _, er := v.newFunctionValue(*function, f.scopes, f.withs, lexicalContext)
+					e = er
+					if e == nil {
+						if f.functionObject != 0 && function.Name != "" && v.hasNestedFunction(f.functionObject, function.Name) {
+							e = v.setMemberString(f.functionObject, function.Name, functionValue)
+						}
+						if e == nil {
+							put(op.Out, functionValue)
+						}
+					}
 				}
 			}
 		case OpCall:
@@ -3140,12 +3359,15 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			}
 			for i := range definition.Methods {
 				function := definition.Methods[i].Clone()
-				method, methodID, allocErr := v.alloc(CategoryFunction)
+				lexicalContext := f.lexicalContext
+				if lexicalContext == 0 {
+					lexicalContext = f.context
+				}
+				method, methodID, allocErr := v.newFunctionValue(function, f.scopes, f.withs, lexicalContext)
 				if allocErr != nil {
 					e = allocErr
 					break
 				}
-				v.meta[methodID].function = &function
 				v.meta[methodID].owner = id
 				if setErr := classObject.Set(function.Name, method); setErr != nil {
 					e = setErr
@@ -3583,6 +3805,10 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 		registry.mu.RLock()
 		callable := registry.callable[id]
 		registry.mu.RUnlock()
+		if callable != nil && callable.valueCall != nil && callable.boundValue != nil &&
+			callable.fn.Name == "replace" && callable.boundValue.Kind() == KindString {
+			return v.replaceStringValue(*callable.boundValue, args, h, b)
+		}
 		if callable != nil && callable.call != nil && context.Kind() == KindObject && !context.IsNull() {
 			if receiver, ok := v.Objects.Lookup(context.ObjectRef().Object); ok && receiver.Category == CategoryArray {
 				if callable.fn.Name == "load" {
@@ -3659,14 +3885,18 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 		if !owned {
 			args = append([]Value(nil), args...)
 		}
-		f := vmFrame{context: cid, lexicalContext: lexicalContext, args: args, owner: m.owner, scopes: scopes, withs: append([]Value(nil), m.capturedWiths...), functionName: m.function.Name, function: true}
+		f := vmFrame{context: cid, lexicalContext: lexicalContext, args: args, owner: m.owner, scopes: scopes, withs: append([]Value(nil), m.capturedWiths...), functionName: m.function.Name, function: true, functionObject: id}
 		return v.run(&m.function.Program, h, b, f)
 	case CategoryMethod:
 		return v.nativeCall(m.native, context, args, h, b, needed)
 	case CategoryClass:
 		v.linkClassBase(context, id)
 		if m.legacyClassBody != nil {
-			return m.legacyClassBody(context, args, h, b, needed)
+			wasInitializing := m.legacyClassInitializing
+			m.legacyClassInitializing = true
+			value, err := m.legacyClassBody(context, args, h, b, needed)
+			m.legacyClassInitializing = wasInitializing
+			return value, err
 		}
 		if m.nativeClass && context.Kind() == KindObject && !context.IsNull() {
 			return VoidValue, nil
@@ -3677,8 +3907,15 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 	return VoidValue, errors.New("TJS object is not callable")
 }
 func (v *VM) initializeClass(classID, instance ObjectID, args []Value, h Host, b *uint64, depth int) error {
+	return v.initializeClassOnce(classID, instance, args, h, b, depth, make(map[ObjectID]bool))
+}
+
+func (v *VM) initializeClassOnce(classID, instance ObjectID, args []Value, h Host, b *uint64, depth int, initialized map[ObjectID]bool) error {
 	if depth >= 128 {
 		return errors.New("class inheritance depth exceeded")
+	}
+	if initialized[classID] {
+		return nil
 	}
 	if err := v.validID(classID); err != nil {
 		return err
@@ -3686,6 +3923,9 @@ func (v *VM) initializeClass(classID, instance ObjectID, args []Value, h Host, b
 	class := v.meta[classID]
 	if class == nil || class.category != CategoryClass {
 		return errors.New("TJS class base must be a class")
+	}
+	if err := v.initializeLegacyClassNow(classID, h, b); err != nil {
+		return err
 	}
 	if err := v.resolveLegacyClassBases(classID, h, b); err != nil {
 		return err
@@ -3704,7 +3944,7 @@ func (v *VM) initializeClass(classID, instance ObjectID, args []Value, h Host, b
 		if alreadyInitialized {
 			continue
 		}
-		if err := v.initializeClass(base, instance, nil, h, b, depth+1); err != nil {
+		if err := v.initializeClassOnce(base, instance, nil, h, b, depth+1, initialized); err != nil {
 			return err
 		}
 	}
@@ -3719,11 +3959,11 @@ func (v *VM) initializeClass(classID, instance ObjectID, args []Value, h Host, b
 		if alreadyInitialized {
 			continue
 		}
-		if err := v.initializeClass(base, instance, nil, h, b, depth+1); err != nil {
+		if err := v.initializeClassOnce(base, instance, nil, h, b, depth+1, initialized); err != nil {
 			return err
 		}
 	}
-	if names, registered := v.Objects.ClassInstanceMembers(classID); registered {
+	if names, registered := v.Objects.ClassInstanceMembers(classID); registered && class.legacyClassBody == nil {
 		classObject, err := v.obj(classID)
 		if err != nil {
 			return err
@@ -3739,6 +3979,11 @@ func (v *VM) initializeClass(classID, instance ObjectID, args []Value, h Host, b
 		}
 	}
 	context := ObjectValue(NewObjectRef(instance, instance))
+	if depth == 0 && class.legacyClassBody != nil {
+		if _, err := v.invoke(ObjectValue(NewObjectRef(classID)), context, nil, h, b, false); err != nil {
+			return fmt.Errorf("initialize legacy class instance body %q (%d): %w", class.class.Name, classID, err)
+		}
+	}
 	if class.native != "" {
 		if _, err := v.nativeCall(class.native, context, args, h, b, true); err != nil {
 			return err
@@ -3752,8 +3997,11 @@ func (v *VM) initializeClass(classID, instance ObjectID, args []Value, h Host, b
 	}
 	if class.class != nil && len(class.class.Initializer.Code) != 0 {
 		_, err := v.run(&class.class.Initializer, h, b, vmFrame{context: instance})
-		return err
+		if err != nil {
+			return err
+		}
 	}
+	initialized[classID] = true
 	return nil
 }
 
@@ -3780,7 +4028,7 @@ func (v *VM) constructWithMemberTarget(callee Value, args []Value, targetObject,
 	if meta == nil || meta.category != CategoryClass {
 		return VoidValue, errors.New("TJS object is not constructible")
 	}
-	if err = v.ensureLegacyClassInitialized(id, h, b); err != nil {
+	if err = v.initializeLegacyClassNow(id, h, b); err != nil {
 		return VoidValue, err
 	}
 	instance, instanceID, err := v.alloc(CategoryInstance)
@@ -3857,7 +4105,7 @@ func (v *VM) constructWithMemberTarget(callee Value, args []Value, targetObject,
 	return instance, nil
 }
 
-func (v *VM) callStringMethod(value Value, name string, args []Value) (Value, error) {
+func (v *VM) callStringMethod(value Value, name string, args []Value, h Host, b *uint64) (Value, error) {
 	if value.Kind() != KindString {
 		return Value{}, ErrType
 	}
@@ -3981,10 +4229,66 @@ func (v *VM) callStringMethod(value Value, name string, args []Value) (Value, er
 		}
 		return v.NewArray(splitTJSString(value.string, separator, purgeEmpty))
 	case "replace":
-		return replaceStringValue(value, args)
+		return v.replaceStringValue(value, args, h, b)
 	default:
 		return Value{}, ErrMemberNotFound
 	}
+}
+
+func (v *VM) replaceStringValue(value Value, args []Value, h Host, budget *uint64) (Value, error) {
+	if len(args) < 2 {
+		return VoidValue, ErrBadParamCount
+	}
+	replacement := args[1]
+	if os.Getenv("KRKRGO_STRING_REPLACE_TRACE") != "" {
+		isRegexp := regexpValue(args[0]) != nil
+		fmt.Printf("[string-replace] input=%q pattern=%q regexp=%t replacement=%s:%q\n", value.Text(), args[0].Text(), isRegexp, replacement.TypeName(), replacement.Text())
+	}
+	if replacement.Kind() != KindObject || replacement.IsNull() {
+		return replaceStringValue(value, args)
+	}
+	invokeReplacement := func(text string, captures []string) (string, error) {
+		if os.Getenv("KRKRGO_STRING_REPLACE_TRACE") != "" {
+			fmt.Printf("[string-replace] callback match=%q captures=%q\n", text, captures)
+		}
+		items := make([]Value, 1, len(captures)+1)
+		items[0] = StringValue(text)
+		for _, capture := range captures {
+			items = append(items, StringValue(capture))
+		}
+		match, err := v.NewArray(items)
+		if err != nil {
+			return "", err
+		}
+		result, err := v.InvokeLegacy(replacement, value, []Value{match}, h, budget, true)
+		if err != nil {
+			return "", err
+		}
+		if os.Getenv("KRKRGO_STRING_REPLACE_TRACE") != "" {
+			fmt.Printf("[string-replace] callback result=%s:%q\n", result.TypeName(), result.Text())
+		}
+		return result.Text(), nil
+	}
+	if expression := regexpValue(args[0]); expression != nil {
+		result, err := expression.replaceFunc(value.Text(), func(match RegexpMatch) (string, error) {
+			return invokeReplacement(match.Text, match.Submatches)
+		})
+		if err != nil {
+			return VoidValue, err
+		}
+		return StringValue(result), nil
+	}
+	subject := value.Text()
+	search := args[0].Text()
+	index := strings.Index(subject, search)
+	if index < 0 {
+		return value, nil
+	}
+	result, err := invokeReplacement(search, nil)
+	if err != nil {
+		return VoidValue, err
+	}
+	return StringValue(subject[:index] + result + subject[index+len(search):]), nil
 }
 
 func (v *VM) callRegexpMethod(context Value, name string, args []Value) (Value, error) {
@@ -4115,7 +4419,7 @@ func (v *VM) nativeCall(name string, context Value, args []Value, h Host, b *uin
 		return v.callRegexpMethod(context, strings.TrimPrefix(name, "RegExp."), args)
 	}
 	if strings.HasPrefix(name, "String.") {
-		return v.callStringMethod(context, strings.TrimPrefix(name, "String."), args)
+		return v.callStringMethod(context, strings.TrimPrefix(name, "String."), args, h, b)
 	}
 	if name == "Array.load" {
 		if rr, ok := h.(HostResult); ok {
@@ -4159,6 +4463,9 @@ func (v *VM) readProperty(property, context Value, h Host, b *uint64) (Value, er
 	if m == nil {
 		return VoidValue, nil
 	}
+	if m.variantProperty != nil {
+		return *m.variantProperty, nil
+	}
 	context = v.propertyReferenceContext(property, context)
 	if m.legacyProperty != nil {
 		return v.invokeLegacyPropertyAccessor(m.legacyProperty.getter, context, nil, h, b, true)
@@ -4166,7 +4473,7 @@ func (v *VM) readProperty(property, context Value, h Host, b *uint64) (Value, er
 	if m.property == nil || m.property.Getter == nil {
 		return VoidValue, nil
 	}
-	return v.invokePropertyFunction(m.property.Getter, context, nil, m.owner, h, b)
+	return v.invokePropertyFunction(m.property.Getter, context, nil, m.owner, id, h, b)
 }
 func (v *VM) writeProperty(property, context, input Value, h Host, b *uint64) error {
 	id, e := v.handle(property)
@@ -4177,6 +4484,10 @@ func (v *VM) writeProperty(property, context, input Value, h Host, b *uint64) er
 	if m == nil {
 		return nil
 	}
+	if m.variantProperty != nil {
+		*m.variantProperty = input
+		return nil
+	}
 	context = v.propertyReferenceContext(property, context)
 	if m.legacyProperty != nil {
 		_, e = v.invokeLegacyPropertyAccessor(m.legacyProperty.setter, context, []Value{input}, h, b, false)
@@ -4185,7 +4496,7 @@ func (v *VM) writeProperty(property, context, input Value, h Host, b *uint64) er
 	if m.property == nil || m.property.Setter == nil {
 		return nil
 	}
-	_, e = v.invokePropertyFunction(m.property.Setter, context, []Value{input}, m.owner, h, b)
+	_, e = v.invokePropertyFunction(m.property.Setter, context, []Value{input}, m.owner, id, h, b)
 	return e
 }
 func (v *VM) propertyReferenceContext(property, context Value) Value {
@@ -4275,23 +4586,27 @@ func (v *VM) ClassNames(value Value) ([]string, error) {
 	if instance == nil || instance.category != CategoryInstance || instance.classObject == 0 {
 		return []string{}, nil
 	}
-	return v.classNames(instance.classObject, 0)
+	return v.classNames(instance.classObject, 0, make(map[ObjectID]bool))
 }
 
-func (v *VM) classNames(classID ObjectID, depth int) ([]string, error) {
+func (v *VM) classNames(classID ObjectID, depth int, seen map[ObjectID]bool) ([]string, error) {
 	if depth >= 128 {
 		return nil, errors.New("class inheritance depth exceeded")
+	}
+	if seen[classID] {
+		return nil, nil
 	}
 	meta := v.meta[classID]
 	if meta == nil || meta.category != CategoryClass {
 		return nil, errors.New("invalid TJS class handle")
 	}
+	seen[classID] = true
 	var names []string
 	if meta.class != nil && meta.class.Name != "" {
 		names = append(names, meta.class.Name)
 	}
 	for _, base := range meta.classBases {
-		baseNames, err := v.classNames(base, depth+1)
+		baseNames, err := v.classNames(base, depth+1, seen)
 		if err != nil {
 			return nil, err
 		}
@@ -4301,7 +4616,7 @@ func (v *VM) classNames(classID ObjectID, depth int) ([]string, error) {
 		if base == 0 {
 			continue
 		}
-		baseNames, err := v.classNames(base, depth+1)
+		baseNames, err := v.classNames(base, depth+1, seen)
 		if err != nil {
 			return nil, err
 		}

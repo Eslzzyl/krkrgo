@@ -30,10 +30,65 @@ func decodeScriptStorageDefault(data []byte) (string, error) {
 	return assets.Decode(data)
 }
 func setLegacyMemberWithRuntime(vm *tjs.VM, receiver tjs.Value, name string, value tjs.Value, flags uint32, host tjs.Host, budget *uint64) error {
+	if isLegacyVMArray(vm, receiver) {
+		return vm.SetMemberByKey(receiver, tjs.StringValue(name), value, flags, host, budget)
+	}
 	if flags&tjs.LegacyPropertySetFlag != 0 {
 		return vm.SetPropertyWithRuntime(receiver, value, host, budget)
 	}
 	return vm.SetMemberWithRuntime(receiver, name, value, flags, host, budget)
+}
+
+func isLegacyVMArray(vm *tjs.VM, value tjs.Value) bool {
+	if vm == nil {
+		return false
+	}
+	_, _, err := vm.ArrayElement(value, 0)
+	return err == nil
+}
+
+func resolveLegacyMemberWithRuntime(vm *tjs.VM, receiver tjs.Value, name string, flags uint32, host tjs.Host, budget *uint64) (tjs.Value, bool, error) {
+	if isLegacyVMArray(vm, receiver) {
+		value, _, err := vm.GetMemberByKey(receiver, tjs.StringValue(name), flags, host, budget)
+		if os.Getenv("KRKRGO_LEGACY_ARRAY_TRACE") == "1" && name == "count" {
+			length, lengthErr := vm.GetArrayLength(receiver)
+			fmt.Printf("[legacy-array-read] receiver=%v length=%d length_error=%v value=%s:%s error=%v\n", receiver, length, lengthErr, value.TypeName(), value.Text(), err)
+		}
+		if errors.Is(err, tjs.ErrMemberNotFound) {
+			return tjs.VoidValue, false, nil
+		}
+		if err != nil {
+			return tjs.VoidValue, false, err
+		}
+		return value, true, nil
+	}
+	if flags&tjs.IgnoreProperty != 0 {
+		return vm.GetMemberRawIfPresent(receiver, name, host, budget)
+	}
+	return vm.GetMemberIfPresent(receiver, name, host, budget)
+}
+
+func evaluateLegacySource(vm *tjs.VM, source string, context tjs.Value, host tjs.Host, budget *uint64, resultNeeded bool) (tjs.Value, error) {
+	if source == "" {
+		return tjs.VoidValue, nil
+	}
+	program, err := tjs.CompileEval("<eval>", source)
+	if err != nil {
+		return tjs.VoidValue, fmt.Errorf("eval source %q: %w", source, err)
+	}
+	var value tjs.Value
+	if context.Kind() == tjs.KindObject && !context.IsNull() {
+		value, err = vm.ExecuteInContext(&program, context, host, budget)
+	} else {
+		value, err = vm.Execute(&program, host, budget)
+	}
+	if err != nil {
+		return tjs.VoidValue, fmt.Errorf("eval execution source %q: %w", source, err)
+	}
+	if !resultNeeded {
+		return tjs.VoidValue, nil
+	}
+	return value, nil
 }
 
 func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Host, budget *uint64, sourceName string) (tjs.Value, error) {
@@ -61,18 +116,7 @@ func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Ho
 		return tjs.VoidValue, fmt.Errorf("%w: compiled TJS2100 bytecode has invalid top-level object %d", ErrUnsupportedNative, top)
 	}
 	evaluate := func(source string, context tjs.Value, resultNeeded bool) (tjs.Value, error) {
-		if source == "" {
-			return tjs.VoidValue, nil
-		}
-		program, err := tjs.CompileEval("<eval>", source)
-		if err != nil {
-			return tjs.VoidValue, fmt.Errorf("eval source %q: %w", source, err)
-		}
-		value, err := vm.ExecuteInContext(&program, context, host, budget)
-		if err != nil || resultNeeded {
-			return value, err
-		}
-		return tjs.VoidValue, nil
+		return evaluateLegacySource(vm, source, context, host, budget, resultNeeded)
 	}
 	invoke := func(function, receiver tjs.Value, args []tjs.Value, resultNeeded bool) (tjs.Value, error) {
 		return vm.InvokeLegacy(function, receiver, args, host, budget, resultNeeded)
@@ -81,26 +125,30 @@ func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Ho
 		return vm.Construct(class, args, host, budget)
 	}
 	legacyGlobal := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
-	_, err = bindLegacyScriptFunctionsDeferred(vm, decoded, legacyGlobal, host, budget, sourceName)
+	initializeClasses, err := bindLegacyScriptFunctionsDeferred(vm, decoded, legacyGlobal, host, budget, sourceName)
 	if err != nil {
 		return tjs.VoidValue, err
 	}
 	resolve := func(receiver tjs.Value, name string, flags uint32) (tjs.Value, bool, error) {
-		if flags&tjs.IgnoreProperty != 0 {
-			return vm.GetMemberRawIfPresent(receiver, name, host, budget)
-		}
-		return vm.GetMemberIfPresent(receiver, name, host, budget)
+		return resolveLegacyMemberWithRuntime(vm, receiver, name, flags, host, budget)
 	}
 	set := func(receiver tjs.Value, name string, value tjs.Value, flags uint32) error {
 		return setLegacyMemberWithRuntime(vm, receiver, name, value, flags, host, budget)
 	}
 	instanceOf, invalidate, isValid := legacyVMOps(vm, host, budget)
+	releaseClassInitializationDeferral := vm.DeferLegacyClassInitialization()
 	value, err := decoded.ExecuteLegacyWithContextAndConstructionAndMemberResolversAndVMOpsWithRoots(top, legacyGlobal, context, evaluate, invoke, construct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects)
+	releaseClassInitializationDeferral()
 	if err != nil {
 		if strings.Contains(err.Error(), "unsupported ") {
 			return tjs.VoidValue, fmt.Errorf("%w: compiled TJS2100 %v", ErrUnsupportedNative, err)
 		}
 		return tjs.VoidValue, err
+	}
+	if initializeClasses != nil {
+		if err := initializeClasses(); err != nil {
+			return tjs.VoidValue, fmt.Errorf("initialize compiled TJS2100 classes: %w", err)
+		}
 	}
 	if services, ok := host.(*Services); ok {
 		if err := services.installLegacyKAGHookNative(vm, budget); err != nil {
@@ -221,18 +269,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 		classIndex := index
 		return vm.SetLegacyClassBody(class, func(receiver tjs.Value, args []tjs.Value, callHost tjs.Host, callBudget *uint64, _ bool) (tjs.Value, error) {
 			callEvaluate := func(source string, evalContext tjs.Value, resultNeeded bool) (tjs.Value, error) {
-				if source == "" {
-					return tjs.VoidValue, nil
-				}
-				program, compileErr := tjs.CompileEval("<eval>", source)
-				if compileErr != nil {
-					return tjs.VoidValue, fmt.Errorf("eval source %q: %w", source, compileErr)
-				}
-				value, evalErr := vm.ExecuteInContext(&program, evalContext, callHost, callBudget)
-				if evalErr != nil || resultNeeded {
-					return value, evalErr
-				}
-				return tjs.VoidValue, nil
+				return evaluateLegacySource(vm, source, evalContext, callHost, callBudget, resultNeeded)
 			}
 			callInvoke := func(callee, thisValue tjs.Value, callArgs []tjs.Value, resultNeeded bool) (tjs.Value, error) {
 				return vm.InvokeLegacy(callee, thisValue, callArgs, callHost, callBudget, resultNeeded)
@@ -241,10 +278,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				return vm.Construct(value, callArgs, callHost, callBudget)
 			}
 			resolve := func(value tjs.Value, member string, flags uint32) (tjs.Value, bool, error) {
-				if flags&tjs.IgnoreProperty != 0 {
-					return vm.GetMemberRawIfPresent(value, member, callHost, callBudget)
-				}
-				return vm.GetMemberIfPresent(value, member, callHost, callBudget)
+				return resolveLegacyMemberWithRuntime(vm, value, member, flags, callHost, callBudget)
 			}
 			set := func(value tjs.Value, member string, assigned tjs.Value, flags uint32) error {
 				return setLegacyMemberWithRuntime(vm, value, member, assigned, flags, callHost, callBudget)
@@ -281,18 +315,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 		}
 		return vm.SetLegacyClassSuperclassGetter(class, offsets, func(offset int, callHost tjs.Host, callBudget *uint64) (tjs.Value, error) {
 			callEvaluate := func(source string, evalContext tjs.Value, resultNeeded bool) (tjs.Value, error) {
-				if source == "" {
-					return tjs.VoidValue, nil
-				}
-				program, compileErr := tjs.CompileEval("<eval>", source)
-				if compileErr != nil {
-					return tjs.VoidValue, fmt.Errorf("eval source %q: %w", source, compileErr)
-				}
-				value, evalErr := vm.ExecuteInContext(&program, evalContext, callHost, callBudget)
-				if evalErr != nil || resultNeeded {
-					return value, evalErr
-				}
-				return tjs.VoidValue, nil
+				return evaluateLegacySource(vm, source, evalContext, callHost, callBudget, resultNeeded)
 			}
 			callInvoke := func(callee, thisValue tjs.Value, args []tjs.Value, resultNeeded bool) (tjs.Value, error) {
 				return vm.InvokeLegacy(callee, thisValue, args, callHost, callBudget, resultNeeded)
@@ -301,10 +324,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				return vm.Construct(value, args, callHost, callBudget)
 			}
 			resolve := func(value tjs.Value, member string, flags uint32) (tjs.Value, bool, error) {
-				if flags&tjs.IgnoreProperty != 0 {
-					return vm.GetMemberRawIfPresent(value, member, callHost, callBudget)
-				}
-				return vm.GetMemberIfPresent(value, member, callHost, callBudget)
+				return resolveLegacyMemberWithRuntime(vm, value, member, flags, callHost, callBudget)
 			}
 			set := func(value tjs.Value, member string, assigned tjs.Value, flags uint32) error {
 				return setLegacyMemberWithRuntime(vm, value, member, assigned, flags, callHost, callBudget)
@@ -331,19 +351,15 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 			return function, false, nil
 		}
 		function, err := vm.RegisterLegacyFunction(objectName(index), func(receiver tjs.Value, args []tjs.Value, callHost tjs.Host, callBudget *uint64, resultNeeded bool) (tjs.Value, error) {
+			if traceStorage := os.Getenv("KRKRGO_LEGACY_CALL_TRACE_STORAGE"); traceStorage != "" && traceStorage == sourceName {
+				argSummary := make([]string, len(args))
+				for argIndex, argument := range args {
+					argSummary[argIndex] = argument.TypeName() + ":" + argument.Text()
+				}
+				fmt.Printf("[legacy-function-entry] storage=%q object=%d receiver=%v args=%v\n", sourceName, index, receiver, argSummary)
+			}
 			callEvaluate := func(source string, evalContext tjs.Value, needed bool) (tjs.Value, error) {
-				if source == "" {
-					return tjs.VoidValue, nil
-				}
-				program, compileErr := tjs.CompileEval("<eval>", source)
-				if compileErr != nil {
-					return tjs.VoidValue, fmt.Errorf("eval source %q: %w", source, compileErr)
-				}
-				value, evalErr := vm.ExecuteInContext(&program, evalContext, callHost, callBudget)
-				if evalErr != nil || needed {
-					return value, evalErr
-				}
-				return tjs.VoidValue, nil
+				return evaluateLegacySource(vm, source, evalContext, callHost, callBudget, needed)
 			}
 			callInvoke := func(callee, thisValue tjs.Value, callArgs []tjs.Value, needed bool) (tjs.Value, error) {
 				return vm.InvokeLegacy(callee, thisValue, callArgs, callHost, callBudget, needed)
@@ -352,10 +368,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				return vm.Construct(class, callArgs, callHost, callBudget)
 			}
 			resolve := func(value tjs.Value, member string, flags uint32) (tjs.Value, bool, error) {
-				if flags&tjs.IgnoreProperty != 0 {
-					return vm.GetMemberRawIfPresent(value, member, callHost, callBudget)
-				}
-				return vm.GetMemberIfPresent(value, member, callHost, callBudget)
+				return resolveLegacyMemberWithRuntime(vm, value, member, flags, callHost, callBudget)
 			}
 			set := func(value tjs.Value, member string, assigned tjs.Value, flags uint32) error {
 				return setLegacyMemberWithRuntime(vm, value, member, assigned, flags, callHost, callBudget)
@@ -623,6 +636,34 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 	// mirroring the C++ bytecode loader's member replay. The write stays raw so
 	// the member value keeps dispatching reads and writes through its compiled
 	// getter and setter instead of being evaluated during binding.
+	if traceStorage := os.Getenv("KRKRGO_TJS_BIND_TRACE"); traceStorage != "" && traceStorage == sourceName {
+		for objectIndex := range decoded.Objects {
+			object := &decoded.Objects[objectIndex]
+			if object.ContextType != 3 {
+				continue
+			}
+			parent := int(object.Parent)
+			for _, entry := range object.Properties {
+				if entry.Name < 0 || int(entry.Name) >= len(decoded.Strings) {
+					continue
+				}
+				if decoded.Strings[entry.Name] != "enabled" {
+					continue
+				}
+				parentType := uint32(0)
+				parentName := ""
+				if parent >= 0 && parent < len(decoded.Objects) {
+					parentType = decoded.Objects[parent].ContextType
+					parentName = objectName(parent)
+				}
+				var owner tjs.Value
+				if parent >= 0 && parent < len(decoded.Objects) {
+					owner = functions[parent]
+				}
+				fmt.Printf("[property-bind] storage=%q context=%d parent=%d parent-type=%d parent-name=%q entry-object=%d owner=%s\n", sourceName, objectIndex, parent, parentType, parentName, entry.Object, owner)
+			}
+		}
+	}
 	for objectIndex := range decoded.Objects {
 		object := &decoded.Objects[objectIndex]
 		if object.ContextType != 3 || len(object.Properties) == 0 {
@@ -664,6 +705,18 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				if err := registerClassInstanceMember(class, memberName); err != nil {
 					return fmt.Errorf("register compiled TJS instance property %q: %w", memberName, err)
 				}
+			case 1, 2:
+				function, exists := functions[parent]
+				if !exists {
+					var err error
+					function, _, err = callable(parent)
+					if err != nil {
+						return fmt.Errorf("bind compiled TJS function property owner %d: %w", parent, err)
+					}
+				}
+				if err := vm.RegisterNativeStaticValue(function, memberName, member); err != nil {
+					return fmt.Errorf("bind compiled TJS function property %q: %w", memberName, err)
+				}
 			case 0:
 				globalObject, found := vm.Objects.Lookup(global.ObjectRef().Object)
 				if !found {
@@ -699,18 +752,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 		}
 		initializedClasses[objectIndex] = true
 		callEvaluate := func(source string, evalContext tjs.Value, needed bool) (tjs.Value, error) {
-			if source == "" {
-				return tjs.VoidValue, nil
-			}
-			program, err := tjs.CompileEval("<eval>", source)
-			if err != nil {
-				return tjs.VoidValue, fmt.Errorf("eval source %q: %w", source, err)
-			}
-			value, err := vm.ExecuteInContext(&program, evalContext, callHost, callBudget)
-			if err != nil || needed {
-				return value, err
-			}
-			return tjs.VoidValue, nil
+			return evaluateLegacySource(vm, source, evalContext, callHost, callBudget, needed)
 		}
 		callInvoke := func(callee, receiver tjs.Value, args []tjs.Value, needed bool) (tjs.Value, error) {
 			return vm.InvokeLegacy(callee, receiver, args, callHost, callBudget, needed)
@@ -719,10 +761,7 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 			return vm.Construct(value, args, callHost, callBudget)
 		}
 		resolve := func(receiver tjs.Value, name string, flags uint32) (tjs.Value, bool, error) {
-			if flags&tjs.IgnoreProperty != 0 {
-				return vm.GetMemberRawIfPresent(receiver, name, callHost, callBudget)
-			}
-			return vm.GetMemberIfPresent(receiver, name, callHost, callBudget)
+			return resolveLegacyMemberWithRuntime(vm, receiver, name, flags, callHost, callBudget)
 		}
 		set := func(receiver tjs.Value, name string, value tjs.Value, flags uint32) error {
 			return setLegacyMemberWithRuntime(vm, receiver, name, value, flags, callHost, callBudget)
