@@ -53,7 +53,7 @@ func Start(game Game, executable, logPath string) (*Process, error) {
 		return nil, fmt.Errorf("open game log: %w", err)
 	}
 	cmd := exec.Command(executable, args...)
-	cmd.Dir = game.Project
+	cmd.Dir = projectDirectory(game.Project)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	configureProcess(cmd)

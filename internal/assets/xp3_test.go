@@ -128,6 +128,33 @@ func TestOpenStorageSkipsNonXP3FilesWithXP3Extension(t *testing.T) {
 	}
 }
 
+func TestOpenStorageAcceptsDirectXP3File(t *testing.T) {
+	root := t.TempDir()
+	archivePath := filepath.Join(root, "data.xp3")
+	if err := os.WriteFile(archivePath, xp3TestArchive("startup.tjs", []byte("startup")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := OpenStorage(archivePath, core.DefaultLimits())
+	if err != nil {
+		t.Fatalf("OpenStorage() error = %v", err)
+	}
+	defer func() {
+		for _, archive := range storage.Archives {
+			_ = archive.Close()
+		}
+	}()
+	wantProject, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storage.Project != wantProject {
+		t.Fatalf("storage project = %q, want %q", storage.Project, wantProject)
+	}
+	if got, err := storage.Read("startup.tjs"); err != nil || string(got) != "startup" {
+		t.Fatalf("Read(startup.tjs) = %q, %v", got, err)
+	}
+}
+
 func TestOpenArchiveRejectsMZWithoutAlignedXP3Marker(t *testing.T) {
 	tests := []struct {
 		name string

@@ -57,13 +57,29 @@ func TestInspectProjectXP3Startup(t *testing.T) {
 	if err := os.WriteFile(archive, testXP3Archive("startup.tjs", nil), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wantProject, err := filepath.EvalSymlinks(project)
+	wantArchive, err := filepath.EvalSymlinks(archive)
 	if err != nil {
 		t.Fatal(err)
 	}
 	game, err := InspectProject(project)
-	if err != nil || game.Project != wantProject || game.Title != filepath.Base(project) {
+	if err != nil || game.Project != wantArchive || game.Title != filepath.Base(project) {
 		t.Fatalf("InspectProject(XP3) = %#v, %v", game, err)
+	}
+}
+
+func TestInspectProjectDirectXP3File(t *testing.T) {
+	project := t.TempDir()
+	archive := filepath.Join(project, "entry.xp3")
+	if err := os.WriteFile(archive, testXP3Archive("startup.tjs", nil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantArchive, err := filepath.EvalSymlinks(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	game, err := InspectProject(archive)
+	if err != nil || game.Project != wantArchive || game.Title != filepath.Base(project) {
+		t.Fatalf("InspectProject(file) = %#v, %v", game, err)
 	}
 }
 

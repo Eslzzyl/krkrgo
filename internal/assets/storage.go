@@ -135,20 +135,43 @@ func OpenStorage(project string, limits core.Limits) (*Storage, error) {
 	if err != nil {
 		return nil, err
 	}
+	preferredArchive := ""
+	archiveDirs := []string{project}
+	dataSearch := false
 	if !st.IsDir() {
-		return nil, fmt.Errorf("project is not a directory: %s", project)
+		if !st.Mode().IsRegular() || !strings.EqualFold(filepath.Ext(project), ".xp3") {
+			return nil, fmt.Errorf("project is not a directory or XP3 file: %s", project)
+		}
+		preferredArchive = project
+		archiveDir := filepath.Dir(project)
+		project = archiveDir
+		archiveDirs = []string{archiveDir}
+		if strings.EqualFold(filepath.Base(archiveDir), "data") {
+			project = filepath.Dir(archiveDir)
+			archiveDirs = []string{project, archiveDir}
+			dataSearch = true
+		}
 	}
 	if limits.IndexBytes == 0 || limits.FileBytes == 0 || limits.Entries == 0 {
 		return nil, fmt.Errorf("%w: zero storage limit", ErrLimit)
 	}
-	entries, err := os.ReadDir(project)
-	if err != nil {
-		return nil, err
-	}
 	paths := make([]string, 0)
-	for _, e := range entries {
-		if !e.IsDir() && strings.EqualFold(filepath.Ext(e.Name()), ".xp3") {
-			paths = append(paths, filepath.Join(project, e.Name()))
+	seenPaths := make(map[string]struct{})
+	for _, archiveDir := range archiveDirs {
+		entries, err := os.ReadDir(archiveDir)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".xp3") {
+				continue
+			}
+			path := filepath.Join(archiveDir, e.Name())
+			if _, exists := seenPaths[path]; exists {
+				continue
+			}
+			seenPaths[path] = struct{}{}
+			paths = append(paths, path)
 		}
 	}
 	sort.Slice(paths, func(i, j int) bool {
@@ -166,8 +189,16 @@ func OpenStorage(project string, limits core.Limits) (*Storage, error) {
 	for _, path := range paths {
 		if err := s.Mount(path, limits); err != nil {
 			if errors.Is(err, ErrNotArchive) {
+				if path == preferredArchive {
+					return nil, fmt.Errorf("open XP3 file %q: %w", path, err)
+				}
 				continue
 			}
+			return nil, err
+		}
+	}
+	if dataSearch {
+		if err := s.AddSearchPath("data/"); err != nil {
 			return nil, err
 		}
 	}

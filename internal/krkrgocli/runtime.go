@@ -47,7 +47,7 @@ func ParseLaunchArgs(args []string) (LaunchOptions, error) {
 	var gameArgs []string
 	fs := flag.NewFlagSet("krkrgo run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	fs.StringVar(&opts.Project, "project", "", "project root or data directory")
+	fs.StringVar(&opts.Project, "project", "", "project directory or XP3 entry file")
 	fs.StringVar(&opts.SaveDir, "save-dir", "", "save-data directory")
 	fs.Uint64Var(&opts.Budget, "budget", unlimitedBudget, "diagnostic session instruction limit (default: unlimited)")
 	fs.StringVar(&opts.Renderer, "renderer", rendererGPU, "renderer backend: gpu or cpu (default: gpu)")

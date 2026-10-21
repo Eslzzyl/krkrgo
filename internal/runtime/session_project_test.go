@@ -125,6 +125,38 @@ func TestOpenSessionMissingStartupReportsCandidatePaths(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenSessionAcceptsDirectXP3Entry(t *testing.T) {
+	root := t.TempDir()
+	archive := filepath.Join(root, "entry.xp3")
+	if err := os.WriteFile(archive, storagesTestXP3("startup.tjs", []byte("var direct_entry = 1;")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	session, err := OpenSession(archive, "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	closeArchivesOnCleanup(t, session.Services.Storage)
+	wantProject, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := session.Services.Storage.Project; got != wantProject {
+		t.Fatalf("storage project = %q, want %q", got, wantProject)
+	}
+	if _, err := session.Startup(); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("direct_entry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := value.Int(); got != 1 {
+		t.Fatalf("direct_entry = %v, want 1", value)
+	}
+}
+
 func TestOpenSessionKeepsProjectRootAndDataResources(t *testing.T) {
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "data")

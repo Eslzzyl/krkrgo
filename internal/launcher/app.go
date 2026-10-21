@@ -271,8 +271,12 @@ func (a *launcherApp) handleDrop(e *mygo.FileDropEvent) {
 		var failures []string
 		for _, path := range paths {
 			info, err := os.Stat(path)
-			if err != nil || !info.IsDir() {
-				failures = append(failures, path+" is not a directory")
+			if err != nil {
+				failures = append(failures, err.Error())
+				continue
+			}
+			if !info.IsDir() && !strings.EqualFold(filepath.Ext(path), ".xp3") {
+				failures = append(failures, path+" is not a project directory or XP3 archive")
 				continue
 			}
 			game, err := InspectProject(path)

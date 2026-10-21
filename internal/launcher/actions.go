@@ -33,7 +33,7 @@ func (a *launcherApp) chooseProject() {
 		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
 			Parent:            a.window,
 			Title:             locales.AddGameProject(),
-			Directory:         true,
+			Filters:           []mygo.FileFilter{{Name: "XP3 archives", Extensions: []string{"xp3"}}},
 			CreateDirectories: false,
 		})
 		if err != nil {
@@ -103,9 +103,9 @@ func (a *launcherApp) removeSelected() {
 func (a *launcherApp) relink(game Game) {
 	go func() {
 		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
-			Parent:    a.window,
-			Title:     locales.LocateGame(game.Title),
-			Directory: true,
+			Parent:  a.window,
+			Title:   locales.LocateGame(game.Title),
+			Filters: []mygo.FileFilter{{Name: "XP3 archives", Extensions: []string{"xp3"}}},
 		})
 		if err != nil {
 			a.post(func() { a.notify(locales.ChooseProjectFailed(err.Error())) })
@@ -287,7 +287,7 @@ func (a *launcherApp) revealProject() {
 	if game == nil {
 		return
 	}
-	if err := mygo.Shell.OpenPath(game.Project); err != nil {
+	if err := mygo.Shell.OpenPath(projectDirectory(game.Project)); err != nil {
 		a.notify(locales.OpenProjectFailed(err.Error()))
 	}
 }

@@ -250,13 +250,15 @@ func ValidateGame(g Game) error {
 	return nil
 }
 
-// ProjectAvailable reports whether project still looks like a game
-// directory: startup.tjs at the root or under data/, or an XP3 archive in
-// either directory.
+// ProjectAvailable reports whether project still resolves startup.tjs from a
+// project directory or an explicit XP3 entry file.
 func ProjectAvailable(project string) bool {
 	info, err := os.Stat(project)
-	if err != nil || !info.IsDir() {
+	if err != nil {
 		return false
+	}
+	if !info.IsDir() {
+		return projectHasStartup(project)
 	}
 	for _, dir := range []string{project, filepath.Join(project, "data")} {
 		if regularFile(filepath.Join(dir, "startup.tjs")) {
@@ -279,6 +281,7 @@ func ProjectAvailable(project string) bool {
 // directory or its data directory.
 func DiscoverCover(project string) string {
 	names := []string{"cover.png", "cover.jpg", "cover.jpeg", "icon.png", "icon.jpg", "logo.png"}
+	project = projectDirectory(project)
 	for _, dir := range []string{project, filepath.Join(project, "data")} {
 		for _, name := range names {
 			path := filepath.Join(dir, name)
@@ -301,8 +304,9 @@ func GameID(project string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// InspectProject canonicalizes a directory and accepts startup.tjs at the root,
-// in data/, or inside XP3 archives mounted at either level.
+// InspectProject canonicalizes a project directory or an explicit XP3 entry
+// file. Directory inputs are reduced to the XP3 containing startup.tjs when
+// one exists; loose startup.tjs keeps the directory input.
 func InspectProject(project string) (Game, error) {
 	abs, err := filepath.Abs(project)
 	if err != nil {
@@ -317,14 +321,28 @@ func InspectProject(project string) (Game, error) {
 		return Game{}, err
 	}
 	if !info.IsDir() {
-		return Game{}, fmt.Errorf("project is not a directory: %s", abs)
+		if !strings.EqualFold(filepath.Ext(abs), ".xp3") {
+			return Game{}, fmt.Errorf("project is not a directory or XP3 file: %s", abs)
+		}
+		if !projectHasStartup(abs) {
+			return Game{}, fmt.Errorf("startup.tjs not found in XP3 archive %q", abs)
+		}
+		return Game{ID: GameID(abs), Title: projectTitle(abs), Project: abs, Renderer: RendererGPU}, nil
 	}
-	if projectHasStartup(abs) {
+	if regularFile(filepath.Join(abs, "startup.tjs")) {
 		return Game{ID: GameID(abs), Title: filepath.Base(abs), Project: abs, Renderer: RendererGPU}, nil
 	}
 	dataDir := filepath.Join(abs, "data")
-	if info, err := os.Stat(dataDir); err == nil && info.IsDir() && projectHasStartup(dataDir) {
-		return Game{ID: GameID(abs), Title: filepath.Base(abs), Project: abs, Renderer: RendererGPU}, nil
+	if info, err := os.Stat(dataDir); err == nil && info.IsDir() {
+		if regularFile(filepath.Join(dataDir, "startup.tjs")) {
+			return Game{ID: GameID(abs), Title: filepath.Base(abs), Project: abs, Renderer: RendererGPU}, nil
+		}
+		if entry := startupArchive(dataDir); entry != "" {
+			return Game{ID: GameID(entry), Title: projectTitle(entry), Project: entry, Renderer: RendererGPU}, nil
+		}
+	}
+	if entry := startupArchive(abs); entry != "" {
+		return Game{ID: GameID(entry), Title: projectTitle(entry), Project: entry, Renderer: RendererGPU}, nil
 	}
 	return Game{}, fmt.Errorf("startup.tjs not found in %q, %q, or an XP3 archive in either directory", filepath.Join(abs, "startup.tjs"), filepath.Join(dataDir, "startup.tjs"))
 }
@@ -339,4 +357,45 @@ func projectHasStartup(dir string) bool {
 		_ = archive.Close()
 	}
 	return err == nil
+}
+
+func startupArchive(dir string) string {
+	storage, err := assets.OpenStorage(dir, core.DefaultLimits())
+	if err != nil {
+		return ""
+	}
+	defer func() {
+		for _, archive := range storage.Archives {
+			_ = archive.Close()
+		}
+	}()
+	if _, err := storage.Resolve("startup.tjs"); err != nil {
+		return ""
+	}
+	for i := len(storage.Archives) - 1; i >= 0; i-- {
+		if _, ok := storage.Archives[i].Entries["startup.tjs"]; ok {
+			return storage.Archives[i].Path
+		}
+	}
+	return ""
+}
+
+func projectTitle(project string) string {
+	dir := filepath.Dir(project)
+	if strings.EqualFold(filepath.Base(dir), "data") {
+		dir = filepath.Dir(dir)
+	}
+	return filepath.Base(dir)
+}
+
+func projectDirectory(project string) string {
+	info, err := os.Stat(project)
+	if err == nil && !info.IsDir() {
+		dir := filepath.Dir(project)
+		if strings.EqualFold(filepath.Base(dir), "data") {
+			return filepath.Dir(dir)
+		}
+		return dir
+	}
+	return project
 }
