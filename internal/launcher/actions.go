@@ -310,14 +310,6 @@ func (a *launcherApp) openSaveDir() {
 	}
 }
 
-func (a *launcherApp) toggleFavorite(game *Game) {
-	if game == nil {
-		return
-	}
-	game.Favorite = !game.Favorite
-	a.persist(true)
-}
-
 func (a *launcherApp) logPath(game Game) string {
 	return filepath.Join(a.logsDir, safeName(game.ID)+".log")
 }

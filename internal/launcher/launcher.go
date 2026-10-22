@@ -39,7 +39,6 @@ type Game struct {
 	Budget       uint64 `json:"budget,omitempty"`
 	Renderer     string `json:"renderer,omitempty"`
 	RenderScale  int    `json:"renderScale,omitempty"`
-	Favorite     bool   `json:"favorite,omitempty"`
 	Cover        string `json:"cover,omitempty"`
 	AddedAt      int64  `json:"addedAt,omitempty"`
 	LastPlayedAt int64  `json:"lastPlayedAt,omitempty"`

@@ -790,16 +790,6 @@ func (msgs Messages) Missing() string {
 	return Catalog.Format(msgs.locale, "missing", nil)
 }
 
-// Favorite says "Favorite"
-// in the language the app shows.
-func Favorite() string { return In(i18n.Locale()).Favorite() }
-
-// Favorite says "Favorite"
-// in the language of msgs.
-func (msgs Messages) Favorite() string {
-	return Catalog.Format(msgs.locale, "favorite", nil)
-}
-
 // Running says "Running"
 // in the language the app shows.
 func Running() string { return In(i18n.Locale()).Running() }

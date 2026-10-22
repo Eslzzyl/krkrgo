@@ -196,10 +196,6 @@ func (a *launcherApp) gameRow(c *ui.Context, order []int, i int, t *ui.Theme, se
 	selected := i == a.chosen
 	textColor := t.Text
 	mutedColor := t.TextMuted
-	starColor := t.TextMuted
-	if selected {
-		starColor = t.Accent
-	}
 	row := ui.Row(c).Padding(8, 10).Gap(10).AlignItems(ui.Center).Radius(t.Radius)
 	if selected {
 		row.Background(selectedBackground)
@@ -236,35 +232,11 @@ func (a *launcherApp) gameRow(c *ui.Context, order []int, i int, t *ui.Theme, se
 				if !a.isAvailable(*game) {
 					badge(locales.Missing(), t.Danger)
 				}
-				if game.Favorite && !selected {
-					badge(locales.Favorite(), t.Warning)
-				}
 				if a.running[game.ID] != nil {
 					badge(locales.Running(), t.Success)
 				}
 			})
 		})
-		star := "☆"
-		if game.Favorite {
-			star = "★"
-		}
-		if !selected && game.Favorite {
-			starColor = t.Warning
-		}
-		favorite := ui.ButtonBase(c.Key("favorite-"+game.ID)).Size(26, 26).Label(locales.Favorite()).Radius(6).Tooltip(locales.Favorite())
-		if favorite.Hovered() {
-			if selected {
-				favorite.Background(t.AccentText.Alpha(0.16))
-			} else {
-				favorite.Background(t.SurfaceHover)
-			}
-		}
-		favorite.Children(func() {
-			ui.Text(c, star).FontSize(15).TextColor(starColor)
-		})
-		if favorite.Clicked() {
-			a.toggleFavorite(game)
-		}
 	})
 }
 
@@ -318,8 +290,6 @@ func (a *launcherApp) gridCell(c *ui.Context, order []int, i int) {
 				ui.Text(c, locales.Running()).FontSize(10).TextColor(t.Success)
 			} else if !a.isAvailable(*game) {
 				ui.Text(c, locales.Missing()).FontSize(10).TextColor(t.Danger)
-			} else if game.Favorite {
-				ui.Text(c, "★").FontSize(10).TextColor(t.Warning)
 			}
 		})
 	})
@@ -369,9 +339,6 @@ func (a *launcherApp) detail(c *ui.Context) {
 						ui.Badge(c, locales.Ready()).Background(t.Success.Alpha(0.14)).TextColor(t.Success)
 					} else {
 						ui.Badge(c, locales.ProjectMissing()).Background(t.Danger.Alpha(0.14)).TextColor(t.Danger)
-					}
-					if game.Favorite {
-						ui.Badge(c, locales.Favorite()).Background(t.Warning.Alpha(0.14)).TextColor(t.Warning)
 					}
 					if a.running[game.ID] != nil {
 						ui.Badge(c, locales.Running()).Background(t.Success.Alpha(0.14)).TextColor(t.Success)
