@@ -328,7 +328,7 @@ func (a *launcherApp) detail(c *ui.Context) {
 			ui.Column(c).Fill().Justify(ui.Center).AlignItems(ui.Center).Gap(12).Children(func() {
 				ui.Icon(c, iconGamepad).FontSize(56).TextColor(t.TextMuted)
 				ui.Text(c, locales.NoGameSelected()).FontSize(24).Bold()
-				ui.Text(c, locales.EmptyHint()).FontSize(13).TextColor(t.TextMuted).Width(460)
+				ui.Text(c, locales.EmptyHint()).FontSize(13).TextColor(t.TextMuted).Width(460).TextAlign(ui.Center)
 				if ui.PrimaryButton(c, locales.AddGame()).Clicked() {
 					a.chooseProject()
 				}
