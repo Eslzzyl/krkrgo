@@ -4,8 +4,67 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val ffmpegAndroidDir = providers.gradleProperty("krkrgoFfmpegAndroidDir")
+    .orElse(providers.environmentVariable("KRKRGO_FFMPEG_ANDROID_DIR"))
+val generatedFfmpegJniLibs = layout.buildDirectory.dir("generated/ffmpeg-jniLibs")
+val androidFfmpegAbis = listOf("arm64-v8a", "x86_64", "armeabi-v7a", "x86")
+val androidFfmpegLibraries = listOf(
+    "libavutil.so",
+    "libavutil.so.61",
+    "libavcodec.so",
+    "libavcodec.so.63",
+    "libavformat.so",
+    "libavformat.so.63",
+    "libswscale.so",
+    "libswscale.so.10",
+)
+
+val prepareFfmpegAndroid by tasks.registering {
+    description = "Copies Android FFmpeg shared libraries into the APK JNI source set."
+    group = "build"
+    if (ffmpegAndroidDir.isPresent) {
+        inputs.dir(ffmpegAndroidDir)
+    }
+    outputs.dir(generatedFfmpegJniLibs)
+
+    doLast {
+        val sourceValue = ffmpegAndroidDir.orNull
+        if (sourceValue.isNullOrBlank()) {
+            logger.lifecycle("Android FFmpeg libraries are not configured; media decoding remains unavailable in this APK.")
+            return@doLast
+        }
+
+        val sourceRoot = file(sourceValue)
+        var copied = false
+        androidFfmpegAbis.forEach { abi ->
+            val candidates = listOf(
+                sourceRoot.resolve(abi),
+                sourceRoot.resolve("lib").resolve(abi),
+                sourceRoot.resolve("jniLibs").resolve(abi),
+            )
+            val sourceDir = candidates.firstOrNull { candidate ->
+                androidFfmpegLibraries.any { library -> candidate.resolve(library).isFile }
+            } ?: return@forEach
+
+            copy {
+                from(sourceDir)
+                include(androidFfmpegLibraries)
+                into(generatedFfmpegJniLibs.get().asFile.resolve(abi))
+            }
+            copied = true
+        }
+
+        check(copied) {
+            "Android FFmpeg directory contains no supported ABI libraries: $sourceRoot"
+        }
+    }
+}
+
+android.sourceSets.getByName("main").jniLibs.srcDir(generatedFfmpegJniLibs)
+
 tasks.named("preBuild") {
     dependsOn(rootProject.tasks.named("generateGoBinding"))
+    dependsOn(prepareFfmpegAndroid)
 }
 
 android {

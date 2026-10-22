@@ -25,6 +25,9 @@ NM=${NM:-}
 OBJDUMP=${OBJDUMP:-}
 WINDRES=${WINDRES:-}
 READELF=${READELF:-}
+ANDROID_API=${ANDROID_API:-24}
+ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}
+ANDROID_HOST_TAG=${ANDROID_HOST_TAG:-}
 
 fail() {
     printf 'build-ffmpeg: %s\n' "$*" >&2
@@ -56,6 +59,10 @@ case "$(printf '%s' "$OS_NAME" | tr '[:upper:]' '[:lower:]')" in
         PLATFORM=linux
         TARGET_OS=linux
         ;;
+    android)
+        PLATFORM=android
+        TARGET_OS=android
+        ;;
     windows|mingw|mingw32|msys)
         PLATFORM=windows
         TARGET_OS=mingw32
@@ -65,19 +72,47 @@ case "$(printf '%s' "$OS_NAME" | tr '[:upper:]' '[:lower:]')" in
         ;;
 esac
 
-case "$(printf '%s' "$ARCH_NAME" | tr '[:upper:]' '[:lower:]')" in
-    amd64|x86_64|x64)
-        TARGET_ARCH=x86_64
-        GO_ARCH=amd64
-        ;;
-    arm64|aarch64)
-        TARGET_ARCH=aarch64
-        GO_ARCH=arm64
-        ;;
-    *)
-        fail "unsupported architecture: $ARCH_NAME"
-        ;;
-esac
+if [[ "$PLATFORM" == android ]]; then
+    case "$(printf '%s' "$ARCH_NAME" | tr '[:upper:]' '[:lower:]')" in
+        arm64-v8a|arm64|aarch64)
+            TARGET_ARCH=aarch64
+            ANDROID_ABI=arm64-v8a
+            ANDROID_TRIPLE=aarch64-linux-android
+            ;;
+        x86_64|x64|amd64)
+            TARGET_ARCH=x86_64
+            ANDROID_ABI=x86_64
+            ANDROID_TRIPLE=x86_64-linux-android
+            ;;
+        armeabi-v7a|arm|armv7|armv7a)
+            TARGET_ARCH=arm
+            ANDROID_ABI=armeabi-v7a
+            ANDROID_TRIPLE=armv7a-linux-androideabi
+            ;;
+        x86|i686)
+            TARGET_ARCH=i686
+            ANDROID_ABI=x86
+            ANDROID_TRIPLE=i686-linux-android
+            ;;
+        *)
+            fail "unsupported Android ABI: $ARCH_NAME"
+            ;;
+    esac
+else
+    case "$(printf '%s' "$ARCH_NAME" | tr '[:upper:]' '[:lower:]')" in
+        amd64|x86_64|x64)
+            TARGET_ARCH=x86_64
+            GO_ARCH=amd64
+            ;;
+        arm64|aarch64)
+            TARGET_ARCH=aarch64
+            GO_ARCH=arm64
+            ;;
+        *)
+            fail "unsupported architecture: $ARCH_NAME"
+            ;;
+    esac
+fi
 
 if [[ "$CROSS_PREFIX" == none ]]; then
     CROSS_PREFIX=
@@ -89,6 +124,32 @@ if [[ "$PLATFORM" == windows ]]; then
     CC=${CC:-"${CROSS_PREFIX}gcc"}
 elif [[ "$PLATFORM" == macos ]]; then
     CC=${CC:-clang}
+elif [[ "$PLATFORM" == android ]]; then
+    [[ -n "$ANDROID_NDK_HOME" ]] || fail "ANDROID_NDK_HOME is required for Android builds"
+    if [[ -z "$ANDROID_HOST_TAG" ]]; then
+        case "$(uname -s)" in
+            Linux*)
+                ANDROID_HOST_TAG=linux-x86_64
+                ;;
+            Darwin*)
+                ANDROID_HOST_TAG=darwin-x86_64
+                ;;
+            MINGW*|MSYS*|CYGWIN*)
+                ANDROID_HOST_TAG=windows-x86_64
+                ;;
+            *)
+                fail "cannot determine Android NDK host tag from $(uname -s)"
+                ;;
+        esac
+    fi
+    ANDROID_NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$ANDROID_HOST_TAG/bin"
+    [[ -d "$ANDROID_NDK_BIN" ]] || fail "Android NDK toolchain is missing: $ANDROID_NDK_BIN"
+    CC=${CC:-"$ANDROID_NDK_BIN/${ANDROID_TRIPLE}${ANDROID_API}-clang"}
+    AR=${AR:-"$ANDROID_NDK_BIN/llvm-ar"}
+    NM=${NM:-"$ANDROID_NDK_BIN/llvm-nm"}
+    READELF=${READELF:-"$ANDROID_NDK_BIN/llvm-readelf"}
+    SYSROOT=${SYSROOT:-"$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$ANDROID_HOST_TAG/sysroot"}
+    ENABLE_CROSS_COMPILE=1
 else
     CC=${CC:-gcc}
     if [[ "$TARGET_ARCH" == aarch64 && -z "${CROSS_PREFIX}" ]]; then
@@ -120,7 +181,9 @@ if [[ "$PLATFORM" == windows ]]; then
         fi
     fi
     need_command "$OBJDUMP"
-elif [[ "$PLATFORM" == linux ]]; then
+elif [[ "$PLATFORM" == linux || "$PLATFORM" == android ]]; then
+    NM=${NM:-nm}
+    need_command "$NM"
     if [[ -z "$READELF" ]]; then
         if [[ -n "$CROSS_PREFIX" ]] && command -v "${CROSS_PREFIX}readelf" >/dev/null 2>&1; then
             READELF="${CROSS_PREFIX}readelf"
@@ -137,14 +200,18 @@ source_version=$(tr -d '\r\n' < "$FFMPEG_SOURCE_DIR/RELEASE")
 [[ "$source_version" == "$FFMPEG_VERSION" ]] || fail "FFmpeg source version $source_version does not match $FFMPEG_VERSION"
 
 rm -rf "$BUILD_DIR" "$PREFIX"
-mkdir -p "$BUILD_DIR" "$PREFIX" "$PREFIX/lib/ffmpeg" "$PREFIX/LICENSES/FFmpeg"
+lib_dir="$PREFIX/lib/ffmpeg"
+if [[ "$PLATFORM" == android ]]; then
+    lib_dir="$PREFIX/lib/$ANDROID_ABI"
+fi
+mkdir -p "$BUILD_DIR" "$PREFIX" "$lib_dir" "$PREFIX/LICENSES/FFmpeg"
 
 extra_cflags=()
 extra_ldflags=()
 configure_args=(
     "--prefix=$PREFIX"
-    "--libdir=$PREFIX/lib/ffmpeg"
-    "--shlibdir=$PREFIX/lib/ffmpeg"
+    "--libdir=$lib_dir"
+    "--shlibdir=$lib_dir"
     "--arch=$TARGET_ARCH"
     "--target-os=$TARGET_OS"
     "--cc=$compiler_command_string"
@@ -223,6 +290,9 @@ if [[ "$PLATFORM" == windows && -n "$CROSS_PREFIX" ]]; then
         configure_args+=("--windres=windres")
     fi
 fi
+if [[ "$PLATFORM" == android ]]; then
+    configure_args+=("--ar=$AR" "--nm=$NM" "--ranlib=$ANDROID_NDK_BIN/llvm-ranlib" "--strip=$ANDROID_NDK_BIN/llvm-strip")
+fi
 if [[ -n "$SYSROOT" ]]; then
     extra_cflags+=("--sysroot=$SYSROOT")
     extra_ldflags+=("--sysroot=$SYSROOT")
@@ -265,9 +335,11 @@ cp "$FFMPEG_SOURCE_DIR/COPYING.LGPLv2.1" "$PREFIX/LICENSES/FFmpeg/COPYING.LGPLv2
 printf '%s\n' "$FFMPEG_VERSION" > "$PREFIX/LICENSES/FFmpeg/source-version.txt"
 printf '%s\n' "$(printf '%q ' "${configure_args[@]}")" > "$PREFIX/LICENSES/FFmpeg/configure.txt"
 
-lib_dir="$PREFIX/lib/ffmpeg"
 case "$PLATFORM" in
     linux)
+        library_names=(libavutil.so.61 libavcodec.so.63 libavformat.so.63 libswscale.so.10)
+        ;;
+    android)
         library_names=(libavutil.so.61 libavcodec.so.63 libavformat.so.63 libswscale.so.10)
         ;;
     macos)
@@ -282,13 +354,20 @@ for library in "${library_names[@]}"; do
     [[ -f "$lib_dir/$library" ]] || fail "expected shared library is missing: $lib_dir/$library"
 done
 
+if [[ "$PLATFORM" == android ]]; then
+    for library in libavutil.so.61 libavcodec.so.63 libavformat.so.63 libswscale.so.10; do
+        unversioned=${library%%.*}.so
+        [[ -f "$lib_dir/$unversioned" ]] || cp "$lib_dir/$library" "$lib_dir/$unversioned"
+    done
+fi
+
 check_symbol() {
     local library=$1
     local symbol=$2
     local output
     case "$PLATFORM" in
-        linux)
-            output=$(nm -D --defined-only "$library" 2>/dev/null || true)
+        linux|android)
+            output=$("$NM" -D --defined-only "$library" 2>/dev/null || true)
             printf '%s\n' "$output" | tr -d '\r' | grep -Eq "(^|[[:space:]])_?${symbol}(@[^[:space:]]+)?($|[[:space:]])" || fail "missing exported symbol $symbol in $library"
             ;;
         macos)
@@ -330,6 +409,25 @@ validate_linux_dependencies() {
                     ;;
                 *)
                     fail "unexpected Linux FFmpeg dependency: $dep"
+                    ;;
+            esac
+        done < <("$READELF" -d "$lib_dir/$library" | awk -F'[][]' '/NEEDED/{print $2}')
+    done
+}
+
+validate_android_dependencies() {
+    local library dep
+    for library in "${library_names[@]}"; do
+        while IFS= read -r dep; do
+            [[ -n "$dep" ]] || continue
+            case "$dep" in
+                libavutil.so.61|libavcodec.so.63|libavformat.so.63|libswscale.so.10)
+                    [[ -f "$lib_dir/$dep" ]] || fail "Android FFmpeg dependency is missing: $dep"
+                    ;;
+                libc.so|libc.so.*|libm.so|libm.so.*|libdl.so|libdl.so.*|liblog.so|liblog.so.*|libz.so|libz.so.*|libandroid.so|libandroid.so.*|libgcc.so|libgcc.so.*|libatomic.so|libatomic.so.*|libc++_shared.so|libunwind.so|ld-android.so|linker64|linux-vdso.so.*)
+                    ;;
+                *)
+                    fail "unexpected Android FFmpeg dependency: $dep"
                     ;;
             esac
         done < <("$READELF" -d "$lib_dir/$library" | awk -F'[][]' '/NEEDED/{print $2}')
@@ -422,6 +520,9 @@ check_symbol "$lib_dir/${library_names[3]}" sws_scale
 case "$PLATFORM" in
     linux)
         validate_linux_dependencies
+        ;;
+    android)
+        validate_android_dependencies
         ;;
     macos)
         need_command otool

@@ -41,6 +41,24 @@ jobs:
             cc: aarch64-linux-gnu-gcc
             cross_prefix: aarch64-linux-gnu-
             install: ccache gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu make nasm pkg-config
+          - name: android-arm64-v8a
+            runner: ubuntu-26.04
+            shell: bash
+            ffmpeg_os: android
+            ffmpeg_arch: arm64-v8a
+            android_api: 24
+            android_ndk: 27.2.12479018
+            cross_prefix: none
+            install: ccache make nasm
+          - name: android-x86_64
+            runner: ubuntu-26.04
+            shell: bash
+            ffmpeg_os: android
+            ffmpeg_arch: x86_64
+            android_api: 24
+            android_ndk: 27.2.12479018
+            cross_prefix: none
+            install: ccache make nasm
           - name: macos-arm64
             runner: macos-26
             shell: bash
@@ -106,6 +124,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.install }}
 
+      - name: Set up Android SDK
+        if: matrix.ffmpeg_os == 'android'
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        if: matrix.ffmpeg_os == 'android'
+        run: sdkmanager "ndk;${{ matrix.android_ndk }}"
+
       - name: Install macOS tools
         if: runner.os == 'macOS'
         run: brew install ${{ matrix.install }}
@@ -158,12 +184,16 @@ jobs:
           CROSS_PREFIX: ${{ matrix.cross_prefix }}
           SYSROOT: ${{ matrix.sysroot || '' }}
           ENABLE_CROSS_COMPILE: ${{ matrix.enable_cross_compile || '0' }}
+          ANDROID_API: ${{ matrix.android_api || '' }}
           FFMPEG_SOURCE_DIR: ${{ github.workspace }}/ffmpeg-source
           PREFIX: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
         run: |
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             export CCACHE_BASEDIR="$PWD"
             export CCACHE_DIR="$PWD/.ccache"
+          fi
+          if [[ "$OS" == android ]]; then
+            export ANDROID_NDK_HOME="${ANDROID_SDK_ROOT:-$ANDROID_HOME}/ndk/${{ matrix.android_ndk }}"
           fi
           scripts/build-ffmpeg.sh
       - name: Show configure log on failure
@@ -185,15 +215,21 @@ jobs:
           test -f "$PREFIX/LICENSES/FFmpeg/COPYING.LGPLv2.1"
           test -f "$PREFIX/LICENSES/FFmpeg/source-version.txt"
           test -f "$PREFIX/LICENSES/FFmpeg/configure.txt"
-          test -d "$PREFIX/lib/ffmpeg"
           case "$FF_PLATFORM" in
             linux)
+              test -d "$PREFIX/lib/ffmpeg"
               for lib in libavutil.so.61 libavcodec.so.63 libavformat.so.63 libswscale.so.10; do test -f "$PREFIX/lib/ffmpeg/$lib"; done
               ;;
+            android)
+              test -d "$PREFIX/lib/${{ matrix.ffmpeg_arch }}"
+              for lib in libavutil.so libavcodec.so libavformat.so libswscale.so; do test -f "$PREFIX/lib/${{ matrix.ffmpeg_arch }}/$lib"; done
+              ;;
             macos)
+              test -d "$PREFIX/lib/ffmpeg"
               for lib in libavutil.61.dylib libavcodec.63.dylib libavformat.63.dylib libswscale.10.dylib; do test -f "$PREFIX/lib/ffmpeg/$lib"; done
               ;;
             windows)
+              test -d "$PREFIX/lib/ffmpeg"
               for lib in avutil-61.dll avcodec-63.dll avformat-63.dll swscale-10.dll; do test -f "$PREFIX/lib/ffmpeg/$lib"; done
               ;;
           esac
@@ -263,6 +299,8 @@ jobs:
             macos-arm64
             windows-x86_64
             windows-arm64
+            android-arm64-v8a
+            android-x86_64
           )
           for platform in "${platforms[@]}"; do
             archive_dir="ffmpeg-$platform"
@@ -286,7 +324,7 @@ jobs:
           gh release create "$RELEASE_TAG" release-assets/* \
             --target "$GITHUB_SHA" \
             --title "$RELEASE_TAG" \
-            --notes "FFmpeg ${FFMPEG_VERSION} sidecar release.
+            --notes "FFmpeg ${FFMPEG_VERSION} desktop and Android sidecar release.
 
           Build: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
           Commit: ${GITHUB_SHA}"

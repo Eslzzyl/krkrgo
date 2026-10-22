@@ -37,6 +37,19 @@ Build from this directory:
 The build requires `go` on `PATH`, an Android SDK with platform 35 and build
 tools installed, and a JDK 17 installation selected through `JAVA_HOME`.
 
+## Android FFmpeg libraries
+
+The launcher packages `libavutil.so`, `libavcodec.so`, `libavformat.so`, and
+`libswscale.so` for each available ABI. The FFmpeg workflow produces these
+libraries for `arm64-v8a` and `x86_64`; the Android build accepts an aggregate
+directory through `KRKRGO_FFMPEG_ANDROID_DIR` or
+`-PkrkrgoFfmpegAndroidDir=...`. The directory may contain ABI folders directly,
+under `lib/`, or under `jniLibs/`.
+
+Without that setting the launcher still builds, and the APK contains no
+FFmpeg native libraries. Generated native libraries remain build inputs and
+stay outside Git.
+
 ## Emulator setup
 
 The validated AVD is `krkrgo-api35` with Android 35, x86_64, four virtual CPU

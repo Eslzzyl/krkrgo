@@ -74,7 +74,7 @@ go build -trimpath ./cmd/krkrgo-tool
 
 ### Build the FFmpeg sidecar
 
-The workflow builds and uploads FFmpeg 9.0.2 shared libraries for six desktop targets. It enables Ogg/Vorbis, ASF, VC-1, WMV3, and WMA2 support. Hardware acceleration and FFmpeg command-line programs are disabled; runtime decoding uses the purego loader.
+The workflow builds and uploads FFmpeg 9.0.2 shared libraries for six desktop targets plus Android `arm64-v8a` and `x86_64`. It enables Ogg/Vorbis, ASF, VC-1, WMV3, and WMA2 support. Hardware acceleration and FFmpeg command-line programs are disabled; runtime decoding uses the purego loader.
 
 For a local build from the verified FFmpeg 9.0.2 source archive:
 
@@ -87,6 +87,15 @@ scripts/build-ffmpeg.sh
 ```
 
 The workflow is [`.github/workflows/build-ffmpeg.yml`](.github/workflows/build-ffmpeg.yml). It builds and uploads the FFmpeg shared libraries, required Windows MinGW runtime DLLs, LGPL license, source version, configure manifest, and ABI probe output.
+
+Android builds use the NDK clang toolchain with API 24. To package local Android libraries into the launcher, point Gradle at a directory containing ABI folders such as `arm64-v8a/` and `x86_64/`:
+
+```powershell
+$env:KRKRGO_FFMPEG_ANDROID_DIR = "D:\path\to\android-ffmpeg"
+.\gradlew.bat assembleDebug
+```
+
+The same value can be passed as `-PkrkrgoFfmpegAndroidDir=D:\path\to\android-ffmpeg`.
 
 ### Package the application
 
