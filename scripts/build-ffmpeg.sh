@@ -480,7 +480,7 @@ validate_android_dependencies() {
         while IFS= read -r dep; do
             [[ -n "$dep" ]] || continue
             case "$dep" in
-                libavutil.so.61|libavcodec.so.63|libavformat.so.63|libswscale.so.10)
+                libavutil.so|libavutil.so.61|libavcodec.so|libavcodec.so.63|libavformat.so|libavformat.so.63|libswscale.so|libswscale.so.10)
                     [[ -f "$lib_dir/$dep" ]] || fail "Android FFmpeg dependency is missing: $dep"
                     ;;
                 libc.so|libc.so.*|libm.so|libm.so.*|libdl.so|libdl.so.*|liblog.so|liblog.so.*|libz.so|libz.so.*|libandroid.so|libandroid.so.*|libgcc.so|libgcc.so.*|libatomic.so|libatomic.so.*|libc++_shared.so|libunwind.so|ld-android.so|linker64|linux-vdso.so.*)
