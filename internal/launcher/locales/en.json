@@ -50,7 +50,7 @@
   "menuGame": "Game",
   "menuLaunch": "Launch",
   "menuStop": "Stop",
-  "menuRevealProject": "Reveal Project",
+	"menuOpenProjectFolder": "Open Project Folder",
   "menuRemove": "Remove…",
   "menuView": "View",
   "menuList": "List",

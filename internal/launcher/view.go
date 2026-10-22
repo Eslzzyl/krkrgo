@@ -357,7 +357,7 @@ func (a *launcherApp) detail(c *ui.Context) {
 						a.launchGame(game)
 					}
 					if button := a.iconButton(c, locales.OpenFolder(), iconFolder); button.Clicked() {
-						a.revealProject()
+						a.openProjectFolder()
 					}
 					if button := a.iconButton(c, locales.SaveFolder(), iconArchive); button.Clicked() {
 						a.openSaveDir()

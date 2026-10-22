@@ -50,7 +50,7 @@
   "menuGame": "游戏",
   "menuLaunch": "启动",
   "menuStop": "停止",
-  "menuRevealProject": "在访达中显示项目",
+	"menuOpenProjectFolder": "打开项目目录",
   "menuRemove": "移除…",
   "menuView": "视图",
   "menuList": "列表",

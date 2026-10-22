@@ -282,7 +282,7 @@ func (a *launcherApp) stopGame(id string) {
 	}
 }
 
-func (a *launcherApp) revealProject() {
+func (a *launcherApp) openProjectFolder() {
 	game := a.selectedGame()
 	if game == nil {
 		return

@@ -538,14 +538,14 @@ func (msgs Messages) MenuStop() string {
 	return Catalog.Format(msgs.locale, "menuStop", nil)
 }
 
-// MenuRevealProject says "Reveal Project"
+// MenuOpenProjectFolder says "Open Project Folder"
 // in the language the app shows.
-func MenuRevealProject() string { return In(i18n.Locale()).MenuRevealProject() }
+func MenuOpenProjectFolder() string { return In(i18n.Locale()).MenuOpenProjectFolder() }
 
-// MenuRevealProject says "Reveal Project"
+// MenuOpenProjectFolder says "Open Project Folder"
 // in the language of msgs.
-func (msgs Messages) MenuRevealProject() string {
-	return Catalog.Format(msgs.locale, "menuRevealProject", nil)
+func (msgs Messages) MenuOpenProjectFolder() string {
+	return Catalog.Format(msgs.locale, "menuOpenProjectFolder", nil)
 }
 
 // MenuRemove says "Remove…"

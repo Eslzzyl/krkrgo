@@ -159,7 +159,7 @@ func (a *launcherApp) setMenu() {
 			{Label: locales.MenuLaunch(), Accelerator: "CmdOrCtrl+Return", Click: func(*mygo.MenuItem, *mygo.Window) { a.launchSelected() }},
 			{Label: locales.MenuStop(), Accelerator: "CmdOrCtrl+.", Click: func(*mygo.MenuItem, *mygo.Window) { a.stopSelected() }},
 			mygo.Separator(),
-			{Label: locales.MenuRevealProject(), Click: func(*mygo.MenuItem, *mygo.Window) { a.revealProject() }},
+			{Label: locales.MenuOpenProjectFolder(), Click: func(*mygo.MenuItem, *mygo.Window) { a.openProjectFolder() }},
 			{Label: locales.MenuRemove(), Click: func(*mygo.MenuItem, *mygo.Window) { a.confirmRemove = true }},
 		}},
 		{Label: locales.MenuView(), Submenu: []*mygo.MenuItem{
