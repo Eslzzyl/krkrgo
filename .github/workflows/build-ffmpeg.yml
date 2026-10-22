@@ -59,6 +59,33 @@ jobs:
             android_ndk: 27.2.12479018
             cross_prefix: none
             install: ccache make nasm
+          - name: ios-device-arm64
+            runner: macos-26
+            shell: bash
+            ffmpeg_os: ios
+            ffmpeg_arch: arm64
+            apple_sdk: iphoneos
+            ios_min_version: 13.0
+            cross_prefix: none
+            install: ccache nasm
+          - name: ios-simulator-arm64
+            runner: macos-26
+            shell: bash
+            ffmpeg_os: ios
+            ffmpeg_arch: arm64
+            apple_sdk: iphonesimulator
+            ios_min_version: 13.0
+            cross_prefix: none
+            install: ccache nasm
+          - name: ios-simulator-x86_64
+            runner: macos-26
+            shell: bash
+            ffmpeg_os: ios
+            ffmpeg_arch: x86_64
+            apple_sdk: iphonesimulator
+            ios_min_version: 13.0
+            cross_prefix: none
+            install: ccache nasm
           - name: macos-arm64
             runner: macos-26
             shell: bash
@@ -185,6 +212,8 @@ jobs:
           SYSROOT: ${{ matrix.sysroot || '' }}
           ENABLE_CROSS_COMPILE: ${{ matrix.enable_cross_compile || '0' }}
           ANDROID_API: ${{ matrix.android_api || '' }}
+          IOS_SDK: ${{ matrix.apple_sdk || '' }}
+          IOS_MIN_VERSION: ${{ matrix.ios_min_version || '' }}
           FFMPEG_SOURCE_DIR: ${{ github.workspace }}/ffmpeg-source
           PREFIX: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
         run: |
@@ -224,6 +253,10 @@ jobs:
               test -d "$PREFIX/lib/${{ matrix.ffmpeg_arch }}"
               for lib in libavutil.so libavcodec.so libavformat.so libswscale.so; do test -f "$PREFIX/lib/${{ matrix.ffmpeg_arch }}/$lib"; done
               ;;
+            ios)
+              test -d "$PREFIX/lib/ffmpeg"
+              for lib in libavutil.61.dylib libavcodec.63.dylib libavformat.63.dylib libswscale.10.dylib; do test -f "$PREFIX/lib/ffmpeg/$lib"; done
+              ;;
             macos)
               test -d "$PREFIX/lib/ffmpeg"
               for lib in libavutil.61.dylib libavcodec.63.dylib libavformat.63.dylib libswscale.10.dylib; do test -f "$PREFIX/lib/ffmpeg/$lib"; done
@@ -244,9 +277,33 @@ jobs:
           path: ${{ github.workspace }}/stage/ffmpeg-${{ matrix.name }}
           compression-level: 6
           if-no-files-found: error
+  package-ios:
+    name: Package iOS XCFrameworks
+    needs: build
+    runs-on: macos-26
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout build scripts
+        uses: actions/checkout@v7
+      - name: Download iOS FFmpeg slices
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ffmpeg-ios-*
+          path: release-inputs
+      - name: Create iOS XCFrameworks
+        run: bash scripts/package-ffmpeg-ios.sh release-inputs stage/ffmpeg-ios-xcframeworks
+      - name: Upload iOS XCFrameworks
+        uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-ios-xcframeworks
+          path: stage/ffmpeg-ios-xcframeworks
+          compression-level: 6
+          if-no-files-found: error
   publish-release:
     name: Publish FFmpeg sidecar release
-    needs: build
+    needs: [build, package-ios]
     runs-on: ubuntu-26.04
     permissions:
       actions: read
@@ -301,6 +358,10 @@ jobs:
             windows-arm64
             android-arm64-v8a
             android-x86_64
+            ios-device-arm64
+            ios-simulator-arm64
+            ios-simulator-x86_64
+            ios-xcframeworks
           )
           for platform in "${platforms[@]}"; do
             archive_dir="ffmpeg-$platform"
@@ -324,7 +385,7 @@ jobs:
           gh release create "$RELEASE_TAG" release-assets/* \
             --target "$GITHUB_SHA" \
             --title "$RELEASE_TAG" \
-            --notes "FFmpeg ${FFMPEG_VERSION} desktop and Android sidecar release.
+            --notes "FFmpeg ${FFMPEG_VERSION} desktop, Android, and iOS sidecar release.
 
           Build: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
           Commit: ${GITHUB_SHA}"

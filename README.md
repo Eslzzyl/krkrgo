@@ -97,6 +97,11 @@ $env:KRKRGO_FFMPEG_ANDROID_DIR = "D:\path\to\android-ffmpeg"
 
 The same value can be passed as `-PkrkrgoFfmpegAndroidDir=D:\path\to\android-ffmpeg`.
 
+The workflow also prepares iOS FFmpeg dynamic libraries for `arm64-iphoneos`,
+`arm64-iphonesimulator`, and `x86_64-iphonesimulator`, then packages four
+Framework-based XCFrameworks under `Frameworks/`. The iOS application target
+is not part of this workflow yet.
+
 ### Package the application
 
 The packaging scripts build one archive per platform and architecture. They download the FFmpeg sidecar from the `ffmpeg-sidecar-v9.0.2-r3` release and do not build FFmpeg locally.

@@ -28,6 +28,8 @@ READELF=${READELF:-}
 ANDROID_API=${ANDROID_API:-24}
 ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}
 ANDROID_HOST_TAG=${ANDROID_HOST_TAG:-}
+IOS_SDK=${IOS_SDK:-iphoneos}
+IOS_MIN_VERSION=${IOS_MIN_VERSION:-13.0}
 
 fail() {
     printf 'build-ffmpeg: %s\n' "$*" >&2
@@ -63,6 +65,10 @@ case "$(printf '%s' "$OS_NAME" | tr '[:upper:]' '[:lower:]')" in
         PLATFORM=android
         TARGET_OS=android
         ;;
+    ios|iphoneos|iphonesimulator)
+        PLATFORM=ios
+        TARGET_OS=darwin
+        ;;
     windows|mingw|mingw32|msys)
         PLATFORM=windows
         TARGET_OS=mingw32
@@ -72,7 +78,21 @@ case "$(printf '%s' "$OS_NAME" | tr '[:upper:]' '[:lower:]')" in
         ;;
 esac
 
-if [[ "$PLATFORM" == android ]]; then
+if [[ "$PLATFORM" == ios ]]; then
+    case "$(printf '%s' "$ARCH_NAME" | tr '[:upper:]' '[:lower:]')" in
+        arm64|aarch64)
+            TARGET_ARCH=arm64
+            GO_ARCH=arm64
+            ;;
+        amd64|x86_64|x64)
+            TARGET_ARCH=x86_64
+            GO_ARCH=amd64
+            ;;
+        *)
+            fail "unsupported iOS architecture: $ARCH_NAME"
+            ;;
+    esac
+elif [[ "$PLATFORM" == android ]]; then
     case "$(printf '%s' "$ARCH_NAME" | tr '[:upper:]' '[:lower:]')" in
         arm64-v8a|arm64|aarch64)
             TARGET_ARCH=aarch64
@@ -150,6 +170,20 @@ elif [[ "$PLATFORM" == android ]]; then
     READELF=${READELF:-"$ANDROID_NDK_BIN/llvm-readelf"}
     SYSROOT=${SYSROOT:-"$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$ANDROID_HOST_TAG/sysroot"}
     ENABLE_CROSS_COMPILE=1
+elif [[ "$PLATFORM" == ios ]]; then
+    need_command xcrun
+    case "$IOS_SDK" in
+        iphoneos|iphonesimulator)
+            ;;
+        *)
+            fail "unsupported iOS SDK: $IOS_SDK"
+            ;;
+    esac
+    CC=${CC:-$(xcrun --sdk "$IOS_SDK" --find clang)}
+    AR=${AR:-$(xcrun --sdk "$IOS_SDK" --find ar)}
+    NM=${NM:-$(xcrun --sdk "$IOS_SDK" --find nm)}
+    SYSROOT=${SYSROOT:-$(xcrun --sdk "$IOS_SDK" --show-sdk-path)}
+    ENABLE_CROSS_COMPILE=1
 else
     CC=${CC:-gcc}
     if [[ "$TARGET_ARCH" == aarch64 && -z "${CROSS_PREFIX}" ]]; then
@@ -192,6 +226,9 @@ elif [[ "$PLATFORM" == linux || "$PLATFORM" == android ]]; then
         fi
     fi
     need_command "$READELF"
+elif [[ "$PLATFORM" == macos || "$PLATFORM" == ios ]]; then
+    NM=${NM:-nm}
+    need_command "$NM"
 fi
 
 [[ -x "$FFMPEG_SOURCE_DIR/configure" ]] || fail "FFmpeg source is missing configure: $FFMPEG_SOURCE_DIR"
@@ -208,6 +245,8 @@ mkdir -p "$BUILD_DIR" "$PREFIX" "$lib_dir" "$PREFIX/LICENSES/FFmpeg"
 
 extra_cflags=()
 extra_ldflags=()
+shared_flag=--enable-shared
+static_flag=--disable-static
 configure_args=(
     "--prefix=$PREFIX"
     "--libdir=$lib_dir"
@@ -215,8 +254,8 @@ configure_args=(
     "--arch=$TARGET_ARCH"
     "--target-os=$TARGET_OS"
     "--cc=$compiler_command_string"
-    "--enable-shared"
-    "--disable-static"
+    "$shared_flag"
+    "$static_flag"
     "--disable-programs"
     "--disable-doc"
     "--disable-network"
@@ -293,6 +332,9 @@ fi
 if [[ "$PLATFORM" == android ]]; then
     configure_args+=("--ar=$AR" "--nm=$NM" "--ranlib=$ANDROID_NDK_BIN/llvm-ranlib" "--strip=$ANDROID_NDK_BIN/llvm-strip")
 fi
+if [[ "$PLATFORM" == ios ]]; then
+    configure_args+=("--ar=$AR" "--nm=$NM")
+fi
 if [[ -n "$SYSROOT" ]]; then
     extra_cflags+=("--sysroot=$SYSROOT")
     extra_ldflags+=("--sysroot=$SYSROOT")
@@ -306,6 +348,14 @@ if [[ "$PLATFORM" == macos ]]; then
     extra_cflags+=("-arch" "$mac_arch")
     extra_ldflags+=("-arch" "$mac_arch")
     configure_args+=("--install-name-dir=@loader_path")
+elif [[ "$PLATFORM" == ios ]]; then
+    ios_version_flag="-miphoneos-version-min=$IOS_MIN_VERSION"
+    if [[ "$IOS_SDK" == iphonesimulator ]]; then
+        ios_version_flag="-mios-simulator-version-min=$IOS_MIN_VERSION"
+    fi
+    extra_cflags+=("-arch" "$TARGET_ARCH" "-isysroot" "$SYSROOT" "$ios_version_flag")
+    extra_ldflags+=("-arch" "$TARGET_ARCH" "-isysroot" "$SYSROOT" "$ios_version_flag")
+    configure_args+=("--install-name-dir=@rpath")
 elif [[ "$PLATFORM" == windows && "$TARGET_ARCH" == aarch64 && "$CC" == clang* ]]; then
     extra_cflags+=("--target=aarch64-w64-windows-gnu")
     extra_ldflags+=("--target=aarch64-w64-windows-gnu")
@@ -342,6 +392,9 @@ case "$PLATFORM" in
     android)
         library_names=(libavutil.so.61 libavcodec.so.63 libavformat.so.63 libswscale.so.10)
         ;;
+    ios)
+        library_names=(libavutil.61.dylib libavcodec.63.dylib libavformat.63.dylib libswscale.10.dylib)
+        ;;
     macos)
         library_names=(libavutil.61.dylib libavcodec.63.dylib libavformat.63.dylib libswscale.10.dylib)
         ;;
@@ -372,6 +425,10 @@ check_symbol() {
             ;;
         macos)
             output=$(nm -gU "$library" 2>/dev/null || true)
+            printf '%s\n' "$output" | tr -d '\r' | grep -Eq "(^|[[:space:]])_?${symbol}(@[^[:space:]]+)?($|[[:space:]])" || fail "missing exported symbol $symbol in $library"
+            ;;
+        ios)
+            output=$("$NM" -gU "$library" 2>/dev/null || true)
             printf '%s\n' "$output" | tr -d '\r' | grep -Eq "(^|[[:space:]])_?${symbol}(@[^[:space:]]+)?($|[[:space:]])" || fail "missing exported symbol $symbol in $library"
             ;;
         windows)
@@ -444,6 +501,25 @@ validate_macos_dependencies() {
                     ;;
                 *)
                     fail "unexpected macOS FFmpeg dependency: $dep"
+                    ;;
+            esac
+        done < <(otool -L "$lib_dir/$library" | awk 'NR > 1 {print $1}')
+    done
+}
+
+validate_ios_dependencies() {
+    local library dep
+    for library in "${library_names[@]}"; do
+        while IFS= read -r dep; do
+            [[ -n "$dep" ]] || continue
+            case "$dep" in
+                @rpath/*|@loader_path/*|/usr/lib/*|/System/Library/*)
+                    ;;
+                libavutil.61.dylib|libavcodec.63.dylib|libavformat.63.dylib|libswscale.10.dylib)
+                    [[ -f "$lib_dir/$dep" ]] || fail "iOS FFmpeg dependency is missing: $dep"
+                    ;;
+                *)
+                    fail "unexpected iOS FFmpeg dependency: $dep"
                     ;;
             esac
         done < <(otool -L "$lib_dir/$library" | awk 'NR > 1 {print $1}')
@@ -524,6 +600,10 @@ case "$PLATFORM" in
     android)
         validate_android_dependencies
         ;;
+    ios)
+        need_command otool
+        validate_ios_dependencies
+        ;;
     macos)
         need_command otool
         validate_macos_dependencies
@@ -589,7 +669,7 @@ EOF
 
 probe_include=("-I$PREFIX/include")
 probe_libs=("-L$lib_dir" -lavformat -lavcodec -lavutil -lswscale)
-"${compiler_command[@]}" "${probe_include[@]}" "$probe_c" "${probe_libs[@]}" -o "$probe_bin"
+"${compiler_command[@]}" "${probe_include[@]}" "${extra_cflags[@]}" "$probe_c" "${probe_libs[@]}" "${extra_ldflags[@]}" -o "$probe_bin"
 if [[ -n "$ABI_PROBE_RUNNER" ]]; then
     "$ABI_PROBE_RUNNER" "$probe_bin" > "$PREFIX/LICENSES/FFmpeg/abi-offsets.txt"
 elif [[ "$PLATFORM" == "$(printf '%s' "$(uname -s)" | tr '[:upper:]' '[:lower:]')" && "$TARGET_ARCH" == "$(uname -m)" ]]; then
