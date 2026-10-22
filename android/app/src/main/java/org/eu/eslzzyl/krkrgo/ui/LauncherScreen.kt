@@ -80,14 +80,7 @@ fun LauncherScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text(stringResource(R.string.launcher_library), style = MaterialTheme.typography.headlineSmall)
-                        Text(
-                            stringResource(R.string.launcher_subtitle),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    Text(stringResource(R.string.launcher_library), style = MaterialTheme.typography.headlineSmall)
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,
@@ -209,7 +202,7 @@ private fun ProjectList(
         contentPadding = PaddingValues(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 112.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item { ProjectSectionHeader(projects.size) }
+        item { ProjectCount(projects.size) }
         items(projects, key = { it.id }) { project ->
             ProjectCard(
                 project = project,
@@ -235,7 +228,7 @@ private fun ProjectGrid(
         horizontalArrangement = Arrangement.spacedBy(20.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        item { ProjectSectionHeader(projects.size) }
+        item { ProjectCount(projects.size) }
         items(projects, key = { it.id }) { project ->
             ProjectCard(
                 project = project,
@@ -248,19 +241,16 @@ private fun ProjectGrid(
 }
 
 @Composable
-private fun ProjectSectionHeader(projectCount: Int) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(stringResource(R.string.launcher_projects), style = MaterialTheme.typography.titleLarge)
-        Text(
-            if (projectCount == 1) {
-                stringResource(R.string.launcher_project_count, projectCount)
-            } else {
-                stringResource(R.string.launcher_project_count_plural, projectCount)
-            },
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
+private fun ProjectCount(projectCount: Int) {
+    Text(
+        if (projectCount == 1) {
+            stringResource(R.string.launcher_project_count, projectCount)
+        } else {
+            stringResource(R.string.launcher_project_count_plural, projectCount)
+        },
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable

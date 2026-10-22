@@ -2,10 +2,8 @@
 <resources>
     <string name="app_name">krkrgo</string>
     <string name="launcher_library">游戏库</string>
-    <string name="launcher_subtitle">你的游戏项目</string>
     <string name="launcher_start_library">开始使用游戏库</string>
     <string name="launcher_description">选择项目文件夹，从 krkrgo 启动游戏。</string>
-    <string name="launcher_projects">项目</string>
     <string name="launcher_project_count">已保存 %1$d 个项目</string>
     <string name="launcher_project_count_plural">已保存 %1$d 个项目</string>
     <string name="project_status_ready">可以继续运行</string>

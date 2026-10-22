@@ -2,10 +2,8 @@
 <resources>
     <string name="app_name">krkrgo</string>
     <string name="launcher_library">Library</string>
-    <string name="launcher_subtitle">Your game projects</string>
     <string name="launcher_start_library">Start your library</string>
     <string name="launcher_description">Choose a project folder to launch your games from krkrgo.</string>
-    <string name="launcher_projects">Projects</string>
     <string name="launcher_project_count">%1$d saved project</string>
     <string name="launcher_project_count_plural">%1$d saved projects</string>
     <string name="project_status_ready">Ready to resume</string>
