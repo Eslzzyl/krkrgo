@@ -114,11 +114,11 @@ func (msgs Messages) AddedGame(title string) string {
 	return Catalog.Format(msgs.locale, "addedGame", map[string]any{"title": title})
 }
 
-// AddGameProject says "Add XP3 entry file"
+// AddGameProject says "Choose the game's entry XP3 file"
 // in the language the app shows.
 func AddGameProject() string { return In(i18n.Locale()).AddGameProject() }
 
-// AddGameProject says "Add XP3 entry file"
+// AddGameProject says "Choose the game's entry XP3 file"
 // in the language of msgs.
 func (msgs Messages) AddGameProject() string {
 	return Catalog.Format(msgs.locale, "addGameProject", nil)
@@ -660,11 +660,11 @@ func (msgs Messages) Add() string {
 	return Catalog.Format(msgs.locale, "add", nil)
 }
 
-// AddGameTooltip says "Add an XP3 entry file (Cmd+O)"
+// AddGameTooltip says "Add game"
 // in the language the app shows.
 func AddGameTooltip() string { return In(i18n.Locale()).AddGameTooltip() }
 
-// AddGameTooltip says "Add an XP3 entry file (Cmd+O)"
+// AddGameTooltip says "Add game"
 // in the language of msgs.
 func (msgs Messages) AddGameTooltip() string {
 	return Catalog.Format(msgs.locale, "addGameTooltip", nil)
@@ -840,11 +840,11 @@ func (msgs Messages) NoGameSelected() string {
 	return Catalog.Format(msgs.locale, "noGameSelected", nil)
 }
 
-// EmptyHint says "Add an XP3 entry file, or drop a project directory here."
+// EmptyHint says "Add a game, or drop a project directory here."
 // in the language the app shows.
 func EmptyHint() string { return In(i18n.Locale()).EmptyHint() }
 
-// EmptyHint says "Add an XP3 entry file, or drop a project directory here."
+// EmptyHint says "Add a game, or drop a project directory here."
 // in the language of msgs.
 func (msgs Messages) EmptyHint() string {
 	return Catalog.Format(msgs.locale, "emptyHint", nil)

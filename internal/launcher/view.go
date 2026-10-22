@@ -106,7 +106,7 @@ func (a *launcherApp) sidebar(c *ui.Context, order []int) {
 		})
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.SearchField(c, &a.query).Bind(&a.search).Label(locales.SearchGames()).Grow(1)
-			add := a.iconAction(c, iconAdd, locales.Add(), locales.AddGameTooltip())
+			add := a.primaryIconAction(c, iconAdd, locales.Add(), locales.AddGameTooltip())
 			if add.Clicked() {
 				a.chooseProject()
 			}
@@ -329,9 +329,6 @@ func (a *launcherApp) detail(c *ui.Context) {
 				ui.Icon(c, iconGamepad).FontSize(56).TextColor(t.TextMuted)
 				ui.Text(c, locales.NoGameSelected()).FontSize(24).Bold()
 				ui.Text(c, locales.EmptyHint()).FontSize(13).TextColor(t.TextMuted).Width(460).TextAlign(ui.Center)
-				if ui.PrimaryButton(c, locales.AddGame()).Clicked() {
-					a.chooseProject()
-				}
 			})
 			return
 		}
@@ -424,6 +421,17 @@ func (a *launcherApp) iconAction(c *ui.Context, icon *ui.SVG, label, tooltip str
 	}
 	button.Children(func() {
 		ui.Icon(c, icon).FontSize(14).TextColor(t.TextMuted)
+	})
+	return button
+}
+
+func (a *launcherApp) primaryIconAction(c *ui.Context, icon *ui.SVG, label, tooltip string) ui.Element {
+	button := ui.PrimaryButton(c, "").Size(30, 30).Padding(0).Label(label)
+	if tooltip != "" {
+		button.Tooltip(tooltip)
+	}
+	button.Children(func() {
+		ui.Icon(c, icon).FontSize(16)
 	})
 	return button
 }
