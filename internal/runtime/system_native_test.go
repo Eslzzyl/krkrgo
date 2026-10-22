@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/eslzzyl/krkrgo/internal/tjs"
+	"github.com/eslzzyl/krkrgo/internal/version"
 )
 
 func TestSystemNativePropertiesAndMethods(t *testing.T) {
@@ -36,7 +37,7 @@ func TestSystemNativePropertiesAndMethods(t *testing.T) {
 	if err != nil || len(items) != 7 {
 		t.Fatalf("System information = %v, %v", items, err)
 	}
-	if items[0].Text() != "krkrgo" || items[2].Text() == "" || items[3].Text() == "" {
+	if items[0].Text() != version.Version || items[2].Text() == "" || items[3].Text() == "" {
 		t.Fatalf("System information values = %#v", items)
 	}
 	for _, item := range items[4:] {

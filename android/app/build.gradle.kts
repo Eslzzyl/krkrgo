@@ -1,7 +1,13 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+val versionProperties = Properties().apply {
+    rootProject.file("../internal/version/version.xcconfig").inputStream().use { load(it) }
 }
 
 val ffmpegAndroidDir = providers.gradleProperty("krkrgoFfmpegAndroidDir")
@@ -75,8 +81,8 @@ android {
         applicationId = "org.eu.eslzzyl.krkrgo"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = versionProperties.getProperty("KRKRGO_BUILD").toInt()
+        versionName = versionProperties.getProperty("KRKRGO_VERSION")
     }
 
     buildTypes {

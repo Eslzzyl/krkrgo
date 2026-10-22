@@ -14,13 +14,18 @@ import (
 
 	"github.com/eslzzyl/krkrgo/internal/core"
 	"github.com/eslzzyl/krkrgo/internal/tjs"
+	"github.com/eslzzyl/krkrgo/internal/version"
 )
 
 const (
-	systemVersionString      = "krkrgo"
-	systemVersionInformation = "krkrgo Go runtime; C++ System compatibility surface"
-	compactLevelIdle         = 5
-	compactLevelDeactivate   = 10
+	systemName             = "krkrgo"
+	compactLevelIdle       = 5
+	compactLevelDeactivate = 10
+)
+
+var (
+	systemVersionString      = version.Version
+	systemVersionInformation = systemName + " Go runtime " + version.Version + " (build " + version.Build + "); C++ System compatibility surface"
 )
 
 func sameContinuousHandler(a, b tjs.Value) bool {

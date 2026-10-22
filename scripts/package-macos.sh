@@ -15,7 +15,7 @@ Options:
   --tag TAG        FFmpeg sidecar release tag
   --sidecar DIR    Use an extracted sidecar directory
   --icon FILE      Application icon (.icns)
-  --version VER    CFBundleShortVersionString (default: 0.1.0)
+  --version VER    CFBundleShortVersionString (default: project version)
   --bundle-id ID   CFBundleIdentifier (default: org.eu.eslzzyl.krkrgo)
   -h, --help       Show this help
 EOF
@@ -26,7 +26,8 @@ out=
 tag=$PKG_DEFAULT_TAG
 sidecar=
 icon=
-version=0.1.0
+version=$PKG_VERSION
+build=$PKG_BUILD
 bundle_id=org.eu.eslzzyl.krkrgo
 
 while [ $# -gt 0 ]; do
@@ -156,7 +157,7 @@ for target_arch in $targets; do
 	<key>CFBundleShortVersionString</key>
 	<string>$version</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$build</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>12.0</string>
 	<key>NSHighResolutionCapable</key>

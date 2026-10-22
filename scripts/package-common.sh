@@ -9,6 +9,33 @@ die() {
     exit 1
 }
 
+PKG_VERSION_FILE="$ROOT_DIR/internal/version/version.xcconfig"
+
+pkg_version_value() {
+    local key=$1
+    local value
+
+    [ -f "$PKG_VERSION_FILE" ] || die "version file is missing: $PKG_VERSION_FILE"
+    value=$(awk -F= -v wanted="$key" '
+        {
+            current = $1
+            gsub(/[[:space:]]/, "", current)
+            if (current == wanted) {
+                value = $2
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                print value
+                exit
+            }
+        }
+    ' "$PKG_VERSION_FILE")
+    [ -n "$value" ] || die "version key is missing: $key"
+    printf '%s\n' "$value"
+}
+
+PKG_VERSION=$(pkg_version_value KRKRGO_VERSION)
+PKG_BUILD=$(pkg_version_value KRKRGO_BUILD)
+PKG_VERSION_LDFLAGS="-X github.com/eslzzyl/krkrgo/internal/version.Version=$PKG_VERSION -X github.com/eslzzyl/krkrgo/internal/version.Build=$PKG_BUILD"
+
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "required command is missing: $1"
 }
@@ -161,7 +188,7 @@ build_app_binary() {
     (
         cd "$ROOT_DIR" || exit 1
         CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-            go build -trimpath -ldflags "$ldflags" -o "$output" ./cmd/krkrgo
+            go build -trimpath -ldflags "$PKG_VERSION_LDFLAGS $ldflags" -o "$output" ./cmd/krkrgo
     )
 }
 

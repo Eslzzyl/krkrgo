@@ -41,6 +41,7 @@
 		A20000010000000000000016 /* KrkrgoContentURIReaderAdapter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = KrkrgoContentURIReaderAdapter.h; sourceTree = "<group>"; };
 		A20000010000000000000017 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
 		A20000010000000000000018 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
+		A20000010000000000000019 /* version.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = ../internal/version/version.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -59,6 +60,7 @@
 			isa = PBXGroup;
 			children = (
 				A40000010000000000000002 /* ios */,
+				A20000010000000000000019 /* version.xcconfig */,
 				A40000010000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -213,6 +215,7 @@
 /* Begin XCBuildConfiguration section */
 		A70000010000000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A20000010000000000000019 /* version.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
@@ -235,6 +238,7 @@
 		};
 		A70000010000000000000002 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A20000010000000000000019 /* version.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
@@ -257,6 +261,7 @@
 		};
 		A70000010000000000000003 /* Debug target */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A20000010000000000000019 /* version.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "";
@@ -278,6 +283,7 @@
 		};
 		A70000010000000000000004 /* Release target */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A20000010000000000000019 /* version.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "";

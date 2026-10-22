@@ -117,6 +117,8 @@ below the selected folder's `savedata/` directory.
 
 ### Package the application
 
+The application version source is [`internal/version/version.xcconfig`](internal/version/version.xcconfig). `KRKRGO_VERSION` supplies the user-facing version and `KRKRGO_BUILD` supplies the platform build number. Go, Android, iOS, macOS, and Windows packaging consume these values.
+
 The packaging scripts build one archive per platform and architecture. They download the FFmpeg sidecar from the `ffmpeg-sidecar-v9.0.2-r3` release and do not build FFmpeg locally.
 
 On a Linux build host, build every target:

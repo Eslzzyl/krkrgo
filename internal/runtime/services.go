@@ -426,7 +426,7 @@ func (s *Services) ensureInit() {
 		s.RenderScale = 1
 	}
 	if !s.systemTitleInitialized {
-		s.SystemTitle = systemVersionString
+		s.SystemTitle = systemName
 		s.systemTitleInitialized = true
 	}
 	if !s.systemExecutableResolved {
@@ -828,7 +828,7 @@ func (s *Services) RegisterWindow(id tjs.ObjectID, window *WindowState) error {
 }
 func (s *Services) systemTitle() string {
 	if s == nil {
-		return systemVersionString
+		return systemName
 	}
 	s.ensureInit()
 	s.mu.RLock()

@@ -12,6 +12,7 @@ val generateGoBinding by tasks.registering {
     inputs.dir(goRoot.resolve("mobile/krkrgo"))
     inputs.file(goRoot.resolve("go.mod"))
     inputs.file(goRoot.resolve("go.sum"))
+    inputs.file(goRoot.resolve("internal/version/version.xcconfig"))
     outputs.file(mobileBinding)
 
     doLast {

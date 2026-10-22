@@ -16,6 +16,21 @@ $ErrorActionPreference = 'Stop'
 $Repo = 'Eslzzyl/krkrgo'
 $Root = Split-Path -Parent $PSScriptRoot
 $SidecarLibraries = @('avutil-61.dll', 'avcodec-63.dll', 'avformat-63.dll', 'swscale-10.dll')
+$VersionFile = Join-Path $Root 'internal/version/version.xcconfig'
+$VersionValues = @{}
+if (-not (Test-Path -LiteralPath $VersionFile)) {
+    throw "version file is missing: $VersionFile"
+}
+foreach ($line in Get-Content -LiteralPath $VersionFile) {
+    if ($line -match '^\s*([A-Z0-9_]+)\s*=\s*(\S+)\s*$') {
+        $VersionValues[$Matches[1]] = $Matches[2]
+    }
+}
+$AppVersion = $VersionValues['KRKRGO_VERSION']
+$AppBuild = $VersionValues['KRKRGO_BUILD']
+if ([string]::IsNullOrWhiteSpace($AppVersion) -or [string]::IsNullOrWhiteSpace($AppBuild)) {
+    throw "version file is missing KRKRGO_VERSION or KRKRGO_BUILD"
+}
 
 function Fail {
     param([string]$Message)
@@ -153,7 +168,8 @@ foreach ($goArch in $architectures) {
         $env:CGO_ENABLED = '0'
         $env:GOOS = 'windows'
         $env:GOARCH = $goArch
-        & go build -trimpath -ldflags '-s -w -H windowsgui' -o $exe ./cmd/krkrgo
+        $ldFlags = "-s -w -H windowsgui -X github.com/eslzzyl/krkrgo/internal/version.Version=$AppVersion -X github.com/eslzzyl/krkrgo/internal/version.Build=$AppBuild"
+        & go build -trimpath -ldflags $ldFlags -o $exe ./cmd/krkrgo
         if ($LASTEXITCODE -ne 0) {
             Fail "go build failed with exit code $LASTEXITCODE"
         }
