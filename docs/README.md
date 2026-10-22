@@ -16,6 +16,7 @@ Each domain guide links the relevant Go source and records current implementatio
 - [Verification and cross-cutting gaps](verification-and-gaps.md)
 - [Headless performance baseline](performance-headless.md): reproducible no-window measurements for TJS, CPU composition, assets, and replay.
 - [Launcher architecture](launcher.md), including the MyGo message catalogs used for localization.
+- [Remote asset streaming](remote-asset-streaming.md): LAN C/S delivery, media streaming, caching, and smooth-playback risks.
 
 Design notes that are not porting status:
 
