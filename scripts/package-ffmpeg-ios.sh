@@ -15,6 +15,7 @@ need_command() {
 }
 
 need_command xcodebuild
+need_command lipo
 
 slices=(
     ios-device-arm64
@@ -42,7 +43,6 @@ mkdir -p "$OUTPUT_DIR/Frameworks" "$OUTPUT_DIR/LICENSES/FFmpeg"
 
 for library in "${libraries[@]}"; do
     name=${library%%.*}
-    framework_args=()
     for slice in "${slices[@]}"; do
         slice_dir="$INPUT_DIR/ffmpeg-$slice"
         framework_dir="$slice_dir/frameworks/$name.framework"
@@ -85,13 +85,30 @@ EOF
                     ;;
             esac
         done < <(otool -L "$framework_dir/$name" | awk 'NR > 1 {print $1}')
-        framework_args+=("-framework" "$framework_dir")
     done
+
+    simulator_arm_framework="$INPUT_DIR/ffmpeg-ios-simulator-arm64/frameworks/$name.framework"
+    simulator_x86_framework="$INPUT_DIR/ffmpeg-ios-simulator-x86_64/frameworks/$name.framework"
+    simulator_framework_dir="$OUTPUT_DIR/.simulator/$name.framework"
+    rm -rf "$simulator_framework_dir"
+    mkdir -p "$simulator_framework_dir/Headers"
+    cp -R "$simulator_arm_framework/Headers/." "$simulator_framework_dir/Headers/"
+    cp "$simulator_arm_framework/Info.plist" "$simulator_framework_dir/Info.plist"
+    lipo -create \
+        "$simulator_arm_framework/$name" \
+        "$simulator_x86_framework/$name" \
+        -output "$simulator_framework_dir/$name"
+
+    framework_args=(
+        -framework "$INPUT_DIR/ffmpeg-ios-device-arm64/frameworks/$name.framework"
+        -framework "$simulator_framework_dir"
+    )
     xcodebuild -create-xcframework \
         "${framework_args[@]}" \
         -output "$OUTPUT_DIR/Frameworks/$name.xcframework"
 done
 
+rm -rf "$OUTPUT_DIR/.simulator"
 cp "$INPUT_DIR/ffmpeg-ios-device-arm64/LICENSES/FFmpeg/"* "$OUTPUT_DIR/LICENSES/FFmpeg/"
 printf '%s\n' "FFmpeg iOS dynamic XCFramework package" > "$OUTPUT_DIR/LICENSES/FFmpeg/package.txt"
 printf 'FFmpeg iOS XCFrameworks ready: %s\n' "$OUTPUT_DIR"
