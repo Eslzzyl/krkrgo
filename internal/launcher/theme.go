@@ -58,6 +58,10 @@ func sidebarColor(t *ui.Theme) ui.Color {
 	return ui.Hex("#EFEFF3")
 }
 
+func selectedRowBackground(t *ui.Theme) ui.Color {
+	return t.Accent.Alpha(0.16).Over(sidebarColor(t))
+}
+
 func cardShadow(t *ui.Theme) ui.Color {
 	if t.Dark {
 		return ui.RGBA(0, 0, 0, 0.45)

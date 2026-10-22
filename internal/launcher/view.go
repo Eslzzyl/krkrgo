@@ -2,6 +2,7 @@ package launcher
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -165,8 +166,15 @@ func (a *launcherApp) listView(c *ui.Context, order []int) {
 	} else {
 		a.list.Reorder = nil
 	}
+	selectedBackground := selectedRowBackground(t)
+	listTheme := *t
+	listTheme.Accent = selectedBackground
+	listTheme.AccentHover = selectedBackground
+	listTheme.AccentPressed = selectedBackground
+	listTheme.AccentText = t.Text
+	c.SetTheme(&listTheme)
 	list := ui.List(c, &a.list, len(order), func(i int) {
-		a.gameRow(c, order, i)
+		a.gameRow(c, order, i, t, selectedBackground)
 	}).Grow(1).Children(func() {
 		if len(order) == 0 {
 			message := locales.NoGames()
@@ -176,26 +184,26 @@ func (a *launcherApp) listView(c *ui.Context, order []int) {
 			ui.Text(c, message).TextColor(t.TextMuted).Padding(12)
 		}
 	})
+	c.SetTheme(t)
 	a.commitChosen(order)
 	if list.Submitted() {
 		a.launchSelected()
 	}
 }
 
-func (a *launcherApp) gameRow(c *ui.Context, order []int, i int) {
+func (a *launcherApp) gameRow(c *ui.Context, order []int, i int, t *ui.Theme, selectedBackground ui.Color) {
 	game := &a.catalog.Games[order[i]]
-	t := c.Theme()
 	selected := i == a.chosen
 	textColor := t.Text
 	mutedColor := t.TextMuted
 	starColor := t.TextMuted
 	if selected {
-		textColor = t.AccentText
-		mutedColor = t.AccentText.Alpha(0.8)
-		starColor = t.AccentText
+		starColor = t.Accent
 	}
-	row := ui.Row(c).Padding(8, 10).Gap(10).AlignItems(ui.Center).Radius(10)
-	if !selected && row.Hovered() {
+	row := ui.Row(c).Padding(8, 10).Gap(10).AlignItems(ui.Center).Radius(t.Radius)
+	if selected {
+		row.Background(selectedBackground)
+	} else if row.Hovered() {
 		row.Background(t.SurfaceHover)
 	}
 	row.Children(func() {
@@ -206,8 +214,8 @@ func (a *launcherApp) gameRow(c *ui.Context, order []int, i int) {
 			background := tint.Alpha(0.18)
 			foreground := tint
 			if selected {
-				background = t.AccentText.Alpha(0.18)
-				foreground = t.AccentText
+				background = t.Accent.Alpha(0.14).Over(selectedBackground)
+				foreground = t.Accent
 			}
 			ui.Column(c).Size(40, 54).Radius(6).Background(background).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, initial(game.Title)).FontSize(16).Bold().TextColor(foreground)
@@ -218,14 +226,11 @@ func (a *launcherApp) gameRow(c *ui.Context, order []int, i int) {
 			if a.running[game.ID] != nil {
 				title += "  ●"
 			}
-			ui.Text(c, title).FontSize(14).TextColor(textColor).SingleLine()
-			ui.Text(c, a.shortPath(game.Project)).FontSize(11).TextColor(mutedColor).SingleLine()
+			ui.Text(c, title).FontSize(15).Bold().TextColor(textColor).SingleLine()
+			ui.Text(c, a.shortPath(game.Project)).FontSize(11).TextColor(mutedColor).SingleLine().Tooltip(game.Project)
 			ui.Row(c).Gap(6).Children(func() {
 				badge := func(text string, color ui.Color) {
 					background, foreground := color.Alpha(0.14), color
-					if selected {
-						background, foreground = t.AccentText.Alpha(0.18), t.AccentText
-					}
 					ui.Badge(c, text).Background(background).TextColor(foreground)
 				}
 				if !a.isAvailable(*game) {
@@ -632,7 +637,28 @@ func initial(title string) string {
 
 func (a *launcherApp) shortPath(path string) string {
 	if a.homeDir != "" && strings.HasPrefix(path, a.homeDir) {
-		return "~" + strings.TrimPrefix(path, a.homeDir)
+		path = "~" + strings.TrimPrefix(path, a.homeDir)
 	}
-	return path
+
+	clean := filepath.Clean(path)
+	parts := make([]string, 0, 2)
+	for len(parts) < 2 {
+		base := filepath.Base(clean)
+		if base == "." || base == string(filepath.Separator) || base == "" {
+			break
+		}
+		parts = append(parts, base)
+		parent := filepath.Dir(clean)
+		if parent == clean {
+			break
+		}
+		clean = parent
+	}
+	if len(parts) == 0 {
+		return path
+	}
+	for left, right := 0, len(parts)-1; left < right; left, right = left+1, right-1 {
+		parts[left], parts[right] = parts[right], parts[left]
+	}
+	return "…" + string(filepath.Separator) + filepath.Join(parts...)
 }
