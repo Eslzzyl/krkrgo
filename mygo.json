@@ -1,6 +1,6 @@
 {
   "name": "krkrgo",
-  "identifier": "com.eslzzyl.krkrgo",
+  "identifier": "org.eu.eslzzyl.krkrgo",
   "main": "./cmd/krkrgo",
   "i18n": {
     "dir": "internal/launcher/locales",

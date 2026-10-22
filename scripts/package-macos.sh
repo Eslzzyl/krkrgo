@@ -16,7 +16,7 @@ Options:
   --sidecar DIR    Use an extracted sidecar directory
   --icon FILE      Application icon (.icns)
   --version VER    CFBundleShortVersionString (default: 0.1.0)
-  --bundle-id ID   CFBundleIdentifier (default: io.github.eslzzyl.krkrgo)
+  --bundle-id ID   CFBundleIdentifier (default: org.eu.eslzzyl.krkrgo)
   -h, --help       Show this help
 EOF
 }
@@ -27,7 +27,7 @@ tag=$PKG_DEFAULT_TAG
 sidecar=
 icon=
 version=0.1.0
-bundle_id=io.github.eslzzyl.krkrgo
+bundle_id=org.eu.eslzzyl.krkrgo
 
 while [ $# -gt 0 ]; do
     case "$1" in
