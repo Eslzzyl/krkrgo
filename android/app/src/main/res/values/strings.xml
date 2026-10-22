@@ -1,4 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">krkrgo</string>
+    <string name="launcher_library">Library</string>
+    <string name="launcher_subtitle">Your game projects</string>
+    <string name="launcher_start_library">Start your library</string>
+    <string name="launcher_description">Choose a project folder to launch your games from krkrgo.</string>
+    <string name="launcher_projects">Projects</string>
+    <string name="launcher_project_count">%1$d saved project</string>
+    <string name="launcher_project_count_plural">%1$d saved projects</string>
+    <string name="project_status_ready">Ready to resume</string>
+    <string name="project_status_folder">Project folder</string>
+    <string name="project_reads_directly">Reads directly from the selected folder</string>
+    <string name="action_importing">Importing...</string>
+    <string name="action_add_project">Add project</string>
+    <string name="action_choose_project_folder">Choose project folder</string>
+    <string name="action_opening">Opening...</string>
+    <string name="action_resume">Resume</string>
+    <string name="action_launch">Launch</string>
+    <string name="action_back">Back</string>
+    <string name="error_unable_import_project">Unable to import project</string>
+    <string name="error_unable_launch_project">Unable to launch project</string>
+    <string name="error_unable_open_selected_folder">Unable to open the selected folder</string>
+    <string name="error_select_project_folder">Please select a project folder</string>
+    <string name="project_default_name">Project</string>
+    <string name="error_invalid_project_folder">The selected folder does not contain startup.tjs or an XP3 archive</string>
+    <string name="error_unable_open_selected_content_uri">Unable to open the selected content URI</string>
+    <string name="error_unable_open_project_file">Unable to open project file: %1$s</string>
+    <string name="error_unknown_content_storage_handle">Unknown content storage handle: %1$d</string>
+    <string name="error_invalid_content_read_range">Invalid content read range</string>
+    <string name="error_invalid_content_write_offset">Invalid content write offset</string>
+    <string name="error_unable_write_unnamed_project_file">Unable to write unnamed project file</string>
+    <string name="error_unable_create_project_save_file">Unable to create project save file: %1$s</string>
+    <string name="error_unable_open_project_save_file">Unable to open project save file: %1$s</string>
+    <string name="error_unable_delete_project_save_entry">Unable to delete project save entry: %1$s</string>
+    <string name="error_unable_list_project_directory">Unable to list project directory: %1$s</string>
+    <string name="error_project_entry_no_display_name">Project entry has no display name</string>
+    <string name="error_project_entry_not_found">Project entry not found: %1$s</string>
+    <string name="error_project_save_path_is_file">Project save path is a file: %1$s</string>
+    <string name="error_invalid_project_save_path">Invalid project save path: %1$s</string>
+    <string name="error_unable_create_project_save_directory">Unable to create project save directory: %1$s</string>
 </resources>

@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.eu.eslzzyl.krkrgo.R
 import org.eu.eslzzyl.krkrgo.bridge.GameHost
 import org.eu.eslzzyl.krkrgo.catalog.PersistentProjectCatalog
 import org.eu.eslzzyl.krkrgo.catalog.ProjectImporter
@@ -70,7 +71,8 @@ class MainActivity : ComponentActivity() {
                                     catalog.add(imported.name, imported.uri.toString())
                                 }
                                 .onFailure { error ->
-                                    operationError = error.message ?: "Unable to import project"
+                                    operationError = error.message
+                                        ?: context.getString(R.string.error_unable_import_project)
                                 }
                             isImporting = false
                         }
@@ -109,7 +111,8 @@ class MainActivity : ComponentActivity() {
                                             gameVisible = true
                                         }
                                         .onFailure { error ->
-                                            operationError = error.message ?: "Unable to launch project"
+                                            operationError = error.message
+                                                ?: context.getString(R.string.error_unable_launch_project)
                                         }
                                     isLaunching = false
                                 }

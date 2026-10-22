@@ -46,9 +46,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import org.eu.eslzzyl.krkrgo.R
 import org.eu.eslzzyl.krkrgo.catalog.ProjectCatalog
 import org.eu.eslzzyl.krkrgo.catalog.ProjectEntry
 
@@ -79,9 +81,9 @@ fun LauncherScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Text("Library", style = MaterialTheme.typography.headlineSmall)
+                        Text(stringResource(R.string.launcher_library), style = MaterialTheme.typography.headlineSmall)
                         Text(
-                            "Your game projects",
+                            stringResource(R.string.launcher_subtitle),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -97,7 +99,13 @@ fun LauncherScreen(
                 ExtendedFloatingActionButton(
                     onClick = { if (!isImporting) onAddProject() },
                     icon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-                    text = { Text(if (isImporting) "Importing..." else "Add project") },
+                    text = {
+                        Text(
+                            stringResource(
+                                if (isImporting) R.string.action_importing else R.string.action_add_project,
+                            ),
+                        )
+                    },
                 )
             }
         },
@@ -157,13 +165,13 @@ private fun EmptyLibrary(
         }
         Spacer(Modifier.size(28.dp))
         Text(
-            "Start your library",
+            stringResource(R.string.launcher_start_library),
             style = MaterialTheme.typography.headlineSmall,
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.size(12.dp))
         Text(
-            "Choose a project folder to launch your games from krkrgo.",
+            stringResource(R.string.launcher_description),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -180,7 +188,11 @@ private fun EmptyLibrary(
                 Icon(Icons.Outlined.Add, contentDescription = null)
             }
             Spacer(Modifier.width(8.dp))
-            Text(if (isImporting) "Importing..." else "Choose project folder")
+            Text(
+                stringResource(
+                    if (isImporting) R.string.action_importing else R.string.action_choose_project_folder,
+                ),
+            )
         }
     }
 }
@@ -238,9 +250,13 @@ private fun ProjectGrid(
 @Composable
 private fun ProjectSectionHeader(projectCount: Int) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        Text("Projects", style = MaterialTheme.typography.titleLarge)
+        Text(stringResource(R.string.launcher_projects), style = MaterialTheme.typography.titleLarge)
         Text(
-            "$projectCount saved project${if (projectCount == 1) "" else "s"}",
+            if (projectCount == 1) {
+                stringResource(R.string.launcher_project_count, projectCount)
+            } else {
+                stringResource(R.string.launcher_project_count_plural, projectCount)
+            },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -288,7 +304,9 @@ private fun ProjectCard(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        if (selected) "Ready to resume" else "Project folder",
+                        stringResource(
+                            if (selected) R.string.project_status_ready else R.string.project_status_folder,
+                        ),
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -296,7 +314,7 @@ private fun ProjectCard(
             }
             Spacer(Modifier.size(18.dp))
             Text(
-                "Reads directly from the selected folder",
+                stringResource(R.string.project_reads_directly),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
@@ -307,7 +325,15 @@ private fun ProjectCard(
                 FilledTonalButton(onClick = onLaunch, enabled = !isLaunching) {
                     Icon(Icons.Outlined.SportsEsports, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text(if (isLaunching) "Opening..." else if (selected) "Resume" else "Launch")
+                    Text(
+                        stringResource(
+                            when {
+                                isLaunching -> R.string.action_opening
+                                selected -> R.string.action_resume
+                                else -> R.string.action_launch
+                            },
+                        ),
+                    )
                 }
             }
         }

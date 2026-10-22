@@ -3,6 +3,7 @@ package org.eu.eslzzyl.krkrgo.catalog
 import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
+import org.eu.eslzzyl.krkrgo.R
 
 data class ImportedProject(
     val name: String,
@@ -12,12 +13,13 @@ data class ImportedProject(
 class ProjectImporter(private val context: Context) {
     fun import(uri: Uri): Result<ImportedProject> = runCatching {
         val source = DocumentFile.fromTreeUri(context, uri)
-            ?: error("Unable to open the selected folder")
-        require(source.isDirectory) { "Please select a project folder" }
+            ?: error(context.getString(R.string.error_unable_open_selected_folder))
+        require(source.isDirectory) { context.getString(R.string.error_select_project_folder) }
 
-        val projectName = source.name?.takeIf { it.isNotBlank() } ?: "Project"
+        val projectName = source.name?.takeIf { it.isNotBlank() }
+            ?: context.getString(R.string.project_default_name)
         require(hasProjectEntryPoint(source)) {
-            "The selected folder does not contain startup.tjs or an XP3 archive"
+            context.getString(R.string.error_invalid_project_folder)
         }
         ImportedProject(projectName, uri)
     }

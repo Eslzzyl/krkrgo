@@ -8,7 +8,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.viewinterop.AndroidView
+import org.eu.eslzzyl.krkrgo.R
 import org.eu.eslzzyl.krkrgo.mobile.krkrgo.EbitenView
 
 @Composable
@@ -32,7 +34,7 @@ fun GameScreen(onBack: () -> Unit) {
             modifier = Modifier.align(Alignment.TopStart),
             onClick = onBack,
         ) {
-            Text("Back")
+            Text(stringResource(R.string.action_back))
         }
     }
 }
