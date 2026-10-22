@@ -349,7 +349,7 @@ func (a *launcherApp) detail(c *ui.Context) {
 				} else {
 					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 						ui.Text(c, game.Title).FontSize(28).Bold().SingleLine().Grow(1)
-						rename := ui.Button(c, "").Size(30, 30).Label(locales.Rename()).Tooltip(locales.Rename()).Children(func() {
+						rename := ui.Button(c, "").Size(30, 30).Padding(0).Label(locales.Rename()).Tooltip(locales.Rename()).Children(func() {
 							ui.Icon(c, iconPencil).FontSize(14)
 						})
 						if rename.Clicked() {
