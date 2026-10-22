@@ -145,7 +145,7 @@ func OpenSession(project, saveDir string, budget uint64) (*Session, error) {
 		log.Printf("krkrgo-startup phase=storage-open elapsed=%s project=%q archives=%d", time.Since(storageStarted), project, len(storage.Archives))
 	}
 	sessionStarted := time.Now()
-	session, err := fromStorage(storage, saveDir, defaultSaveDir, budget)
+	session, err := fromStorage(storage, saveDir, defaultSaveDir, nil, budget)
 	if err != nil {
 		return nil, err
 	}
@@ -153,6 +153,24 @@ func OpenSession(project, saveDir string, budget uint64) (*Session, error) {
 		log.Printf("krkrgo-startup phase=session-create elapsed=%s", time.Since(sessionStarted))
 	}
 	return session, nil
+}
+
+// OpenSessionWithStorage opens a session from an already configured storage
+// backend. The caller supplies the writable application save directory.
+func OpenSessionWithStorage(storage *assets.Storage, saveDir string, budget uint64) (*Session, error) {
+	if storage == nil {
+		return nil, fmt.Errorf("nil storage")
+	}
+	return fromStorage(storage, saveDir, "", nil, budget)
+}
+
+// OpenSessionWithStorageAndSaveBackend opens a session whose project files and
+// writable save files use separate operations on one platform storage tree.
+func OpenSessionWithStorageAndSaveBackend(storage *assets.Storage, saveDir string, saveBackend SaveStorageBackend, budget uint64) (*Session, error) {
+	if storage == nil {
+		return nil, fmt.Errorf("nil storage")
+	}
+	return fromStorage(storage, saveDir, "", saveBackend, budget)
 }
 
 // openProjectStorage returns project-root storage and its project-level default save path.
@@ -209,27 +227,44 @@ func openProjectStorage(project string, limits core.Limits) (*assets.Storage, st
 		filepath.Join(project, "startup.tjs"), filepath.Join(project, "data", "startup.tjs"))
 }
 func FromStorage(storage *assets.Storage, saveDir string, budget uint64) (*Session, error) {
-	return fromStorage(storage, saveDir, "", budget)
+	return fromStorage(storage, saveDir, "", nil, budget)
 }
 
-func fromStorage(storage *assets.Storage, saveDir, defaultSaveDir string, budget uint64) (*Session, error) {
+func FromStorageWithSaveBackend(storage *assets.Storage, saveDir string, saveBackend SaveStorageBackend, budget uint64) (*Session, error) {
+	return fromStorage(storage, saveDir, "", saveBackend, budget)
+}
+
+func fromStorage(storage *assets.Storage, saveDir, defaultSaveDir string, saveBackend SaveStorageBackend, budget uint64) (*Session, error) {
 	if storage == nil {
 		return nil, fmt.Errorf("nil storage")
 	}
 	if saveDir == "" {
 		if defaultSaveDir == "" {
-			defaultSaveDir = filepath.Join(storage.Project, "savedata")
+			if storage.IsLocal() {
+				defaultSaveDir = filepath.Join(storage.Project, "savedata")
+			} else if saveBackend != nil {
+				defaultSaveDir = strings.TrimRight(storage.Project, "/") + "/savedata"
+			} else {
+				return nil, fmt.Errorf("content storage requires an application save directory")
+			}
 		}
 		saveDir = defaultSaveDir
 	} else {
-		var override = saveDir
-		resolved, err := core.SaveDirectory(storage.Project, &override)
-		if err != nil {
-			return nil, err
+		if storage.IsLocal() {
+			var override = saveDir
+			resolved, err := core.SaveDirectory(storage.Project, &override)
+			if err != nil {
+				return nil, err
+			}
+			saveDir = resolved
+		} else if saveBackend == nil {
+			if err := os.MkdirAll(saveDir, 0o755); err != nil {
+				return nil, fmt.Errorf("create application save directory: %w", err)
+			}
+			saveDir = filepath.Clean(saveDir)
 		}
-		saveDir = resolved
 	}
-	return NewSession(NewServices(storage, saveDir, core.DefaultLimits()), budget), nil
+	return NewSession(NewServicesWithSaveBackend(storage, saveDir, saveBackend, core.DefaultLimits()), budget), nil
 }
 func (s *Session) registerNatives() error {
 	if s == nil || s.VM == nil || s.Services == nil {
@@ -799,11 +834,10 @@ func (s *Session) loadXP3ArchiveExtractionFilter() error {
 		return nil
 	}
 	storage := s.Services.Storage
-	path := filepath.Join(storage.Project, "xp3filter.tjs")
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+	if exists, err := storage.ExistsNoSearch("xp3filter.tjs"); err != nil {
+		return fmt.Errorf("check XP3 extraction filter: %w", err)
+	} else if !exists {
 		return nil
-	} else if err != nil {
-		return fmt.Errorf("stat XP3 extraction filter %q: %w", path, err)
 	}
 	if _, err := s.executeStorage("xp3filter.tjs", false); err != nil {
 		return fmt.Errorf("execute XP3 extraction filter: %w", err)
@@ -815,8 +849,7 @@ func (s *Session) executeNoSearchScript(name string) (tjs.Value, bool, error) {
 	if s.Services == nil || s.Services.Storage == nil {
 		return tjs.VoidValue, false, nil
 	}
-	path := filepath.Join(s.Services.Storage.Project, filepath.FromSlash(name))
-	data, err := s.Services.Storage.ReadNoSearch(path)
+	data, err := s.Services.Storage.ReadNoSearch(name)
 	if errors.Is(err, assets.ErrNotFound) {
 		return tjs.VoidValue, false, nil
 	}

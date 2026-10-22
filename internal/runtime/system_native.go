@@ -114,10 +114,16 @@ func (s *Services) systemPath(operation string) string {
 		if storage == nil {
 			return ""
 		}
+		if !storage.IsLocal() {
+			return strings.TrimRight(storage.Project, "/") + "/"
+		}
 		return systemDirectoryPath(storage.Project)
 	case "get:exeName":
 		return systemFilePath(exeName)
 	case "get:dataPath", "get:personalPath", "get:appDataPath":
+		if strings.HasPrefix(saveDir, "content://") {
+			return strings.TrimRight(filepath.ToSlash(saveDir), "/") + "/"
+		}
 		return systemFileURI(saveDir)
 	default:
 		return ""

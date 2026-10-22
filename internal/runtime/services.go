@@ -67,9 +67,10 @@ type keyInputState struct {
 // Services owns host state and implements the TJS Host boundary. It deliberately
 // contains no presentation thread: native hosts can consume FrameSnapshot values.
 type Services struct {
-	Storage *assets.Storage
-	SaveDir string
-	Limits  core.Limits
+	Storage     *assets.Storage
+	SaveDir     string
+	SaveBackend SaveStorageBackend
+	Limits      core.Limits
 
 	varStorageVM            *tjs.VM
 	csvParserVM             *tjs.VM
@@ -363,6 +364,10 @@ func (s *Services) unbindSessionPreprocessor(vm *tjs.VM, preprocessor *tjs.Prepr
 }
 
 func NewServices(storage *assets.Storage, saveDir string, limits core.Limits) *Services {
+	return NewServicesWithSaveBackend(storage, saveDir, nil, limits)
+}
+
+func NewServicesWithSaveBackend(storage *assets.Storage, saveDir string, saveBackend SaveStorageBackend, limits core.Limits) *Services {
 	if limits == (core.Limits{}) {
 		limits = core.DefaultLimits()
 	}
@@ -372,6 +377,7 @@ func NewServices(storage *assets.Storage, saveDir string, limits core.Limits) *S
 	return &Services{
 		Storage:                 storage,
 		SaveDir:                 saveDir,
+		SaveBackend:             saveBackend,
 		Limits:                  limits,
 		RenderScale:             1,
 		FontBook:                book,
@@ -424,7 +430,7 @@ func (s *Services) ensureInit() {
 		s.systemTitleInitialized = true
 	}
 	if !s.systemExecutableResolved {
-		if s.Storage != nil {
+		if s.Storage != nil && s.Storage.IsLocal() {
 			if executable, ok, err := core.ProjectExecutable(s.Storage.Project, nil); err == nil && ok {
 				s.systemExecutableName = executable
 			}
@@ -763,7 +769,7 @@ func (s *Services) readStorage(name string) ([]byte, error) {
 	// would hand the separator to the host filesystem, which rejects it on
 	// Windows, so they go straight to the project storage.
 	if s.SaveDir != "" && !strings.ContainsRune(name, '>') {
-		save := SaveStorage{Root: s.SaveDir, Project: serviceProjectPath(s)}
+		save := s.storagesOverlaySave()
 		data, err := save.Read(name)
 		if err == nil {
 			return data, nil
@@ -788,7 +794,7 @@ func (s *Services) writeSave(name string, data []byte, offset int64) error {
 	if s.SaveDir == "" {
 		return fmt.Errorf("%w: save storage is unavailable", ErrUnsupportedDevice)
 	}
-	save := SaveStorage{Root: s.SaveDir, Project: serviceProjectPath(s)}
+	save := s.storagesOverlaySave()
 	return save.writeAtMode(name, data, offset, 0o644)
 }
 

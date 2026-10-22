@@ -70,7 +70,7 @@ type Archive struct {
 	Path    string
 	Entries map[string]Entry
 
-	file        *os.File
+	file        archiveFile
 	length      uint64
 	baseOffset  uint64
 	limits      core.Limits
@@ -81,6 +81,11 @@ type Archive struct {
 	cacheOldest *cachedSegment
 	cacheNewest *cachedSegment
 	cacheBytes  uint64
+}
+
+type archiveFile interface {
+	io.ReaderAt
+	io.Closer
 }
 
 // SetExtractionFilter configures the callback used for protected XP3 entries.
@@ -103,13 +108,17 @@ func OpenArchive(path string, limits core.Limits) (*Archive, error) {
 		f.Close()
 		return nil, err
 	}
-	a := &Archive{Path: path, Entries: make(map[string]Entry), file: f, length: uint64(st.Size()), limits: limits}
+	return openArchiveFile(path, f, uint64(st.Size()), limits)
+}
+
+func openArchiveFile(path string, f archiveFile, length uint64, limits core.Limits) (*Archive, error) {
+	a := &Archive{Path: path, Entries: make(map[string]Entry), file: f, length: length, limits: limits}
 	if limits.IndexBytes == 0 || limits.FileBytes == 0 || limits.Entries == 0 {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("%w: zero XP3 limit", ErrLimit)
 	}
 	if err := a.parse(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	return a, nil
@@ -172,7 +181,7 @@ func (a *Archive) readArchiveAt(offset, size uint64) ([]byte, error) {
 
 // findArchiveOffset locates a bare XP3 archive or one embedded at a paragraph
 // boundary in an MZ executable. maxScan bounds the number of file bytes scanned.
-func findArchiveOffset(file *os.File, length, maxScan uint64) (uint64, error) {
+func findArchiveOffset(file io.ReaderAt, length, maxScan uint64) (uint64, error) {
 	var header [11]byte
 	n, err := file.ReadAt(header[:], 0)
 	if err != nil && !errors.Is(err, io.EOF) {

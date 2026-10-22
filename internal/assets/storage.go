@@ -38,12 +38,15 @@ type Storage struct {
 	psdMediaLoadMu    sync.Mutex
 	psdMediaDocuments map[string]*psdMediaDocument
 
-	filterMu         sync.RWMutex
-	extractionFilter ExtractionFilter
-	directoryMu      sync.Mutex
-	directories      map[string]directoryIndex
-	directoryAge     uint64
-	cacheProject     string
+	filterMu           sync.RWMutex
+	extractionFilter   ExtractionFilter
+	directoryMu        sync.Mutex
+	directories        map[string]directoryIndex
+	directoryAge       uint64
+	cacheProject       string
+	contentDirectoryMu sync.RWMutex
+	contentDirectories map[string][]ContentEntry
+	backend            ContentBackend
 }
 
 const maxStorageDirectoryIndexes = 128
@@ -228,6 +231,38 @@ func (s *Storage) Mount(path string, limits core.Limits) error {
 	if s == nil {
 		return fmt.Errorf("nil storage")
 	}
+	if s.backend != nil {
+		canonical, err := s.normalizeContent(path, false)
+		if err != nil {
+			return err
+		}
+		for _, mounted := range s.Archives {
+			if mounted != nil && mounted.Path == canonical {
+				return nil
+			}
+		}
+		file, length, err := s.backend.Open(canonical)
+		if err != nil {
+			return err
+		}
+		archiveStarted := time.Now()
+		a, err := openArchiveFile(canonical, file, uint64(length), limits)
+		if err != nil {
+			if os.Getenv("KRKRGO_STARTUP_TIMING") == "1" {
+				log.Printf("krkrgo-startup phase=archive-index path=%q elapsed=%s error=%v", canonical, time.Since(archiveStarted), err)
+			}
+			return err
+		}
+		s.filterMu.Lock()
+		a.SetExtractionFilter(s.extractionFilter)
+		index := len(s.Archives)
+		for name := range a.Entries {
+			s.Catalog[name] = index
+		}
+		s.Archives = append(s.Archives, a)
+		s.filterMu.Unlock()
+		return nil
+	}
 	canonical, err := filepath.Abs(path)
 	if err != nil {
 		return err
@@ -353,6 +388,9 @@ func (s *Storage) FullPath(name string) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("nil storage")
 	}
+	if s.backend != nil {
+		return s.contentFullPath(name)
+	}
 	if strings.IndexByte(name, 0) >= 0 {
 		return "", fmt.Errorf("NUL in storage name")
 	}
@@ -410,6 +448,9 @@ func (s *Storage) LocalName(name string) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("nil storage")
 	}
+	if s.backend != nil && (name == s.Project || strings.HasPrefix(name, strings.TrimRight(s.Project, "/")+"/")) {
+		return s.contentFullPath(name)
+	}
 	if strings.ContainsRune(name, '>') {
 		return "", fmt.Errorf("archive members are not locally accessible")
 	}
@@ -419,6 +460,9 @@ func (s *Storage) LocalName(name string) (string, error) {
 		return "", err
 	}
 	local = filepath.FromSlash(core.LocalStorageNativePath(local))
+	if s.backend != nil && !filepath.IsAbs(local) {
+		return "", fmt.Errorf("%w: content URI storage path has no local path", ErrUnsupportedStorageMedia)
+	}
 	if !filepath.IsAbs(local) {
 		local = filepath.Join(s.Project, local)
 	}
@@ -520,6 +564,9 @@ func (s *Storage) localFileMediaPath(path string) (string, error) {
 }
 
 func (s *Storage) normalize(name string, directory bool) (string, error) {
+	if s != nil && s.backend != nil {
+		return s.normalizeContent(name, directory)
+	}
 	name = strings.ReplaceAll(name, `\`, "/")
 	outer, member, qualified := name, "", false
 	if i := strings.IndexByte(name, '>'); i >= 0 {
@@ -619,6 +666,13 @@ func (s *Storage) archiveIndex(name string) (int, bool) {
 	for index, candidate := range s.Archives {
 		base := filepath.Base(candidate.Path)
 		stem := strings.TrimSuffix(base, filepath.Ext(base))
+		if s.backend != nil {
+			relative := filepath.ToSlash(candidate.Path)
+			if archive == asciiLower(base) || archive == asciiLower(stem) || archive == asciiLower(relative) {
+				return index, true
+			}
+			continue
+		}
 		relative, err := filepath.Rel(s.Project, candidate.Path)
 		if err != nil {
 			continue
@@ -741,6 +795,16 @@ func (s *Storage) exactLoosePath(name string) (string, bool) {
 // project-relative names first try an exact path to avoid scanning each
 // directory when the on-disk spelling already matches.
 func (s *Storage) loosePath(name string) (string, error) {
+	if s != nil && s.backend != nil {
+		path, _, found, err := s.contentLoosePath(name)
+		if err != nil {
+			return "", err
+		}
+		if !found {
+			return "", nil
+		}
+		return path, nil
+	}
 	if strings.ContainsRune(name, '>') {
 		return "", nil
 	}
@@ -1163,6 +1227,28 @@ func (s *Storage) readFirstLooseExisting(names []string) (string, []byte, bool, 
 }
 
 func (s *Storage) readLoosePath(path string) ([]byte, error) {
+	if s != nil && s.backend != nil {
+		file, length, err := s.backend.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
+		if length < 0 || uint64(length) > s.limits.FileBytes {
+			return nil, fmt.Errorf("%w: loose storage exceeds limit", ErrLimit)
+		}
+		data := make([]byte, int(length))
+		if len(data) == 0 {
+			return data, nil
+		}
+		read, err := file.ReadAt(data, 0)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		if read != len(data) {
+			return nil, io.ErrUnexpectedEOF
+		}
+		return data, nil
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -1204,9 +1290,13 @@ func (s *Storage) PlacedPath(name string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("%w: archive entry disappeared", ErrNotFound)
 	}
-	archivePath, err := filepath.Abs(s.Archives[idx].Path)
-	if err != nil {
-		return "", err
+	archivePath := s.Archives[idx].Path
+	if s.backend == nil {
+		var err error
+		archivePath, err = filepath.Abs(archivePath)
+		if err != nil {
+			return "", err
+		}
 	}
 	return s.FullPath(archivePath + ">" + member)
 }
@@ -1230,6 +1320,30 @@ func (s *Storage) StatSize(name string) (uint64, error) {
 			return 0, err
 		}
 		return uint64(len(data)), nil
+	}
+	if s.backend != nil {
+		resolved, err := s.Resolve(name)
+		if err != nil {
+			return 0, err
+		}
+		if path, err := s.loosePath(resolved); err != nil {
+			return 0, err
+		} else if path != "" {
+			entry, err := s.backend.Stat(path)
+			if err != nil {
+				return 0, err
+			}
+			return uint64(entry.Size), nil
+		}
+		index, member, ok := s.archiveLocation(resolved)
+		if !ok {
+			return 0, fmt.Errorf("%w: archive entry disappeared", ErrNotFound)
+		}
+		entry, ok := s.Archives[index].Entries[member]
+		if !ok {
+			return 0, fmt.Errorf("%w: archive entry disappeared", ErrNotFound)
+		}
+		return entry.Size, nil
 	}
 	if strings.ContainsRune(name, ':') {
 		outer, member, qualified := name, "", false
@@ -1259,6 +1373,13 @@ func (s *Storage) StatSize(name string) (uint64, error) {
 	if path, err := s.loosePath(resolved); err != nil {
 		return 0, err
 	} else if path != "" {
+		if s.backend != nil {
+			entry, err := s.backend.Stat(path)
+			if err != nil {
+				return 0, err
+			}
+			return uint64(entry.Size), nil
+		}
 		info, err := os.Stat(path)
 		if err != nil {
 			return 0, err
@@ -1304,6 +1425,29 @@ func (s *Storage) ReadDirNames(name string) ([]string, error) {
 		}
 		return names, nil
 	}
+	if s != nil && s.backend != nil {
+		normalized, err := s.normalize(name, true)
+		if err != nil {
+			return nil, err
+		}
+		if strings.ContainsRune(normalized, '>') {
+			return nil, fmt.Errorf("archive directories are not locally accessible: %s", name)
+		}
+		dir, err := s.contentDirectory(normalized)
+		if err != nil {
+			return nil, err
+		}
+		entries, err := s.readContentDirectory(dir)
+		if err != nil {
+			return nil, err
+		}
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name)
+		}
+		sort.Strings(names)
+		return names, nil
+	}
 	dir, err := s.readDirPath(name)
 	if err != nil {
 		return nil, err
@@ -1336,6 +1480,36 @@ func (s *Storage) ReadDirEntries(name string) ([]DirEntry, error) {
 			entries = append(entries, DirEntry{Name: itemName, Mode: 0444})
 		}
 		return entries, nil
+	}
+	if s != nil && s.backend != nil {
+		normalized, err := s.normalize(name, true)
+		if err != nil {
+			return nil, err
+		}
+		if strings.ContainsRune(normalized, '>') {
+			return nil, fmt.Errorf("archive directories are not locally accessible: %s", name)
+		}
+		dir, err := s.contentDirectory(normalized)
+		if err != nil {
+			return nil, err
+		}
+		entries, err := s.readContentDirectory(dir)
+		if err != nil {
+			return nil, err
+		}
+		result := make([]DirEntry, 0, len(entries))
+		for _, entry := range entries {
+			mode := entry.Mode
+			if mode == 0 {
+				mode = 0444
+				if entry.IsDir {
+					mode |= os.ModeDir
+				}
+			}
+			result = append(result, DirEntry{Name: entry.Name, IsDir: entry.IsDir, Mode: mode, Size: entry.Size, ModTime: entry.ModTime, Atime: entry.Atime, Ctime: entry.Ctime})
+		}
+		sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+		return result, nil
 	}
 	dir, err := s.readDirPath(name)
 	if err != nil {

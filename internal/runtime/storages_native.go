@@ -267,7 +267,7 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 			return tjs.IntegerValue(0), nil
 		}
 		if s != nil && s.SaveDir != "" {
-			save := SaveStorage{Root: s.SaveDir, Project: serviceProjectPath(s)}
+			save := s.storagesOverlaySave()
 			exists, err := save.Exists(name)
 			if err == nil && exists {
 				return tjs.IntegerValue(1), nil
@@ -736,7 +736,7 @@ func (s *Services) storagesOverlaySave() *SaveStorage {
 	if s == nil {
 		return nil
 	}
-	return &SaveStorage{Root: s.SaveDir, Project: serviceProjectPath(s)}
+	return &SaveStorage{Root: s.SaveDir, Project: serviceProjectPath(s), Backend: s.SaveBackend}
 }
 
 // storagesTimeValue converts one dictionary timestamp. Integers are Unix

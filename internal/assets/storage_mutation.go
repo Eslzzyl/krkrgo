@@ -39,6 +39,9 @@ func (s *Storage) LooseFile(name string) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("nil storage")
 	}
+	if s.backend != nil {
+		return "", fmt.Errorf("%w: content URI storage has no local path", ErrUnsupportedStorageMedia)
+	}
 	normalized, err := s.normalize(name, false)
 	if err != nil {
 		return "", err
@@ -55,6 +58,9 @@ func (s *Storage) LooseFile(name string) (string, error) {
 func (s *Storage) DirectoryPath(name string) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("nil storage")
+	}
+	if s.backend != nil {
+		return "", fmt.Errorf("%w: content URI storage has no local path", ErrUnsupportedStorageMedia)
 	}
 	normalized, err := s.normalize(name, true)
 	if err != nil {

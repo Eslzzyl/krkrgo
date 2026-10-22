@@ -34,7 +34,7 @@ func (s *Services) lzfsExists(source string, search bool) bool {
 		return false
 	}
 	if s.SaveDir != "" {
-		save := SaveStorage{Root: s.SaveDir, Project: serviceProjectPath(s)}
+		save := s.storagesOverlaySave()
 		if exists, err := save.Exists(source); err == nil && exists {
 			return true
 		}

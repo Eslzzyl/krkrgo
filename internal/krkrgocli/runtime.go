@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eslzzyl/krkrgo/internal/assets"
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/audio"
 
@@ -132,6 +133,33 @@ func NewSessionWithScaleAndArguments(project, saveDir string, budget uint64, sca
 		if err != nil {
 			return nil, fmt.Errorf("open project: %w", err)
 		}
+	}
+	return finishSession(session, project, scale, gameArguments)
+}
+
+// NewSessionWithStorageAndScaleAndArguments starts a session over a platform
+// storage backend while keeping saves in the supplied writable directory.
+func NewSessionWithStorageAndScaleAndArguments(storage *assets.Storage, saveDir string, budget uint64, scale int32, gameArguments map[string]string) (*runtime.Session, error) {
+	session, err := runtime.OpenSessionWithStorage(storage, saveDir, budget)
+	if err != nil {
+		return nil, fmt.Errorf("open storage project: %w", err)
+	}
+	return finishSession(session, storage.Project, scale, gameArguments)
+}
+
+// NewSessionWithStorageAndSaveBackend starts a session with a platform-backed
+// writable save tree, such as Android's Storage Access Framework.
+func NewSessionWithStorageAndSaveBackend(storage *assets.Storage, saveDir string, saveBackend runtime.SaveStorageBackend, budget uint64, scale int32, gameArguments map[string]string) (*runtime.Session, error) {
+	session, err := runtime.OpenSessionWithStorageAndSaveBackend(storage, saveDir, saveBackend, budget)
+	if err != nil {
+		return nil, fmt.Errorf("open storage project: %w", err)
+	}
+	return finishSession(session, storage.Project, scale, gameArguments)
+}
+
+func finishSession(session *runtime.Session, project string, scale int32, gameArguments map[string]string) (*runtime.Session, error) {
+	if session == nil {
+		return nil, fmt.Errorf("nil session")
 	}
 	session.Services.SetArguments(gameArguments)
 	session.Services.SetRenderScale(scale)

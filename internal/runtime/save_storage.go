@@ -19,6 +19,18 @@ var (
 	ErrSavePath        = errors.New("invalid save path")
 )
 
+// SaveStorageBackend provides the writable part of a platform storage tree.
+// Desktop sessions use the filesystem implementation below; Android supplies
+// a Storage Access Framework implementation.
+type SaveStorageBackend interface {
+	Read(name string) ([]byte, error)
+	Write(name string, data []byte, offset int64) error
+	Delete(name string) error
+	Exists(name string) (bool, error)
+	List(prefix string) ([]string, error)
+	Mkdir(name string) error
+}
+
 // SaveStorage is a writable overlay rooted in the policy-approved save
 // directory. Base, when supplied, remains read-only and is consulted only
 // after the overlay, allowing scripts to save over packaged resources without
@@ -27,6 +39,7 @@ type SaveStorage struct {
 	Root    string
 	Project string
 	Base    *assets.Storage
+	Backend SaveStorageBackend
 }
 
 // NewSaveStorage creates the save directory if necessary. core.SaveDirectory
@@ -156,6 +169,31 @@ func (s *SaveStorage) path(name string) (string, string, error) {
 	return saveStoragePath(s.Project, s.Root, name)
 }
 
+func (s *SaveStorage) backendName(name string) (string, error) {
+	name = strings.ReplaceAll(name, `\`, "/")
+	root := strings.TrimRight(filepath.ToSlash(s.Root), "/")
+	if root != "" {
+		if name == root {
+			name = ""
+		} else if strings.HasPrefix(name, root+"/") {
+			name = strings.TrimPrefix(name, root+"/")
+		}
+	}
+	if strings.HasPrefix(name, "file://./") {
+		name = strings.TrimPrefix(name, "file://./")
+		root = strings.TrimLeft(root, "/")
+		if root != "" {
+			if name == root {
+				name = ""
+			} else if strings.HasPrefix(name, root+"/") {
+				name = strings.TrimPrefix(name, root+"/")
+			}
+		}
+	}
+	name = strings.TrimPrefix(name, "/")
+	return core.StorageName(name)
+}
+
 // ensureParent creates only ordinary directories below the canonical root and
 // rejects symlinked components. This keeps all writes inside the save overlay.
 func (s *SaveStorage) ensureParent(path string) error {
@@ -236,6 +274,28 @@ func (s *SaveStorage) target(path string) (os.FileInfo, error) {
 }
 
 func (s *SaveStorage) Read(name string) ([]byte, error) {
+	if s != nil && s.Backend != nil {
+		n, err := s.backendName(name)
+		if err != nil {
+			return nil, err
+		}
+		exists, existsErr := s.Backend.Exists(n)
+		if existsErr != nil {
+			return nil, existsErr
+		}
+		if exists {
+			data, readErr := s.Backend.Read(n)
+			if readErr == nil {
+				return data, nil
+			}
+		}
+		if s.Base != nil {
+			if baseData, baseErr := s.Base.Read(n); baseErr == nil {
+				return baseData, nil
+			}
+		}
+		return nil, fmt.Errorf("%w: %s", ErrSaveNotFound, n)
+	}
 	n, path, err := s.path(name)
 	if err != nil {
 		return nil, err
@@ -285,6 +345,31 @@ func (s *SaveStorage) writeAt(name string, data []byte, offset int64) error {
 func (s *SaveStorage) writeAtMode(name string, data []byte, offset int64, mode os.FileMode) error {
 	if offset < 0 {
 		return fmt.Errorf("negative save offset")
+	}
+	if s != nil && s.Backend != nil {
+		n, err := s.backendName(name)
+		if err != nil {
+			return err
+		}
+		if err := s.Backend.Mkdir(""); err != nil {
+			return err
+		}
+		if slash := strings.LastIndexByte(n, '/'); slash >= 0 {
+			if err := s.Backend.Mkdir(n[:slash]); err != nil {
+				return err
+			}
+		}
+		if offset > 0 {
+			old, readErr := s.Backend.Read(n)
+			if readErr == nil {
+				if int64(len(old)) < offset {
+					old = append(old, make([]byte, int(offset)-len(old))...)
+				}
+				old = append(old[:int(offset)], data...)
+				data = old
+			}
+		}
+		return s.Backend.Write(n, data, 0)
 	}
 	_, path, err := s.path(name)
 	if err != nil {
@@ -347,6 +432,13 @@ func (s *SaveStorage) WriteFile(name string, data []byte) error { return s.Write
 func (s *SaveStorage) Save(name string, data []byte) error      { return s.Write(name, data) }
 
 func (s *SaveStorage) Delete(name string) error {
+	if s != nil && s.Backend != nil {
+		n, err := s.backendName(name)
+		if err != nil {
+			return err
+		}
+		return s.Backend.Delete(n)
+	}
 	_, path, err := s.path(name)
 	if err != nil {
 		return err
@@ -365,6 +457,24 @@ func (s *SaveStorage) Delete(name string) error {
 	return os.Remove(path)
 }
 func (s *SaveStorage) Exists(name string) (bool, error) {
+	if s != nil && s.Backend != nil {
+		n, err := s.backendName(name)
+		if err != nil {
+			return false, err
+		}
+		exists, err := s.Backend.Exists(n)
+		if err == nil && exists {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if s.Base != nil {
+			_, baseErr := s.Base.Read(n)
+			return baseErr == nil, nil
+		}
+		return false, nil
+	}
 	_, path, err := s.path(name)
 	if err != nil {
 		return false, err
@@ -388,6 +498,17 @@ func (s *SaveStorage) Exists(name string) (bool, error) {
 // directory-like storage name; returned names use slash separators and are
 // sorted for deterministic saves/replays.
 func (s *SaveStorage) List(prefix ...string) ([]string, error) {
+	if s != nil && s.Backend != nil {
+		name := ""
+		if len(prefix) > 0 {
+			var err error
+			name, err = s.backendName(prefix[0])
+			if err != nil {
+				return nil, err
+			}
+		}
+		return s.Backend.List(name)
+	}
 	root := s.Root
 	if len(prefix) > 0 && prefix[0] != "" {
 		n, _, err := s.path(prefix[0])

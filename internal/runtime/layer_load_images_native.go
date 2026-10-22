@@ -76,7 +76,7 @@ func (s *Services) readFirstLayerImage(candidates []string) (string, []byte, err
 		return "", nil, assets.ErrNotFound
 	}
 	if s.SaveDir != "" {
-		save := SaveStorage{Root: s.SaveDir, Project: serviceProjectPath(s)}
+		save := s.storagesOverlaySave()
 		for _, candidate := range candidates {
 			data, err := save.Read(candidate)
 			if err == nil {
