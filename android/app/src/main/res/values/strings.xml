@@ -15,7 +15,6 @@
     <string name="action_opening">Opening...</string>
     <string name="action_resume">Resume</string>
     <string name="action_launch">Launch</string>
-    <string name="action_back">Back</string>
     <string name="error_unable_import_project">Unable to import project</string>
     <string name="error_unable_launch_project">Unable to launch project</string>
     <string name="error_unable_open_selected_folder">Unable to open the selected folder</string>

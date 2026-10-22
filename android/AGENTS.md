@@ -15,8 +15,7 @@ the generated `app/libs/krkrgo.aar` binding.
 - The game screen and launcher share one Android activity. The game is a view
   inside that activity rather than a second Android window.
 - The launcher follows the system orientation. Successful game launch locks
-  the activity to landscape, and the in-app Back action restores the system
-  orientation.
+  the activity to landscape while the game view is active.
 
 ## Toolchain
 
@@ -115,9 +114,9 @@ adb -s emulator-5554 shell dumpsys activity activities |
 adb -s emulator-5554 shell dumpsys gfxinfo org.eu.eslzzyl.krkrgo
 ```
 
-The game screen has an in-app `Back` button. The Android system Back key can
-finish `MainActivity` and return to the emulator home screen, so use the
-in-app button when checking the launcher-to-game handoff.
+The game screen has no launcher navigation control. The game content provides
+its own exit action; the Android system Back key can finish `MainActivity` and
+return to the emulator home screen.
 
 ## Runtime timing
 

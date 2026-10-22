@@ -80,14 +80,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 if (gameVisible) {
-                    GameScreen(
-                        onBack = {
-                            gameHost.close()
-                            selectedProjectId = null
-                            gameVisible = false
-                            setLauncherOrientation()
-                        },
-                    )
+                    GameScreen()
                 } else {
                     LauncherScreen(
                         catalog = catalog,

@@ -15,7 +15,6 @@
     <string name="action_opening">正在打开…</string>
     <string name="action_resume">继续运行</string>
     <string name="action_launch">启动</string>
-    <string name="action_back">返回</string>
     <string name="error_unable_import_project">无法导入项目</string>
     <string name="error_unable_launch_project">无法启动项目</string>
     <string name="error_unable_open_selected_folder">无法打开所选文件夹</string>
