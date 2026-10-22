@@ -390,7 +390,7 @@ case "$PLATFORM" in
         library_names=(libavutil.so.61 libavcodec.so.63 libavformat.so.63 libswscale.so.10)
         ;;
     android)
-        library_names=(libavutil.so.61 libavcodec.so.63 libavformat.so.63 libswscale.so.10)
+        library_names=(libavutil.so libavcodec.so libavformat.so libswscale.so)
         ;;
     ios)
         library_names=(libavutil.61.dylib libavcodec.63.dylib libavformat.63.dylib libswscale.10.dylib)
@@ -403,16 +403,18 @@ case "$PLATFORM" in
         ;;
 esac
 
-for library in "${library_names[@]}"; do
-    [[ -f "$lib_dir/$library" ]] || fail "expected shared library is missing: $lib_dir/$library"
-done
-
 if [[ "$PLATFORM" == android ]]; then
     for library in libavutil.so.61 libavcodec.so.63 libavformat.so.63 libswscale.so.10; do
         unversioned=${library%%.*}.so
-        [[ -f "$lib_dir/$unversioned" ]] || cp "$lib_dir/$library" "$lib_dir/$unversioned"
+        if [[ ! -f "$lib_dir/$unversioned" && -f "$lib_dir/$library" ]]; then
+            cp "$lib_dir/$library" "$lib_dir/$unversioned"
+        fi
     done
 fi
+
+for library in "${library_names[@]}"; do
+    [[ -f "$lib_dir/$library" ]] || fail "expected shared library is missing: $lib_dir/$library"
+done
 
 check_symbol() {
     local library=$1
