@@ -962,16 +962,6 @@ func (msgs Messages) RelinkProject() string {
 	return Catalog.Format(msgs.locale, "relinkProject", nil)
 }
 
-// NoCover says "No cover"
-// in the language the app shows.
-func NoCover() string { return In(i18n.Locale()).NoCover() }
-
-// NoCover says "No cover"
-// in the language of msgs.
-func (msgs Messages) NoCover() string {
-	return Catalog.Format(msgs.locale, "noCover", nil)
-}
-
 // TabOverview says "Overview"
 // in the language the app shows.
 func TabOverview() string { return In(i18n.Locale()).TabOverview() }

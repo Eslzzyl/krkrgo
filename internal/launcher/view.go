@@ -426,7 +426,6 @@ func (a *launcherApp) detailCover(c *ui.Context, game Game) {
 	tint := titleTint(game.Title)
 	ui.Column(c).Size(200, 267).Radius(14).Background(tint.Alpha(0.14)).Border(1, t.Border).Justify(ui.Center).AlignItems(ui.Center).Gap(10).Children(func() {
 		ui.Text(c, initial(game.Title)).FontSize(48).Bold().TextColor(tint)
-		ui.Text(c, locales.NoCover()).FontSize(11).TextColor(t.TextMuted)
 	})
 }
 
