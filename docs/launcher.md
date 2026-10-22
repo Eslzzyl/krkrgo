@@ -186,6 +186,20 @@ and Metal on iOS. The native binding hides the backend choice from the host.
 
 Reference: <https://ebitengine.org/en/documents/mobile.html>
 
+### Android implementation layout
+
+The Android implementation is currently organized into two parts:
+
+```text
+mobile/krkrgo/       Go lifecycle bridge and mobile Ebitengine game
+android/             Gradle project and Jetpack Compose launcher
+android/app/libs/    generated krkrgo.aar binding
+```
+
+`android` owns the Activity, Compose screens, project catalog, and game view
+host. Its `preBuild` task generates the AAR from `mobile/krkrgo`, so a fresh
+checkout can build with the project Gradle Wrapper.
+
 ### Mobile lifecycle
 
 The shared Go host exposes lifecycle operations for the native UI:
