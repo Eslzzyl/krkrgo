@@ -40,6 +40,7 @@ type ContentBackend interface {
 // OpenContentStorage creates a read-only storage over a platform URI tree.
 // The backend owns URI resolution; the engine keeps only indexes and caches.
 func OpenContentStorage(project string, backend ContentBackend, limits core.Limits) (*Storage, error) {
+	project = strings.TrimRight(strings.TrimSpace(project), "/")
 	if strings.TrimSpace(project) == "" || backend == nil {
 		return nil, fmt.Errorf("content storage requires a project URI and backend")
 	}

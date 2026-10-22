@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	avutilABIMajor  = 61
-	avcodecABIMajor = 63
+	avutilABIMajor   = 61
+	avcodecABIMajor  = 63
 	avformatABIMajor = 63
-	swscaleABIMajor = 10
+	swscaleABIMajor  = 10
 )
 
 var (
@@ -29,9 +29,9 @@ var (
 
 // LoadError retains the library, candidate paths, and underlying loader error.
 type LoadError struct {
-	Library   string
+	Library    string
 	Candidates []string
-	Err       error
+	Err        error
 }
 
 func (e *LoadError) Error() string {
@@ -40,7 +40,12 @@ func (e *LoadError) Error() string {
 	}
 	return fmt.Sprintf("FFmpeg %s: %v (candidates: %s)", e.Library, e.Err, strings.Join(e.Candidates, ", "))
 }
-func (e *LoadError) Unwrap() error { if e == nil { return nil }; return e.Err }
+func (e *LoadError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 // Options controls dynamic-library discovery.
 type Options struct {
@@ -49,10 +54,10 @@ type Options struct {
 
 // Loader owns one ABI-compatible FFmpeg library set.
 type Loader struct {
-	mu       sync.Mutex
-	libs     map[string]sharedLibrary
-	api      api
-	closed   bool
+	mu     sync.Mutex
+	libs   map[string]sharedLibrary
+	api    api
+	closed bool
 }
 
 var defaultLoader struct {
@@ -138,6 +143,9 @@ func searchPaths(explicit []string) []string {
 	}
 	if executable, err := os.Executable(); err == nil {
 		paths = append(paths, filepath.Join(filepath.Dir(executable), "lib", "ffmpeg"))
+		if mobileIOS {
+			paths = append(paths, filepath.Join(filepath.Dir(executable), "Frameworks"))
+		}
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		paths = append(paths, filepath.Join(cwd, "lib", "ffmpeg"), cwd)
@@ -181,7 +189,12 @@ func libraryNames(component string) []string {
 	major := map[string]int{"avutil": avutilABIMajor, "avcodec": avcodecABIMajor, "avformat": avformatABIMajor, "swscale": swscaleABIMajor}[component]
 	switch runtime.GOOS {
 	case "darwin":
-		return []string{fmt.Sprintf("lib%s.%d.dylib", component, major), "lib" + component + ".dylib"}
+		names := []string{fmt.Sprintf("lib%s.%d.dylib", component, major), "lib" + component + ".dylib"}
+		if mobileIOS {
+			framework := "lib" + component + ".framework"
+			names = append([]string{filepath.Join(framework, "lib"+component)}, names...)
+		}
+		return names
 	case "windows":
 		return []string{fmt.Sprintf("%s-%d.dll", component, major), component + ".dll"}
 	default:
@@ -190,42 +203,42 @@ func libraryNames(component string) []string {
 }
 
 type api struct {
-	avutilVersion func() uint32
-	avcodecVersion func() uint32
+	avutilVersion   func() uint32
+	avcodecVersion  func() uint32
 	avformatVersion func() uint32
-	swscaleVersion func() uint32
+	swscaleVersion  func() uint32
 
-	avformatAllocContext func() uintptr
-	avformatOpenInput func(*uintptr, *byte, uintptr, *uintptr) int32
+	avformatAllocContext   func() uintptr
+	avformatOpenInput      func(*uintptr, *byte, uintptr, *uintptr) int32
 	avformatFindStreamInfo func(uintptr, uintptr) int32
-	avFindBestStream func(uintptr, int32, int32, int32, *uintptr, int32) int32
-	avReadFrame func(uintptr, uintptr) int32
-	avSeekFrame func(uintptr, int32, int64, int32) int32
-	avformatCloseInput func(*uintptr)
+	avFindBestStream       func(uintptr, int32, int32, int32, *uintptr, int32) int32
+	avReadFrame            func(uintptr, uintptr) int32
+	avSeekFrame            func(uintptr, int32, int64, int32) int32
+	avformatCloseInput     func(*uintptr)
 
 	avioAllocContext func(*byte, int32, int32, uintptr, uintptr, uintptr, uintptr) uintptr
-	avioContextFree func(*uintptr)
+	avioContextFree  func(*uintptr)
 
-	avcodecFindDecoder func(int32) uintptr
-	avcodecAllocContext3 func(uintptr) uintptr
+	avcodecFindDecoder         func(int32) uintptr
+	avcodecAllocContext3       func(uintptr) uintptr
 	avcodecParametersToContext func(uintptr, uintptr) int32
-	avcodecOpen2 func(uintptr, uintptr, uintptr) int32
-	avcodecFreeContext func(*uintptr)
-	avcodecSendPacket func(uintptr, uintptr) int32
-	avcodecReceiveFrame func(uintptr, uintptr) int32
-	avcodecFlushBuffers func(uintptr)
+	avcodecOpen2               func(uintptr, uintptr, uintptr) int32
+	avcodecFreeContext         func(*uintptr)
+	avcodecSendPacket          func(uintptr, uintptr) int32
+	avcodecReceiveFrame        func(uintptr, uintptr) int32
+	avcodecFlushBuffers        func(uintptr)
 
 	avPacketAlloc func() uintptr
 	avPacketUnref func(uintptr)
-	avPacketFree func(*uintptr)
-	avFrameAlloc func() uintptr
-	avFrameUnref func(uintptr)
-	avFrameFree func(*uintptr)
-	avMalloc func(uintptr) uintptr
-	avFree func(uintptr)
+	avPacketFree  func(*uintptr)
+	avFrameAlloc  func() uintptr
+	avFrameUnref  func(uintptr)
+	avFrameFree   func(*uintptr)
+	avMalloc      func(uintptr) uintptr
+	avFree        func(uintptr)
 
-	swsGetContext func(int32, int32, int32, int32, int32, int32, int32, uintptr, uintptr, uintptr) uintptr
-	swsScale func(uintptr, uintptr, uintptr, int32, int32, uintptr, uintptr) int32
+	swsGetContext  func(int32, int32, int32, int32, int32, int32, int32, uintptr, uintptr, uintptr) uintptr
+	swsScale       func(uintptr, uintptr, uintptr, int32, int32, uintptr, uintptr) int32
 	swsFreeContext func(uintptr)
 }
 
@@ -238,7 +251,10 @@ func (a *api) bind(libs map[string]sharedLibrary) error {
 		purego.RegisterFunc(dst, address)
 		return nil
 	}
-	bindings := []struct{ component, name string; dst any }{
+	bindings := []struct {
+		component, name string
+		dst             any
+	}{
 		{"avutil", "avutil_version", &a.avutilVersion}, {"avcodec", "avcodec_version", &a.avcodecVersion},
 		{"avformat", "avformat_version", &a.avformatVersion}, {"swscale", "swscale_version", &a.swscaleVersion},
 		{"avformat", "avformat_alloc_context", &a.avformatAllocContext}, {"avformat", "avformat_open_input", &a.avformatOpenInput},
@@ -263,7 +279,10 @@ func (a *api) bind(libs map[string]sharedLibrary) error {
 }
 
 func (a *api) checkABI() error {
-	checks := []struct{ name string; got, want uint32 }{
+	checks := []struct {
+		name      string
+		got, want uint32
+	}{
 		{"avutil", a.avutilVersion() >> 16, avutilABIMajor},
 		{"avcodec", a.avcodecVersion() >> 16, avcodecABIMajor},
 		{"avformat", a.avformatVersion() >> 16, avformatABIMajor},

@@ -90,7 +90,7 @@ menus. The configuration lives in `mygo.json` at the repository root:
 ```json
 {
   "name": "krkrgo",
-  "identifier": "com.eslzzyl.krkrgo",
+  "identifier": "org.eu.eslzzyl.krkrgo",
   "main": "./cmd/krkrgo",
   "i18n": {
     "dir": "internal/launcher/locales",
@@ -226,9 +226,10 @@ The launcher imports or opens projects through the platform file picker:
 - Android receives a Storage Access Framework URI.
 - iOS receives a security-scoped document URL.
 
-The first implementation copies the selected project or XP3 archive into the
-application sandbox and records the imported path in the catalog. A
-provider-backed storage adapter can support large or remote projects later.
+Android keeps the selected Storage Access Framework tree URI in the catalog.
+iOS keeps a security-scoped bookmark for the selected document tree. Both
+mobile launchers provide the Go runtime with random-access project operations
+and write saves below the selected project's `savedata/` directory.
 
 ### Mobile process choice
 

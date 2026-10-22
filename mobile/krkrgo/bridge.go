@@ -1,7 +1,8 @@
-// Package krkrgo exposes the Go host used by the Android launcher.
+// Package krkrgo exposes the Go host used by mobile launchers.
 package krkrgo
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,11 +13,13 @@ import (
 	"github.com/eslzzyl/krkrgo/internal/core"
 	"github.com/eslzzyl/krkrgo/internal/host"
 	"github.com/eslzzyl/krkrgo/internal/krkrgocli"
+	runtime "github.com/eslzzyl/krkrgo/internal/runtime"
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/audio"
 )
 
-// ContentURIReader is implemented by the Android launcher. It gives the Go
-// runtime random access to a persisted Storage Access Framework tree URI.
+// ContentURIReader is implemented by a mobile launcher. It gives the Go
+// runtime random access to a persisted project tree.
 type ContentURIReader interface {
 	Open(path string) (int64, error)
 	Size(handle int64) (int64, error)
@@ -261,13 +264,22 @@ const (
 	defaultScale  = int32(1)
 )
 
-// controller owns the native game session and the Ebitengine presentation
-// object. The Android UI controls it through the exported lifecycle methods.
+// controller owns the native game session, presentation object, and device
+// audio output. The mobile UI controls it through the exported lifecycle
+// methods.
 type controller struct {
-	mu      sync.RWMutex
-	game    *host.Game
-	paused  bool
-	started bool
+	mu            sync.RWMutex
+	game          *host.Game
+	audioOutput   *host.AudioOutput
+	retiredGames  []retiredGame
+	paused        bool
+	started       bool
+	exitRequested bool
+}
+
+type retiredGame struct {
+	game        *host.Game
+	audioOutput *host.AudioOutput
 }
 
 type mobileGame struct {
@@ -277,6 +289,10 @@ type mobileGame struct {
 var (
 	globalController = &controller{}
 	globalGame       = &mobileGame{owner: globalController}
+	audioContext     struct {
+		once    sync.Once
+		context *audio.Context
+	}
 )
 
 // OpenGame loads a project and prepares the Ebitengine view.
@@ -294,6 +310,9 @@ func OpenGameWithContentURI(uri string, reader ContentURIReader) error {
 func PauseGame() {
 	globalController.mu.Lock()
 	globalController.paused = true
+	if globalController.audioOutput != nil {
+		globalController.audioOutput.Pause()
+	}
 	globalController.mu.Unlock()
 }
 
@@ -302,6 +321,9 @@ func ResumeGame() {
 	globalController.mu.Lock()
 	if globalController.game != nil {
 		globalController.paused = false
+		if globalController.audioOutput != nil {
+			_ = globalController.audioOutput.Resume()
+		}
 	}
 	globalController.mu.Unlock()
 }
@@ -309,6 +331,14 @@ func ResumeGame() {
 // CloseGame releases the current runtime session and presentation resources.
 func CloseGame() {
 	globalController.closeGame()
+}
+
+// GameExitRequested reports that the game requested an in-app exit. Mobile
+// launchers can use this state to return to their project library.
+func GameExitRequested() bool {
+	globalController.mu.RLock()
+	defer globalController.mu.RUnlock()
+	return globalController.exitRequested
 }
 
 func (c *controller) openGame(project string) error {
@@ -328,21 +358,30 @@ func (c *controller) openGame(project string) error {
 		return err
 	}
 	game := host.NewGameWithInitialWindowSize(session, host.DefaultWidth, host.DefaultHeight)
+	audioOutput, err := newAudioOutput()
+	if err != nil {
+		_ = session.Close()
+		return err
+	}
+	if err := game.AttachAudioOutput(audioOutput); err != nil {
+		_ = audioOutput.Close()
+		_ = session.Close()
+		return err
+	}
 
 	c.mu.Lock()
 	oldGame := c.game
+	oldAudioOutput := c.audioOutput
 	c.game = game
+	c.audioOutput = audioOutput
 	c.paused = false
 	c.started = true
+	c.exitRequested = false
+	if oldGame != nil || oldAudioOutput != nil {
+		c.retiredGames = append(c.retiredGames, retiredGame{game: oldGame, audioOutput: oldAudioOutput})
+	}
 	c.mu.Unlock()
 
-	if oldGame != nil {
-		oldSession := oldGame.Session()
-		oldGame.Deallocate()
-		if oldSession != nil {
-			_ = oldSession.Close()
-		}
-	}
 	return nil
 }
 
@@ -364,39 +403,75 @@ func (c *controller) openContentGame(uri string, reader ContentURIReader) error 
 		return err
 	}
 	game := host.NewGameWithInitialWindowSize(session, host.DefaultWidth, host.DefaultHeight)
+	audioOutput, err := newAudioOutput()
+	if err != nil {
+		_ = session.Close()
+		return err
+	}
+	if err := game.AttachAudioOutput(audioOutput); err != nil {
+		_ = audioOutput.Close()
+		_ = session.Close()
+		return err
+	}
 
 	c.mu.Lock()
 	oldGame := c.game
+	oldAudioOutput := c.audioOutput
 	c.game = game
+	c.audioOutput = audioOutput
 	c.paused = false
 	c.started = true
+	c.exitRequested = false
+	if oldGame != nil || oldAudioOutput != nil {
+		c.retiredGames = append(c.retiredGames, retiredGame{game: oldGame, audioOutput: oldAudioOutput})
+	}
 	c.mu.Unlock()
 
-	if oldGame != nil {
-		oldSession := oldGame.Session()
-		oldGame.Deallocate()
-		if oldSession != nil {
-			_ = oldSession.Close()
-		}
-	}
 	return nil
 }
 
 func (c *controller) closeGame() {
 	c.mu.Lock()
 	game := c.game
+	audioOutput := c.audioOutput
 	c.game = nil
+	c.audioOutput = nil
 	c.paused = false
 	c.started = false
-	c.mu.Unlock()
-
-	if game == nil {
-		return
+	c.exitRequested = false
+	if game != nil || audioOutput != nil {
+		c.retiredGames = append(c.retiredGames, retiredGame{game: game, audioOutput: audioOutput})
 	}
-	session := game.Session()
-	game.Deallocate()
-	if session != nil {
-		_ = session.Close()
+	c.mu.Unlock()
+}
+
+func newAudioOutput() (*host.AudioOutput, error) {
+	audioContext.once.Do(func() {
+		audioContext.context = audio.NewContext(runtime.OutputRate)
+	})
+	return host.NewAudioOutput(audioContext.context, host.AudioOutputOptions{})
+}
+
+func releaseGame(game *host.Game, audioOutput *host.AudioOutput) {
+	if game != nil {
+		session := game.Session()
+		game.Deallocate()
+		if session != nil {
+			_ = session.Close()
+		}
+	}
+	if audioOutput != nil {
+		_ = audioOutput.Close()
+	}
+}
+
+func (c *controller) releaseRetiredGames() {
+	c.mu.Lock()
+	retired := c.retiredGames
+	c.retiredGames = nil
+	c.mu.Unlock()
+	for _, item := range retired {
+		releaseGame(item.game, item.audioOutput)
 	}
 }
 
@@ -404,12 +479,29 @@ func (g *mobileGame) Update() error {
 	if g == nil || g.owner == nil {
 		return nil
 	}
-	g.owner.mu.RLock()
-	defer g.owner.mu.RUnlock()
-	if g.owner.paused || g.owner.game == nil {
+	owner := g.owner
+	owner.releaseRetiredGames()
+	owner.mu.RLock()
+	if owner.paused || owner.exitRequested || owner.game == nil {
+		owner.mu.RUnlock()
 		return nil
 	}
-	return g.owner.game.Update()
+	game := owner.game
+	err := game.Update()
+	owner.mu.RUnlock()
+	if errors.Is(err, ebiten.Termination) {
+		owner.mu.Lock()
+		if owner.game == game {
+			owner.exitRequested = true
+			owner.paused = true
+			if owner.audioOutput != nil {
+				owner.audioOutput.Pause()
+			}
+		}
+		owner.mu.Unlock()
+		return nil
+	}
+	return err
 }
 
 func (g *mobileGame) Draw(screen *ebiten.Image) {
@@ -418,7 +510,7 @@ func (g *mobileGame) Draw(screen *ebiten.Image) {
 	}
 	g.owner.mu.RLock()
 	defer g.owner.mu.RUnlock()
-	if g.owner.paused || g.owner.game == nil {
+	if g.owner.paused || g.owner.exitRequested || g.owner.game == nil {
 		return
 	}
 	g.owner.game.Draw(screen)

@@ -1,0 +1,309 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000010000000000000001 /* Krkrgo.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000010000000000000001 /* Krkrgo.xcframework */; };
+		A10000010000000000000010 /* KrkrgoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000010 /* KrkrgoApp.swift */; };
+		A10000010000000000000011 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000011 /* AppState.swift */; };
+		A10000010000000000000012 /* SecurityScopedStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000012 /* SecurityScopedStorage.swift */; };
+		A10000010000000000000013 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000013 /* Views.swift */; };
+		A10000010000000000000014 /* LICENSES in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000014 /* LICENSES */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A30000010000000000000001 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		A20000010000000000000000 /* krkrgo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = krkrgo.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A20000010000000000000001 /* Krkrgo.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Krkrgo.xcframework; sourceTree = "<group>"; };
+		A20000010000000000000010 /* KrkrgoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KrkrgoApp.swift; sourceTree = "<group>"; };
+		A20000010000000000000011 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		A20000010000000000000012 /* SecurityScopedStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecurityScopedStorage.swift; sourceTree = "<group>"; };
+		A20000010000000000000013 /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
+		A20000010000000000000014 /* LICENSES */ = {isa = PBXFileReference; lastKnownFileType = folder; path = LICENSES; sourceTree = "<group>"; };
+		A20000010000000000000015 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A20000010000000000000016 /* KrkrgoContentURIReaderAdapter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = KrkrgoContentURIReaderAdapter.h; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A30000010000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000010000000000000001 /* Krkrgo.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A40000010000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				A40000010000000000000002 /* ios */,
+				A40000010000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A40000010000000000000002 /* ios */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000010 /* KrkrgoApp.swift */,
+				A20000010000000000000011 /* AppState.swift */,
+				A20000010000000000000012 /* SecurityScopedStorage.swift */,
+				A20000010000000000000013 /* Views.swift */,
+				A20000010000000000000016 /* KrkrgoContentURIReaderAdapter.h */,
+				A20000010000000000000015 /* Info.plist */,
+				A40000010000000000000004 /* Frameworks */,
+				A40000010000000000000005 /* Resources */,
+			);
+			path = "";
+			sourceTree = "<group>";
+		};
+		A40000010000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000000 /* krkrgo.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A40000010000000000000004 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000001 /* Krkrgo.xcframework */,
+			);
+			path = Frameworks;
+			sourceTree = "<group>";
+		};
+		A40000010000000000000005 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000014 /* LICENSES */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A50000010000000000000001 /* krkrgo */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A60000010000000000000002 /* Build configuration list for PBXNativeTarget "krkrgo" */;
+			buildPhases = (
+				A30000010000000000000003 /* Sources */,
+				A30000010000000000000002 /* Frameworks */,
+				A30000010000000000000004 /* Resources */,
+				A30000010000000000000001 /* Embed Frameworks */,
+				A30000010000000000000005 /* Copy Optional FFmpeg Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = krkrgo;
+			productName = krkrgo;
+			productReference = A20000010000000000000000 /* krkrgo.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A50000010000000000000002 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					A50000010000000000000001 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+				};
+			};
+			buildConfigurationList = A60000010000000000000001 /* Build configuration list for PBXProject "krkrgo" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A40000010000000000000001;
+			productRefGroup = A40000010000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A50000010000000000000001 /* krkrgo */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A30000010000000000000004 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000010000000000000014 /* LICENSES in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A30000010000000000000005 /* Copy Optional FFmpeg Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Copy Optional FFmpeg Frameworks";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nsource_dir=\"${SRCROOT}/Frameworks\"\ndestination=\"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\ncase \"${PLATFORM_NAME}\" in\n  iphoneos) slice=ios-arm64 ;;\n  iphonesimulator) slice=ios-arm64_x86_64-simulator ;;\n  *) exit 0 ;;\nesac\nmkdir -p \"${destination}\"\nfor name in libavutil libavcodec libavformat libswscale; do\n  source=\"${source_dir}/${name}.xcframework/${slice}/${name}.framework\"\n  if [ -d \"${source}\" ]; then\n    /usr/bin/ditto \"${source}\" \"${destination}/${name}.framework\"\n    if [ \"${CODE_SIGNING_ALLOWED:-NO}\" = YES ] && [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then\n      /usr/bin/codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" \"${destination}/${name}.framework\"\n    fi\n  fi\ndone\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A30000010000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000010000000000000010 /* KrkrgoApp.swift in Sources */,
+				A10000010000000000000011 /* AppState.swift in Sources */,
+				A10000010000000000000012 /* SecurityScopedStorage.swift in Sources */,
+				A10000010000000000000013 /* Views.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A70000010000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_PREVIEWS = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 13.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = org.eu.eslzzyl.krkrgo;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A70000010000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_PREVIEWS = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 13.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = org.eu.eslzzyl.krkrgo;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		A70000010000000000000003 /* Debug target */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGNING_ALLOWED = NO;
+				FRAMEWORK_SEARCH_PATHS = "$(inherited) $(SRCROOT)/Frameworks";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				SWIFT_OBJC_BRIDGING_HEADER = KrkrgoContentURIReaderAdapter.h;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
+				OTHER_LDFLAGS = (
+					"-ObjC",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.eu.eslzzyl.krkrgo;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A70000010000000000000004 /* Release target */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGNING_ALLOWED = NO;
+				FRAMEWORK_SEARCH_PATHS = "$(inherited) $(SRCROOT)/Frameworks";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				SWIFT_OBJC_BRIDGING_HEADER = KrkrgoContentURIReaderAdapter.h;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
+				OTHER_LDFLAGS = (
+					"-ObjC",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.eu.eslzzyl.krkrgo;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A60000010000000000000001 /* Build configuration list for PBXProject "krkrgo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A70000010000000000000001 /* Debug */,
+				A70000010000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A60000010000000000000002 /* Build configuration list for PBXNativeTarget "krkrgo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A70000010000000000000003 /* Debug target */,
+				A70000010000000000000004 /* Release target */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A50000010000000000000002 /* Project object */;
+}

@@ -121,6 +121,9 @@ func (s *Services) systemPath(operation string) string {
 	case "get:exeName":
 		return systemFilePath(exeName)
 	case "get:dataPath", "get:personalPath", "get:appDataPath":
+		if storage != nil && !storage.IsLocal() {
+			return strings.TrimRight(filepath.ToSlash(saveDir), "/") + "/"
+		}
 		if strings.HasPrefix(saveDir, "content://") {
 			return strings.TrimRight(filepath.ToSlash(saveDir), "/") + "/"
 		}

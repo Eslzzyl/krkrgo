@@ -30,3 +30,7 @@ lib/*
 
 # Packaging output
 /dist/
+
+# iOS generated frameworks and Xcode build output
+/ios/Frameworks/
+/temp/ios-deriveddata/

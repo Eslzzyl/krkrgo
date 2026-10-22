@@ -111,6 +111,36 @@ func (o *AudioOutput) Start() error {
 	return nil
 }
 
+// Pause suspends playback while retaining queued samples for a later resume.
+func (o *AudioOutput) Pause() {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed || !o.started || o.player == nil {
+		return
+	}
+	o.player.Pause()
+}
+
+// Resume continues playback after Pause.
+func (o *AudioOutput) Resume() error {
+	if o == nil {
+		return ErrAudioOutputClosed
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed || o.player == nil {
+		return ErrAudioOutputClosed
+	}
+	if !o.started {
+		o.started = true
+	}
+	o.player.Play()
+	return nil
+}
+
 // Write queues one complete interleaved stereo float32 block. It copies the
 // samples into the bounded queue. A full queue returns
 // ErrAudioOutputBackpressure without partially accepting the block.

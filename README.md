@@ -97,10 +97,23 @@ $env:KRKRGO_FFMPEG_ANDROID_DIR = "D:\path\to\android-ffmpeg"
 
 The same value can be passed as `-PkrkrgoFfmpegAndroidDir=D:\path\to\android-ffmpeg`.
 
-The workflow also prepares iOS FFmpeg dynamic libraries for `arm64-iphoneos`,
-`arm64-iphonesimulator`, and `x86_64-iphonesimulator`, then packages four
-Framework-based XCFrameworks under `Frameworks/`. The iOS application target
-is not part of this workflow yet.
+The workflow also prepares optional iOS FFmpeg dynamic libraries for
+`arm64-iphoneos`, `arm64-iphonesimulator`, and `x86_64-iphonesimulator`, then
+packages four Framework-based XCFrameworks under `Frameworks/`. The SwiftUI
+target in `ios/` can package these frameworks for runtime media decoding.
+
+Compile the iOS application from a macOS host with Xcode:
+
+```sh
+scripts/build-ios.sh all
+```
+
+Set `KRKRGO_FFMPEG_IOS_DIR` to an extracted iOS FFmpeg package to embed the
+optional runtime frameworks. The Xcode target links the Go binding only; the
+Go loader opens FFmpeg from the app `Frameworks` directory when available and
+keeps the media fallback when the package is absent. The application reads
+selected project folders through security-scoped bookmarks and writes saves
+below the selected folder's `savedata/` directory.
 
 ### Package the application
 
