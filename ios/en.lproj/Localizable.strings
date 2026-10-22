@@ -1,0 +1,14 @@
+"operation_failed" = "Operation failed";
+"unknown_error" = "Unknown error";
+"action_ok" = "OK";
+"launcher_start_library" = "Start your library";
+"launcher_description" = "Choose a project folder to launch your games from krkrgo.";
+"action_opening" = "Opening…";
+"action_choose_project_folder" = "Choose project folder";
+"launcher_library" = "Library";
+"project_status_folder" = "Project folder";
+"action_launch" = "Launch";
+"error_invalid_project_folder" = "The selected item needs to be a project folder.";
+"error_missing_project_entry_point" = "The selected folder does not contain startup.tjs or an XP3 archive.";
+"error_stale_project_folder" = "The saved project folder needs to be selected again.";
+"project_default_name" = "Project";

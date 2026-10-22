@@ -44,9 +44,9 @@ struct RootView: View {
             set: { if !$0 { appState.errorMessage = nil } },
         )) {
             Alert(
-                title: Text("Operation failed"),
-                message: Text(appState.errorMessage ?? "Unknown error"),
-                dismissButton: .default(Text("OK")),
+                title: Text(Localization.text(.operationFailed)),
+                message: Text(appState.errorMessage ?? Localization.text(.unknownError)),
+                dismissButton: .default(Text(Localization.text(.actionOK))),
             )
         }
     }
@@ -67,13 +67,18 @@ struct LauncherScreen: View {
                         Image(systemName: "gamecontroller")
                             .font(.system(size: 52))
                             .foregroundColor(.accentColor)
-                        Text("Start your library")
+                        Text(Localization.text(.launcherStartLibrary))
                             .font(.title2)
-                        Text("Choose a project folder to launch your games from krkrgo.")
+                        Text(Localization.text(.launcherDescription))
                             .multilineTextAlignment(.center)
                             .foregroundColor(.secondary)
                         Button(action: onAddProject) {
-                            Label(isImporting ? "Opening…" : "Choose project folder", systemImage: "plus")
+                            Label(
+                                Localization.text(
+                                    isImporting ? .actionOpening : .actionChooseProjectFolder,
+                                ),
+                                systemImage: "plus",
+                            )
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(isImporting)
@@ -92,7 +97,7 @@ struct LauncherScreen: View {
                     .listStyle(InsetGroupedListStyle())
                 }
             }
-            .navigationBarTitle("Library", displayMode: .large)
+            .navigationBarTitle(Text(Localization.text(.launcherLibrary)), displayMode: .large)
             .navigationBarItems(trailing: Button(action: onAddProject) {
                 Image(systemName: "plus")
             }.disabled(isImporting))
@@ -114,13 +119,13 @@ private struct ProjectRow: View {
                 Text(project.name)
                     .font(.headline)
                     .lineLimit(1)
-                Text("Project folder")
+                Text(Localization.text(.projectStatusFolder))
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             }
             Spacer()
             Button(action: onLaunch) {
-                Text(isLaunching ? "Opening…" : "Launch")
+                Text(Localization.text(isLaunching ? .actionOpening : .actionLaunch))
             }
             .buttonStyle(.bordered)
             .disabled(isLaunching)

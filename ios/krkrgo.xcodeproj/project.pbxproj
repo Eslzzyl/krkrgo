@@ -13,6 +13,7 @@
 		A10000010000000000000012 /* SecurityScopedStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000012 /* SecurityScopedStorage.swift */; };
 		A10000010000000000000013 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000013 /* Views.swift */; };
 		A10000010000000000000014 /* LICENSES in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000014 /* LICENSES */; };
+		A10000010000000000000015 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A40000010000000000000006 /* Localizable.strings */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -38,6 +39,8 @@
 		A20000010000000000000014 /* LICENSES */ = {isa = PBXFileReference; lastKnownFileType = folder; path = LICENSES; sourceTree = "<group>"; };
 		A20000010000000000000015 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A20000010000000000000016 /* KrkrgoContentURIReaderAdapter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = KrkrgoContentURIReaderAdapter.h; sourceTree = "<group>"; };
+		A20000010000000000000017 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
+		A20000010000000000000018 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -71,6 +74,7 @@
 				A20000010000000000000015 /* Info.plist */,
 				A40000010000000000000004 /* Frameworks */,
 				A40000010000000000000005 /* Resources */,
+				A40000010000000000000006 /* Localizable.strings */,
 			);
 			path = "";
 			sourceTree = "<group>";
@@ -97,6 +101,15 @@
 				A20000010000000000000014 /* LICENSES */,
 			);
 			path = Resources;
+			sourceTree = "<group>";
+		};
+		A40000010000000000000006 /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				A20000010000000000000017 /* en */,
+				A20000010000000000000018 /* zh-Hans */,
+			);
+			name = Localizable.strings;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -141,6 +154,7 @@
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
+				"zh-Hans",
 				Base,
 			);
 			mainGroup = A40000010000000000000001;
@@ -159,6 +173,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000010000000000000014 /* LICENSES in Resources */,
+				A10000010000000000000015 /* Localizable.strings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

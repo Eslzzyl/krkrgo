@@ -1,0 +1,14 @@
+"operation_failed" = "操作失败";
+"unknown_error" = "未知错误";
+"action_ok" = "确定";
+"launcher_start_library" = "开始使用游戏库";
+"launcher_description" = "选择项目文件夹，从 krkrgo 启动游戏。";
+"action_opening" = "正在打开…";
+"action_choose_project_folder" = "选择项目文件夹";
+"launcher_library" = "游戏库";
+"project_status_folder" = "项目文件夹";
+"action_launch" = "启动";
+"error_invalid_project_folder" = "所选项目需为文件夹。";
+"error_missing_project_entry_point" = "所选文件夹中没有 startup.tjs 或 XP3 存档。";
+"error_stale_project_folder" = "已保存的项目文件夹需要重新选择。";
+"project_default_name" = "项目";

@@ -3,6 +3,29 @@ import SwiftUI
 import UIKit
 import Krkrgo
 
+enum Localization {
+    enum Key: String {
+        case operationFailed = "operation_failed"
+        case unknownError = "unknown_error"
+        case actionOK = "action_ok"
+        case launcherStartLibrary = "launcher_start_library"
+        case launcherDescription = "launcher_description"
+        case actionOpening = "action_opening"
+        case actionChooseProjectFolder = "action_choose_project_folder"
+        case launcherLibrary = "launcher_library"
+        case projectStatusFolder = "project_status_folder"
+        case actionLaunch = "action_launch"
+        case errorInvalidProjectFolder = "error_invalid_project_folder"
+        case errorMissingProjectEntryPoint = "error_missing_project_entry_point"
+        case errorStaleProjectFolder = "error_stale_project_folder"
+        case projectDefaultName = "project_default_name"
+    }
+
+    static func text(_ key: Key) -> String {
+        NSLocalizedString(key.rawValue, comment: "")
+    }
+}
+
 struct ProjectEntry: Identifiable, Codable, Equatable {
     let id: UUID
     var name: String
@@ -57,11 +80,11 @@ enum ProjectImportError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidFolder:
-            return "The selected item is not a project folder."
+            return Localization.text(.errorInvalidProjectFolder)
         case .missingEntryPoint:
-            return "The selected folder does not contain startup.tjs or an XP3 archive."
+            return Localization.text(.errorMissingProjectEntryPoint)
         case .staleBookmark:
-            return "The saved project folder needs to be selected again."
+            return Localization.text(.errorStaleProjectFolder)
         }
     }
 }
@@ -87,7 +110,7 @@ enum ProjectImporter {
             includingResourceValuesForKeys: nil,
             relativeTo: nil,
         )
-        let name = url.lastPathComponent.isEmpty ? "Project" : url.lastPathComponent
+        let name = url.lastPathComponent.isEmpty ? Localization.text(.projectDefaultName) : url.lastPathComponent
         return ImportedProject(name: name, bookmark: bookmark)
     }
 
