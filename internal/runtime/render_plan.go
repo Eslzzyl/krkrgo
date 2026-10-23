@@ -167,8 +167,7 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		return p, nil
 	}
 	if s.Compositor == nil {
-		s.Root.SetScale(s.renderScale())
-		s.Compositor = NewCompositorWithScale(s.Root.Bounds.Width, s.Root.Bounds.Height, s.renderScale())
+		s.Compositor = NewCompositor(s.Root.Bounds.Width, s.Root.Bounds.Height)
 		s.Compositor.Root = s.Root
 	}
 	c := s.Compositor
@@ -283,7 +282,6 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		}
 	}
 	var walk func(*Layer, int32, int32, LayerType, bool) (int, error)
-	scale := s.renderScale()
 	walk = func(l *Layer, px, py int32, target LayerType, ancestorsVisible bool) (int, error) {
 		if l == nil {
 			return -1, nil
@@ -295,7 +293,7 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		p.Nodes = append(p.Nodes, RenderNode{})
 		n := &p.Nodes[i]
 		n.ID = l.ID
-		n.Bounds = Rect{X: px + l.Bounds.X*scale, Y: py + l.Bounds.Y*scale, Width: l.Bounds.Width * scale, Height: l.Bounds.Height * scale}
+		n.Bounds = Rect{X: px + l.Bounds.X, Y: py + l.Bounds.Y, Width: l.Bounds.Width, Height: l.Bounds.Height}
 		n.Opacity = clampLayerOpacity(l.Opacity)
 		n.Visible = l.Visible
 		n.TransitionHidden = l.transitionHidden
@@ -304,8 +302,8 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		n.HoldAlpha = l.HoldAlpha
 		n.ImageWidth = l.deviceWidth()
 		n.ImageHeight = l.deviceHeight()
-		n.ImageLeft = l.ImageLeft * scale
-		n.ImageTop = l.ImageTop * scale
+		n.ImageLeft = l.ImageLeft
+		n.ImageTop = l.ImageTop
 		n.RGBA = l.RGBA
 		hashes := renderHashes{}
 		if l.gpuStretch != nil && len(l.transitionPixels) == 0 {
@@ -319,14 +317,14 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 				n.GPUStretch = true
 				n.GPUStretchSourceWidth = pending.sourceWidth
 				n.GPUStretchSourceHeight = pending.sourceHeight
-				n.GPUStretchSourceX = pending.sourceX * scale
-				n.GPUStretchSourceY = pending.sourceY * scale
-				n.GPUStretchCropWidth = pending.cropWidth * scale
-				n.GPUStretchCropHeight = pending.cropHeight * scale
-				n.GPUStretchDestinationX = pending.destinationX * scale
-				n.GPUStretchDestinationY = pending.destinationY * scale
-				n.GPUStretchDestinationWidth = pending.destinationWidth * scale
-				n.GPUStretchDestinationHeight = pending.destinationHeight * scale
+				n.GPUStretchSourceX = pending.sourceX
+				n.GPUStretchSourceY = pending.sourceY
+				n.GPUStretchCropWidth = pending.cropWidth
+				n.GPUStretchCropHeight = pending.cropHeight
+				n.GPUStretchDestinationX = pending.destinationX
+				n.GPUStretchDestinationY = pending.destinationY
+				n.GPUStretchDestinationWidth = pending.destinationWidth
+				n.GPUStretchDestinationHeight = pending.destinationHeight
 				n.RGBA = pending.sourcePixels
 			} else {
 				if err := l.materializeGPUStretch(); err != nil {
@@ -363,7 +361,7 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 			}
 			n.RGBA = l.transitionPixels
 		}
-		n.Clip = Rect{X: l.clip.X * scale, Y: l.clip.Y * scale, Width: l.clip.Width * scale, Height: l.clip.Height * scale}
+		n.Clip = l.clip
 		n.ClipSet = l.clipSet
 		if l.inTransition && (l.transitionMethod == "crossfade" || l.transitionMethod == "universal") {
 			method := RenderTransitionCrossfade

@@ -11,15 +11,7 @@ import (
 // so repeated renders produce identical bytes on every host.
 type drawContext struct {
 	width, height  int32
-	scale          int32
 	rgba, province []byte
-}
-
-func (d *drawContext) renderScale() int32 {
-	if d == nil || d.scale < 1 {
-		return 1
-	}
-	return d.scale
 }
 
 func (d *drawContext) drawLayer(l *Layer, parentX, parentY int32) error {
@@ -36,8 +28,7 @@ func (d *drawContext) drawLayerTo(l *Layer, parentX, parentY int32, targetType L
 	if l.Type == LayerEffect || l.Type == LayerFilter {
 		return unsupportedLayerType(l)
 	}
-	scale := d.renderScale()
-	ax, ay := parentX+l.Bounds.X*scale, parentY+l.Bounds.Y*scale
+	ax, ay := parentX+l.Bounds.X, parentY+l.Bounds.Y
 	pixels := l.RGBA
 	if l.inTransition && len(l.transitionPixels) != 0 {
 		pixels = l.transitionPixels
@@ -59,11 +50,11 @@ func (d *drawContext) drawLayerTo(l *Layer, parentX, parentY int32, targetType L
 		// Intersect in source-local coordinates before entering the pixel loops.
 		// This matches the DrawDevice cliprect path: off-screen and clipped
 		// pixels do not incur per-pixel bounds branches.
-		imageLeft, imageTop := l.ImageLeft*scale, l.ImageTop*scale
-		x0 := maxInt64(int64(localClip.X)*int64(scale), -int64(ax)) - int64(imageLeft)
-		y0 := maxInt64(int64(localClip.Y)*int64(scale), -int64(ay)) - int64(imageTop)
-		x1 := minInt64(int64(localClip.Right())*int64(scale), int64(d.width)-int64(ax)) - int64(imageLeft)
-		y1 := minInt64(int64(localClip.Bottom())*int64(scale), int64(d.height)-int64(ay)) - int64(imageTop)
+		imageLeft, imageTop := l.ImageLeft, l.ImageTop
+		x0 := maxInt64(int64(localClip.X), -int64(ax)) - int64(imageLeft)
+		y0 := maxInt64(int64(localClip.Y), -int64(ay)) - int64(imageTop)
+		x1 := minInt64(int64(localClip.Right()), int64(d.width)-int64(ax)) - int64(imageLeft)
+		y1 := minInt64(int64(localClip.Bottom()), int64(d.height)-int64(ay)) - int64(imageTop)
 		x0 = maxInt64(x0, 0)
 		y0 = maxInt64(y0, 0)
 		x1 = minInt64(x1, int64(deviceWidth))
@@ -74,7 +65,7 @@ func (d *drawContext) drawLayerTo(l *Layer, parentX, parentY int32, targetType L
 			l.Opacity == 255 && !provinceMatchesImage && !l.clipSet &&
 			ax+imageLeft == 0 && ay+imageTop == 0 &&
 			deviceWidth == d.width && deviceHeight == d.height &&
-			drawW*scale == d.width && drawH*scale == d.height &&
+			drawW == d.width && drawH == d.height &&
 			x0 == 0 && y0 == 0 && x1 == int64(d.width) && y1 == int64(d.height) &&
 			len(pixels) == len(d.rgba) {
 			copy(d.rgba, pixels)
@@ -122,7 +113,7 @@ func (d *drawContext) drawLayerTo(l *Layer, parentX, parentY int32, targetType L
 						di := (destinationRowOffset + int(dx)) * 4
 						blendPixelForTarget(d.rgba[di:di+4], pixels[si:si+4], clampLayerOpacity(l.Opacity), l.Type, targetType)
 						if provinceMatchesImage {
-							provinceID := l.Province[(int(l.ImageTop)+int(sy)/int(scale))*int(l.ImageWidth)+int(l.ImageLeft)+int(sx)/int(scale)]
+							provinceID := l.Province[(int(l.ImageTop)+int(sy))*int(l.ImageWidth)+int(l.ImageLeft)+int(sx)]
 							if provinceID != 0 && pixels[si+3] != 0 {
 								d.province[destinationRowOffset+int(dx)] = provinceID
 							}
@@ -150,19 +141,18 @@ func (d *drawContext) drawOpaqueAlphaLayer(pixels []byte, l *Layer, targetType L
 	if startX >= endX || startY >= endY {
 		return
 	}
-	scale := d.renderScale()
 	imageWidth := int(l.deviceWidth())
 	logicalWidth := int(l.ImageWidth)
 	destinationWidth := int(d.width)
 	sourceLeft := startX * 4
 	rowBytes := (endX - startX) * 4
-	destinationX := int(ax) + int(l.ImageLeft)*int(scale) + startX
+	destinationX := int(ax) + int(l.ImageLeft) + startX
 	parallelRows(endY-startY, 64, func(rowStart, rowEnd int) {
 		for sy := startY + rowStart; sy < startY+rowEnd; sy++ {
 			source := sy*imageWidth*4 + sourceLeft
-			destinationY := int(ay) + int(l.ImageTop)*int(scale) + sy
+			destinationY := int(ay) + int(l.ImageTop) + sy
 			destination := (destinationY*destinationWidth + destinationX) * 4
-			provinceRow := (int(l.ImageTop) + sy/int(scale)) * logicalWidth
+			provinceRow := (int(l.ImageTop) + sy) * logicalWidth
 			sourceRow := pixels[source : source+rowBytes]
 			if rowAllOpaque(sourceRow) {
 				copy(d.rgba[destination:destination+rowBytes], sourceRow)
@@ -207,7 +197,7 @@ func (d *drawContext) drawOpaqueAlphaLayer(pixels []byte, l *Layer, targetType L
 							}
 						}
 					}
-					provinceID := l.Province[provinceRow+(int(l.ImageLeft)+sx/int(scale))]
+					provinceID := l.Province[provinceRow+int(l.ImageLeft)+sx]
 					if provinceID != 0 {
 						d.province[destinationY*destinationWidth+destinationX+offset] = provinceID
 					}
@@ -218,46 +208,25 @@ func (d *drawContext) drawOpaqueAlphaLayer(pixels []byte, l *Layer, targetType L
 }
 
 func (d *drawContext) writeOpaqueProvinceRow(l *Layer, sourceStartX, endX, provinceRow, destinationY, destinationX int) {
-	scale := int(d.renderScale())
 	provinceBase := provinceRow + int(l.ImageLeft)
 	destinationBase := destinationY*int(d.width) + destinationX
-	if scale == 1 {
-		source := l.Province[provinceBase+sourceStartX : provinceBase+endX]
-		target := d.province[destinationBase : destinationBase+endX-sourceStartX]
-		for offset, id := range source {
-			if id != 0 {
-				target[offset] = id
-			}
-		}
-		return
-	}
-	for offset, sx := 0, sourceStartX; sx < endX; offset, sx = offset+1, sx+1 {
-		if id := l.Province[provinceBase+sx/scale]; id != 0 {
-			d.province[destinationBase+offset] = id
+	source := l.Province[provinceBase+sourceStartX : provinceBase+endX]
+	target := d.province[destinationBase : destinationBase+endX-sourceStartX]
+	for offset, id := range source {
+		if id != 0 {
+			target[offset] = id
 		}
 	}
 }
 
 func (d *drawContext) writeAlphaProvinceRow(l *Layer, source []byte, sourceStartX, endX, provinceRow, destinationY, destinationX int) {
-	scale := int(d.renderScale())
 	provinceBase := provinceRow + int(l.ImageLeft)
 	destinationBase := destinationY*int(d.width) + destinationX
-	if scale == 1 {
-		for offset := range endX - sourceStartX {
-			if source[offset*4+3] == 0 {
-				continue
-			}
-			if id := l.Province[provinceBase+sourceStartX+offset]; id != 0 {
-				d.province[destinationBase+offset] = id
-			}
-		}
-		return
-	}
-	for offset, sx := 0, sourceStartX; sx < endX; offset, sx = offset+1, sx+1 {
+	for offset := range endX - sourceStartX {
 		if source[offset*4+3] == 0 {
 			continue
 		}
-		if id := l.Province[provinceBase+sx/scale]; id != 0 {
+		if id := l.Province[provinceBase+sourceStartX+offset]; id != 0 {
 			d.province[destinationBase+offset] = id
 		}
 	}
@@ -269,16 +238,15 @@ func (d *drawContext) drawOpaqueAlphaLayerNoProvince(pixels []byte, l *Layer, ta
 	if startX >= endX || startY >= endY {
 		return
 	}
-	scale := d.renderScale()
 	imageWidth := int(l.deviceWidth())
 	destinationWidth := int(d.width)
 	rowBytes := (endX - startX) * 4
 	sourceLeft := startX * 4
-	destinationX := int(ax) + int(l.ImageLeft)*int(scale) + startX
+	destinationX := int(ax) + int(l.ImageLeft) + startX
 	parallelRows(endY-startY, 64, func(rowStart, rowEnd int) {
 		for sy := startY + rowStart; sy < startY+rowEnd; sy++ {
 			source := sy*imageWidth*4 + sourceLeft
-			destinationY := int(ay) + int(l.ImageTop)*int(scale) + sy
+			destinationY := int(ay) + int(l.ImageTop) + sy
 			destination := (destinationY*destinationWidth + destinationX) * 4
 			if rowAllOpaque(pixels[source : source+rowBytes]) {
 				copy(d.rgba[destination:destination+rowBytes], pixels[source:source+rowBytes])
@@ -582,8 +550,7 @@ func layerHitAt(l *Layer, x, y, absoluteX, absoluteY int32) bool {
 	if sx < 0 || sy < 0 || sx >= l.ImageWidth || sy >= l.ImageHeight || len(l.RGBA) == 0 {
 		return false
 	}
-	scale := l.RenderScale()
-	px, py := sx*scale, sy*scale
+	px, py := sx, sy
 	pixelIndex := int(py*l.deviceWidth() + px)
 	if l.Hit == HitProvince {
 		idx := int(sy*l.ImageWidth + sx)

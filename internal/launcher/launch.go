@@ -24,9 +24,6 @@ func BuildArgs(g Game) ([]string, error) {
 	if g.Renderer != "" {
 		args = append(args, "-renderer", g.Renderer)
 	}
-	if g.RenderScale != 0 {
-		args = append(args, "-render-scale", strconv.Itoa(g.RenderScale))
-	}
 	return args, nil
 }
 

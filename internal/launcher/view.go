@@ -454,10 +454,6 @@ func (a *launcherApp) overview(c *ui.Context, game *Game) {
 	if game.Renderer == RendererCPU {
 		renderer = "CPU"
 	}
-	scale := locales.FollowDisplay()
-	if game.RenderScale > 0 {
-		scale = fmt.Sprintf("%dx", game.RenderScale)
-	}
 	budget := locales.Unlimited()
 	if game.Budget > 0 {
 		budget = locales.Instructions(strconv.FormatUint(game.Budget, 10))
@@ -466,7 +462,6 @@ func (a *launcherApp) overview(c *ui.Context, game *Game) {
 		{locales.Project(), game.Project},
 		{locales.SaveDirectory(), game.SaveDir},
 		{locales.Renderer(), renderer},
-		{locales.RenderScale(), scale},
 		{locales.InstructionBudget(), budget},
 		{locales.Launches(), fmt.Sprintf("%d", game.LaunchCount)},
 		{locales.Playtime(), a.formatPlayTime(game.PlayTimeSec)},
@@ -514,10 +509,6 @@ func (a *launcherApp) settings(c *ui.Context, game *Game) {
 			label(locales.Renderer())
 			if ui.Segmented(c, &a.rendererChoice, "GPU", "CPU").Changed() {
 				a.commitRenderer()
-			}
-			label(locales.RenderScaleHint())
-			if ui.Stepper(c, &a.renderScale, 0, 4, 1).Changed() {
-				a.commitRenderScale()
 			}
 		})
 		a.sectionCard(c, locales.Cover(), func() {

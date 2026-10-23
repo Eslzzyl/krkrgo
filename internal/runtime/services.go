@@ -114,7 +114,6 @@ type Services struct {
 	ContinuousHandlers           []tjs.Value
 	Root                         *Layer
 	Compositor                   *Compositor
-	RenderScale                  int32
 	validatedTreeRoot            *Layer
 	validatedTreeRevision        uint64
 	validatedTreeError           error
@@ -379,7 +378,6 @@ func NewServicesWithSaveBackend(storage *assets.Storage, saveDir string, saveBac
 		SaveDir:                 saveDir,
 		SaveBackend:             saveBackend,
 		Limits:                  limits,
-		RenderScale:             1,
 		FontBook:                book,
 		FontSystem:              NewFontSystem(book),
 		prerenderedFonts:        make(map[string]*prerenderedFont),
@@ -422,9 +420,6 @@ func (s *Services) ensureInit() {
 	defer s.initMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.RenderScale < 1 {
-		s.RenderScale = 1
-	}
 	if !s.systemTitleInitialized {
 		s.SystemTitle = systemName
 		s.systemTitleInitialized = true
@@ -983,68 +978,6 @@ func (s *Services) ExitRequested() bool {
 	return window == nil || window.Closed
 }
 
-func (s *Services) renderScale() int32 {
-	if s == nil || s.RenderScale < 1 {
-		return 1
-	}
-	return s.RenderScale
-}
-
-// SetRenderScale changes the device pixel density used by layer and Bitmap
-// buffers and composition. It resamples existing buffers and keeps logical
-// coordinates unchanged.
-func (s *Services) SetRenderScale(scale int32) {
-	if s == nil {
-		return
-	}
-	if scale < 1 {
-		scale = 1
-	}
-	s.ensureInit()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.RenderScale == scale {
-		return
-	}
-	oldScale := s.RenderScale
-	if oldScale < 1 {
-		oldScale = 1
-	}
-	s.RenderScale = scale
-	for _, layer := range s.Layers {
-		layer.SetScale(scale)
-	}
-	for _, bitmap := range s.Bitmaps {
-		if bitmap == nil {
-			continue
-		}
-		oldBitmapScale := bitmap.renderScale()
-		if oldBitmapScale == scale {
-			continue
-		}
-		if len(bitmap.RGBA) != 0 && bitmap.Width > 0 && bitmap.Height > 0 {
-			bitmap.RGBA = resampleRGBA(bitmap.RGBA, int32(bitmap.Width)*oldBitmapScale, int32(bitmap.Height)*oldBitmapScale,
-				int32(bitmap.Width)*scale, int32(bitmap.Height)*scale)
-		}
-		bitmap.Scale = scale
-		bitmap.markDirty()
-	}
-	if s.Root != nil {
-		s.Root.SetScale(scale)
-	}
-	if s.Compositor != nil {
-		logicalWidth := s.Compositor.Width / oldScale
-		logicalHeight := s.Compositor.Height / oldScale
-		s.Compositor.Scale = scale
-		s.Compositor.Width = logicalWidth * scale
-		s.Compositor.Height = logicalHeight * scale
-	}
-	s.frameCacheValid = false
-	s.dynamicRGBA = nil
-	s.dynamicProvince = nil
-	s.validatedTreeRoot = nil
-}
-
 func (s *Services) SetRoot(root *Layer) {
 	s.Root = root
 	if root == nil {
@@ -1053,20 +986,17 @@ func (s *Services) SetRoot(root *Layer) {
 		}
 		return
 	}
-	root.SetScale(s.renderScale())
-	s.Compositor = NewCompositorWithScale(root.Bounds.Width, root.Bounds.Height, s.renderScale())
+	s.Compositor = NewCompositor(root.Bounds.Width, root.Bounds.Height)
 	s.Compositor.SetRoot(root)
 }
 func (s *Services) SetFrameSize(width, height int32) error {
 	if width <= 0 || height <= 0 {
 		return ErrInvalidLayer
 	}
-	scale := s.renderScale()
 	if s.Compositor == nil {
-		s.Compositor = NewCompositorWithScale(width, height, scale)
+		s.Compositor = NewCompositor(width, height)
 	} else {
-		s.Compositor.Scale = scale
-		s.Compositor.Width, s.Compositor.Height = width*scale, height*scale
+		s.Compositor.Width, s.Compositor.Height = width, height
 		if s.Root != nil && s.Root.windowID != 0 {
 			if err := s.Root.SetSize(width, height); err != nil {
 				return err
@@ -1146,8 +1076,7 @@ func (s *Services) captureFrameWithPresentation(presentation bool) (FrameSnapsho
 		return FrameSnapshot{}, nil
 	}
 	if s.Compositor == nil {
-		s.Root.SetScale(s.renderScale())
-		s.Compositor = NewCompositorWithScale(s.Root.Bounds.Width, s.Root.Bounds.Height, s.renderScale())
+		s.Compositor = NewCompositor(s.Root.Bounds.Width, s.Root.Bounds.Height)
 		s.Compositor.Root = s.Root
 	}
 	c := s.Compositor

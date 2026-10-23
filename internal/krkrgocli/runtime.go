@@ -32,7 +32,7 @@ type LaunchOptions struct {
 	SaveDir       string
 	Budget        uint64
 	Renderer      string
-	RenderScale   int
+	WindowScale   float64
 	Upscaler      string
 	Anime4K       bool
 	GameArguments map[string]string
@@ -44,7 +44,7 @@ const (
 )
 
 func ParseLaunchArgs(args []string) (LaunchOptions, error) {
-	opts := LaunchOptions{Budget: unlimitedBudget, Renderer: rendererGPU, RenderScale: 1}
+	opts := LaunchOptions{Budget: unlimitedBudget, Renderer: rendererGPU, WindowScale: 1}
 	var gameArgs []string
 	fs := flag.NewFlagSet("krkrgo run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -52,8 +52,8 @@ func ParseLaunchArgs(args []string) (LaunchOptions, error) {
 	fs.StringVar(&opts.SaveDir, "save-dir", "", "save-data directory")
 	fs.Uint64Var(&opts.Budget, "budget", unlimitedBudget, "diagnostic session instruction limit (default: unlimited)")
 	fs.StringVar(&opts.Renderer, "renderer", rendererGPU, "renderer backend: gpu or cpu (default: gpu)")
-	fs.IntVar(&opts.RenderScale, "render-scale", 1, "rendering pixel density: 1-4, or 0 for the monitor scale (default: 1)")
-	fs.StringVar(&opts.Upscaler, "upscaler", "off", "frame upscaler: off, bilinear, bicubic, anime4k (requires -render-scale 2)")
+	fs.Float64Var(&opts.WindowScale, "window-scale", 1.0, "window size multiplier (default: 1.0)")
+	fs.StringVar(&opts.Upscaler, "upscaler", "off", "frame upscaler: off, bilinear, bicubic, anime4k")
 	fs.BoolVar(&opts.Anime4K, "anime4k", false, "alias for -upscaler anime4k")
 	fs.Func("game-arg", "pass a command-line option to the game's System.getArgument", func(value string) error {
 		gameArgs = append(gameArgs, value)
@@ -65,8 +65,8 @@ func ParseLaunchArgs(args []string) (LaunchOptions, error) {
 	if opts.Renderer != rendererGPU && opts.Renderer != rendererCPU {
 		return LaunchOptions{}, fmt.Errorf("unsupported renderer %q; want gpu or cpu", opts.Renderer)
 	}
-	if opts.RenderScale < 0 || opts.RenderScale > 4 {
-		return LaunchOptions{}, fmt.Errorf("unsupported render scale %d; want 0 through 4", opts.RenderScale)
+	if opts.WindowScale <= 0 {
+		opts.WindowScale = 1
 	}
 	if opts.Upscaler == "off" {
 		opts.Upscaler = ""
@@ -114,14 +114,10 @@ func parseGameArguments(args []string) (map[string]string, error) {
 }
 
 func NewSession(project, saveDir string, budget uint64) (*runtime.Session, error) {
-	return NewSessionWithScale(project, saveDir, budget, 1)
+	return NewSessionWithArguments(project, saveDir, budget, nil)
 }
 
-func NewSessionWithScale(project, saveDir string, budget uint64, scale int32) (*runtime.Session, error) {
-	return NewSessionWithScaleAndArguments(project, saveDir, budget, scale, nil)
-}
-
-func NewSessionWithScaleAndArguments(project, saveDir string, budget uint64, scale int32, gameArguments map[string]string) (*runtime.Session, error) {
+func NewSessionWithArguments(project, saveDir string, budget uint64, gameArguments map[string]string) (*runtime.Session, error) {
 	var (
 		session *runtime.Session
 		err     error
@@ -134,35 +130,34 @@ func NewSessionWithScaleAndArguments(project, saveDir string, budget uint64, sca
 			return nil, fmt.Errorf("open project: %w", err)
 		}
 	}
-	return finishSession(session, project, scale, gameArguments)
+	return finishSession(session, project, gameArguments)
 }
 
-// NewSessionWithStorageAndScaleAndArguments starts a session over a platform
+// NewSessionWithStorageAndArguments starts a session over a platform
 // storage backend while keeping saves in the supplied writable directory.
-func NewSessionWithStorageAndScaleAndArguments(storage *assets.Storage, saveDir string, budget uint64, scale int32, gameArguments map[string]string) (*runtime.Session, error) {
+func NewSessionWithStorageAndArguments(storage *assets.Storage, saveDir string, budget uint64, gameArguments map[string]string) (*runtime.Session, error) {
 	session, err := runtime.OpenSessionWithStorage(storage, saveDir, budget)
 	if err != nil {
 		return nil, fmt.Errorf("open storage project: %w", err)
 	}
-	return finishSession(session, storage.Project, scale, gameArguments)
+	return finishSession(session, storage.Project, gameArguments)
 }
 
 // NewSessionWithStorageAndSaveBackend starts a session with a platform-backed
 // writable save tree, such as Android's Storage Access Framework.
-func NewSessionWithStorageAndSaveBackend(storage *assets.Storage, saveDir string, saveBackend runtime.SaveStorageBackend, budget uint64, scale int32, gameArguments map[string]string) (*runtime.Session, error) {
+func NewSessionWithStorageAndSaveBackend(storage *assets.Storage, saveDir string, saveBackend runtime.SaveStorageBackend, budget uint64, gameArguments map[string]string) (*runtime.Session, error) {
 	session, err := runtime.OpenSessionWithStorageAndSaveBackend(storage, saveDir, saveBackend, budget)
 	if err != nil {
 		return nil, fmt.Errorf("open storage project: %w", err)
 	}
-	return finishSession(session, storage.Project, scale, gameArguments)
+	return finishSession(session, storage.Project, gameArguments)
 }
 
-func finishSession(session *runtime.Session, project string, scale int32, gameArguments map[string]string) (*runtime.Session, error) {
+func finishSession(session *runtime.Session, project string, gameArguments map[string]string) (*runtime.Session, error) {
 	if session == nil {
 		return nil, fmt.Errorf("nil session")
 	}
 	session.Services.SetArguments(gameArguments)
-	session.Services.SetRenderScale(scale)
 
 	if project == "" {
 		// Keep an empty host scene for non-project launches. Project startup
@@ -300,21 +295,12 @@ func RunGame(args []string) {
 		log.Fatal(formatErrorChain(err))
 	}
 	log.Printf("krkrgo: opening project %q", opts.Project)
-	scale := int32(opts.RenderScale)
-	if scale == 0 {
-		scale = displayRenderScale()
-	}
 	if opts.Upscaler != "" {
 		if opts.Renderer != rendererGPU {
 			log.Fatalf("%s upscaling requires the gpu renderer", opts.Upscaler)
 		}
-		if scale != 2 {
-			log.Fatalf("%s upscaling requires -render-scale 2; resolved scale is %d", opts.Upscaler, scale)
-		}
-		// The frame post-processor consumes a 1x composition and produces 2x.
-		scale = 1
 	}
-	session, err := NewSessionWithScaleAndArguments(opts.Project, opts.SaveDir, opts.Budget, scale, opts.GameArguments)
+	session, err := NewSessionWithArguments(opts.Project, opts.SaveDir, opts.Budget, opts.GameArguments)
 	if err != nil {
 		log.Fatal(formatErrorChain(err))
 	}
@@ -323,7 +309,8 @@ func RunGame(args []string) {
 	}
 	log.Printf("krkrgo: creating presentation window")
 
-	ebiten.SetWindowSize(defaultWidth, defaultHeight)
+	initialWidth, initialHeight := initialWindowSize(defaultWidth, defaultHeight, opts.WindowScale)
+	ebiten.SetWindowSize(initialWidth, initialHeight)
 	ebiten.SetWindowTitle("krkrgo")
 	stopCPUProfile := startCPUProfileFromEnv()
 	if stopCPUProfile != nil {
@@ -331,9 +318,9 @@ func RunGame(args []string) {
 	}
 	var game *host.Game
 	if opts.Renderer == rendererCPU {
-		game = host.NewCPUGameWithInitialWindowSize(session, defaultWidth, defaultHeight)
+		game = host.NewCPUGameWithInitialWindowSize(session, initialWidth, initialHeight, opts.WindowScale)
 	} else {
-		game = host.NewGameWithInitialWindowSize(session, defaultWidth, defaultHeight)
+		game = host.NewGameWithInitialWindowSize(session, initialWidth, initialHeight, opts.WindowScale)
 	}
 	game.SetStartupTiming(startupStarted)
 	defer game.Deallocate()
@@ -385,26 +372,13 @@ func RunGame(args []string) {
 	}
 }
 
-// displayRenderScale rounds the monitor's device scale factor to an integer
-// render density. Ebitengine may not have initialized a monitor before RunGame;
-// use scale 1 until that monitor becomes available.
-func displayRenderScale() int32 {
-	return displayScaleForMonitor(ebiten.Monitor())
-}
-
-func displayScaleForMonitor(monitor *ebiten.MonitorType) int32 {
-	if monitor == nil {
-		return 1
+func initialWindowSize(width, height int, windowScale float64) (int, int) {
+	if windowScale <= 0 {
+		windowScale = 1
 	}
-	return renderScaleFromDeviceScale(monitor.DeviceScaleFactor())
-}
-
-func renderScaleFromDeviceScale(scale float64) int32 {
-	if scale < 1 {
-		return 1
+	deviceScale := 1.0
+	if monitor := ebiten.Monitor(); monitor != nil && monitor.DeviceScaleFactor() >= 1 {
+		deviceScale = monitor.DeviceScaleFactor()
 	}
-	if scale > 4 {
-		scale = 4
-	}
-	return int32(math.Round(scale))
+	return int(math.Round(float64(width) * windowScale / deviceScale)), int(math.Round(float64(height) * windowScale / deviceScale))
 }

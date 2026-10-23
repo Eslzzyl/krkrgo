@@ -8,17 +8,16 @@ import (
 
 func TestBuildArgs(t *testing.T) {
 	game := Game{
-		Project:     "/games/example",
-		SaveDir:     "/saves/example",
-		Budget:      5000,
-		Renderer:    RendererCPU,
-		RenderScale: 2,
+		Project:  "/games/example",
+		SaveDir:  "/saves/example",
+		Budget:   5000,
+		Renderer: RendererCPU,
 	}
 	args, err := BuildArgs(game)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"run", "-project", "/games/example", "-save-dir", "/saves/example", "-budget", "5000", "-renderer", "cpu", "-render-scale", "2"}
+	want := []string{"run", "-project", "/games/example", "-save-dir", "/saves/example", "-budget", "5000", "-renderer", "cpu"}
 	if strings.Join(args, " ") != strings.Join(want, " ") {
 		t.Fatalf("BuildArgs = %q, want %q", args, want)
 	}
@@ -42,11 +41,9 @@ func TestValidateGame(t *testing.T) {
 	}{
 		{Game{Project: "/p", Renderer: RendererGPU}, true},
 		{Game{Project: "/p", Renderer: ""}, true},
-		{Game{Project: "/p", Renderer: RendererCPU, RenderScale: 4}, true},
+		{Game{Project: "/p", Renderer: RendererCPU}, true},
 		{Game{Project: "", Renderer: RendererGPU}, false},
 		{Game{Project: "/p", Renderer: "vulkan"}, false},
-		{Game{Project: "/p", Renderer: RendererGPU, RenderScale: 5}, false},
-		{Game{Project: "/p", Renderer: RendererGPU, RenderScale: -1}, false},
 	}
 	for _, tc := range cases {
 		err := ValidateGame(tc.game)

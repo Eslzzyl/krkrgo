@@ -395,22 +395,6 @@ func (a *launcherApp) commitRenderer() {
 	a.scheduleSave()
 }
 
-func (a *launcherApp) commitRenderScale() {
-	game := a.selectedGame()
-	if game == nil {
-		return
-	}
-	scale := int(a.renderScale)
-	if scale < 0 {
-		scale = 0
-	}
-	if scale > 4 {
-		scale = 4
-	}
-	game.RenderScale = scale
-	a.scheduleSave()
-}
-
 func (a *launcherApp) saveTitle() {
 	game := a.selectedGame()
 	if game == nil {

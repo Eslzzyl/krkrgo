@@ -14,11 +14,11 @@ no arguments (or launcher options) open the GUI, while `run` starts a game.
 Direct runtime and tool commands are:
 
 ```text
-krkrgo run -project <directory> [-save-dir <directory>] [-budget <instructions>] [-renderer gpu|cpu] [-render-scale 1-4] [-upscaler off|bilinear|bicubic|anime4k]
+krkrgo run -project <directory> [-save-dir <directory>] [-budget <instructions>] [-renderer gpu|cpu] [-window-scale <multiplier>] [-upscaler off|bilinear|bicubic|anime4k]
 krkrgo-tool replay|extract ...
 ```
 
-`-upscaler` selects the frame post-processor: `bilinear`, `bicubic`, or `anime4k`. It requires the GPU renderer and a resolved render scale of 2; the runtime composes at 1x and presents the 2x post-processed frame. `-anime4k` is an alias for `-upscaler anime4k`. See [Frame upscaling](upscaling.md).
+`-window-scale` changes the requested physical window size and defaults to `1.0`. `-upscaler` selects the frame post-processor: `bilinear`, `bicubic`, or `anime4k`. It requires the GPU renderer; the runtime composes at native resolution and presents a 2x post-processed frame. `-anime4k` is an alias for `-upscaler anime4k`. See [Frame upscaling](upscaling.md).
 
 The game runtime, TJS VM, compositor, and presentation layer remain shared.
 The launcher supplies host-specific UI and lifecycle control.
@@ -35,7 +35,7 @@ launcher process (cmd/krkrgo, MyGo native UI)
   - monitors the child process and its log
 
 game process (cmd/krkrgo run)
-  - parses -project, -save-dir, -budget, -renderer, -render-scale, -upscaler, -anime4k, and repeated -game-arg values
+  - parses -project, -save-dir, -budget, -renderer, -window-scale, -upscaler, -anime4k, and repeated -game-arg values
   - creates the runtime Session
   - creates the Ebitengine host
   - runs ebiten.RunGame

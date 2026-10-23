@@ -261,7 +261,6 @@ func (b *contentSaveBackend) listFiles(prefix string) ([]string, error) {
 
 const (
 	defaultBudget = ^uint64(0)
-	defaultScale  = int32(1)
 )
 
 // controller owns the native game session, presentation object, and device
@@ -347,17 +346,16 @@ func (c *controller) openGame(project string) error {
 		return fmt.Errorf("project path is empty")
 	}
 
-	session, err := krkrgocli.NewSessionWithScaleAndArguments(
+	session, err := krkrgocli.NewSessionWithArguments(
 		project,
 		"",
 		defaultBudget,
-		defaultScale,
 		nil,
 	)
 	if err != nil {
 		return err
 	}
-	game := host.NewGameWithInitialWindowSize(session, host.DefaultWidth, host.DefaultHeight)
+	game := host.NewGameWithInitialWindowSize(session, host.DefaultWidth, host.DefaultHeight, 1)
 	audioOutput, err := newAudioOutput()
 	if err != nil {
 		_ = session.Close()
@@ -398,11 +396,11 @@ func (c *controller) openContentGame(uri string, reader ContentURIReader) error 
 		return fmt.Errorf("create game save directory: %w", err)
 	}
 	saveBackend := &contentSaveBackend{reader: reader, root: "savedata"}
-	session, err := krkrgocli.NewSessionWithStorageAndSaveBackend(storage, strings.TrimRight(uri, "/")+"/savedata", saveBackend, defaultBudget, defaultScale, nil)
+	session, err := krkrgocli.NewSessionWithStorageAndSaveBackend(storage, strings.TrimRight(uri, "/")+"/savedata", saveBackend, defaultBudget, nil)
 	if err != nil {
 		return err
 	}
-	game := host.NewGameWithInitialWindowSize(session, host.DefaultWidth, host.DefaultHeight)
+	game := host.NewGameWithInitialWindowSize(session, host.DefaultWidth, host.DefaultHeight, 1)
 	audioOutput, err := newAudioOutput()
 	if err != nil {
 		_ = session.Close()

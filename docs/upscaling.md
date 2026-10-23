@@ -4,9 +4,9 @@
 feature is disabled by default and selected with `-upscaler`.
 
 ```sh
-krkrgo run -project <dir> -render-scale 2 -upscaler bilinear
-krkrgo run -project <dir> -render-scale 2 -upscaler bicubic
-krkrgo run -project <dir> -render-scale 2 -upscaler anime4k
+krkrgo run -project <dir> -upscaler bilinear
+krkrgo run -project <dir> -upscaler bicubic
+krkrgo run -project <dir> -upscaler anime4k
 ```
 
 `-anime4k` is an alias for `-upscaler anime4k`.
@@ -20,23 +20,23 @@ krkrgo run -project <dir> -render-scale 2 -upscaler anime4k
 | `bicubic` | Kage shader | one full-frame pass, 4×4 taps | Catmull-Rom 2× scaling |
 | `anime4k` | Kage shader chain | five full-frame passes | Anime4K Fast/S CNN |
 
-All enabled modes require the GPU renderer and a resolved render scale of `2`.
-The runtime composes at 1× and the host presents the 2× result. `-render-scale`
-values other than `2` are rejected for these modes.
+All enabled modes require the GPU renderer. The runtime composes at the game's
+nominal resolution and the post-processor produces a 2× presentation frame.
+`-window-scale` then controls the requested physical window size for that frame.
 
 ## Pipeline
 
-1. The runtime composes the frame at 1×.
+1. The runtime composes the frame at the game's nominal resolution.
 2. `GPUCompositor` returns the composed `*ebiten.Image`.
 3. `Game.composeGPUPlan` applies the selected `PostProcessor`.
 4. The 2× result is cached by `RenderPlan.StateHash`.
 5. `Game.Draw` presents the 2× image; input coordinates are scaled by
    `Game.outputScale`.
 
-The host keeps the runtime render scale at `1` while the presentation scale is
-`2`. `Game.SetOutputScale(2)` updates both window sizing and `InputPoller.scale`,
-so mouse and touch coordinates continue to map to the runtime's 1× layer
-coordinates.
+The host keeps runtime pixels at the nominal resolution while the presentation
+scale is `2`. `Game.SetOutputScale(2)` updates the presentation output and
+`InputPoller.scale`, so mouse and touch coordinates continue to map to the
+runtime layer coordinates.
 
 ## PostProcessor Interface
 

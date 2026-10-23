@@ -68,11 +68,7 @@ func rgbaFromLayer(l *Layer) (int32, int32, []byte, error) {
 	if width <= 0 || height <= 0 {
 		return 0, 0, nil, fmt.Errorf("D3DImage.load: layer has no image")
 	}
-	pixels := l.RGBA
-	if scale := l.RenderScale(); scale != 1 {
-		pixels = resampleRGBA(pixels, l.deviceWidth(), l.deviceHeight(), width, height)
-	}
-	return width, height, pixels, nil
+	return width, height, l.RGBA, nil
 }
 
 func rgbaFromBitmap(b *Bitmap) (int32, int32, []byte, error) {
@@ -82,11 +78,7 @@ func rgbaFromBitmap(b *Bitmap) (int32, int32, []byte, error) {
 	if b.Width == 0 || b.Height == 0 || !validLayerImageSize(int32(b.deviceWidth()), int32(b.deviceHeight()), len(b.RGBA), 4) {
 		return 0, 0, nil, fmt.Errorf("D3DImage.load: bitmap has no image")
 	}
-	pixels := b.RGBA
-	if scale := b.renderScale(); scale != 1 {
-		pixels = resampleRGBA(pixels, int32(b.deviceWidth()), int32(b.deviceHeight()), int32(b.Width), int32(b.Height))
-	}
-	return int32(b.Width), int32(b.Height), pixels, nil
+	return int32(b.Width), int32(b.Height), b.RGBA, nil
 }
 
 type d3dPictureData struct {

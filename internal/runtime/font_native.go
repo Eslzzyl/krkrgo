@@ -92,10 +92,6 @@ func (s *Services) Font(id tjs.ObjectID) *FontState {
 }
 
 func (s *Services) fontFace(f *FontState) (FontFace, error) {
-	return s.fontFaceScaled(f, 1)
-}
-
-func (s *Services) fontFaceScaled(f *FontState, scale int32) (FontFace, error) {
 	if f == nil {
 		return nil, fmt.Errorf("%w: nil Font state", ErrInvalidFont)
 	}
@@ -111,9 +107,6 @@ func (s *Services) fontFaceScaled(f *FontState, scale int32) (FontFace, error) {
 	size := math.Abs(float64(state.Height))
 	if size == 0 {
 		size = system.DefaultSize
-	}
-	if scale > 1 {
-		size *= float64(scale)
 	}
 	face, err := system.Select(state.Face, size)
 	if err != nil {

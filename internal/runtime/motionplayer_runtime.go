@@ -3067,7 +3067,7 @@ func (s *Services) drawMotionTargetLayer(vm *tjs.VM, state *motionPlayerState, l
 			zFactor:            motionPlayerZFactor(state),
 			rootCoordinateMode: state.rootCoordinateMode,
 			rootState:          state.rootState, hasRootState: state.hasRootState,
-			scale: layer.RenderScale(), maskMode: maskMode,
+			scale: 1, maskMode: maskMode,
 			completion: state.completionType, freezeBody: freezeBody,
 			independentLayerInherit: state.independentLayerInherit,
 			variables:               motionVariablesSignature(params) + "\x00" + motionAttachmentsSignature(attached) + "\x00anchor:" + motionAnchorOutputSignature(motionAnchorOutputs(state.anchorStates)),
@@ -3076,7 +3076,7 @@ func (s *Services) drawMotionTargetLayer(vm *tjs.VM, state *motionPlayerState, l
 		motion := state.gpuMotion
 		if !state.gpuMotionValid || state.gpuMotionKey != key {
 			var err error
-			motion, err = buildGPUMotionVariablesZFactorInherit(resource, state.chara, state.motion, state.clampedEvalTime, 0, drawMatrix, layer.RenderScale(), params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, state.independentLayerInherit, renderOptions)
+			motion, err = buildGPUMotionVariablesZFactorInherit(resource, state.chara, state.motion, state.clampedEvalTime, 0, drawMatrix, 1, params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, state.independentLayerInherit, renderOptions)
 			if err != nil {
 				return err
 			}

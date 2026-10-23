@@ -2,32 +2,29 @@ package krkrgocli
 
 import "testing"
 
-func TestParseLaunchArgsDefaultsToLogicalRenderScale(t *testing.T) {
+func TestParseLaunchArgsDefaultsToNativeWindowScale(t *testing.T) {
 	opts, err := ParseLaunchArgs(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.RenderScale != 1 {
-		t.Fatalf("default render scale = %d, want 1", opts.RenderScale)
+	if opts.WindowScale != 1 {
+		t.Fatalf("default window scale = %g, want 1", opts.WindowScale)
 	}
 }
 
 func TestParseLaunchArgsAnime4K(t *testing.T) {
-	opts, err := ParseLaunchArgs([]string{"-anime4k", "-render-scale", "2"})
+	opts, err := ParseLaunchArgs([]string{"-anime4k"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !opts.Anime4K {
 		t.Fatal("Anime4K flag was not parsed")
 	}
-	if opts.RenderScale != 2 {
-		t.Fatalf("render scale = %d, want 2", opts.RenderScale)
-	}
 }
 
 func TestParseLaunchArgsUpscaler(t *testing.T) {
 	for _, mode := range []string{"bilinear", "bicubic", "anime4k"} {
-		opts, err := ParseLaunchArgs([]string{"-upscaler", mode, "-render-scale", "2"})
+		opts, err := ParseLaunchArgs([]string{"-upscaler", mode})
 		if err != nil {
 			t.Fatalf("%s: %v", mode, err)
 		}
@@ -43,25 +40,14 @@ func TestParseLaunchArgsUpscaler(t *testing.T) {
 	}
 }
 
-func TestDisplayScaleDefaultsWithoutMonitor(t *testing.T) {
-	if got := displayScaleForMonitor(nil); got != 1 {
-		t.Fatalf("display scale without monitor = %d, want 1", got)
-	}
-}
-
-func TestRenderScaleFromDeviceScale(t *testing.T) {
-	for _, test := range []struct {
-		deviceScale float64
-		want        int32
-	}{
-		{0, 1},
-		{1, 1},
-		{1.5, 2},
-		{2, 2},
-		{8, 4},
-	} {
-		if got := renderScaleFromDeviceScale(test.deviceScale); got != test.want {
-			t.Errorf("renderScaleFromDeviceScale(%v) = %d, want %d", test.deviceScale, got, test.want)
+func TestParseLaunchArgsNormalizesInvalidWindowScale(t *testing.T) {
+	for _, value := range []string{"0", "-2"} {
+		opts, err := ParseLaunchArgs([]string{"-window-scale", value})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if opts.WindowScale != 1 {
+			t.Fatalf("window scale for %s = %g, want 1", value, opts.WindowScale)
 		}
 	}
 }

@@ -17,21 +17,21 @@ func TestParseLaunchArgs(t *testing.T) {
 		args []string
 		want krkrgocli.LaunchOptions
 	}{
-		{name: "defaults", want: krkrgocli.LaunchOptions{Budget: ^uint64(0), Renderer: "gpu", RenderScale: 1, GameArguments: map[string]string{}}},
+		{name: "defaults", want: krkrgocli.LaunchOptions{Budget: ^uint64(0), Renderer: "gpu", WindowScale: 1, GameArguments: map[string]string{}}},
 		{
 			name: "project without diagnostic budget",
 			args: []string{"-project", "/games/sample"},
-			want: krkrgocli.LaunchOptions{Project: "/games/sample", Budget: ^uint64(0), Renderer: "gpu", RenderScale: 1, GameArguments: map[string]string{}},
+			want: krkrgocli.LaunchOptions{Project: "/games/sample", Budget: ^uint64(0), Renderer: "gpu", WindowScale: 1, GameArguments: map[string]string{}},
 		},
 		{
 			name: "project options",
 			args: []string{"-project", "/games/sample", "-save-dir", "/tmp/sample-saves", "-budget", "42"},
-			want: krkrgocli.LaunchOptions{Project: "/games/sample", SaveDir: "/tmp/sample-saves", Budget: 42, Renderer: "gpu", RenderScale: 1, GameArguments: map[string]string{}},
+			want: krkrgocli.LaunchOptions{Project: "/games/sample", SaveDir: "/tmp/sample-saves", Budget: 42, Renderer: "gpu", WindowScale: 1, GameArguments: map[string]string{}},
 		},
 		{
 			name: "explicit CPU renderer",
 			args: []string{"-renderer", "cpu"},
-			want: krkrgocli.LaunchOptions{Budget: ^uint64(0), Renderer: "cpu", RenderScale: 1, GameArguments: map[string]string{}},
+			want: krkrgocli.LaunchOptions{Budget: ^uint64(0), Renderer: "cpu", WindowScale: 1, GameArguments: map[string]string{}},
 		},
 	}
 	for _, tt := range tests {

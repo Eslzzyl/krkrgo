@@ -16,20 +16,11 @@ type layerColor struct {
 }
 
 func nativeLayerDefaults(id tjs.ObjectID) *Layer {
-	return nativeLayerDefaultsScale(id, 1)
-}
-
-func nativeLayerDefaultsScale(id tjs.ObjectID, scale int32) *Layer {
-	if scale < 1 {
-		scale = 1
-	}
 	l := NewLayer(LayerID(id))
-	l.Scale = scale
 	l.Bounds = Rect{Width: nativeLayerDefaultSize, Height: nativeLayerDefaultSize}
 	l.Visible = false
 	l.HitThreshold = 16
-	deviceWidth, deviceHeight := nativeLayerDefaultSize*scale, nativeLayerDefaultSize*scale
-	l.RGBA = make([]byte, int(deviceWidth)*int(deviceHeight)*4)
+	l.RGBA = make([]byte, int(nativeLayerDefaultSize)*int(nativeLayerDefaultSize)*4)
 	fillLayerNeutral(l.RGBA, l.Type)
 	l.ImageWidth, l.ImageHeight = nativeLayerDefaultSize, nativeLayerDefaultSize
 	_ = l.SetClip(Rect{Width: nativeLayerDefaultSize, Height: nativeLayerDefaultSize})
@@ -170,7 +161,7 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 			s.mu.Unlock()
 			return tjs.VoidValue, fmt.Errorf("Layer count limit exceeded")
 		}
-		l := nativeLayerDefaultsScale(id, s.RenderScale)
+		l := nativeLayerDefaults(id)
 		parent, ownerID, err := s.layerOwnerAndParentLocked(args)
 		if err != nil {
 			s.mu.Unlock()
@@ -701,9 +692,8 @@ func (s *Services) attachRoot(l *Layer) error {
 	if l == nil {
 		return ErrInvalidLayer
 	}
-	l.SetScale(s.renderScale())
 	s.Root = l
-	s.Compositor = NewCompositorWithScale(l.Bounds.Width, l.Bounds.Height, s.renderScale())
+	s.Compositor = NewCompositor(l.Bounds.Width, l.Bounds.Height)
 	s.Compositor.SetRoot(l)
 	return nil
 }
@@ -717,10 +707,8 @@ func (s *Services) syncRootGeometry() {
 	if s.Root == nil || s.Compositor == nil {
 		return
 	}
-	scale := s.renderScale()
-	s.Compositor.Scale = scale
-	s.Compositor.Width = s.Root.Bounds.Width * scale
-	s.Compositor.Height = s.Root.Bounds.Height * scale
+	s.Compositor.Width = s.Root.Bounds.Width
+	s.Compositor.Height = s.Root.Bounds.Height
 	s.Compositor.SetRoot(s.Root)
 }
 
@@ -1389,13 +1377,10 @@ func layerPixel(l *Layer, x, y int32) ([]byte, error) {
 	if x < 0 || y < 0 || x >= l.ImageWidth || y >= l.ImageHeight {
 		return nil, fmt.Errorf("%w: pixel outside image", ErrInvalidLayer)
 	}
-	scale := l.RenderScale()
-	dx, dy := x*scale, y*scale
-	return l.RGBA[(int64(dy)*int64(l.deviceWidth())+int64(dx))*4:], nil
+	return l.RGBA[(int64(y)*int64(l.deviceWidth())+int64(x))*4:], nil
 }
 
-// fillLayerPixelBlock writes one logical pixel, covering the scale×scale
-// device block that represents it.
+// fillLayerPixelBlock writes one logical pixel.
 func fillLayerPixelBlock(l *Layer, x, y int32, value [4]byte) error {
 	if l == nil || len(l.RGBA) == 0 {
 		return fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
@@ -1403,15 +1388,9 @@ func fillLayerPixelBlock(l *Layer, x, y int32, value [4]byte) error {
 	if x < 0 || y < 0 || x >= l.ImageWidth || y >= l.ImageHeight {
 		return fmt.Errorf("%w: pixel outside image", ErrInvalidLayer)
 	}
-	scale := l.RenderScale()
 	deviceWidth := l.deviceWidth()
-	for sy := int32(0); sy < scale; sy++ {
-		row := (int64(y)*int64(scale) + int64(sy)) * int64(deviceWidth)
-		for sx := int32(0); sx < scale; sx++ {
-			offset := (row + int64(x)*int64(scale) + int64(sx)) * 4
-			copy(l.RGBA[offset:offset+4], value[:])
-		}
-	}
+	offset := (int64(y)*int64(deviceWidth) + int64(x)) * 4
+	copy(l.RGBA[offset:offset+4], value[:])
 	return nil
 }
 
@@ -1552,65 +1531,59 @@ func (s *Services) layerFillRect(l *Layer, operation string, args []tjs.Value, i
 	} else {
 		strength = max(0, min(strength, 255))
 	}
-	scale := l.RenderScale()
 	deviceWidth := l.deviceWidth()
 	for py := r.Y; py < r.Bottom(); py++ {
 		for px := r.X; px < r.Right(); px++ {
-			for sy := int32(0); sy < scale; sy++ {
-				for sx := int32(0); sx < scale; sx++ {
-					i := ((int64(py)*int64(scale)+int64(sy))*int64(deviceWidth) + int64(px)*int64(scale) + int64(sx)) * 4
-					p := l.RGBA[i : i+4]
-					if operation == "fillRect" || face == layerFaceMask {
-						switch face {
-						case layerFaceMask:
-							p[3] = c.b
-						case layerFaceOpaque:
-							p[0], p[1], p[2] = c.r, c.g, c.b
-							if !l.HoldAlpha {
-								p[3] = c.a
-							}
-						default:
-							p[0], p[1], p[2], p[3] = c.r, c.g, c.b, c.a
-						}
-						continue
+			i := (int64(py)*int64(deviceWidth) + int64(px)) * 4
+			p := l.RGBA[i : i+4]
+			if operation == "fillRect" || face == layerFaceMask {
+				switch face {
+				case layerFaceMask:
+					p[3] = c.b
+				case layerFaceOpaque:
+					p[0], p[1], p[2] = c.r, c.g, c.b
+					if !l.HoldAlpha {
+						p[3] = c.a
 					}
-					if removing {
-						p[3] = byte((int(p[3]) * (255 - strength)) >> 8)
-						continue
-					}
-					if strength == 255 {
-						p[0], p[1], p[2] = c.r, c.g, c.b
-						if face != layerFaceOpaque {
-							p[3] = 255
-						}
-						continue
-					}
-					switch face {
-					case layerFaceAlpha:
-						weight := straightAlphaWeight(p[3], byte(strength))
-						p[0] = byte(int(p[0]) + ((int(c.r)-int(p[0]))*weight)>>8)
-						p[1] = byte(int(p[1]) + ((int(c.g)-int(p[1]))*weight)>>8)
-						p[2] = byte(int(p[2]) + ((int(c.b)-int(p[2]))*weight)>>8)
-						p[3] = byte(255 - ((255-int(p[3]))*(255-strength))/255)
-					case layerFaceOpaque:
-						p[0] = byte((int(p[0])*(255-strength) + int(c.r)*strength) >> 8)
-						p[1] = byte((int(p[1])*(255-strength) + int(c.g)*strength) >> 8)
-						p[2] = byte((int(p[2])*(255-strength) + int(c.b)*strength) >> 8)
-					case layerFaceAddAlpha:
-						alpha := strength + (strength >> 7)
-						p[0] = byte(min(255, int(p[0])-((int(p[0])*alpha)>>8)+((int(c.r)*alpha)>>8)))
-						p[1] = byte(min(255, int(p[1])-((int(p[1])*alpha)>>8)+((int(c.g)*alpha)>>8)))
-						p[2] = byte(min(255, int(p[2])-((int(p[2])*alpha)>>8)+((int(c.b)*alpha)>>8)))
-						p[3] = byte(min(255, int(p[3])-((int(p[3])*alpha)>>8)+alpha))
-					}
+				default:
+					p[0], p[1], p[2], p[3] = c.r, c.g, c.b, c.a
 				}
+				continue
+			}
+			if removing {
+				p[3] = byte((int(p[3]) * (255 - strength)) >> 8)
+				continue
+			}
+			if strength == 255 {
+				p[0], p[1], p[2] = c.r, c.g, c.b
+				if face != layerFaceOpaque {
+					p[3] = 255
+				}
+				continue
+			}
+			switch face {
+			case layerFaceAlpha:
+				weight := straightAlphaWeight(p[3], byte(strength))
+				p[0] = byte(int(p[0]) + ((int(c.r)-int(p[0]))*weight)>>8)
+				p[1] = byte(int(p[1]) + ((int(c.g)-int(p[1]))*weight)>>8)
+				p[2] = byte(int(p[2]) + ((int(c.b)-int(p[2]))*weight)>>8)
+				p[3] = byte(255 - ((255-int(p[3]))*(255-strength))/255)
+			case layerFaceOpaque:
+				p[0] = byte((int(p[0])*(255-strength) + int(c.r)*strength) >> 8)
+				p[1] = byte((int(p[1])*(255-strength) + int(c.g)*strength) >> 8)
+				p[2] = byte((int(p[2])*(255-strength) + int(c.b)*strength) >> 8)
+			case layerFaceAddAlpha:
+				alpha := strength + (strength >> 7)
+				p[0] = byte(min(255, int(p[0])-((int(p[0])*alpha)>>8)+((int(c.r)*alpha)>>8)))
+				p[1] = byte(min(255, int(p[1])-((int(p[1])*alpha)>>8)+((int(c.g)*alpha)>>8)))
+				p[2] = byte(min(255, int(p[2])-((int(p[2])*alpha)>>8)+((int(c.b)*alpha)>>8)))
+				p[3] = byte(min(255, int(p[3])-((int(p[3])*alpha)>>8)+alpha))
 			}
 		}
 	}
 	l.imageModified = true
-	scale = l.RenderScale()
 	if r.Width > 0 && r.Height > 0 {
-		l.markImageDirtyRect(Rect{X: r.X * scale, Y: r.Y * scale, Width: r.Width * scale, Height: r.Height * scale})
+		l.markImageDirtyRect(Rect{X: r.X, Y: r.Y, Width: r.Width, Height: r.Height})
 	}
 	return nil
 }
@@ -1709,8 +1682,7 @@ func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) err
 		fg.A = byte(int(fg.A) * int(opacity) / 255)
 		foreground = fg
 	}
-	scale := l.RenderScale()
-	fontFace, e := s.fontFaceScaled(state, scale)
+	fontFace, e := s.fontFace(state)
 	if e != nil {
 		return e
 	}
@@ -1728,9 +1700,9 @@ func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) err
 	minX, minY, maxX, maxY := deviceWidth, deviceHeight, int32(-1), int32(-1)
 	for sy := range img.Rect.Dy() {
 		for sx := range img.Rect.Dx() {
-			dx, dy := int32(x)*scale+int32(sx), int32(y)*scale+int32(sy)
+			dx, dy := int32(x)+int32(sx), int32(y)+int32(sy)
 			if dx < 0 || dy < 0 || dx >= deviceWidth || dy >= deviceHeight ||
-				(l.clipSet && !clip.Contains(dx/scale, dy/scale)) {
+				(l.clipSet && !clip.Contains(dx, dy)) {
 				continue
 			}
 			si := (sy*img.Rect.Dx() + sx) * 4

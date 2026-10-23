@@ -904,44 +904,6 @@ func BenchmarkComposeAlphaOverOpaqueWithProvince(b *testing.B) {
 	}
 }
 
-func BenchmarkComposeFullFrameScale2(b *testing.B) {
-	const width, height = int32(1280), int32(720)
-	root := NewRootLayer(1, width, height)
-	root.SetScale(2)
-	layer := NewLayer(2)
-	layer.SetScale(2)
-	if err := layer.SetBounds(Rect{Width: width, Height: height}); err != nil {
-		b.Fatal(err)
-	}
-	rgba := make([]byte, int(width*height)*4)
-	for i := 0; i < len(rgba); i += 4 {
-		rgba[i], rgba[i+1], rgba[i+2], rgba[i+3] = 80, 120, 200, 180
-	}
-	if err := layer.SetRGBA(width, height, rgba); err != nil {
-		b.Fatal(err)
-	}
-	province := make([]byte, width*height)
-	for i := range province {
-		province[i] = byte(i%255 + 1)
-	}
-	if err := layer.SetProvince(width, height, province); err != nil {
-		b.Fatal(err)
-	}
-	if err := root.AddChild(layer); err != nil {
-		b.Fatal(err)
-	}
-	compositor := NewCompositorWithScale(width, height, 2)
-	compositor.SetRoot(root)
-	b.SetBytes(int64(width * height * 4 * 4))
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		if _, err := compositor.Compose(); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 func BenchmarkClearRGBA720p(b *testing.B) {
 	const width, height = int32(1280), int32(720)
 	color := [4]uint8{17, 83, 149, 211}
@@ -1071,56 +1033,6 @@ func TestComposeProvinceAlphaOverOpaqueMatchesScalar(t *testing.T) {
 		}
 		if got := frame.Province[i]; got != wantProvince {
 			t.Fatalf("province %d = %d, want %d", i, got, wantProvince)
-		}
-	}
-}
-
-func TestDrawScaledProvinceAlphaRowMatchesScalar(t *testing.T) {
-	const logicalWidth, logicalHeight = int32(4), int32(2)
-	layer := NewLayer(2)
-	layer.SetScale(2)
-	if err := layer.SetBounds(Rect{Width: logicalWidth, Height: logicalHeight}); err != nil {
-		t.Fatal(err)
-	}
-	source := []byte{
-		10, 20, 30, 0, 40, 50, 60, 64, 70, 80, 90, 128, 100, 110, 120, 255,
-		130, 140, 150, 255, 160, 170, 180, 255, 190, 200, 210, 255, 220, 230, 240, 255,
-	}
-	if err := layer.SetRGBA(logicalWidth, logicalHeight, source); err != nil {
-		t.Fatal(err)
-	}
-	province := []byte{11, 12, 13, 14, 15, 16, 17, 18}
-	if err := layer.SetProvince(logicalWidth, logicalHeight, province); err != nil {
-		t.Fatal(err)
-	}
-	const deviceWidth, deviceHeight = int32(8), int32(4)
-	got := make([]byte, deviceWidth*deviceHeight*4)
-	initial := make([]byte, len(got))
-	gotProvince := make([]byte, deviceWidth*deviceHeight)
-	for i := range deviceWidth * deviceHeight {
-		initial[i*4], initial[i*4+1], initial[i*4+2], initial[i*4+3] = 30, 90, 160, 255
-		gotProvince[i] = 9
-	}
-	copy(got, initial)
-	draw := drawContext{width: deviceWidth, height: deviceHeight, scale: 2, rgba: got, province: gotProvince}
-	if err := draw.drawLayerTo(layer, 0, 0, LayerAlpha); err != nil {
-		t.Fatal(err)
-	}
-	for y := range deviceHeight {
-		for x := range deviceWidth {
-			i := y*deviceWidth + x
-			want := append([]byte(nil), initial[i*4:i*4+4]...)
-			blendPixelForTarget(want, layer.RGBA[i*4:i*4+4], 255, LayerAlpha, LayerAlpha)
-			if got := got[i*4 : i*4+4]; !bytes.Equal(got, want) {
-				t.Fatalf("pixel (%d,%d) = %v, want %v", x, y, got, want)
-			}
-			wantProvince := byte(9)
-			if layer.RGBA[i*4+3] != 0 {
-				wantProvince = province[(int(y)/2)*int(logicalWidth)+int(x)/2]
-			}
-			if got := gotProvince[i]; got != wantProvince {
-				t.Fatalf("province (%d,%d) = %d, want %d", x, y, got, wantProvince)
-			}
 		}
 	}
 }

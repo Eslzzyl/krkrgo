@@ -38,21 +38,14 @@ func (f FrameSnapshot) Clone() FrameSnapshot {
 type Compositor struct {
 	Root          *Layer
 	Width, Height int32
-	Scale         int32
 	Background    [4]uint8
 }
 
 func NewCompositor(width, height int32) *Compositor {
-	return &Compositor{Width: width, Height: height, Scale: 1}
-}
-func NewCompositorWithScale(width, height, scale int32) *Compositor {
-	if scale < 1 {
-		scale = 1
-	}
-	return &Compositor{Width: width * scale, Height: height * scale, Scale: scale}
+	return &Compositor{Width: width, Height: height}
 }
 func NewCompositorWithRoot(root *Layer, width, height int32) *Compositor {
-	return &Compositor{Root: root, Width: width, Height: height, Scale: 1}
+	return &Compositor{Root: root, Width: width, Height: height}
 }
 func (c *Compositor) SetRoot(root *Layer)            { c.Root = root }
 func (c *Compositor) SetBackground(r, g, b, a uint8) { c.Background = [4]uint8{r, g, b, a} }
@@ -67,7 +60,7 @@ func (c *Compositor) canSkipBackgroundFill() bool {
 	if c.Root.Type == LayerEffect || c.Root.Type == LayerFilter {
 		return false
 	}
-	ax, ay := c.Root.Bounds.X*c.Root.RenderScale(), c.Root.Bounds.Y*c.Root.RenderScale()
+	ax, ay := c.Root.Bounds.X, c.Root.Bounds.Y
 	for _, child := range c.Root.children {
 		if opaqueFullCanvasLayer(child, ax, ay, c.Width, c.Height) {
 			return true
@@ -81,7 +74,6 @@ func opaqueFullCanvasLayer(layer *Layer, parentX, parentY, width, height int32) 
 		layer.clipSet || layer.Type == LayerBinder {
 		return false
 	}
-	scale := layer.RenderScale()
 	pixels := layer.RGBA
 	if layer.inTransition && layer.transitionOpaque {
 		pixels = layer.transitionPixels
@@ -92,16 +84,16 @@ func opaqueFullCanvasLayer(layer *Layer, parentX, parentY, width, height int32) 
 	if len(pixels) != int(uint64(width)*uint64(height)*4) {
 		return false
 	}
-	ax := parentX + layer.Bounds.X*scale
-	ay := parentY + layer.Bounds.Y*scale
-	drawWidth, drawHeight := layer.Bounds.Width*scale, layer.Bounds.Height*scale
+	ax := parentX + layer.Bounds.X
+	ay := parentY + layer.Bounds.Y
+	drawWidth, drawHeight := layer.Bounds.Width, layer.Bounds.Height
 	if drawWidth == 0 {
 		drawWidth = layer.deviceWidth()
 	}
 	if drawHeight == 0 {
 		drawHeight = layer.deviceHeight()
 	}
-	return ax+layer.ImageLeft*scale == 0 && ay+layer.ImageTop*scale == 0 &&
+	return ax+layer.ImageLeft == 0 && ay+layer.ImageTop == 0 &&
 		drawWidth == width && drawHeight == height &&
 		layer.deviceWidth() == width && layer.deviceHeight() == height
 }
@@ -146,7 +138,7 @@ func (c *Compositor) composeInto(rgba, province []byte, skipValidation bool) (Fr
 	}
 	clear(province)
 	f := FrameSnapshot{Width: c.Width, Height: c.Height, RGBA: rgba, Province: province}
-	ctx := drawContext{width: c.Width, height: c.Height, scale: c.Scale, rgba: f.RGBA, province: f.Province}
+	ctx := drawContext{width: c.Width, height: c.Height, rgba: f.RGBA, province: f.Province}
 	if err := ctx.drawLayer(c.Root, 0, 0); err != nil {
 		return FrameSnapshot{}, err
 	}

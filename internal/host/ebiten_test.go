@@ -209,7 +209,8 @@ func TestPresentationResizesWindowToNativeFrameDimensions(t *testing.T) {
 }
 func TestPresentationSkipsOnlyConfiguredInitialWindowResize(t *testing.T) {
 	var sizes [][2]int
-	game := NewGameWithInitialWindowSize(nil, 640, 480)
+	game := NewGameWithInitialWindowSize(nil, 640, 480, 1)
+	game.deviceScaleFactor = func() float64 { return 1 }
 	game.resizeWindow = func(width, height int) {
 		sizes = append(sizes, [2]int{width, height})
 	}
@@ -231,7 +232,8 @@ func TestPresentationSkipsOnlyConfiguredInitialWindowResize(t *testing.T) {
 
 func TestPresentationResizesWhenInitialFrameDiffersFromConfiguredSize(t *testing.T) {
 	var sizes [][2]int
-	game := NewGameWithInitialWindowSize(nil, 640, 480)
+	game := NewGameWithInitialWindowSize(nil, 640, 480, 1)
+	game.deviceScaleFactor = func() float64 { return 1 }
 	game.resizeWindow = func(width, height int) {
 		sizes = append(sizes, [2]int{width, height})
 	}

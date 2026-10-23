@@ -4035,16 +4035,6 @@ func motionTranslateCanvas(frame *assets.Image, offsetX, offsetY int) *assets.Im
 // layer bitmap. Destination pixels sample the source, so scaled transforms stay
 // gap-free; rotation and shearing are supported through the inverse transform.
 func drawMotionCanvasInto(layer *Layer, frame *assets.Image, matrix motionDrawMatrix, filter int64) {
-	scale := layer.RenderScale()
-	if scale > 1 {
-		frame = &assets.Image{
-			Width:  frame.Width * uint32(scale),
-			Height: frame.Height * uint32(scale),
-			RGBA:   scaleRGBA(frame.RGBA, int32(frame.Width), int32(frame.Height), scale),
-		}
-		matrix.tx *= float64(scale)
-		matrix.ty *= float64(scale)
-	}
 	width, height := int(layer.deviceWidth()), int(layer.deviceHeight())
 	canvasWidth, canvasHeight := int(frame.Width), int(frame.Height)
 	if width <= 0 || height <= 0 || canvasWidth <= 0 || canvasHeight <= 0 {

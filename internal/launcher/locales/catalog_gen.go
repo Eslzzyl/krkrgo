@@ -1062,26 +1062,6 @@ func (msgs Messages) Renderer() string {
 	return Catalog.Format(msgs.locale, "renderer", nil)
 }
 
-// RenderScale says "Render scale"
-// in the language the app shows.
-func RenderScale() string { return In(i18n.Locale()).RenderScale() }
-
-// RenderScale says "Render scale"
-// in the language of msgs.
-func (msgs Messages) RenderScale() string {
-	return Catalog.Format(msgs.locale, "renderScale", nil)
-}
-
-// FollowDisplay says "Follow display"
-// in the language the app shows.
-func FollowDisplay() string { return In(i18n.Locale()).FollowDisplay() }
-
-// FollowDisplay says "Follow display"
-// in the language of msgs.
-func (msgs Messages) FollowDisplay() string {
-	return Catalog.Format(msgs.locale, "followDisplay", nil)
-}
-
 // Unlimited says "Unlimited"
 // in the language the app shows.
 func Unlimited() string { return In(i18n.Locale()).Unlimited() }
@@ -1170,16 +1150,6 @@ func BudgetHint() string { return In(i18n.Locale()).BudgetHint() }
 // in the language of msgs.
 func (msgs Messages) BudgetHint() string {
 	return Catalog.Format(msgs.locale, "budgetHint", nil)
-}
-
-// RenderScaleHint says "Render scale (0 follows the display)"
-// in the language the app shows.
-func RenderScaleHint() string { return In(i18n.Locale()).RenderScaleHint() }
-
-// RenderScaleHint says "Render scale (0 follows the display)"
-// in the language of msgs.
-func (msgs Messages) RenderScaleHint() string {
-	return Catalog.Format(msgs.locale, "renderScaleHint", nil)
 }
 
 // CoverImage says "Cover image"

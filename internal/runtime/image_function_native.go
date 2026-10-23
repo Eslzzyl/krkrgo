@@ -280,7 +280,7 @@ func (s *Services) imageOperateRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, er
 		for x := dr.left; x < dr.right; x++ {
 			sx := sr.left + (x - dr.left)
 			sy := sr.top + (y - dr.top)
-			si := (int(sy)*int(src.deviceWidth()) + int(sx)*int(src.renderScale())) * 4
+			si := (int(sy)*int(src.deviceWidth()) + int(sx)) * 4
 			dstPixel := append([]byte(nil), dst.blockAt(int64(x), int64(y))...)
 			if err := imageBlend(dstPixel, source[si:si+4], mode, face, opa); err != nil {
 				return tjs.VoidValue, err
@@ -341,7 +341,7 @@ func (s *Services) imageStretch(dst, src *Bitmap, dstID, srcID tjs.ObjectID, dr,
 			if sy >= sr.bottom {
 				sy = sr.bottom - 1
 			}
-			si := (int(sy)*int(src.deviceWidth()) + int(sx)*int(src.renderScale())) * 4
+			si := (int(sy)*int(src.deviceWidth()) + int(sx)) * 4
 			dstPixel := append([]byte(nil), dst.blockAt(int64(x), int64(y))...)
 			if err := imageBlend(dstPixel, source[si:si+4], mode, face, opa); err != nil {
 				return err
@@ -447,7 +447,7 @@ func (s *Services) imageAffine(dst, src *Bitmap, dstID, srcID tjs.ObjectID, matr
 			}
 			sourceX := sr.left + int32(math.Floor(sx+0.5))
 			sourceY := sr.top + int32(math.Floor(sy+0.5))
-			si := (int(sourceY)*int(src.deviceWidth()) + int(sourceX)*int(src.renderScale())) * 4
+			si := (int(sourceY)*int(src.deviceWidth()) + int(sourceX)) * 4
 			dstPixel := append([]byte(nil), dst.blockAt(int64(x), int64(y))...)
 			blendPixelForTarget(dstPixel, source[si:si+4], uint8(opa), blendType, target)
 			dst.setBlock(int64(x), int64(y), dstPixel)
@@ -614,8 +614,6 @@ func (s *Services) imageFlip(vm *tjs.VM, args []tjs.Value, horizontal bool) (tjs
 	if !ok {
 		return tjs.VoidValue, nil
 	}
-	scale := b.renderScale()
-	rect.left, rect.top, rect.right, rect.bottom = rect.left*scale, rect.top*scale, rect.right*scale, rect.bottom*scale
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if horizontal {
@@ -711,8 +709,6 @@ func (s *Services) imageAdjustGamma(vm *tjs.VM, args []tjs.Value) (tjs.Value, er
 		}
 		return uint8(math.Round(result))
 	}
-	scale := b.renderScale()
-	clip.left, clip.top, clip.right, clip.bottom = clip.left*scale, clip.top*scale, clip.right*scale, clip.bottom*scale
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for y := clip.top; y < clip.bottom; y++ {
@@ -741,8 +737,6 @@ func (s *Services) imageGrayScale(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 	if !ok {
 		return tjs.VoidValue, nil
 	}
-	scale := b.renderScale()
-	clip.left, clip.top, clip.right, clip.bottom = clip.left*scale, clip.top*scale, clip.right*scale, clip.bottom*scale
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for y := clip.top; y < clip.bottom; y++ {
@@ -923,9 +917,6 @@ func (s *Services) imageBoxBlur(vm *tjs.VM, args []tjs.Value) (tjs.Value, error)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	source := append([]byte(nil), b.RGBA...)
-	scale := b.renderScale()
-	xblur, yblur = xblur*int64(scale), yblur*int64(scale)
-	clip.left, clip.top, clip.right, clip.bottom = clip.left*scale, clip.top*scale, clip.right*scale, clip.bottom*scale
 	for y := clip.top; y < clip.bottom; y++ {
 		for x := clip.left; x < clip.right; x++ {
 			minX, maxX := int64(x)-xblur, int64(x)+xblur
@@ -1064,7 +1055,6 @@ func (s *Services) imageDrawClip(vm *tjs.VM, args []tjs.Value, b *Bitmap, clipIn
 }
 
 func imageDrawMaskLocked(b *Bitmap, mask []byte, maskWidth, maskHeight, maskStride, pixelStride, alphaOffset int, maskScale int32, x, y int64, clip scriptRect, config imageDrawConfig) {
-	scale := b.renderScale()
 	if maskScale < 1 {
 		maskScale = 1
 	}
@@ -1072,11 +1062,11 @@ func imageDrawMaskLocked(b *Bitmap, mask []byte, maskWidth, maskHeight, maskStri
 	if !ok || config.opacity == 0 || maskWidth <= 0 || maskHeight <= 0 {
 		return
 	}
-	originX, originY := x*int64(scale), y*int64(scale)
-	left := max64(int64(clip.left)*int64(scale), originX)
-	top := max64(int64(clip.top)*int64(scale), originY)
-	right := min64(int64(clip.right)*int64(scale), originX+int64(maskWidth)*int64(maskScale))
-	bottom := min64(int64(clip.bottom)*int64(scale), originY+int64(maskHeight)*int64(maskScale))
+	originX, originY := x, y
+	left := max64(int64(clip.left), originX)
+	top := max64(int64(clip.top), originY)
+	right := min64(int64(clip.right), originX+int64(maskWidth)*int64(maskScale))
+	bottom := min64(int64(clip.bottom), originY+int64(maskHeight)*int64(maskScale))
 	if right <= left || bottom <= top {
 		return
 	}
@@ -1135,7 +1125,7 @@ func (s *Services) imageDrawText(vm *tjs.VM, args []tjs.Value) (tjs.Value, error
 		if state.Angle != 0 {
 			return tjs.VoidValue, imageFunctionUnsupported("rotated text")
 		}
-		face, faceErr := s.fontFaceScaled(&state, b.renderScale())
+		face, faceErr := s.fontFace(&state)
 		if faceErr != nil {
 			return tjs.VoidValue, faceErr
 		}
@@ -1147,7 +1137,7 @@ func (s *Services) imageDrawText(vm *tjs.VM, args []tjs.Value) (tjs.Value, error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if rasterized != nil {
-		imageDrawMaskLocked(b, rasterized.Pix, rasterized.Rect.Dx(), rasterized.Rect.Dy(), rasterized.Stride, 4, 3, b.renderScale(), config.x, config.y, config.clip, config)
+		imageDrawMaskLocked(b, rasterized.Pix, rasterized.Rect.Dx(), rasterized.Rect.Dy(), rasterized.Stride, 4, 3, 1, config.x, config.y, config.clip, config)
 		b.markDirty()
 	}
 	return tjs.VoidValue, nil

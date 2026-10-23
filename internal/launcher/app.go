@@ -46,7 +46,6 @@ type launcherApp struct {
 
 	budgetText     string
 	rendererChoice int
-	renderScale    float64
 
 	logGameID string
 	logLines  []string
@@ -207,7 +206,6 @@ func (a *launcherApp) syncFields() {
 	if game == nil {
 		a.budgetText = "0"
 		a.rendererChoice = 0
-		a.renderScale = 0
 		a.titleEditing = false
 		a.logGameID = ""
 		a.logLines = nil
@@ -219,7 +217,6 @@ func (a *launcherApp) syncFields() {
 	} else {
 		a.rendererChoice = 0
 	}
-	a.renderScale = float64(game.RenderScale)
 	a.titleEditing = false
 	a.logGameID = ""
 	a.logLines = nil

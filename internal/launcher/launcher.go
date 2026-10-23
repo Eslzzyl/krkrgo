@@ -38,7 +38,6 @@ type Game struct {
 	SaveDir      string `json:"saveDir,omitempty"`
 	Budget       uint64 `json:"budget,omitempty"`
 	Renderer     string `json:"renderer,omitempty"`
-	RenderScale  int    `json:"renderScale,omitempty"`
 	Cover        string `json:"cover,omitempty"`
 	AddedAt      int64  `json:"addedAt,omitempty"`
 	LastPlayedAt int64  `json:"lastPlayedAt,omitempty"`
@@ -88,9 +87,6 @@ func LoadCatalog(path string) (Catalog, error) {
 		}
 		if c.Games[i].Renderer == "" {
 			c.Games[i].Renderer = RendererGPU
-		}
-		if c.Games[i].RenderScale < 0 || c.Games[i].RenderScale > 4 {
-			c.Games[i].RenderScale = 0
 		}
 	}
 	return c, nil
@@ -242,9 +238,6 @@ func ValidateGame(g Game) error {
 	case "", RendererGPU, RendererCPU:
 	default:
 		return fmt.Errorf("unsupported renderer %q", g.Renderer)
-	}
-	if g.RenderScale < 0 || g.RenderScale > 4 {
-		return fmt.Errorf("render scale %d outside 0 through 4", g.RenderScale)
 	}
 	return nil
 }

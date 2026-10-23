@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"log"
+	"math"
 	"os"
 	"time"
 
@@ -83,6 +84,8 @@ type Game struct {
 	postStateHash         uint64
 	postStateValid        bool
 	outputScale           int
+	windowScale           float64
+	deviceScaleFactor     func() float64
 }
 
 type win32DialogIMECommit struct {
@@ -304,21 +307,23 @@ func NewCPUGame(session *runtime.Session) *Game {
 
 // NewCPUGameWithInitialWindowSize creates a CPU-rendered Game with a
 // preconfigured initial window size.
-func NewCPUGameWithInitialWindowSize(session *runtime.Session, width, height int) *Game {
+func NewCPUGameWithInitialWindowSize(session *runtime.Session, width, height int, windowScale float64) *Game {
 	game := newGameWithRenderer(session, rendererCPU)
 	game.initialWindowSizeSet = true
 	game.initialWindowWidth = width
 	game.initialWindowHeight = height
+	game.SetWindowScale(windowScale)
 	return game
 }
 
 // NewGameWithInitialWindowSize creates a Game when the caller has already
 // configured the Ebitengine window to the given initial size.
-func NewGameWithInitialWindowSize(session *runtime.Session, width, height int) *Game {
+func NewGameWithInitialWindowSize(session *runtime.Session, width, height int, windowScale float64) *Game {
 	game := newGameWithRenderer(session, rendererGPU)
 	game.initialWindowSizeSet = true
 	game.initialWindowWidth = width
 	game.initialWindowHeight = height
+	game.SetWindowScale(windowScale)
 	return game
 }
 
@@ -332,12 +337,20 @@ func newGameWithRenderer(session *runtime.Session, mode rendererMode) *Game {
 		runtimeEvents: make([]runtime.InputEvent, 0, len(trackedKeys)+8),
 		resizeWindow:  ebiten.SetWindowSize,
 		rendererMode:  mode,
+		outputScale:   1,
+		windowScale:   1,
+		poller:        InputPoller{scale: 1},
+		deviceScaleFactor: func() float64 {
+			if monitor := ebiten.Monitor(); monitor != nil {
+				return monitor.DeviceScaleFactor()
+			}
+			return 1
+		},
 	}
 	game.renderStats.enabled = os.Getenv("KRKRGO_RENDER_STATS") == "1"
 	game.renderStats.stallTrace = runtime.StallTraceEnabled()
 	if session != nil && session.Services != nil {
 		game.windowID = session.Services.MainWindow
-		game.poller.scale = session.Services.RenderScale
 	}
 	game.initTextComposer()
 	return game
@@ -689,8 +702,7 @@ func (g *Game) EnableUpscaler(mode Upscaler) {
 	}
 }
 
-// SetOutputScale sets the presentation scale used for window sizing. It is
-// separate from the runtime render scale when frame upscaling is active.
+// SetOutputScale sets the presentation scale used when frame upscaling is active.
 func (g *Game) SetOutputScale(scale int) {
 	if g == nil || scale < 1 {
 		return
@@ -704,6 +716,14 @@ func (g *Game) setOutputScale(scale int) {
 	}
 	g.outputScale = scale
 	g.poller.scale = int32(scale)
+}
+
+// SetWindowScale sets the requested physical window multiplier.
+func (g *Game) SetWindowScale(scale float64) {
+	if g == nil || scale <= 0 {
+		return
+	}
+	g.windowScale = scale
 }
 
 // Deallocate releases GPU presentation resources owned by the game.
@@ -1075,17 +1095,33 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 }
 
 func (g *Game) logicalWindowSize(width, height int) (int, int) {
-	scale := 1
-	if g != nil {
-		scale = g.outputScale
-		if scale < 1 && g.session != nil && g.session.Services != nil && g.session.Services.RenderScale > 1 {
-			scale = int(g.session.Services.RenderScale)
+	nominalW := width
+	nominalH := height
+	outputScale := 1.0
+	if g != nil && g.outputScale > 1 {
+		outputScale = float64(g.outputScale)
+		nominalW = int(math.Round(float64(width) / outputScale))
+		nominalH = int(math.Round(float64(height) / outputScale))
+	}
+
+	scale := 1.0
+	if g != nil && g.windowScale > 0 {
+		scale = g.windowScale
+	}
+
+	targetPhysW := float64(nominalW) * outputScale * scale
+	targetPhysH := float64(nominalH) * outputScale * scale
+
+	deviceScale := 1.0
+	if g != nil && g.deviceScaleFactor != nil {
+		if s := g.deviceScaleFactor(); s >= 1.0 {
+			deviceScale = s
 		}
 	}
-	if scale < 1 {
-		scale = 1
-	}
-	return width / scale, height / scale
+
+	winW := int(math.Round(targetPhysW / deviceScale))
+	winH := int(math.Round(targetPhysH / deviceScale))
+	return winW, winH
 }
 
 // Draw presents the latest runtime frame. Ebitengine applies Layout's logical
