@@ -125,7 +125,7 @@ func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Ho
 		return vm.Construct(class, args, host, budget)
 	}
 	legacyGlobal := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
-	initializeClasses, err := bindLegacyScriptFunctionsDeferred(vm, decoded, legacyGlobal, host, budget, sourceName)
+	_, err = bindLegacyScriptFunctionsDeferred(vm, decoded, legacyGlobal, host, budget, sourceName)
 	if err != nil {
 		return tjs.VoidValue, err
 	}
@@ -136,19 +136,12 @@ func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Ho
 		return setLegacyMemberWithRuntime(vm, receiver, name, value, flags, host, budget)
 	}
 	instanceOf, invalidate, isValid := legacyVMOps(vm, host, budget)
-	releaseClassInitializationDeferral := vm.DeferLegacyClassInitialization()
 	value, err := decoded.ExecuteLegacyWithContextAndConstructionAndMemberResolversAndVMOpsWithRoots(top, legacyGlobal, context, evaluate, invoke, construct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects)
-	releaseClassInitializationDeferral()
 	if err != nil {
 		if strings.Contains(err.Error(), "unsupported ") {
 			return tjs.VoidValue, fmt.Errorf("%w: compiled TJS2100 %v", ErrUnsupportedNative, err)
 		}
 		return tjs.VoidValue, err
-	}
-	if initializeClasses != nil {
-		if err := initializeClasses(); err != nil {
-			return tjs.VoidValue, fmt.Errorf("initialize compiled TJS2100 classes: %w", err)
-		}
 	}
 	if services, ok := host.(*Services); ok {
 		if err := services.installLegacyKAGHookNative(vm, budget); err != nil {
@@ -627,6 +620,11 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 			if err := vm.RegisterNativeStaticValue(owner, memberName, member); err != nil {
 				return fmt.Errorf("bind compiled function member %q: %w", memberName, err)
 			}
+			if parentType == 6 && object.ContextType != 6 && memberName == objectName(parent) {
+				if err := vm.SetLegacyClassConstructor(owner, member); err != nil {
+					return fmt.Errorf("record compiled class constructor %q: %w", memberName, err)
+				}
+			}
 			if err := registerClassInstanceMember(owner, memberName); err != nil {
 				return fmt.Errorf("register compiled instance member %q: %w", memberName, err)
 			}
@@ -874,7 +872,7 @@ func (s *Services) setScriptTextEncoding(encoding string) {
 	s.mu.Unlock()
 }
 
-func (s *Services) scriptsNative(vm *tjs.VM, operation string, args []tjs.Value, budget *uint64, resultNeeded bool) (tjs.Value, error) {
+func (s *Services) scriptsNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value, budget *uint64, resultNeeded bool) (tjs.Value, error) {
 	arg := func(index int) (tjs.Value, error) {
 		if index >= len(args) {
 			return tjs.VoidValue, fmt.Errorf("Scripts.%s: missing argument %d", operation, index)
@@ -1027,7 +1025,7 @@ func (s *Services) scriptsNative(vm *tjs.VM, operation string, args []tjs.Value,
 			}
 			callbackArgs[0] = tjs.StringValue(entry.Name)
 			callbackArgs[1] = entry.Value
-			value, err := vm.InvokeLegacy(callback, tjs.VoidValue, callbackArgs, s, budget, true)
+			value, err := vm.InvokeLegacy(callback, context, callbackArgs, s, budget, true)
 			if err != nil {
 				return tjs.VoidValue, err
 			}

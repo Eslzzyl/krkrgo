@@ -45,6 +45,20 @@ func TestBuiltinPluginLinksNormalizePathsCaseAndExtensions(t *testing.T) {
 	}
 }
 
+func TestVirtualMotionPluginsAreDiscoverableWithoutFiles(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	for _, name := range []string{"motionplayer.dll", "emoteplayer.dll"} {
+		value, err := session.Evaluate(`Storages.isExistentStorage("` + name + `")`)
+		if err != nil || value.IntegerValue() != 1 {
+			t.Fatalf("virtual plugin %s = %v, err=%v; want 1", name, value, err)
+		}
+	}
+	if _, err := session.Evaluate(`Plugins.link("motionplayer.dll"); typeof Motion.ResourceManager === "Object"`); err != nil {
+		t.Fatalf("link virtual motion plugin: %v", err)
+	}
+}
+
 func TestMigratedPluginLinksExposeTheirSurfaces(t *testing.T) {
 	services := DefaultServices()
 	session := NewSession(services, 100_000)

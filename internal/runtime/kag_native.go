@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/eslzzyl/krkrgo/internal/assets"
+	"github.com/eslzzyl/krkrgo/internal/core"
 	"github.com/eslzzyl/krkrgo/internal/kag"
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
@@ -515,6 +516,16 @@ func (s *Services) kagNativeCall(vm *tjs.VM, name string, context tjs.Value, arg
 			case KAGEventTag:
 				return kagEventValue(vm, event)
 			case KAGEventText:
+				if event.Token.Tag != nil && event.Token.Tag.Name == "emb" {
+					if err := p.injectKAGText(event.Text, core.SourceLocation{
+						Storage: event.Location.Storage,
+						Line:    event.Location.Line,
+						Column:  event.Location.Column,
+					}); err != nil {
+						return tjs.VoidValue, err
+					}
+					continue
+				}
 				p.legacyText = legacyKAGTextEvents(event)
 			case KAGEventNewline:
 				nextKind, hasNext := p.nextKAGTokenKind()

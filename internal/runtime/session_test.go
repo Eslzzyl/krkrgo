@@ -40,6 +40,41 @@ func TestSessionEvaluateAndBudget(t *testing.T) {
 	}
 }
 
+func TestTickRestartsKAGFlipHandler(t *testing.T) {
+	session := newScriptsTestSession(t, nil)
+	if _, err := session.Evaluate(`
+		global.kag = %[];
+		global.kag.count = 0;
+		global.kag.flipStartFlag = 0;
+		global.kag.handler = function(t) {
+			global.kag.count++;
+			global.kag.flipStartFlag = 0;
+			System.removeContinuousHandler(global.kag.handler);
+		};
+		global.kag.flipStart = function() {
+			if(!global.kag.flipStartFlag) {
+				global.kag.flipStartFlag = 1;
+				System.addContinuousHandler(global.kag.handler);
+			}
+		};
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Tick(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Tick(16); err != nil {
+		t.Fatal(err)
+	}
+	count, err := session.Evaluate("global.kag.count")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := count.IntegerValue(), int64(2); got != want {
+		t.Fatalf("KAG callback count = %d, want %d", got, want)
+	}
+}
+
 func TestSessionRegistersDefaultFontFaceGlobals(t *testing.T) {
 	services := DefaultServices()
 	services.FontSystem.DefaultFont = "Configured Default"

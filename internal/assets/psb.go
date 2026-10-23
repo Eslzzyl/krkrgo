@@ -22,7 +22,7 @@ type Resource struct {
 	Length        int    `json:"length"`
 }
 
-// Document is a PSB v2 or v3 structured-data document.
+// Document is a PSB v2, v3, or v4 structured-data document.
 type Document struct {
 	Version uint16      `json:"version"`
 	Root    Value       `json:"root"`
@@ -171,7 +171,7 @@ func decryptEmotePSB(data []byte, seed uint32) ([]byte, error) {
 	return out, nil
 }
 
-// ParsePSB decodes a bounded PSB v2 or v3 document.
+// ParsePSB decodes a bounded PSB v2, v3, or v4 document.
 func ParsePSB(data []byte) (*Document, error) {
 	magic, err := psbSlice(data, 0, 4)
 	if err != nil || string(magic) != "PSB\x00" {
@@ -181,7 +181,7 @@ func ParsePSB(data []byte) (*Document, error) {
 	if err != nil {
 		return nil, err
 	}
-	if version != 2 && version != 3 {
+	if version != 2 && version != 3 && version != 4 {
 		return nil, psbErr("unsupported version %d", version)
 	}
 	encrypted, err := psbUint(data, 6, 2)
@@ -194,6 +194,8 @@ func ParsePSB(data []byte) (*Document, error) {
 	headerLength := uint64(40)
 	if version == 3 {
 		headerLength = 44
+	} else if version == 4 {
+		headerLength = 56
 	}
 	var offsets [8]int
 	for i := range offsets {

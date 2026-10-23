@@ -237,6 +237,11 @@ func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string,
 		if err != nil {
 			return tjs.VoidValue, err
 		}
+		if vm != nil {
+			if object, ok := vm.Objects.Lookup(id); ok && object.Category == tjs.CategoryClass {
+				return tjs.VoidValue, nil
+			}
+		}
 		if s.Window(id) == nil {
 			if err := s.RegisterWindow(id, NewWindow()); err != nil {
 				return tjs.VoidValue, err
@@ -326,6 +331,8 @@ func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string,
 			return tjs.IntegerValue(windowBoolInt(window.DisableMove)), nil
 		case "enableNCMouseEvent":
 			return tjs.IntegerValue(windowBoolInt(window.EnableNCMouseEvent)), nil
+		case "enableTouch":
+			return tjs.IntegerValue(windowBoolInt(window.EnableTouch)), nil
 		case "exSystemMenu":
 			if window.ExSystemMenu.Kind() == tjs.KindVoid {
 				return tjs.NullValue, nil
@@ -535,6 +542,12 @@ func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string,
 				return tjs.VoidValue, e
 			}
 			window.EnableNCMouseEvent = value
+		case "enableTouch":
+			value, e := args[0].Truth()
+			if e != nil {
+				return tjs.VoidValue, e
+			}
+			window.EnableTouch = value
 		case "exSystemMenu":
 			if args[0].Kind() != tjs.KindObject {
 				return tjs.VoidValue, fmt.Errorf("Window.set:exSystemMenu requires an Object")

@@ -239,7 +239,7 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		return nil
 	}
 	memberReceiver := func(value Value) Value {
-		if value.Kind() != KindObject || value.IsNull() || table == nil || instanceOf == nil {
+		if value.Kind() != KindObject || value.IsNull() || table == nil {
 			return value
 		}
 		target, ok := table.Lookup(value.ObjectRef().Object)
@@ -253,12 +253,7 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		if !ok || context.Category != CategoryInstance {
 			return value
 		}
-		matched, err := instanceOf(thisContext, value)
-		if err != nil {
-			return value
-		}
-		sameClass, err := matched.Truth()
-		if err != nil || !sameClass {
+		if value.ObjectRef().HasBoundContext() {
 			return value
 		}
 		return ObjectValue(NewObjectRef(value.ObjectRef().Object, thisContext.ObjectRef().Object))
@@ -293,6 +288,23 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		var err error
 		if target == registerBase-2 {
 			value, err = read(thisContext, name, flags|MemberMustExist)
+			if err == nil && o.ContextType == 2 &&
+				thisContext.Kind() == KindObject && !thisContext.IsNull() &&
+				table != nil && value.Kind() == KindObject && !value.IsNull() {
+				contextObject, contextFound := table.Lookup(thisContext.ObjectRef().Object)
+				valueObject, valueFound := table.Lookup(value.ObjectRef().Object)
+				if contextFound && contextObject.Category == CategoryClass &&
+					valueFound && valueObject.Category == CategoryFunction {
+					globalValue, globalErr := read(global, name, flags)
+					if globalErr == nil {
+						if globalValue.Kind() == KindObject && !globalValue.IsNull() {
+							if globalObject, found := table.Lookup(globalValue.ObjectRef().Object); found && globalObject.Category == CategoryClass {
+								value = globalValue
+							}
+						}
+					}
+				}
+			}
 			if os.Getenv("KRKRGO_LEGACY_PROPERTY_TRACE") == "1" && errors.Is(err, ErrMemberNotFound) {
 				fmt.Printf("[legacy-property-read-miss] object=%d receiver=%v property=%q\n", object, thisContext, name)
 			}
@@ -706,7 +718,7 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 					if array.Kind() != KindObject || array.IsNull() {
 						return nil, fmt.Errorf("legacy intercode object %d code offset %d: %s spread argument is %s, not an array", object, in.Offset, label, array.TypeName())
 					}
-					length, e := dispatcher.Get(array, "count")
+					length, e := read(array, "count", 0)
 					if e != nil {
 						return nil, fmt.Errorf("legacy intercode object %d code offset %d: %s spread argument count: %w", object, in.Offset, label, e)
 					}
@@ -715,7 +727,7 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 						return nil, fmt.Errorf("legacy intercode object %d code offset %d: invalid %s spread argument count %s", object, in.Offset, label, length.Text())
 					}
 					for j := int64(0); j < n; j++ {
-						value, e := dispatcher.Get(array, fmt.Sprint(j))
+						value, e := read(array, fmt.Sprint(j), 0)
 						if e != nil {
 							return nil, fmt.Errorf("legacy intercode object %d code offset %d: %s spread argument %d: %w", object, in.Offset, label, j, e)
 						}

@@ -4,8 +4,6 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log"
-	"os"
 	"path/filepath"
 	stdruntime "runtime"
 	"strconv"
@@ -602,9 +600,8 @@ func (s *Services) invokeContinuousHandlers(vm *tjs.VM, tick uint64, budget *uin
 	}
 	s.mu.RUnlock()
 
-	trace := os.Getenv("KRKRGO_CONTINUOUS_TRACE") != ""
 	args := [1]tjs.Value{tjs.IntegerValue(int64(tick))}
-	for index, callback := range handlers {
+	for _, callback := range handlers {
 		ref := callback.ObjectRef()
 		if !continuousHandlerValid(vm, callback, ref) {
 			s.mu.Lock()
@@ -617,24 +614,7 @@ func (s *Services) invokeContinuousHandlers(vm *tjs.VM, tick uint64, budget *uin
 			s.mu.Unlock()
 			continue
 		}
-		started := time.Time{}
-		if trace {
-			started = time.Now()
-		}
 		_, err := vm.CallFunction(callback, tjs.VoidValue, args[:], s, budget)
-		if trace {
-			ref := callback.ObjectRef()
-			category := "unknown"
-			name := ""
-			if object, ok := vm.Objects.Lookup(ref.Object); ok && object != nil {
-				category = fmt.Sprint(object.Category)
-				if value, ok := object.Get("name"); ok {
-					name = value.Text()
-				}
-			}
-			log.Printf("continuous-handler index=%d function_id=%d context_id=%d category=%s name=%q duration=%s error=%v",
-				index, ref.Object, ref.Context, category, name, time.Since(started), err)
-		}
 		if err != nil {
 			s.mu.Lock()
 			for i, existing := range s.ContinuousHandlers {

@@ -22,9 +22,9 @@ func (v *VM) RegisterSerialization(plugin bool) error {
 				return e
 			}
 		}
-		methods := []string{"saveStruct"}
+		methods := []string{"loadStruct", "saveStruct"}
 		if class == "Array" {
-			methods = []string{"save", "load", "saveStruct"}
+			methods = []string{"save", "load", "loadStruct", "saveStruct"}
 		}
 		if plugin {
 			if class == "Array" {
@@ -212,6 +212,22 @@ func (v *VM) Serialize(value Value) (string, error) { return v.SerializeValue(va
 func (v *VM) serializationCall(name string, receiver Value, args []Value, h Host, b *uint64, needed bool) (Value, error) {
 	if !needed && strings.HasSuffix(name, "toStructString") {
 		return VoidValue, nil
+	}
+	if strings.HasSuffix(name, ".loadStruct") {
+		if len(args) == 0 {
+			return VoidValue, ErrBadParamCount
+		}
+		if h == nil {
+			return VoidValue, errors.New("loadStruct requires a VM host")
+		}
+		operation := "Serialization." + name
+		if rr, ok := h.(HostResult); ok {
+			return rr.CallWithResult(v, operation, receiver, args, b, needed)
+		}
+		if cc, ok := h.(HostContext); ok {
+			return cc.CallWithContext(v, operation, receiver, args, b)
+		}
+		return h.Call(v, operation, args, b)
 	}
 	core := strings.HasSuffix(name, ".save") || strings.HasSuffix(name, ".load") || strings.HasSuffix(name, ".saveStruct")
 	if strings.HasSuffix(name, ".toStructString") {

@@ -113,6 +113,28 @@ after = p.getNextTag();`
 	}
 }
 
+func TestKAGNativeGetNextTagExpandsEmbeddedKAGText(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+
+	source := `Plugins.link("plugin/KAGParser.dll");
+p = new KAGParser();
+p.loadScenario("embedded.ks", "[emb exp=\"'[foo a=1]'\" escape=false]\n[after]");
+first = p.getNextTag();
+second = p.getNextTag();`
+	if _, err := session.executeSource("<kag-native-embedded-tag-test>", source, false); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate(`first.tagname == "foo" && first.a == "1" && second.tagname == "after"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := value.Truth(); !ok {
+		detail, _ := session.Evaluate(`[first.tagname,first.a,second.tagname].join("|")`)
+		t.Fatalf("embedded KAG text was not parsed as a tag: %v (%v)", value, detail)
+	}
+}
+
 func TestKAGNativeGoToLabelVoidIsNoOp(t *testing.T) {
 	session := NewSession(DefaultServices(), 100_000)
 	defer session.Close()

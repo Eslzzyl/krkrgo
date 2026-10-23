@@ -2461,6 +2461,34 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		}
 		return context, nil
 	}
+	if name == "Serialization.Dictionary.loadStruct" || name == "Serialization.Array.loadStruct" {
+		if len(args) == 0 || args[0].Kind() != tjs.KindString {
+			return tjs.VoidValue, fmt.Errorf("%s requires a storage name", name)
+		}
+		data, err := s.readStorage(args[0].Text())
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		value, err := vm.DeserializePBD(data)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		if value.Kind() != tjs.KindObject || value.IsNull() {
+			return tjs.VoidValue, fmt.Errorf("%s loaded a non-object value", name)
+		}
+		object, ok := vm.Objects.Lookup(value.ObjectRef().Object)
+		if !ok {
+			return tjs.VoidValue, fmt.Errorf("%s loaded an unavailable object", name)
+		}
+		expected := tjs.CategoryDictionary
+		if name == "Serialization.Array.loadStruct" {
+			expected = tjs.CategoryArray
+		}
+		if object.Category != expected {
+			return tjs.VoidValue, fmt.Errorf("%s loaded an incompatible root type", name)
+		}
+		return value, nil
+	}
 
 	s.ensureInit()
 	if strings.HasPrefix(name, "Clipboard.") {
@@ -2470,7 +2498,7 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		return s.storagesNative(vm, strings.TrimPrefix(name, "Storages."), args, budget)
 	}
 	if strings.HasPrefix(name, "Scripts.") {
-		return s.scriptsNative(vm, strings.TrimPrefix(name, "Scripts."), args, budget, resultNeeded)
+		return s.scriptsNative(vm, context, strings.TrimPrefix(name, "Scripts."), args, budget, resultNeeded)
 	}
 	if strings.HasPrefix(name, "ImageFunction.") {
 		return s.imageFunctionNative(vm, strings.TrimPrefix(name, "ImageFunction."), args)

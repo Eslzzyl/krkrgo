@@ -30,6 +30,16 @@ type vmGlobalConstructionHost struct {
 	observed bool
 }
 
+type vmNativeClassBodyHost struct {
+	name    string
+	context Value
+}
+
+func (h *vmNativeClassBodyHost) Call(_ *VM, name string, _ []Value, _ *uint64) (Value, error) {
+	h.name = name
+	return VoidValue, nil
+}
+
 func (h *vmGlobalConstructionHost) Call(_ *VM, _ string, _ []Value, _ *uint64) (Value, error) {
 	return VoidValue, nil
 }
@@ -43,6 +53,12 @@ func (h *vmGlobalConstructionHost) CallWithContext(vm *VM, name string, context 
 		value, ok := global.Get("x")
 		h.observed = ok && value.StrictEqual(context)
 	}
+	return VoidValue, nil
+}
+
+func (h *vmNativeClassBodyHost) CallWithContext(_ *VM, name string, context Value, _ []Value, _ *uint64) (Value, error) {
+	h.name = name
+	h.context = context
 	return VoidValue, nil
 }
 
@@ -187,6 +203,37 @@ func TestLegacyClassConstructorRebindsClassClosureToInstance(t *testing.T) {
 	}
 }
 
+func TestLegacyClassMemberRebindsRegisteredClosureToInstance(t *testing.T) {
+	vm := NewVM()
+	_, classID, err := vm.alloc(CategoryClass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, instanceID, err := vm.alloc(CategoryInstance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm.meta[instanceID].classObject = classID
+	vm.Objects.RegisterClassInstance(instanceID, classID)
+
+	member := vm.Objects.New(CategoryDictionary)
+	classObject, err := vm.obj(classID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := classObject.Set("member", ObjectValue(NewObjectRef(member.ID, classID))); err != nil {
+		t.Fatal(err)
+	}
+
+	got, found, err := vm.getMember(instanceID, StringValue("member"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || got.Kind() != KindObject || got.ObjectRef().Object != member.ID || got.ObjectRef().Context != instanceID {
+		t.Fatalf("class member = %v, found=%t; want object %d bound to instance %d", got, found, member.ID, instanceID)
+	}
+}
+
 func TestLegacyClassCallKeepsNonCallableObjectsNonCallable(t *testing.T) {
 	vm := NewVM()
 	object, _, err := vm.alloc(CategoryDictionary)
@@ -216,6 +263,51 @@ func TestLegacyClassCallLinksClassBaseOnce(t *testing.T) {
 	}
 	if got := vm.meta[derivedID].classBases; len(got) != 1 || got[0] != baseID {
 		t.Fatalf("derived class bases = %v, want exactly [%d]", got, baseID)
+	}
+}
+
+func TestNativeClassCallInitializesScriptClassContext(t *testing.T) {
+	vm := NewVM()
+	base, err := vm.RegisterNativeClass("NativeBaseClassCallTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.RegisterNativeMethod(base, "@initialize", "NativeBaseClassCallTest.@initialize"); err != nil {
+		t.Fatal(err)
+	}
+	derived, err := vm.RegisterLegacyClass("NativeBaseClassCallDerivedTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &vmNativeClassBodyHost{}
+	if _, err := vm.InvokeLegacy(base, derived, nil, host, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if host.name != "NativeBaseClassCallTest.@initialize" || !host.context.StrictEqual(derived) {
+		t.Fatalf("native class initializer = %q context %v; want derived class context %v", host.name, host.context, derived)
+	}
+}
+
+func TestNativeClassCallInitializesInstanceContext(t *testing.T) {
+	vm := NewVM()
+	base, err := vm.RegisterNativeClass("NativeInstanceBaseCallTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.RegisterNativeMethod(base, "@initialize", "NativeInstanceBaseCallTest.@initialize"); err != nil {
+		t.Fatal(err)
+	}
+	instance, instanceID, err := vm.alloc(CategoryInstance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm.meta[instanceID].classObject = base.ObjectRef().Object
+	host := &vmNativeClassBodyHost{}
+	if _, err := vm.InvokeLegacy(base, instance, nil, host, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if host.name != "NativeInstanceBaseCallTest.@initialize" || !host.context.StrictEqual(instance) {
+		t.Fatalf("native instance initializer = %q context %v; want instance context %v", host.name, host.context, instance)
 	}
 }
 
@@ -1508,6 +1600,18 @@ return outer() == 2 && outer.local.items.count == 2;
 	truth, err := got.Truth()
 	if err != nil || !truth {
 		t.Fatalf("nested function member result = %v, %v; want true", got, err)
+	}
+}
+
+func TestVMHoistedFunctionKeepsNestedStaticMembers(t *testing.T) {
+	got := executeVMSource(t, `
+Outer.local.checked = false;
+function Outer() { function local {} }
+return Outer.local.checked === false;
+`)
+	truth, err := got.Truth()
+	if err != nil || !truth {
+		t.Fatalf("hoisted function member result = %v, %v; want true", got, err)
 	}
 }
 

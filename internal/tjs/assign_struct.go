@@ -46,13 +46,20 @@ func (v *VM) assignStructSourceID(value Value, category ObjectCategory) (ObjectI
 	}
 	ref := value.ObjectRef()
 	id := ref.Object
-	if ref.HasBoundContext() {
-		id = ref.Context
-	}
 	if err := v.validID(id); err != nil {
 		return 0, err
 	}
 	meta := v.meta[id]
+	object, objectOK := v.Objects.Lookup(id)
+	if objectOK && object.Category == category && (meta == nil || meta.category != category) {
+		if meta == nil {
+			meta = &vmObject{category: category}
+			v.idOrder = append(v.idOrder, id)
+		} else {
+			meta.category = category
+		}
+		v.meta[id] = meta
+	}
 	if meta == nil || meta.category != category {
 		return 0, errors.New("assignStruct requires a source of the same collection type")
 	}
@@ -185,9 +192,6 @@ func (v *VM) dictionaryAssign(receiver Value, args []Value, budget *uint64) (Val
 	}
 	ref := source.ObjectRef()
 	sourceID := ref.Object
-	if ref.HasBoundContext() {
-		sourceID = ref.Context
-	}
 	if err := v.validID(sourceID); err != nil {
 		return VoidValue, err
 	}

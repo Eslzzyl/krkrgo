@@ -74,6 +74,7 @@ var nativePluginProviders = map[string]string{
 	"layereximage.dll":   "link-only: the game's LayerEx.tjs helpers compose Layer's built-in pixel operations (layer_image.go); other extension operations report ErrUnsupportedNative",
 	"layerexraster.dll":  "link-only: callers guard on the missing Layer method, and Layer's built-in pixel operations (layer_image.go) are all the runtime claims; other extension operations report ErrUnsupportedNative",
 	"motionplayer.dll":   "Motion resource manager subset with layer/shape/play constants (motionplayer_native.go; cpp/plugins/motionplayer)",
+	"msdfrender.dll":     "link-only: the game-side embedded-font loader can continue with the host font path when the optional MSDF renderer is unavailable",
 	"menu.dll":           "MenuItem and Window menu surfaces (menu_native.go)",
 	"packinone.dll":      "component container for the ScriptsEx/saveStruct/csvParser/LayerExImage exports the runtime already provides (scripts_ex_native.go, tjs/serialization.go, csv_parser_native.go)",
 	"psbfile.dll":        "PSBFile (psbfile_native.go; cpp/plugins/psbfile)",
@@ -90,6 +91,15 @@ var nativePluginProviders = map[string]string{
 func isImplementedNativePlugin(key string) bool {
 	_, ok := nativePluginProviders[path.Base(key)]
 	return ok
+}
+
+func isVirtualNativePluginStorage(name string) bool {
+	switch path.Base(pluginLinkKey(name)) {
+	case "emoteplayer.dll", "motionplayer.dll":
+		return true
+	default:
+		return false
+	}
 }
 
 var ErrPluginName = errors.New("invalid plugin name")

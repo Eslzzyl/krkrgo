@@ -253,6 +253,24 @@ func (p *KAGParser) evaluateKAGValue(expression string, budget *uint64) (tjs.Val
 	return tjs.NewVM().Execute(&program, nil, localBudget)
 }
 
+func (p *KAGParser) injectKAGText(text string, location core.SourceLocation) error {
+	scenario, err := kag.Parse(location.Storage, text)
+	if err != nil {
+		return err
+	}
+	if len(scenario.Tokens) == 0 {
+		return nil
+	}
+	for index := range scenario.Tokens {
+		scenario.Tokens[index].Location = location
+	}
+	inserted := make([]kag.Token, 0, len(scenario.Tokens)+len(p.injectedTokens))
+	inserted = append(inserted, scenario.Tokens...)
+	inserted = append(inserted, p.injectedTokens...)
+	p.injectedTokens = inserted
+	return nil
+}
+
 func (p *KAGParser) invokeEvent(event KAGEvent) error {
 	if p.callbacks == nil {
 		return nil
@@ -981,6 +999,7 @@ func (p *KAGParser) LoadScenario(storage, source string) error {
 	p.state = newKAGState(scenario)
 	p.macroRanges = ranges
 	p.legacyText = nil
+	p.injectedTokens = nil
 	p.macroIndexErr = nil
 	p.conditions = nil
 	p.conditionCalls = nil

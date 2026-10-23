@@ -55,6 +55,7 @@ type WindowState struct {
 	DisableResize           bool
 	DisableMove             bool
 	EnableNCMouseEvent      bool
+	EnableTouch             bool
 	ExSystemMenu            tjs.Value // Script menu description retained by WindowEx.
 	DrawDeviceObject        tjs.Value // Script-visible draw-device object retained by Window.
 	Closed                  bool      // Close has been requested or the instance invalidated.

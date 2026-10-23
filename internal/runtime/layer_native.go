@@ -290,6 +290,11 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		l.CursorX, l.CursorY = x, y
 		s.mu.Unlock()
 		return tjs.VoidValue, nil
+	case "releaseCapture":
+		if window := layerWindowState(s, l); window != nil {
+			window.mouseCapture = [5]LayerID{}
+		}
+		return tjs.VoidValue, nil
 	case "beginTransition", "stopTransition":
 		return s.layerTransition(vm, context, operation, args, budget)
 	case "update":

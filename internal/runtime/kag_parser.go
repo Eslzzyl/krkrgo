@@ -32,6 +32,7 @@ type KAGParser struct {
 	macroIndexErr       error
 	crossCalls          []kagScenarioCallFrame
 	legacyText          []KAGEvent
+	injectedTokens      []kag.Token
 }
 
 // KAGParserEx is the name used by the native extension and is an alias so both
@@ -210,6 +211,7 @@ func (p *KAGParser) clear() error {
 	p.macroIndexErr = nil
 	p.crossCalls = nil
 	p.legacyText = nil
+	p.injectedTokens = nil
 	return nil
 }
 

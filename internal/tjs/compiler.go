@@ -2464,6 +2464,13 @@ func (c *compiler) statement() error {
 			c.localProperties = append(c.localProperties, property.Clone())
 		}
 		r := c.reg()
+		if !c.functionBody && c.scopeDepth == 0 && c.withDepth == 0 {
+			c.hoistGlobalProperty(t.loc, property, r, property.Name)
+			if c.p.eat(";") {
+				return nil
+			}
+			return nil
+		}
 		c.emit(t.loc, Op{Code: OpProperty, Out: r, extra: &opExtra{property: property}})
 		c.emit(t.loc, Op{Code: OpDeclare, Name: property.Name, Input: r})
 		c.hoistGlobalProperty(t.loc, property, r, property.Name)
@@ -2486,6 +2493,13 @@ func (c *compiler) statement() error {
 			c.localFunctions = append(c.localFunctions, fn.Clone())
 		}
 		r := c.reg()
+		if !c.functionBody && c.scopeDepth == 0 && c.withDepth == 0 {
+			c.hoistGlobalFunction(t.loc, fn, r, name)
+			if c.p.eat(";") {
+				return nil
+			}
+			return nil
+		}
 		c.emit(t.loc, Op{Code: OpFunction, Out: r, extra: &opExtra{function: fn}})
 		c.emit(t.loc, Op{Code: OpDeclare, Name: name, Input: r})
 		c.hoistGlobalFunction(t.loc, fn, r, name)

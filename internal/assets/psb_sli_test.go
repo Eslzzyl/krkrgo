@@ -7,8 +7,18 @@ import (
 )
 
 func minimalPSB(value []byte) []byte {
-	d := append([]byte("PSB\x00\x02\x00\x00\x00"), make([]byte, 32)...)
-	for i, n := range []uint32{40, 40, 46, 49, 49, 52, uint32(55 + len(value)), 55} {
+	return minimalPSBVersion(2, value)
+}
+
+func minimalPSBVersion(version uint16, value []byte) []byte {
+	headerLength := 40
+	if version == 3 {
+		headerLength = 44
+	} else if version == 4 {
+		headerLength = 56
+	}
+	d := append([]byte{'P', 'S', 'B', 0, byte(version), byte(version >> 8), 0, 0}, make([]byte, headerLength-8)...)
+	for i, n := range []uint32{uint32(headerLength), uint32(headerLength), uint32(headerLength + 6), uint32(headerLength + 9), uint32(headerLength + 9), uint32(headerLength + 12), uint32(headerLength + 15 + len(value)), uint32(headerLength + 15)} {
 		binary.LittleEndian.PutUint32(d[8+i*4:], n)
 	}
 	for range 5 {
@@ -34,6 +44,16 @@ func TestPSBScalarsAndLists(t *testing.T) {
 	got, ok := doc.Root.([]Value)
 	if !ok || len(got) != 2 || got[0] != true || got[1] != false {
 		t.Fatalf("list = %#v", doc.Root)
+	}
+}
+
+func TestPSBVersion4UsesExtendedHeader(t *testing.T) {
+	doc, err := ParsePSB(minimalPSBVersion(4, []byte{5, 0xff}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := doc.Root.(int64); !ok || got != -1 || doc.Version != 4 {
+		t.Fatalf("version 4 root = %#v, version=%d", doc.Root, doc.Version)
 	}
 }
 func TestPSBEmoteSeedDecryptsEqualOffsetRegion(t *testing.T) {

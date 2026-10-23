@@ -1,6 +1,7 @@
 package tjs
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,76 @@ d.a[0].n=9;
 return [s.a[0].n,d.a[1].n,typeof d.old,d.x,d.a[0]===d.a[1],d.a[0]===shared,d.self===null].join('|');`)
 	if want := "2|2|undefined|3|0|0|1"; got.Text() != want {
 		t.Fatalf("Dictionary.assignStruct = %q, want %q", got.Text(), want)
+	}
+}
+
+func TestVMDictionaryAssignStructImportsSharedTableSource(t *testing.T) {
+	vm := NewVM()
+	source := vm.Objects.New(CategoryDictionary)
+	if err := source.Set("value", IntegerValue(7)); err != nil {
+		t.Fatal(err)
+	}
+	target, err := vm.NewDictionary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.assignStructure(target, []Value{ObjectValue(source.Ref())}, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := vm.getMember(target.ObjectRef().Object, StringValue("value"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, intErr := got.Int()
+	if !ok || intErr != nil || value != 7 {
+		t.Fatalf("imported dictionary value = %v, present=%t; want 7", got, ok)
+	}
+}
+
+func TestVMDictionaryAssignImportsSharedTableArraySource(t *testing.T) {
+	vm := NewVM()
+	source := vm.Objects.New(CategoryArray)
+	for index, value := range []Value{StringValue("width"), IntegerValue(1920), StringValue("height"), IntegerValue(1080)} {
+		if err := source.SetString(strconv.Itoa(index), value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	target, err := vm.NewDictionary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.dictionaryAssign(target, []Value{ObjectValue(source.Ref())}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]int64{"width": 1920, "height": 1080} {
+		got, ok, err := vm.getMemberString(target.ObjectRef().Object, name)
+		if err != nil || !ok || got.IntegerValue() != want {
+			t.Fatalf("imported array pair %s = (%v, %v, %v), want %d", name, got, ok, err, want)
+		}
+	}
+}
+
+func TestVMDictionaryAssignStructKeepsSourceObjectWithGlobalContext(t *testing.T) {
+	vm := NewVM()
+	source := vm.Objects.New(CategoryDictionary)
+	if err := source.Set("value", IntegerValue(9)); err != nil {
+		t.Fatal(err)
+	}
+	target, err := vm.NewDictionary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceValue := ObjectValue(NewObjectRef(source.ID, 0))
+	if _, err := vm.assignStructure(target, []Value{sourceValue}, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := vm.getMember(target.ObjectRef().Object, StringValue("value"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, intErr := got.Int()
+	if !ok || intErr != nil || value != 9 {
+		t.Fatalf("global-context source value = %v, present=%t; want 9", got, ok)
 	}
 }
 
@@ -59,6 +130,31 @@ var keep=%[old:5];(Dictionary.assign incontextof keep)(["new",8,"odd"],false);
 return [source.child.n,typeof target.old,keep.old,keep.new,typeof keep.odd,target.child===source.child].join('|');`)
 	if want := "3|undefined|5|8|undefined|1"; got.Text() != want {
 		t.Fatalf("Dictionary.assign = %q, want %q", got.Text(), want)
+	}
+}
+
+func TestVMDictionaryAssignKeepsBoundSourceObject(t *testing.T) {
+	vm := NewVM()
+	source := vm.Objects.New(CategoryDictionary)
+	if err := source.Set("value", IntegerValue(11)); err != nil {
+		t.Fatal(err)
+	}
+	context := vm.Objects.New(CategoryNative)
+	target, err := vm.NewDictionary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceValue := ObjectValue(NewObjectRef(source.ID, context.ID))
+	if _, err := vm.dictionaryAssign(target, []Value{sourceValue}, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := vm.getMember(target.ObjectRef().Object, StringValue("value"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, intErr := got.Int()
+	if !ok || intErr != nil || value != 11 {
+		t.Fatalf("bound source value = %v, present=%t; want 11", got, ok)
 	}
 }
 

@@ -29,6 +29,28 @@ func TestNativeWindowResizeBaseCallback(t *testing.T) {
 		t.Fatalf("non-Window onResize error = %v, want missing member", err)
 	}
 }
+
+func TestWindowMainWindowSkipsClassConstructorContexts(t *testing.T) {
+	session := NewSession(DefaultServices(), 20_000)
+	defer session.Close()
+	if _, err := session.Evaluate(`
+class DerivedWindow extends Window {
+	function DerivedWindow() { super.Window(); }
+}
+window = new DerivedWindow();
+`); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := session.Evaluate("Window.mainWindow === window"); err != nil {
+		t.Fatal(err)
+	} else if got := value.Text(); got != "1" {
+		t.Fatalf("Window.mainWindow === window = %s, want 1", got)
+	}
+	if len(session.Services.WindowObjects) != 1 {
+		t.Fatalf("registered windows = %d, want 1", len(session.Services.WindowObjects))
+	}
+}
+
 func TestNativeWindowSessionPropertiesAndTransitions(t *testing.T) {
 	services := DefaultServices()
 	session := NewSession(services, 10_000)
@@ -71,6 +93,7 @@ func TestNativeWindowSessionPropertiesAndTransitions(t *testing.T) {
 		`window.disableResize = true`,
 		`window.disableMove = true`,
 		`window.enableNCMouseEvent = true`,
+		`window.enableTouch = true`,
 		`window.registerExEvent()`,
 		`window.bringToFront()`,
 	} {
@@ -81,7 +104,7 @@ func TestNativeWindowSessionPropertiesAndTransitions(t *testing.T) {
 	if window.Caption != "runtime" || window.Left != 30 || window.Top != 40 || window.Width() != 320 || window.Height() != 240 {
 		t.Fatalf("window state = %#v", window)
 	}
-	if !window.DisableResize || !window.DisableMove || !window.EnableNCMouseEvent || !window.ExEvents[2] {
+	if !window.DisableResize || !window.DisableMove || !window.EnableNCMouseEvent || !window.EnableTouch || !window.ExEvents[2] {
 		t.Fatalf("WindowEx state = %#v", window)
 	}
 	evalInt := func(source string) int64 {

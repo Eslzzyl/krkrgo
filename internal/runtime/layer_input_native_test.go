@@ -94,6 +94,46 @@ try { button.update(0, 0, 0); } catch(e) { invalidUpdate = true; }
 	}
 }
 
+func TestLayerReleaseCaptureClearsWindowMouseCapture(t *testing.T) {
+	session := NewSession(DefaultServices(), 20_000)
+	defer session.Close()
+	if _, err := session.executeSource("<layer-release-capture>", `
+window = new Window();
+root = new Layer(window);
+root.setSize(40, 40);
+root.visible = true;
+root.hitThreshold = 0;
+button = new Layer(window, root);
+button.setPos(10, 10);
+button.setSize(10, 10);
+button.visible = true;
+button.hitThreshold = 0;
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	windowValue, err := session.Evaluate("window")
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowID := windowValue.ObjectRef().Object
+	windowState := session.Services.Window(windowID)
+	if windowState == nil {
+		t.Fatal("window state missing")
+	}
+	if err := session.Input(uint64(windowID), PointerDown(15, 15, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if windowState.mouseCapture[0] == 0 {
+		t.Fatal("mouse capture was not recorded")
+	}
+	if _, err := session.Evaluate("window.primaryLayer.releaseCapture()"); err != nil {
+		t.Fatal(err)
+	}
+	if windowState.mouseCapture != [5]LayerID{} {
+		t.Fatalf("mouse capture after release = %v, want empty", windowState.mouseCapture)
+	}
+}
+
 func TestLayerUpdateDispatchesOnPaintAtFrameCapture(t *testing.T) {
 	session := NewSession(DefaultServices(), 10_000)
 	defer session.Close()

@@ -320,7 +320,7 @@ func (s *Session) registerNatives() error {
 			return err
 		}
 	}
-	for _, property := range []string{"caption", "visible", "minimized", "maximized", "left", "top", "layerLeft", "layerTop", "width", "height", "innerWidth", "innerHeight", "borderStyle", "fullScreen", "fitToClient", "zoom", "zoomNumer", "zoomDenom", "mouseCursor", "mouseCursorState", "disableResize", "disableMove", "enableNCMouseEvent", "exSystemMenu", "windowRect", "clientRect", "normalRect", "drawDevice", "focusedLayer", "primaryLayer"} {
+	for _, property := range []string{"caption", "visible", "minimized", "maximized", "left", "top", "layerLeft", "layerTop", "width", "height", "innerWidth", "innerHeight", "borderStyle", "fullScreen", "fitToClient", "zoom", "zoomNumer", "zoomDenom", "mouseCursor", "mouseCursorState", "disableResize", "disableMove", "enableNCMouseEvent", "enableTouch", "exSystemMenu", "windowRect", "clientRect", "normalRect", "drawDevice", "focusedLayer", "primaryLayer"} {
 		setter := "Window.set:" + property
 		switch property {
 		case "windowRect", "clientRect", "normalRect", "primaryLayer":
@@ -340,7 +340,7 @@ func (s *Session) registerNatives() error {
 	if err != nil {
 		return err
 	}
-	for _, method := range []string{"@initialize", "@invalidate", "Layer", "finalize", "update", "setCursorPos", "setPos", "setSize", "setSizeToImageSize", "setImageSize", "setImagePos", "setClip", "resetClip", "loadImages", "loadProvinceImage", "saveLayerImage", "piledCopy", "pileRect", "fillRect", "colorRect", "copyRect", "operateRect", "stretchCopy", "affineCopy", "assignImages", "doBoxBlur", "adjustGamma", "doGrayScale", "drawText", "bringToFront", "move", "addChild", "removeChild", "getLayerAt", "getMainPixel", "setMainPixel", "getMaskPixel", "setMaskPixel", "getProvincePixel", "setProvincePixel", "setMode", "removeMode", "focus", "beginTransition", "stopTransition", "openMovie", "startMovie", "stopMovie", "isPlayingMovie", "onMouseMove", "onHitTest", "onMouseDown", "onMouseUp", "onClick", "onDoubleClick", "onMouseEnter", "onMouseLeave", "onMouseWheel", "onKeyDown", "onKeyUp", "onKeyPress", "onFocus", "onBlur", "onBeforeFocus", "onSearchPrevFocusable", "onSearchNextFocusable", "onNodeEnabled", "onNodeDisabled", "onTouchDown", "onTouchUp", "onTouchMove", "onTouchScaling", "onTouchRotate", "onMultiTouch", "onTransitionCompleted", "onPaint"} {
+	for _, method := range []string{"@initialize", "@invalidate", "Layer", "finalize", "update", "setCursorPos", "releaseCapture", "setPos", "setSize", "setSizeToImageSize", "setImageSize", "setImagePos", "setClip", "resetClip", "loadImages", "loadProvinceImage", "saveLayerImage", "piledCopy", "pileRect", "fillRect", "colorRect", "copyRect", "operateRect", "stretchCopy", "affineCopy", "assignImages", "doBoxBlur", "adjustGamma", "doGrayScale", "drawText", "bringToFront", "move", "addChild", "removeChild", "getLayerAt", "getMainPixel", "setMainPixel", "getMaskPixel", "setMaskPixel", "getProvincePixel", "setProvincePixel", "setMode", "removeMode", "focus", "beginTransition", "stopTransition", "openMovie", "startMovie", "stopMovie", "isPlayingMovie", "onMouseMove", "onHitTest", "onMouseDown", "onMouseUp", "onClick", "onDoubleClick", "onMouseEnter", "onMouseLeave", "onMouseWheel", "onKeyDown", "onKeyUp", "onKeyPress", "onFocus", "onBlur", "onBeforeFocus", "onSearchPrevFocusable", "onSearchNextFocusable", "onNodeEnabled", "onNodeDisabled", "onTouchDown", "onTouchUp", "onTouchMove", "onTouchScaling", "onTouchRotate", "onMultiTouch", "onTransitionCompleted", "onPaint"} {
 		if err := s.VM.RegisterNativeMethod(layer, method, "Layer."+method); err != nil {
 			return err
 		}
@@ -870,8 +870,15 @@ func (s *Session) executeStartupScripts() (tjs.Value, error) {
 		}
 	}
 
+	_, startupResolvedErr := s.Services.Storage.Resolve("startup.tjs")
 	startupValue, startupErr := s.executeStorage("startup.tjs", true)
-	if startupErr != nil {
+	if startupResolvedErr == nil {
+		if startupErr != nil {
+			return tjs.VoidValue, startupErr
+		}
+	} else if !errors.Is(startupResolvedErr, assets.ErrNotFound) {
+		return tjs.VoidValue, startupResolvedErr
+	} else if startupErr != nil {
 		log.Printf("krkrgo: startup primary failure: %v", startupErr)
 		if _, err := s.Services.Storage.Resolve("system/Initialize.tjs"); err != nil {
 			return tjs.VoidValue, startupErr
@@ -1090,6 +1097,34 @@ func (s *Session) Evaluate(source string) (tjs.Value, error) {
 	}
 	return s.VM.Execute(&program, s.Services, &s.Budget)
 }
+
+func (s *Session) ensureKAGFrameHandler() error {
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
+	kag, found, err := s.VM.GetMemberIfPresent(global, "kag", s.Services, &s.Budget)
+	if err != nil || !found || kag.Kind() != tjs.KindObject || kag.IsNull() {
+		return err
+	}
+	flipStart, found, err := s.VM.GetMemberIfPresent(kag, "flipStart", s.Services, &s.Budget)
+	if err != nil || !found || flipStart.IsVoid() || flipStart.Kind() != tjs.KindObject || flipStart.IsNull() {
+		return err
+	}
+	flipStartFlag, flagFound, err := s.VM.GetMemberIfPresent(kag, "flipStartFlag", s.Services, &s.Budget)
+	if err != nil {
+		return err
+	}
+	if flagFound {
+		active, truthErr := flipStartFlag.Truth()
+		if truthErr != nil {
+			return truthErr
+		}
+		if active {
+			return nil
+		}
+	}
+	_, err = s.VM.CallFunction(flipStart, kag, nil, s.Services, &s.Budget)
+	return err
+}
+
 func (s *Session) AdvanceClock(timeMS uint64) error {
 	if err := s.checkOpen(); err != nil {
 		return err
@@ -1131,6 +1166,11 @@ func (s *Session) AdvanceClock(timeMS uint64) error {
 	if profile {
 		schedulerTime = time.Since(stageStarted)
 		stageStarted = time.Now()
+	}
+	s.Services.TimeMS = timeMS
+	s.Services.clockPolls = 0
+	if err := s.ensureKAGFrameHandler(); err != nil {
+		return err
 	}
 	if err := s.Services.invokeContinuousHandlers(s.VM, timeMS, &s.Budget); err != nil {
 		return err
@@ -1207,8 +1247,6 @@ func (s *Session) AdvanceClock(timeMS uint64) error {
 				elapsed, timersTime, schedulerTime, schedulerCallbacks, continuousTime, videosTime, videoCount, soundsTime, soundCount, transitionsTime)
 		}
 	}
-	s.Services.TimeMS = timeMS
-	s.Services.clockPolls = 0
 	return nil
 }
 func (s *Session) queueSoundEventsAfterMix() error {

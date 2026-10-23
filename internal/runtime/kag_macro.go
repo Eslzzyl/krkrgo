@@ -173,6 +173,11 @@ func expandKAGToken(token kag.Token, pmacros map[string][]kag.Attribute, args ma
 }
 
 func (p *KAGParser) nextKAGToken() *kag.Token {
+	if len(p.injectedTokens) != 0 {
+		token := &p.injectedTokens[0]
+		p.injectedTokens = p.injectedTokens[1:]
+		return token
+	}
 	for len(p.macroFrames) != 0 {
 		last := len(p.macroFrames) - 1
 		frame := &p.macroFrames[last]
@@ -192,6 +197,9 @@ func (p *KAGParser) nextKAGToken() *kag.Token {
 	return &expanded
 }
 func (p *KAGParser) nextKAGTokenKind() (kag.Kind, bool) {
+	if len(p.injectedTokens) != 0 {
+		return p.injectedTokens[0].Kind, true
+	}
 	for i := len(p.macroFrames) - 1; i >= 0; i-- {
 		frame := &p.macroFrames[i]
 		if frame.position < len(frame.tokens) {

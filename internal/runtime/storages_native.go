@@ -207,6 +207,9 @@ func (s *Services) storagesNative(vm *tjs.VM, operation string, args []tjs.Value
 	if err != nil {
 		return tjs.VoidValue, err
 	}
+	if operation == "isExistentStorage" && isVirtualNativePluginStorage(name) {
+		return tjs.IntegerValue(1), nil
+	}
 	storage := storagesStorage(s)
 	if storage == nil && !(operation == "isExistentStorage" && s != nil && s.SaveDir != "") && !(operation == "isExistentStorage" && isVarStorage(name) && s != nil && s.varStorageVM != nil) {
 		return tjs.VoidValue, UnsupportedDevice("storage")
