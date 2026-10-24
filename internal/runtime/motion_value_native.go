@@ -12,6 +12,9 @@ type motionValueObjectState struct {
 	cache         map[string]tjs.Value
 	buffer        []byte
 	managedLayers map[string]tjs.Value
+	layerScratch  map[string]tjs.Value
+	layerCounts   map[motionSeparateLayerBaseKey]int
+	layerRetired  map[tjs.ObjectID]tjs.Value
 }
 
 func newMotionValueObjectState(class string) *motionValueObjectState {

@@ -1,6 +1,8 @@
 package host
 
 import (
+	"image"
+	"reflect"
 	"testing"
 
 	runtime "github.com/eslzzyl/krkrgo/internal/runtime"
@@ -62,6 +64,42 @@ func TestGPUCompositorComposeCreatesNativeTarget(t *testing.T) {
 	}
 }
 
+func TestMotionGroupBoundsCropsOffscreenTargets(t *testing.T) {
+	group := &runtime.RenderMotionGroup{
+		Items: []runtime.RenderMotionItem{{Draw: runtime.RenderMotionDraw{
+			Width: 12, Height: 8, A: 1, D: 1, TX: 96, TY: 72,
+		}}},
+		Masks: []runtime.RenderMotionMask{{Items: []runtime.RenderMotionItem{{Draw: runtime.RenderMotionDraw{
+			Width: 4, Height: 6, A: 1, D: 1, TX: 104, TY: 76,
+		}}}}},
+	}
+	got := motionBoundsRect(motionGroupBounds(group), 0, 0, 320, 240)
+	want := image.Rect(96, 72, 108, 80)
+	if got != want {
+		t.Fatalf("motion group crop = %v, want %v", got, want)
+	}
+}
+
+func TestMotionGroupBoundsKeepsMaskOnlyWhenOperationAddsAlpha(t *testing.T) {
+	content := runtime.RenderMotionItem{Draw: runtime.RenderMotionDraw{
+		Width: 8, Height: 8, A: 1, D: 1, TX: 10, TY: 10,
+	}}
+	mask := runtime.RenderMotionItem{Draw: runtime.RenderMotionDraw{
+		Width: 6, Height: 6, A: 1, D: 1, TX: 30, TY: 30,
+	}}
+	group := &runtime.RenderMotionGroup{
+		Items: []runtime.RenderMotionItem{content},
+		Masks: []runtime.RenderMotionMask{{Items: []runtime.RenderMotionItem{mask}, Operation: 1}},
+	}
+	if got, want := motionBoundsRect(motionGroupBounds(group), 0, 0, 64, 64), image.Rect(10, 10, 18, 18); got != want {
+		t.Fatalf("threshold mask crop = %v, want %v", got, want)
+	}
+	group.Masks[0].Operation = 5
+	if got, want := motionBoundsRect(motionGroupBounds(group), 0, 0, 64, 64), image.Rect(10, 10, 36, 36); got != want {
+		t.Fatalf("union mask crop = %v, want %v", got, want)
+	}
+}
+
 func TestGPUCompositorComposesDeferredMotionTarget(t *testing.T) {
 	compositor, err := NewGPUCompositor()
 	if err != nil {
@@ -102,6 +140,61 @@ func TestGPUCompositorComposesDeferredMotionTarget(t *testing.T) {
 	}
 }
 
+func TestDirectMotionAlphaMatchesGroupedComposition(t *testing.T) {
+	draw := runtime.RenderMotionDraw{
+		SourceKey: "motion/direct-alpha",
+		RGBA:      []byte{255, 0, 0, 255},
+		Width:     1,
+		Height:    1,
+		A:         1,
+		D:         1,
+		Opacity:   128,
+	}
+	plan := func(grouped bool) runtime.RenderPlan {
+		motion := &runtime.RenderMotion{Draws: []runtime.RenderMotionDraw{draw}}
+		if grouped {
+			motion.Items = []runtime.RenderMotionItem{{Group: &runtime.RenderMotionGroup{
+				Items: []runtime.RenderMotionItem{{Draw: draw}},
+			}}}
+		}
+		return runtime.RenderPlan{
+			Width: 2, Height: 1, Background: [4]uint8{10, 20, 30, 255},
+			ChildIndices: []int{1},
+			Nodes: []runtime.RenderNode{
+				{ID: 1, Type: runtime.LayerBinder, Visible: true, Opacity: 255, ChildCount: 1},
+				{ID: 2, Bounds: runtime.Rect{Width: 1, Height: 1}, Type: runtime.LayerAlpha, Visible: true, Opacity: 255,
+					ImageWidth: 1, ImageHeight: 1, Motion: motion},
+			},
+		}
+	}
+	compose := func(plan runtime.RenderPlan) (bool, float32) {
+		compositor, err := NewGPUCompositor()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer compositor.Deallocate()
+		if _, err := compositor.Compose(plan); err != nil {
+			t.Fatal(err)
+		}
+		var alpha float32
+		if len(compositor.motionVertices) != 0 {
+			alpha = compositor.motionVertices[0].ColorA
+		}
+		return compositor.motionTargets[2] != nil, alpha
+	}
+	directTarget, directAlpha := compose(plan(false))
+	groupedTarget, _ := compose(plan(true))
+	if directTarget {
+		t.Fatal("direct alpha Motion allocated an intermediate target")
+	}
+	if !groupedTarget {
+		t.Fatal("grouped Motion did not retain the intermediate target")
+	}
+	if want := float32(128) / 255; directAlpha != want {
+		t.Fatalf("direct alpha vertex = %g, want %g", directAlpha, want)
+	}
+}
+
 func TestGPUCompositorPacksMotionSourcesIntoReusableAtlas(t *testing.T) {
 	compositor, err := NewGPUCompositor()
 	if err != nil {
@@ -120,6 +213,7 @@ func TestGPUCompositorPacksMotionSourcesIntoReusableAtlas(t *testing.T) {
 			ImageWidth:  2,
 			ImageHeight: 1,
 			Motion: &runtime.RenderMotion{
+				Filter: 1,
 				Draws: []runtime.RenderMotionDraw{
 					{SourceKey: "motion/a", RGBA: []byte{255, 0, 0, 255}, Width: 1, Height: 1, A: 1, D: 1, Opacity: 255},
 					{SourceKey: "motion/b", RGBA: []byte{0, 255, 0, 255}, Width: 1, Height: 1, A: 1, D: 1, Opacity: 255},
@@ -137,8 +231,11 @@ func TestGPUCompositorPacksMotionSourcesIntoReusableAtlas(t *testing.T) {
 	if len(atlas.entries) != 2 {
 		t.Fatalf("motion atlas entries = %d, want 2", len(atlas.entries))
 	}
-	if got := atlas.texture.Bounds().Dy(); got != 2 {
-		t.Fatalf("motion atlas height = %d, want 2", got)
+	if got := atlas.texture.Bounds().Dy(); got != 8 {
+		t.Fatalf("motion atlas height = %d, want 8", got)
+	}
+	if first, second := atlas.entries["motion/a"], atlas.entries["motion/b"]; first.storage.Intersect(second.storage).Dx() != 0 || first.storage.Intersect(second.storage).Dy() != 0 {
+		t.Fatalf("motion atlas storage overlaps: first=%v second=%v", first.storage, second.storage)
 	}
 	texture := atlas.texture
 	views := map[string]*ebiten.Image{
@@ -154,6 +251,182 @@ func TestGPUCompositorPacksMotionSourcesIntoReusableAtlas(t *testing.T) {
 	if compositor.motionAtlases[7].entries["motion/a"].view != views["a"] ||
 		compositor.motionAtlases[7].entries["motion/b"].view != views["b"] {
 		t.Fatal("unchanged motion sources replaced atlas views")
+	}
+}
+
+func TestMotionPaddedUploadReplicatesEdges(t *testing.T) {
+	compositor := &GPUCompositor{}
+	src := []byte{
+		10, 20, 30, 255, 40, 50, 60, 128,
+		70, 80, 90, 64, 100, 110, 120, 0,
+	}
+	got := compositor.motionPaddedUpload(src, 2, 2)
+	row := 4 * 4
+	want := []byte{
+		10, 20, 30, 255, 10, 20, 30, 255, 40, 50, 60, 128, 40, 50, 60, 128,
+		10, 20, 30, 255, 10, 20, 30, 255, 40, 50, 60, 128, 40, 50, 60, 128,
+		70, 80, 90, 64, 70, 80, 90, 64, 100, 110, 120, 0, 100, 110, 120, 0,
+		70, 80, 90, 64, 70, 80, 90, 64, 100, 110, 120, 0, 100, 110, 120, 0,
+	}
+	if len(got) != row*4 || !reflect.DeepEqual(got, want) {
+		t.Fatalf("padded upload = %v, want %v", got, want)
+	}
+}
+
+func TestGPUCompositorSharesMotionAtlasAcrossLayers(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	draw := runtime.RenderMotionDraw{
+		SourceKey: "motion/shared",
+		RGBA:      []byte{255, 0, 0, 255},
+		Width:     1,
+		Height:    1,
+		A:         1,
+		D:         1,
+		Opacity:   255,
+	}
+	plan := runtime.RenderPlan{
+		Width:        2,
+		Height:       1,
+		ChildIndices: []int{1, 2},
+		Nodes: []runtime.RenderNode{
+			{ID: 1, Type: runtime.LayerBinder, Visible: true, Opacity: 255, ChildCount: 2},
+			{ID: 2, Bounds: runtime.Rect{Width: 1, Height: 1}, Type: runtime.LayerAlpha, Visible: true, Opacity: 255, ImageWidth: 1, ImageHeight: 1, Motion: &runtime.RenderMotion{AtlasKey: "shared", Draws: []runtime.RenderMotionDraw{draw}}},
+			{ID: 3, Bounds: runtime.Rect{X: 1, Width: 1, Height: 1}, Type: runtime.LayerAlpha, Visible: true, Opacity: 255, ImageWidth: 1, ImageHeight: 1, Motion: &runtime.RenderMotion{AtlasKey: "shared", Draws: []runtime.RenderMotionDraw{draw}}},
+		},
+	}
+	if _, err := compositor.Compose(plan); err != nil {
+		t.Fatal(err)
+	}
+	atlas := compositor.sharedMotionAtlases["shared"]
+	if atlas == nil || len(atlas.entries) != 1 {
+		t.Fatalf("shared motion atlas = %#v, want one source entry", atlas)
+	}
+	plan.Nodes[0].ChildCount = 0
+	plan.ChildIndices = nil
+	if _, err := compositor.Compose(plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compositor.Compose(plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(compositor.sharedMotionAtlases) != 0 {
+		t.Fatalf("stale shared motion atlases = %d, want 0", len(compositor.sharedMotionAtlases))
+	}
+}
+
+func TestGPUCompositorFlushesSharedBatchBeforeAtlasRebuild(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	plan := runtime.RenderPlan{
+		Width:        4,
+		Height:       2,
+		ChildIndices: []int{1, 2},
+		Nodes: []runtime.RenderNode{
+			{ID: 1, Type: runtime.LayerBinder, Visible: true, Opacity: 255, ChildCount: 2},
+			{ID: 2, Bounds: runtime.Rect{Width: 1, Height: 1}, Type: runtime.LayerAlpha, Visible: true, Opacity: 255, ImageWidth: 1, ImageHeight: 1, Motion: &runtime.RenderMotion{
+				AtlasKey: "shared-rebuild",
+				Draws:    []runtime.RenderMotionDraw{{SourceKey: "motion/small", RGBA: []byte{255, 0, 0, 255}, Width: 1, Height: 1, A: 1, D: 1, Opacity: 255}},
+			}},
+			{ID: 3, Bounds: runtime.Rect{X: 1, Width: 2, Height: 2}, Type: runtime.LayerAlpha, Visible: true, Opacity: 255, ImageWidth: 2, ImageHeight: 2, Motion: &runtime.RenderMotion{
+				AtlasKey: "shared-rebuild",
+				Draws:    []runtime.RenderMotionDraw{{SourceKey: "motion/large", RGBA: []byte{0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255}, Width: 2, Height: 2, A: 1, D: 1, Opacity: 255}},
+			}},
+		},
+	}
+	if _, err := compositor.Compose(plan); err != nil {
+		t.Fatal(err)
+	}
+	atlas := compositor.sharedMotionAtlases["shared-rebuild"]
+	if atlas == nil || atlas.texture == nil || len(atlas.entries) != 2 {
+		t.Fatalf("rebuilt shared motion atlas = %#v, want two live entries", atlas)
+	}
+	if atlas.entries["motion/small"].view == nil || atlas.entries["motion/large"].view == nil {
+		t.Fatal("rebuilt shared motion atlas has an empty source view")
+	}
+}
+
+func TestGPUCompositorReusesSharedMotionAtlasSlot(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	plan := runtime.RenderPlan{
+		Width:        1,
+		Height:       1,
+		ChildIndices: []int{1},
+		Nodes: []runtime.RenderNode{
+			{ID: 1, Type: runtime.LayerBinder, Visible: true, Opacity: 255, ChildCount: 1},
+			{ID: 2, Bounds: runtime.Rect{Width: 1, Height: 1}, Type: runtime.LayerAlpha, Visible: true, Opacity: 255, ImageWidth: 1, ImageHeight: 1, Motion: &runtime.RenderMotion{
+				AtlasKey: "shared",
+				Draws:    []runtime.RenderMotionDraw{{SourceKey: "motion/a", RGBA: []byte{255, 0, 0, 255}, Width: 1, Height: 1, A: 1, D: 1, Opacity: 255}},
+			}},
+		},
+	}
+	if _, err := compositor.Compose(plan); err != nil {
+		t.Fatal(err)
+	}
+	texture := compositor.sharedMotionAtlases["shared"].texture
+	plan.Nodes[1].Motion.Draws[0].SourceKey = "motion/b"
+	if _, err := compositor.Compose(plan); err != nil {
+		t.Fatal(err)
+	}
+	atlas := compositor.sharedMotionAtlases["shared"]
+	if atlas == nil || atlas.texture != texture || len(atlas.entries) != 1 {
+		t.Fatalf("shared atlas reuse = %#v, want same texture with one active entry", atlas)
+	}
+}
+
+func TestGPUCompositorReusesPaddedSharedMotionAtlasSlot(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	plan := func(key string) runtime.RenderPlan {
+		return runtime.RenderPlan{
+			Width:  1,
+			Height: 1,
+			Nodes: []runtime.RenderNode{{
+				ID:          21,
+				Bounds:      runtime.Rect{Width: 1, Height: 1},
+				Type:        runtime.LayerAlpha,
+				Visible:     true,
+				Opacity:     255,
+				ImageWidth:  1,
+				ImageHeight: 1,
+				Motion: &runtime.RenderMotion{
+					AtlasKey: "padded-shared",
+					Filter:   1,
+					Draws: []runtime.RenderMotionDraw{{
+						SourceKey: key, RGBA: []byte{255, 0, 0, 255}, Width: 1, Height: 1,
+						A: 1, D: 1, Opacity: 255,
+					}},
+				},
+			}},
+		}
+	}
+	if _, err := compositor.Compose(plan("motion/a")); err != nil {
+		t.Fatal(err)
+	}
+	atlas := compositor.sharedMotionAtlases["padded-shared"]
+	if atlas == nil || !atlas.padding || atlas.texture == nil {
+		t.Fatalf("padded shared atlas = %#v", atlas)
+	}
+	texture := atlas.texture
+	if _, err := compositor.Compose(plan("motion/b")); err != nil {
+		t.Fatal(err)
+	}
+	atlas = compositor.sharedMotionAtlases["padded-shared"]
+	if atlas == nil || atlas.texture != texture || len(atlas.entries) != 1 || atlas.entries["motion/b"] == nil {
+		t.Fatalf("padded shared slot reuse = %#v, want same texture with motion/b", atlas)
 	}
 }
 
@@ -178,6 +451,53 @@ func TestPremultipliedPixelsPreservesOpaqueRGB(t *testing.T) {
 		if dst[i] != want[i] {
 			t.Fatalf("opaque premultiplied[%d] = %d, want %d; got %v", i, dst[i], want[i], dst)
 		}
+	}
+}
+
+func TestPremultipliedPixelsCopiesFullyOpaqueSource(t *testing.T) {
+	src := []byte{200, 100, 50, 255, 10, 20, 30, 255}
+	dst := make([]byte, len(src))
+	premultipliedPixels(src, dst, false)
+	for i := range src {
+		if dst[i] != src[i] {
+			t.Fatalf("opaque source pixel[%d] = %d, want %d; got %v", i, dst[i], src[i], dst)
+		}
+	}
+}
+
+func TestPremultipliedUploadReusesFullyOpaqueSource(t *testing.T) {
+	compositor := &GPUCompositor{}
+	src := []byte{200, 100, 50, 255}
+	got := compositor.premultipliedUpload(src, false)
+	if len(got) == 0 || &got[0] != &src[0] {
+		t.Fatalf("opaque upload allocated a copy: got=%p src=%p", &got[0], &src[0])
+	}
+}
+
+func TestPremultipliedUploadConvertsTranslucentSource(t *testing.T) {
+	compositor := &GPUCompositor{}
+	src := []byte{200, 100, 50, 128}
+	got := compositor.premultipliedUpload(src, false)
+	if &got[0] == &src[0] || !reflect.DeepEqual(got, []byte{100, 50, 25, 128}) {
+		t.Fatalf("translucent upload = %v, source=%v", got, src)
+	}
+}
+
+func TestMotionUploadTrustsKnownOpaqueSource(t *testing.T) {
+	compositor := &GPUCompositor{}
+	src := []byte{200, 100, 50, 255}
+	got := compositor.motionUpload(src, true, false)
+	if len(got) == 0 || &got[0] != &src[0] {
+		t.Fatalf("known opaque upload allocated a copy: got=%p src=%p", &got[0], &src[0])
+	}
+}
+
+func TestMotionUploadTrustsPremultipliedSource(t *testing.T) {
+	compositor := &GPUCompositor{}
+	src := []byte{78, 103, 28, 128}
+	got := compositor.motionUpload(src, false, true)
+	if len(got) == 0 || &got[0] != &src[0] {
+		t.Fatalf("premultiplied upload allocated a copy: got=%p src=%p", &got[0], &src[0])
 	}
 }
 
@@ -294,7 +614,7 @@ func TestGPUCompositorStatsTrackUploadScratch(t *testing.T) {
 	}
 	defer compositor.Deallocate()
 	rgba := []byte{
-		1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255,
+		1, 2, 3, 128, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255,
 		13, 14, 15, 255, 16, 17, 18, 255, 19, 20, 21, 255, 22, 23, 24, 255,
 		25, 26, 27, 255, 28, 29, 30, 255, 31, 32, 33, 255, 34, 35, 36, 255,
 		37, 38, 39, 255, 40, 41, 42, 255, 43, 44, 45, 255, 46, 47, 48, 255,

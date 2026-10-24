@@ -49,10 +49,40 @@ type RenderNode struct {
 type RenderMotion struct {
 	Filter int64
 	Scale  int32
+	// AtlasKey groups Motion layers that can share source textures, including
+	// the child layers created by SeparateLayerAdaptor.
+	AtlasKey string
 	// Width and Height are the owning layer's canvas dimensions in device
 	// pixels; particle emitters use them for off-screen culling.
 	Width, Height int
 	Draws         []RenderMotionDraw
+	Items         []RenderMotionItem
+}
+
+// MotionVertex is a GPU mesh vertex. Positions are in Motion canvas pixels;
+// texture coordinates are in source-image pixels.
+type MotionVertex struct {
+	X, Y float32
+	U, V float32
+}
+
+// RenderMotionItem is one ordered GPU Motion item. A group owns an off-screen
+// target and applies its masks before compositing into the parent target.
+type RenderMotionItem struct {
+	SortKey float64
+	Draw    RenderMotionDraw
+	Group   *RenderMotionGroup
+}
+
+type RenderMotionGroup struct {
+	Items    []RenderMotionItem
+	Masks    []RenderMotionMask
+	MaskMode int64
+}
+
+type RenderMotionMask struct {
+	Items     []RenderMotionItem
+	Operation uint8
 }
 
 // MotionBlendMode is the Photoshop blend operation a motion frame applies when
@@ -82,8 +112,12 @@ type RenderMotionDraw struct {
 	A, B, C, D    float64
 	TX, TY        float64
 	Opacity       uint8
+	Opaque        bool
+	Premultiplied bool
 	Blend         MotionBlendMode
 	SortKey       float64
+	Vertices      []MotionVertex
+	Indices       []uint16
 	// Baked marks a canvas-sized frame produced for one motion tick (mesh or
 	// stencil composition). The pixels change every frame and have no reusable
 	// source identity, so the host streams them into one texture per layer.

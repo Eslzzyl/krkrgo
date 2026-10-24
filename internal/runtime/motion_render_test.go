@@ -23,6 +23,22 @@ func TestBlendMotionImageLinearFilterPreservesTransparentEdgeColor(t *testing.T)
 	}
 }
 
+func TestMotionLocalMatrixStateOrderMatchesContentOrder(t *testing.T) {
+	layer := map[string]assets.Value{
+		"transformOrder": []assets.Value{int64(2), int64(1), int64(0), int64(3)},
+	}
+	content := map[string]assets.Value{
+		"fx": float64(1), "fy": float64(0), "angle": float64(37),
+		"zx": float64(1.25), "zy": float64(0.75), "sx": float64(0.2), "sy": float64(-0.1),
+	}
+	state := motionTransformFromContent(content)
+	got := psbMotionLocalMatrixStateOrder(layer, state, motionDefaultTransformOrder)
+	want := psbMotionLocalMatrixOrder(layer, content, motionDefaultTransformOrder)
+	if got != want {
+		t.Fatalf("state matrix = %+v, content matrix = %+v", got, want)
+	}
+}
+
 func TestBlendMotionImageIdentityTranslationUsesSourcePixels(t *testing.T) {
 	src := &assets.Image{
 		Width:  2,
@@ -40,6 +56,23 @@ func TestBlendMotionImageIdentityTranslationUsesSourcePixels(t *testing.T) {
 	}
 	if got := dst[4:]; got[0] != 0 || got[1] != 255 || got[2] != 0 || got[3] != 255 {
 		t.Fatalf("transparent source changed destination = %v", got)
+	}
+}
+
+func TestMotionScratchForBuildSkipsSharedMotion(t *testing.T) {
+	services := DefaultServices()
+	state := &motionPlayerState{gpuMotionScratch: &RenderMotion{}}
+	target := NewLayer(1)
+	alias := NewLayer(2)
+	services.Layers[1] = target
+	services.Layers[2] = alias
+	alias.gpuMotion = state.gpuMotionScratch
+	if got := services.motionScratchForBuild(state, target); got != nil {
+		t.Fatal("shared motion scratch was selected")
+	}
+	alias.gpuMotion = nil
+	if got := services.motionScratchForBuild(state, target); got != state.gpuMotionScratch {
+		t.Fatal("unshared motion scratch was not selected")
 	}
 }
 
@@ -107,6 +140,83 @@ func TestMaterializeGPUMotionUsesDeferredSourceTransform(t *testing.T) {
 	}
 	if got := layer.RGBA[4:]; got[0] != 255 || got[1] != 0 || got[2] != 0 || got[3] != 255 {
 		t.Fatalf("materialized translated pixel = %v, want opaque red", got)
+	}
+}
+
+func TestSeparateLayerDrawUsesChildLocalCoordinates(t *testing.T) {
+	draw := RenderMotionDraw{
+		TX:          17.5,
+		TY:          23.25,
+		Opacity:     91,
+		Blend:       MotionBlendAdditive,
+		HasViewport: true,
+		Viewport:    [4]float64{2, 3, 10, 12},
+		SortKey:     7,
+	}
+	got := motionSeparateLayerDraw(draw, 5, 8)
+	if got.TX != 12.5 || got.TY != 15.25 {
+		t.Fatalf("local translation = (%g,%g), want (12.5,15.25)", got.TX, got.TY)
+	}
+	if got.Opacity != 255 || got.Blend != MotionBlendAlpha || got.HasViewport || got.SortKey != 0 {
+		t.Fatalf("separate child draw metadata = %+v", got)
+	}
+}
+
+func TestDeferredMotionLayerRetainsImageGeometryWithoutPixels(t *testing.T) {
+	layer := NewLayer(1)
+	motion := &RenderMotion{Width: 2, Height: 1}
+	if err := layer.setDeferredMotion(2, 1, motion); err != nil {
+		t.Fatal(err)
+	}
+	if layer.gpuMotion != motion || len(layer.RGBA) != 0 || layer.ImageWidth != 2 || layer.ImageHeight != 1 {
+		t.Fatalf("deferred layer = motion:%p rgba:%d image:%dx%d", layer.gpuMotion, len(layer.RGBA), layer.ImageWidth, layer.ImageHeight)
+	}
+	if err := layer.SetType(LayerAdditive); err != nil {
+		t.Fatal(err)
+	}
+	if layer.gpuMotion != motion || len(layer.RGBA) != 0 {
+		t.Fatalf("setting deferred layer type materialized pixels: motion:%p rgba:%d", layer.gpuMotion, len(layer.RGBA))
+	}
+}
+
+func TestAssignImagesKeepsDeferredMotionOnGPU(t *testing.T) {
+	source := NewLayer(1)
+	motion := &RenderMotion{Width: 2, Height: 1}
+	if err := source.setDeferredMotion(2, 1, motion); err != nil {
+		t.Fatal(err)
+	}
+	target := NewLayer(2)
+	if err := target.AssignImages(source); err != nil {
+		t.Fatal(err)
+	}
+	if target.gpuMotion != motion || len(target.RGBA) != 0 || target.ImageWidth != 2 || target.ImageHeight != 1 {
+		t.Fatalf("assigned deferred motion = motion:%p rgba:%d image:%dx%d", target.gpuMotion, len(target.RGBA), target.ImageWidth, target.ImageHeight)
+	}
+}
+
+func TestAssignImagesRefreshesClipForSharedDeferredMotion(t *testing.T) {
+	source := NewLayer(1)
+	motion := &RenderMotion{Width: 4, Height: 3}
+	if err := source.setDeferredMotion(4, 3, motion); err != nil {
+		t.Fatal(err)
+	}
+	target := NewLayer(2)
+	if err := target.setDeferredMotion(4, 3, motion); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.SetClip(Rect{X: 1, Y: 1, Width: 1, Height: 1}); err != nil {
+		t.Fatal(err)
+	}
+	revision := target.imageRevision
+	if err := target.AssignImages(source); err != nil {
+		t.Fatal(err)
+	}
+	clip, ok := target.Clip()
+	if !ok || clip != (Rect{Width: 4, Height: 3}) {
+		t.Fatalf("shared deferred motion clip = %#v, set=%v", clip, ok)
+	}
+	if target.imageRevision <= revision {
+		t.Fatalf("shared deferred motion revision = %d, prior %d", target.imageRevision, revision)
 	}
 }
 
@@ -223,14 +333,16 @@ func TestGPUMotionSourceKeySeparatesTints(t *testing.T) {
 	if red.SourceKey == black.SourceKey {
 		t.Fatalf("tinted keys collide: %q", red.SourceKey)
 	}
+	if !red.Opaque || !black.Opaque {
+		t.Fatalf("opaque tinted sources were marked translucent: red=%v black=%v", red.Opaque, black.Opaque)
+	}
 	if bytes.Equal(red.RGBA, black.RGBA) {
 		t.Fatalf("tint variants produced identical pixels: key=%q rgba=%v / key=%q rgba=%v", red.SourceKey, red.RGBA[:4], black.SourceKey, black.RGBA[:4])
 	}
 }
 
-// Stencil groups and meshes bake the frame for each tick; the host streams
-// those draws instead of caching them by source identity.
-func TestGPUMotionMarksBakedFramesForStreaming(t *testing.T) {
+// Stencil groups use GPU group composition and remain source-backed draws.
+func TestGPUMotionUsesGPUStencilComposition(t *testing.T) {
 	resource := emotePlayerTestResource("baked.psb")
 	motionTestIdle(resource)["layer"] = []assets.Value{
 		map[string]assets.Value{
@@ -244,8 +356,8 @@ func TestGPUMotionMarksBakedFramesForStreaming(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(motion.Draws) != 1 || !motion.Draws[0].Baked {
-		t.Fatalf("baked draws = %+v, want one streamed draw", motion.Draws)
+	if len(motion.Draws) != 1 || motion.Draws[0].Baked || len(motion.Items) != 1 || motion.Items[0].Group == nil {
+		t.Fatalf("GPU stencil motion = draws:%+v items:%+v, want one grouped source draw", motion.Draws, motion.Items)
 	}
 }
 
@@ -527,11 +639,34 @@ func TestMotionCoordinateModePlacesChildrenInXZ(t *testing.T) {
 	}
 }
 
-func TestSubtractiveMotionRGBAComplementsPremultipliedPixels(t *testing.T) {
+func TestSubtractiveMotionRGBAConvertsStraightPixels(t *testing.T) {
 	got := subtractiveMotionRGBA([]byte{100, 50, 200, 128})
-	want := []byte{28, 78, 0, 128}
+	want := []byte{78, 103, 28, 128}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("complement = %v, want %v", got, want)
+	}
+}
+
+func TestMotionSubtractiveRGBAReusesCachedPixels(t *testing.T) {
+	resource := &motionResource{}
+	source := []byte{100, 50, 200, 128}
+	first := motionSubtractiveRGBA(resource, "source", source)
+	second := motionSubtractiveRGBA(resource, "source", source)
+	if len(resource.subtractive) != 1 || len(first) != len(second) || &first[0] != &second[0] {
+		t.Fatalf("subtractive cache = %d entries, first=%p second=%p", len(resource.subtractive), &first[0], &second[0])
+	}
+	if !bytes.Equal(first, []byte{78, 103, 28, 128}) {
+		t.Fatalf("cached complement = %v", first)
+	}
+}
+
+func TestMotionScaledImageReusesCachedPixels(t *testing.T) {
+	resource := &motionResource{}
+	source := &assets.Image{Width: 1, Height: 1, RGBA: []byte{1, 2, 3, 4}}
+	first := motionScaledImage(resource, "source/scale:2", source, 2)
+	second := motionScaledImage(resource, "source/scale:2", source, 2)
+	if first != second || first.Width != 2 || first.Height != 2 || len(first.RGBA) != 16 {
+		t.Fatalf("scaled cache = first:%p second:%p size:%dx%d bytes:%d", first, second, first.Width, first.Height, len(first.RGBA))
 	}
 }
 

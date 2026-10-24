@@ -1510,11 +1510,7 @@ func (s *Services) layerFillRect(l *Layer, operation string, args []tjs.Value, i
 			l.ClearProvince()
 			return nil
 		}
-		for py := r.Y; py < r.Bottom(); py++ {
-			for px := r.X; px < r.Right(); px++ {
-				l.Province[py*l.ProvinceWidth+px] = c.b
-			}
-		}
+		fillLayerProvince(l, r, c.b)
 		l.markImageDirty()
 		return nil
 	}
@@ -1530,6 +1526,18 @@ func (s *Services) layerFillRect(l *Layer, operation string, args []tjs.Value, i
 		strength = int(min(-int64(opacity), int64(255)))
 	} else {
 		strength = max(0, min(strength, 255))
+	}
+	if color, ok := layerFillRectFastColor(operation, face, l.HoldAlpha, removing, strength, c); ok && int64(r.Width)*int64(r.Height) >= 256 {
+		fillLayerRectRGBA(l, r, color)
+		l.imageModified = true
+		l.markImageDirtyRect(Rect{X: r.X, Y: r.Y, Width: r.Width, Height: r.Height})
+		return nil
+	}
+	if face == layerFaceMask {
+		fillLayerMaskRGBA(l, r, c.b)
+		l.imageModified = true
+		l.markImageDirtyRect(Rect{X: r.X, Y: r.Y, Width: r.Width, Height: r.Height})
+		return nil
 	}
 	deviceWidth := l.deviceWidth()
 	for py := r.Y; py < r.Bottom(); py++ {
@@ -1586,6 +1594,69 @@ func (s *Services) layerFillRect(l *Layer, operation string, args []tjs.Value, i
 		l.markImageDirtyRect(Rect{X: r.X, Y: r.Y, Width: r.Width, Height: r.Height})
 	}
 	return nil
+}
+
+func layerFillRectFastColor(operation string, face int32, holdAlpha, removing bool, strength int, c layerColor) ([4]uint8, bool) {
+	if removing {
+		return [4]uint8{}, false
+	}
+	if operation == "fillRect" {
+		switch face {
+		case layerFaceAlpha, layerFaceAddAlpha:
+			return [4]uint8{c.r, c.g, c.b, c.a}, true
+		case layerFaceOpaque:
+			if !holdAlpha {
+				return [4]uint8{c.r, c.g, c.b, c.a}, true
+			}
+		}
+	}
+	if operation == "colorRect" && strength == 255 && (face == layerFaceAlpha || face == layerFaceAddAlpha) {
+		return [4]uint8{c.r, c.g, c.b, 255}, true
+	}
+	return [4]uint8{}, false
+}
+
+func fillLayerRectRGBA(layer *Layer, rect Rect, color [4]uint8) {
+	rowSize := int(rect.Width) * 4
+	if cap(layer.fillScratch) < rowSize {
+		layer.fillScratch = make([]byte, rowSize)
+	}
+	row := layer.fillScratch[:rowSize]
+	fillRGBA(row, color)
+	deviceWidth := layer.deviceWidth()
+	for y := rect.Y; y < rect.Bottom(); y++ {
+		start := (int64(y)*int64(deviceWidth) + int64(rect.X)) * 4
+		copy(layer.RGBA[start:start+int64(len(row))], row)
+	}
+}
+
+func fillLayerProvince(layer *Layer, rect Rect, value byte) {
+	rowSize := int(rect.Width)
+	if cap(layer.fillScratch) < rowSize {
+		layer.fillScratch = make([]byte, rowSize)
+	}
+	row := layer.fillScratch[:rowSize]
+	for index := range row {
+		row[index] = value
+	}
+	provinceWidth := int(layer.ProvinceWidth)
+	for y := rect.Y; y < rect.Bottom(); y++ {
+		start := int(y)*provinceWidth + int(rect.X)
+		copy(layer.Province[start:start+rowSize], row)
+	}
+}
+
+func fillLayerMaskRGBA(layer *Layer, rect Rect, value byte) {
+	deviceWidth := int(layer.deviceWidth())
+	rowStride := deviceWidth * 4
+	rowStart := (int(rect.Y)*deviceWidth+int(rect.X))*4 + 3
+	rowWidth := int(rect.Width) * 4
+	for row := 0; row < int(rect.Height); row++ {
+		for offset := rowStart; offset < rowStart+rowWidth; offset += 4 {
+			layer.RGBA[offset] = value
+		}
+		rowStart += rowStride
+	}
 }
 
 func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) error {

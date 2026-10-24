@@ -158,6 +158,40 @@ func (l *Layer) AssignImages(source *Layer) error {
 		}
 		return nil
 	}
+	if source.gpuMotion != nil {
+		width, height := source.ImageWidth, source.ImageHeight
+		sameMotion := l.gpuMotion == source.gpuMotion && l.gpuStretch == nil && len(l.RGBA) == 0 &&
+			l.ImageWidth == width && l.ImageHeight == height && len(l.Province) == 0
+		if width < l.Bounds.Width {
+			l.ImageLeft = 0
+			l.Bounds.Width = width
+		}
+		if int64(width)+int64(l.ImageLeft) < int64(l.Bounds.Width) {
+			l.ImageLeft = l.Bounds.Width - width
+		}
+		if height < l.Bounds.Height {
+			l.ImageTop = 0
+			l.Bounds.Height = height
+		}
+		if int64(height)+int64(l.ImageTop) < int64(l.Bounds.Height) {
+			l.ImageTop = l.Bounds.Height - height
+		}
+		l.gpuStretch = nil
+		l.RGBA = nil
+		l.ImageWidth, l.ImageHeight = width, height
+		l.gpuMotion = source.gpuMotion
+		if len(l.Province) != 0 {
+			l.ClearProvince()
+		}
+		if sameMotion {
+			l.markImageDirty()
+			_ = l.SetClip(Rect{Width: l.ImageWidth, Height: l.ImageHeight})
+			return nil
+		}
+		l.markImageDirty()
+		_ = l.SetClip(Rect{Width: l.ImageWidth, Height: l.ImageHeight})
+		return nil
+	}
 	if len(source.Province) != 0 && !validLayerImageSize(source.ProvinceWidth, source.ProvinceHeight, len(source.Province), 1) {
 		return fmt.Errorf("%w: invalid source province dimensions", ErrInvalidLayer)
 	}

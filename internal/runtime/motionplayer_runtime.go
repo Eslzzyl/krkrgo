@@ -156,6 +156,7 @@ type motionPlayerState struct {
 	randomGenerator         tjs.Value
 	disabledSelectorTargets map[string]bool
 	gpuMotion               *RenderMotion
+	gpuMotionScratch        *RenderMotion
 	gpuMotionValid          bool
 	gpuMotionKey            motionPlayerGPUKey
 }
@@ -3074,12 +3075,15 @@ func (s *Services) drawMotionTargetLayer(vm *tjs.VM, state *motionPlayerState, l
 			preview:                 state.preview,
 		}
 		motion := state.gpuMotion
+		rebuilt := false
 		if !state.gpuMotionValid || state.gpuMotionKey != key {
 			var err error
-			motion, err = buildGPUMotionVariablesZFactorInherit(resource, state.chara, state.motion, state.clampedEvalTime, 0, drawMatrix, 1, params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, state.independentLayerInherit, renderOptions)
+			motion, err = buildGPUMotionVariablesZFactorInheritReuse(s.motionScratchForBuild(state, layer), resource, state.chara, state.motion, state.clampedEvalTime, 0, drawMatrix, 1, params, freezeBody, maskMode, state.completionType, motionPlayerZFactor(state), attached, state.independentLayerInherit, renderOptions)
 			if err != nil {
 				return err
 			}
+			rebuilt = true
+			state.gpuMotionScratch = state.gpuMotion
 			state.gpuMotion, state.gpuMotionKey, state.gpuMotionValid = motion, key, true
 			// The counter reports the mesh vertices this draw rasterized; a
 			// cached build keeps the previous total, like a skipped geometry
@@ -3090,7 +3094,7 @@ func (s *Services) drawMotionTargetLayer(vm *tjs.VM, state *motionPlayerState, l
 		changed := layer.gpuMotion != motion
 		layer.gpuMotion = motion
 		layer.Visible = true
-		if changed {
+		if changed || rebuilt {
 			layer.imageModified = true
 			layer.markImageDirty()
 		}
@@ -3146,6 +3150,21 @@ func (s *Services) drawMotionTargetLayer(vm *tjs.VM, state *motionPlayerState, l
 	layer.imageModified = true
 	layer.markImageDirty()
 	return nil
+}
+
+func (s *Services) motionScratchForBuild(state *motionPlayerState, target *Layer) *RenderMotion {
+	if s == nil || state == nil || state.gpuMotionScratch == nil {
+		return nil
+	}
+	scratch := state.gpuMotionScratch
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, candidate := range s.Layers {
+		if candidate != nil && candidate != target && candidate.gpuMotion == scratch {
+			return nil
+		}
+	}
+	return scratch
 }
 
 func layerHasCanvas(layer *Layer) bool {

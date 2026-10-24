@@ -11,6 +11,11 @@ import (
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
+type motionSeparateLayerBaseKey struct {
+	tree    string
+	layerID int
+}
+
 func (s *Services) clearMotionSeparateLayerAdaptor(vm *tjs.VM, id tjs.ObjectID, adaptor *motionValueObjectState) error {
 	s.mu.RLock()
 	values := make([]tjs.Value, 0, len(adaptor.managedLayers))
@@ -39,15 +44,27 @@ func (s *Services) clearMotionSeparateLayerAdaptor(vm *tjs.VM, id tjs.ObjectID, 
 }
 
 func (s *Services) drawMotionSeparateLayerAdaptor(vm *tjs.VM, player *motionPlayerState, adaptorValue tjs.Value, adaptor *motionValueObjectState) error {
-	s.mu.RLock()
+	s.mu.Lock()
 	targetValue := adaptor.values["targetLayer"]
 	owner := adaptor.values["owner"]
 	absolute, _ := adaptor.values["absolute"].Int()
-	previous := make(map[string]tjs.Value, len(adaptor.managedLayers))
-	for key, value := range adaptor.managedLayers {
-		previous[key] = value
+	previous := adaptor.managedLayers
+	current := adaptor.layerScratch
+	if current == nil {
+		current = make(map[string]tjs.Value, len(previous))
 	}
-	s.mu.RUnlock()
+	clear(current)
+	occurrences := adaptor.layerCounts
+	if occurrences == nil {
+		occurrences = make(map[motionSeparateLayerBaseKey]int)
+	}
+	clear(occurrences)
+	retired := adaptor.layerRetired
+	if retired == nil {
+		retired = make(map[tjs.ObjectID]tjs.Value)
+	}
+	clear(retired)
+	s.mu.Unlock()
 	if targetValue.Kind() != tjs.KindObject || targetValue.IsNull() {
 		return nil
 	}
@@ -100,9 +117,6 @@ func (s *Services) drawMotionSeparateLayerAdaptor(vm *tjs.VM, player *motionPlay
 		motion.Draws[index].LayerTreeKey = fmt.Sprintf("player:%d/tree:%d/%s", player.playerID, player.motionTreeGeneration, motion.Draws[index].LayerTreeKey)
 	}
 	motion.Width, motion.Height = canvasWidth, canvasHeight
-	current := make(map[string]tjs.Value, len(motion.Draws))
-	occurrences := make(map[string]int)
-	retired := make(map[tjs.ObjectID]tjs.Value)
 	sequence := int32(0)
 	for _, draw := range motion.Draws {
 		if draw.SourceKey == "" || draw.Opacity == 0 || draw.Width <= 0 || draw.Height <= 0 {
@@ -112,10 +126,10 @@ func (s *Services) drawMotionSeparateLayerAdaptor(vm *tjs.VM, player *motionPlay
 		if !visible {
 			continue
 		}
-		baseKey := fmt.Sprintf("%s\x00%d", draw.LayerTreeKey, draw.LayerID)
+		baseKey := motionSeparateLayerBaseKey{tree: draw.LayerTreeKey, layerID: draw.LayerID}
 		occurrence := occurrences[baseKey]
 		occurrences[baseKey] = occurrence + 1
-		key := fmt.Sprintf("%s\x00%d", baseKey, occurrence)
+		key := motionSeparateLayerKey(draw.LayerTreeKey, draw.LayerID, occurrence)
 		childValue := previous[key]
 		child, _, layerErr := s.layerFromValue(childValue)
 		if layerErr != nil || child.Parent != targetLayer {
@@ -137,27 +151,52 @@ func (s *Services) drawMotionSeparateLayerAdaptor(vm *tjs.VM, player *motionPlay
 			}
 		}
 		width, height := int32(clipRight-clipLeft), int32(clipBottom-clipTop)
-		pixels := make([]byte, int(width)*int(height)*4)
-		matrix := motionRenderContext{
-			x:         draw.TX - float64(clipLeft) - float64(width)/2,
-			y:         draw.TY - float64(clipTop) - float64(height)/2,
-			opacity:   255,
-			blendMode: 16,
-			matrix:    motionMatrix{a: draw.A, b: draw.B, c: draw.C, d: draw.D},
-		}
-		source := &assets.Image{Width: uint32(draw.Width), Height: uint32(draw.Height), RGBA: draw.RGBA}
-		if err := blendMotionImage(pixels, int(width), int(height), source, 0, 0, 0, nil, false, matrix); err != nil {
-			return err
-		}
 		layerType := motionSeparateLayerType(draw.Blend)
 		s.mu.Lock()
 		if err := child.SetSize(width, height); err != nil {
 			s.mu.Unlock()
 			return err
 		}
-		if err := child.SetRGBAOwned(width, height, pixels); err != nil {
-			s.mu.Unlock()
-			return err
+		localDraw := motionSeparateLayerDraw(draw, clipLeft, clipTop)
+		if s.gpuCapture {
+			deferred := child.motionScratch
+			if deferred == nil {
+				deferred = &RenderMotion{Draws: make([]RenderMotionDraw, 1)}
+				child.motionScratch = deferred
+			} else if cap(deferred.Draws) < 1 {
+				deferred.Draws = make([]RenderMotionDraw, 1)
+			} else {
+				deferred.Draws = deferred.Draws[:1]
+			}
+			deferred.Filter = motion.Filter
+			deferred.Scale = motion.Scale
+			deferred.AtlasKey = motion.AtlasKey
+			deferred.Width = int(width)
+			deferred.Height = int(height)
+			deferred.Items = nil
+			deferred.Draws[0] = localDraw
+			if err := child.setDeferredMotion(width, height, deferred); err != nil {
+				s.mu.Unlock()
+				return err
+			}
+		} else {
+			pixels := make([]byte, int(width)*int(height)*4)
+			matrix := motionRenderContext{
+				x:         localDraw.TX - float64(width)/2,
+				y:         localDraw.TY - float64(height)/2,
+				opacity:   255,
+				blendMode: int64(localDraw.Blend),
+				matrix:    motionMatrix{a: localDraw.A, b: localDraw.B, c: localDraw.C, d: localDraw.D},
+			}
+			source := &assets.Image{Width: uint32(localDraw.Width), Height: uint32(localDraw.Height), RGBA: localDraw.RGBA}
+			if err := blendMotionImage(pixels, int(width), int(height), source, 0, 0, 0, nil, false, matrix); err != nil {
+				s.mu.Unlock()
+				return err
+			}
+			if err := child.SetRGBAOwned(width, height, pixels); err != nil {
+				s.mu.Unlock()
+				return err
+			}
 		}
 		child.SetPosition(int32(clipLeft), int32(clipTop))
 		if err := child.SetType(layerType); err != nil {
@@ -193,9 +232,36 @@ func (s *Services) drawMotionSeparateLayerAdaptor(vm *tjs.VM, player *motionPlay
 	s.mu.Lock()
 	if s.MotionValueObjects[adaptorValue.ObjectRef().Object] == adaptor {
 		adaptor.managedLayers = current
+		adaptor.layerScratch = previous
+		adaptor.layerCounts = occurrences
+		adaptor.layerRetired = retired
 	}
 	s.mu.Unlock()
 	return s.syncLayerChildren(vm)
+}
+
+func motionSeparateLayerKey(tree string, layerID, occurrence int) string {
+	var buffer [256]byte
+	key := buffer[:0]
+	key = append(key, tree...)
+	key = append(key, 0)
+	key = strconv.AppendInt(key, int64(layerID), 10)
+	key = append(key, 0)
+	key = strconv.AppendInt(key, int64(occurrence), 10)
+	return string(key)
+}
+
+func motionSeparateLayerDraw(draw RenderMotionDraw, clipLeft, clipTop int) RenderMotionDraw {
+	draw.TX -= float64(clipLeft)
+	draw.TY -= float64(clipTop)
+	// The separate child layer owns the Motion draw's opacity and blend mode.
+	// The deferred draw itself therefore copies the source with source-over.
+	draw.Opacity = 255
+	draw.Blend = MotionBlendAlpha
+	draw.Viewport = [4]float64{}
+	draw.HasViewport = false
+	draw.SortKey = 0
+	return draw
 }
 
 func (s *Services) assignMotionSeparateLayerAdaptor(vm *tjs.VM, id tjs.ObjectID, target *motionValueObjectState, sourceValue tjs.Value) error {

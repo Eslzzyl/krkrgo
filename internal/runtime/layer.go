@@ -238,6 +238,8 @@ type Layer struct {
 	completionHeight      int32
 	dirtyRect             Rect
 	dirtyRectValid        bool
+	fillScratch           []byte
+	motionScratch         *RenderMotion
 	windowID              uint64
 }
 
@@ -594,6 +596,9 @@ func (l *Layer) SetClip(r Rect) error {
 	if r.Width < 0 || r.Height < 0 {
 		return fmt.Errorf("%w: negative clip", ErrInvalidLayer)
 	}
+	if l.clipSet && l.clip == r {
+		return nil
+	}
 	l.clip, l.clipSet = r, true
 	l.markRenderDirty()
 	return nil
@@ -648,7 +653,35 @@ func (l *Layer) setRGBA(width, height int32, rgba []byte, owned bool) error {
 	return nil
 }
 
+// setDeferredMotion attaches a backend-neutral Motion description to the layer.
+// The layer keeps its geometry and image dimensions while the render backend
+// materializes or composes the pixels.
+func (l *Layer) setDeferredMotion(width, height int32, motion *RenderMotion) error {
+	if l == nil || motion == nil || width <= 0 || height <= 0 ||
+		uint64(width)*uint64(height) > maxLayerPixels {
+		return fmt.Errorf("%w: deferred motion dimensions %dx%d", ErrInvalidLayer, width, height)
+	}
+	if len(l.Province) != 0 && (l.ProvinceWidth != width || l.ProvinceHeight != height) {
+		return ErrProvinceSizeMismatch
+	}
+	l.gpuStretch = nil
+	l.gpuMotion = motion
+	l.RGBA = nil
+	l.ImageWidth, l.ImageHeight = width, height
+	if l.Bounds.Width == 0 {
+		l.Bounds.Width = width
+	}
+	if l.Bounds.Height == 0 {
+		l.Bounds.Height = height
+	}
+	l.markImageDirty()
+	return nil
+}
+
 func (l *Layer) SetPosition(x, y int32) {
+	if l.Bounds.X == x && l.Bounds.Y == y {
+		return
+	}
 	l.Bounds.X, l.Bounds.Y = x, y
 	l.markRenderDirty()
 }
@@ -661,6 +694,9 @@ func (l *Layer) SetSize(width, height int32) error {
 	}
 	if width > maxLayerDimension || height > maxLayerDimension {
 		return fmt.Errorf("%w: layer dimension exceeds limit", ErrInvalidLayer)
+	}
+	if l.Bounds.Width == width && l.Bounds.Height == height {
+		return nil
 	}
 	imageWidth, imageHeight := l.ImageWidth, l.ImageHeight
 	imageLeft := maxInt32(l.ImageLeft, width-maxInt32(imageWidth, width))
@@ -809,11 +845,17 @@ func resizeLayerImage(l *Layer, width, height int32) error {
 	return l.SetClip(Rect{Width: width, Height: height})
 }
 func (l *Layer) SetVisible(visible bool) {
+	if l.Visible == visible {
+		return
+	}
 	l.Visible = visible
 	l.markRenderDirty()
 }
 func (l *Layer) SetEnabled(enabled bool) { l.Enabled = enabled }
 func (l *Layer) SetOpacity(opacity int) error {
+	if int(l.Opacity) == opacity {
+		return nil
+	}
 	l.Opacity = opacity
 	l.markRenderDirty()
 	return nil
@@ -979,7 +1021,7 @@ func (l *Layer) SetType(t LayerType) error {
 		l.ResetClip()
 		return nil
 	}
-	if len(l.RGBA) == 0 {
+	if len(l.RGBA) == 0 && l.gpuMotion == nil {
 		if err := resizeLayerImage(l, l.Bounds.Width, l.Bounds.Height); err != nil {
 			fmt.Printf("legacy layer SetType resize width=%d height=%d image=%dx%d type=%d error=%v\n", l.Bounds.Width, l.Bounds.Height, l.ImageWidth, l.ImageHeight, l.Type, err)
 			return err

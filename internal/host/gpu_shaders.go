@@ -235,6 +235,43 @@ func Fragment(dstPos vec4, src0Pos vec2, color vec4) vec4 {
 }
 `
 
+const gpuMotionMaskShaderSource = `//kage:unit pixels
+package main
+
+var Operation float
+var Threshold float
+
+func Fragment(dstPos vec4, src0Pos vec2, color vec4) vec4 {
+	group := imageSrc0At(src0Pos)
+	mask := imageSrc1AtFromSrc0Pos(src0Pos)
+	alpha := group.a
+	if Threshold > 0 {
+		if Operation == 1 {
+			if mask.a < 64.0/255.0 { alpha = 0 }
+		} else if Operation == 2 {
+			if mask.a >= 64.0/255.0 { alpha = 0 }
+		} else if Operation == 5 || Operation == 6 {
+			if mask.a >= 64.0/255.0 { alpha = 1 }
+		}
+	} else {
+		if Operation == 1 {
+			alpha *= mask.a
+		} else if Operation == 2 {
+			alpha *= 1-mask.a
+		} else if Operation == 5 || Operation == 6 {
+			alpha = mask.a+(1-mask.a)*alpha
+		}
+	}
+	if group.a > 0 {
+		group.rgb *= alpha / group.a
+	} else {
+		group.rgb = vec3(0)
+	}
+	group.a = alpha
+	return group
+}
+`
+
 // gpuShaderSources is the one-source-per-method registry. All supported blend
 // keys intentionally point at the same generic source: Mode is a uniform, so
 // the driver compiles only one blend program.
@@ -290,4 +327,12 @@ func compileGPUShaders() (map[gpuMethodKey]*ebiten.Shader, *ebiten.Shader, *ebit
 		methods[key] = blend
 	}
 	return methods, crossfade, universal, nil
+}
+
+func compileMotionMaskShader() (*ebiten.Shader, error) {
+	shader, err := ebiten.NewShader([]byte(gpuMotionMaskShaderSource))
+	if err != nil {
+		return nil, fmt.Errorf("compile GPU Motion mask shader: %w", err)
+	}
+	return shader, nil
 }

@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"math"
 	"sort"
 
 	runtime "github.com/eslzzyl/krkrgo/internal/runtime"
+	"github.com/eslzzyl/krkrgo/internal/simd"
 	"github.com/hajimehoshi/ebiten/v2"
 )
 
@@ -36,11 +38,14 @@ type gpuTextureSize struct {
 	width, height int32
 }
 type gpuMotionAtlasEntry struct {
-	rect   image.Rectangle
-	view   *ebiten.Image
-	width  int32
-	height int32
-	hash   uint64
+	rect           image.Rectangle
+	storage        image.Rectangle
+	view           *ebiten.Image
+	width          int32
+	height         int32
+	hash           uint64
+	lastUsed       uint64
+	sharedLastUsed uint64
 }
 
 // gpuMotionAtlas keeps all source views for one motion node on one backing
@@ -49,7 +54,11 @@ type gpuMotionAtlas struct {
 	texture                    *ebiten.Image
 	width, height              int
 	usedHeight, capacityHeight int
+	padding                    bool
+	frame                      uint64
+	lastSharedUse              uint64
 	entries                    map[string]*gpuMotionAtlasEntry
+	freeSlots                  []image.Rectangle
 }
 
 // gpuMotionStream holds the canvas a mesh or stencil motion bakes for one tick.
@@ -64,30 +73,44 @@ type gpuMotionStream struct {
 // plan's pixel slices are never retained; one shared scratch buffer carries
 // premultiplied pixels into Ebitengine and is reused across uploads.
 type GPUCompositor struct {
-	width, height  int
-	front, back    *ebiten.Image
-	textures       map[gpuTextureKey]*gpuTexture
-	usedTextures   map[gpuTextureKey]struct{}
-	texturePool    map[gpuTextureSize][]*ebiten.Image
-	pooledBytes    int64
-	motionTargets  map[runtime.LayerID]*ebiten.Image
-	motionAtlases  map[runtime.LayerID]*gpuMotionAtlas
-	motionStreams  map[runtime.LayerID]*gpuMotionStream
-	shaders        map[gpuMethodKey]*ebiten.Shader
-	vertices       []ebiten.Vertex
-	indices        []uint16
-	uploadScratch  []byte
-	uniforms       map[string]any
-	sourceOrigin   [2]float32
-	sourceScale    [2]float32
-	sourceOffset   [2]float32
-	sourceMin      [2]float32
-	sourceMax      [2]float32
-	ruleOrigin     [2]float32
-	crossfade      *ebiten.Shader
-	universal      *ebiten.Shader
-	stateHash      uint64
-	stateHashValid bool
+	width, height       int
+	front, back         *ebiten.Image
+	textures            map[gpuTextureKey]*gpuTexture
+	usedTextures        map[gpuTextureKey]struct{}
+	texturePool         map[gpuTextureSize][]*ebiten.Image
+	pooledBytes         int64
+	motionTargets       map[runtime.LayerID]*ebiten.Image
+	motionAtlases       map[runtime.LayerID]*gpuMotionAtlas
+	sharedMotionAtlases map[string]*gpuMotionAtlas
+	motionStreams       map[runtime.LayerID]*gpuMotionStream
+	shaders             map[gpuMethodKey]*ebiten.Shader
+	vertices            []ebiten.Vertex
+	motionVertices      []ebiten.Vertex
+	motionIndices       []uint16
+	motionTriangles     ebiten.DrawTrianglesOptions
+	motionBatching      bool
+	motionBatchActive   bool
+	motionBatchTarget   *ebiten.Image
+	motionBatchAtlas    *gpuMotionAtlas
+	motionBatchTexture  *ebiten.Image
+	motionBatchFilter   ebiten.Filter
+	motionBatchRect     image.Rectangle
+	indices             []uint16
+	uploadScratch       []byte
+	motionPaddedScratch []byte
+	uniforms            map[string]any
+	sourceOrigin        [2]float32
+	sourceScale         [2]float32
+	sourceOffset        [2]float32
+	sourceMin           [2]float32
+	sourceMax           [2]float32
+	ruleOrigin          [2]float32
+	crossfade           *ebiten.Shader
+	universal           *ebiten.Shader
+	motionMask          *ebiten.Shader
+	motionFrame         uint64
+	stateHash           uint64
+	stateHashValid      bool
 }
 
 var gpuReplaceBlend = ebiten.Blend{
@@ -111,17 +134,25 @@ func NewGPUCompositor() (*GPUCompositor, error) {
 	if err != nil {
 		return nil, err
 	}
+	motionMask, err := compileMotionMaskShader()
+	if err != nil {
+		crossfade.Deallocate()
+		universal.Deallocate()
+		return nil, err
+	}
 	return &GPUCompositor{
-		textures:      make(map[gpuTextureKey]*gpuTexture),
-		usedTextures:  make(map[gpuTextureKey]struct{}),
-		texturePool:   make(map[gpuTextureSize][]*ebiten.Image),
-		motionTargets: make(map[runtime.LayerID]*ebiten.Image),
-		motionAtlases: make(map[runtime.LayerID]*gpuMotionAtlas),
-		motionStreams: make(map[runtime.LayerID]*gpuMotionStream),
-		shaders:       methods,
-		crossfade:     crossfade,
-		universal:     universal,
-		indices:       []uint16{0, 1, 2, 2, 1, 3},
+		textures:            make(map[gpuTextureKey]*gpuTexture),
+		usedTextures:        make(map[gpuTextureKey]struct{}),
+		texturePool:         make(map[gpuTextureSize][]*ebiten.Image),
+		motionTargets:       make(map[runtime.LayerID]*ebiten.Image),
+		motionAtlases:       make(map[runtime.LayerID]*gpuMotionAtlas),
+		sharedMotionAtlases: make(map[string]*gpuMotionAtlas),
+		motionStreams:       make(map[runtime.LayerID]*gpuMotionStream),
+		shaders:             methods,
+		crossfade:           crossfade,
+		universal:           universal,
+		motionMask:          motionMask,
+		indices:             []uint16{0, 1, 2, 2, 1, 3},
 	}, nil
 }
 
@@ -158,7 +189,19 @@ func (c *GPUCompositor) Stats() GPUStats {
 			stats.MotionAtlasBytes += int64(atlas.width) * int64(atlas.height) * 4
 		}
 	}
+	for _, atlas := range c.sharedMotionAtlases {
+		if atlas == nil {
+			continue
+		}
+		stats.MotionAtlases++
+		if atlas.texture != nil {
+			stats.MotionAtlasBytes += int64(atlas.width) * int64(atlas.height) * 4
+		}
+	}
 	stats.UploadScratchBytes = int64(cap(c.uploadScratch))
+	if padded := int64(cap(c.motionPaddedScratch)); padded > stats.UploadScratchBytes {
+		stats.UploadScratchBytes = padded
+	}
 	if c.front != nil && c.back != nil {
 		stats.TargetBytes = 2 * int64(c.width) * int64(c.height) * 4
 	}
@@ -188,6 +231,9 @@ func (c *GPUCompositor) Deallocate() {
 	}
 	if c.universal != nil {
 		seen[c.universal] = struct{}{}
+	}
+	if c.motionMask != nil {
+		seen[c.motionMask] = struct{}{}
 	}
 	for shader := range seen {
 		shader.Deallocate()
@@ -220,6 +266,12 @@ func (c *GPUCompositor) Deallocate() {
 		}
 		delete(c.motionAtlases, id)
 	}
+	for key, atlas := range c.sharedMotionAtlases {
+		if atlas != nil && atlas.texture != nil {
+			atlas.texture.Deallocate()
+		}
+		delete(c.sharedMotionAtlases, key)
+	}
 	for id, stream := range c.motionStreams {
 		if stream != nil && stream.image != nil {
 			stream.image.Deallocate()
@@ -228,7 +280,9 @@ func (c *GPUCompositor) Deallocate() {
 	}
 	c.shaders = nil
 	c.crossfade, c.universal = nil, nil
-	c.vertices, c.indices = nil, nil
+	c.vertices, c.motionVertices, c.motionIndices, c.indices = nil, nil, nil, nil
+	c.motionPaddedScratch = nil
+	c.motionFrame = 0
 	c.stateHash, c.stateHashValid = 0, false
 }
 
@@ -312,6 +366,10 @@ func premultipliedRegion(src []byte, srcWidth int32, dirty runtime.Rect, dst []b
 }
 
 func premultipliedPixels(src []byte, dst []byte, opaque bool) {
+	if simd.AllAlphaOpaque(src) {
+		copy(dst, src)
+		return
+	}
 	for i := 0; i+3 < len(src); i += 4 {
 		a := uint16(src[i+3])
 		if opaque {
@@ -333,6 +391,22 @@ func (c *GPUCompositor) scratch(n int) []byte {
 		c.uploadScratch = c.uploadScratch[:n]
 	}
 	return c.uploadScratch
+}
+
+func (c *GPUCompositor) premultipliedUpload(src []byte, opaque bool) []byte {
+	if simd.AllAlphaOpaque(src) {
+		return src
+	}
+	upload := c.scratch(len(src))
+	premultipliedPixels(src, upload, opaque)
+	return upload
+}
+
+func (c *GPUCompositor) motionUpload(src []byte, opaque, premultiplied bool) []byte {
+	if opaque || premultiplied {
+		return src
+	}
+	return c.premultipliedUpload(src, false)
 }
 
 func (c *GPUCompositor) texture(key gpuTextureKey, width, height int32, src []byte, hash uint64, opaque bool, dirty runtime.Rect, dirtyValid bool) (*ebiten.Image, error) {
@@ -358,8 +432,7 @@ func (c *GPUCompositor) texture(key gpuTextureKey, width, height int32, src []by
 			premultipliedRegion(src, width, dirty, upload, opaque)
 			t.image.SubImage(image.Rect(int(dirty.X), int(dirty.Y), int(dirty.Right()), int(dirty.Bottom()))).(*ebiten.Image).WritePixels(upload)
 		} else {
-			upload := c.scratch(len(src))
-			premultipliedPixels(src, upload, opaque)
+			upload := c.premultipliedUpload(src, opaque)
 			t.image.WritePixels(upload)
 		}
 		t.hash = hash
@@ -401,6 +474,138 @@ func motionSourceHash(draw runtime.RenderMotionDraw) uint64 {
 	return uint64(len(draw.RGBA)) ^ uint64(draw.Width)<<32 ^ uint64(draw.Height)
 }
 
+const motionAtlasPadding = 1
+
+func motionAtlasStorageSize(width, height int32, padded bool) (int, int) {
+	if !padded {
+		return int(width), int(height)
+	}
+	return int(width) + motionAtlasPadding*2, int(height) + motionAtlasPadding*2
+}
+
+func motionAtlasContentRect(storage image.Rectangle, width, height int32, padded bool) image.Rectangle {
+	if !padded {
+		return image.Rect(storage.Min.X, storage.Min.Y, storage.Min.X+int(width), storage.Min.Y+int(height))
+	}
+	return image.Rect(
+		storage.Min.X+motionAtlasPadding,
+		storage.Min.Y+motionAtlasPadding,
+		storage.Min.X+motionAtlasPadding+int(width),
+		storage.Min.Y+motionAtlasPadding+int(height),
+	)
+}
+
+func (c *GPUCompositor) motionPaddedUpload(src []byte, width, height int32) []byte {
+	storageWidth, storageHeight := motionAtlasStorageSize(width, height, true)
+	rowBytes := int(width) * 4
+	storageRowBytes := storageWidth * 4
+	n := storageRowBytes * storageHeight
+	if cap(c.motionPaddedScratch) < n {
+		c.motionPaddedScratch = make([]byte, n)
+	} else {
+		c.motionPaddedScratch = c.motionPaddedScratch[:n]
+	}
+	out := c.motionPaddedScratch
+	for y := 0; y < int(height); y++ {
+		srcRow := src[y*rowBytes : (y+1)*rowBytes]
+		rowStart := (y + motionAtlasPadding) * storageRowBytes
+		dstRow := out[rowStart+motionAtlasPadding*4 : rowStart+storageRowBytes]
+		copy(dstRow, srcRow)
+		copy(out[rowStart:rowStart+4], srcRow[:4])
+		rightStart := rowStart + storageRowBytes - 4
+		copy(out[rightStart:rightStart+4], srcRow[len(srcRow)-4:])
+	}
+	copy(out[:storageRowBytes], out[storageRowBytes:2*storageRowBytes])
+	last := (storageHeight - 1) * storageRowBytes
+	previous := (storageHeight - 2) * storageRowBytes
+	copy(out[last:last+storageRowBytes], out[previous:previous+storageRowBytes])
+	return out
+}
+
+func motionAtlasStorageRect(entry *gpuMotionAtlasEntry) image.Rectangle {
+	if entry == nil {
+		return image.Rectangle{}
+	}
+	if !entry.storage.Empty() {
+		return entry.storage
+	}
+	return image.Rect(
+		entry.rect.Min.X-motionAtlasPadding,
+		entry.rect.Min.Y-motionAtlasPadding,
+		entry.rect.Max.X+motionAtlasPadding,
+		entry.rect.Max.Y+motionAtlasPadding,
+	)
+}
+
+func (c *GPUCompositor) writeMotionAtlasEntry(atlas *gpuMotionAtlas, entry *gpuMotionAtlasEntry, upload []byte) {
+	if atlas == nil || atlas.texture == nil || entry == nil {
+		return
+	}
+	entry.storage = motionAtlasStorageRect(entry)
+	storage := atlas.texture.SubImage(entry.storage).(*ebiten.Image)
+	storage.WritePixels(upload)
+	entry.view = atlas.texture.SubImage(entry.rect).(*ebiten.Image)
+}
+
+func drawMotionAtlasCopy(dst, src *ebiten.Image, x, y float64) {
+	if dst == nil || src == nil {
+		return
+	}
+	var geo ebiten.GeoM
+	geo.Translate(x, y)
+	dst.DrawImage(src, &ebiten.DrawImageOptions{
+		GeoM:           geo,
+		Blend:          gpuReplaceBlend,
+		Filter:         ebiten.FilterNearest,
+		DisableMipmaps: true,
+	})
+}
+
+func copyMotionAtlasEntry(dst, src *ebiten.Image, rect image.Rectangle, padded bool) {
+	if dst == nil || src == nil || rect.Empty() {
+		return
+	}
+	bounds := src.Bounds()
+	drawMotionAtlasCopy(dst, src, float64(rect.Min.X), float64(rect.Min.Y))
+	if !padded {
+		return
+	}
+	top := src.SubImage(image.Rect(bounds.Min.X, bounds.Min.Y, bounds.Max.X, bounds.Min.Y+1)).(*ebiten.Image)
+	bottom := src.SubImage(image.Rect(bounds.Min.X, bounds.Max.Y-1, bounds.Max.X, bounds.Max.Y)).(*ebiten.Image)
+	left := src.SubImage(image.Rect(bounds.Min.X, bounds.Min.Y, bounds.Min.X+1, bounds.Max.Y)).(*ebiten.Image)
+	right := src.SubImage(image.Rect(bounds.Max.X-1, bounds.Min.Y, bounds.Max.X, bounds.Max.Y)).(*ebiten.Image)
+	drawMotionAtlasCopy(dst, top, float64(rect.Min.X), float64(rect.Min.Y-motionAtlasPadding))
+	drawMotionAtlasCopy(dst, bottom, float64(rect.Min.X), float64(rect.Max.Y))
+	drawMotionAtlasCopy(dst, left, float64(rect.Min.X-motionAtlasPadding), float64(rect.Min.Y))
+	drawMotionAtlasCopy(dst, right, float64(rect.Max.X), float64(rect.Min.Y))
+	topLeft := src.SubImage(image.Rect(bounds.Min.X, bounds.Min.Y, bounds.Min.X+1, bounds.Min.Y+1)).(*ebiten.Image)
+	topRight := src.SubImage(image.Rect(bounds.Max.X-1, bounds.Min.Y, bounds.Max.X, bounds.Min.Y+1)).(*ebiten.Image)
+	bottomLeft := src.SubImage(image.Rect(bounds.Min.X, bounds.Max.Y-1, bounds.Min.X+1, bounds.Max.Y)).(*ebiten.Image)
+	bottomRight := src.SubImage(image.Rect(bounds.Max.X-1, bounds.Max.Y-1, bounds.Max.X, bounds.Max.Y)).(*ebiten.Image)
+	drawMotionAtlasCopy(dst, topLeft, float64(rect.Min.X-motionAtlasPadding), float64(rect.Min.Y-motionAtlasPadding))
+	drawMotionAtlasCopy(dst, topRight, float64(rect.Max.X), float64(rect.Min.Y-motionAtlasPadding))
+	drawMotionAtlasCopy(dst, bottomLeft, float64(rect.Min.X-motionAtlasPadding), float64(rect.Max.Y))
+	drawMotionAtlasCopy(dst, bottomRight, float64(rect.Max.X), float64(rect.Max.Y))
+}
+
+func (c *GPUCompositor) enableMotionAtlasPadding(atlas *gpuMotionAtlas) {
+	if atlas == nil || atlas.padding {
+		return
+	}
+	atlas.padding = true
+	if len(atlas.entries) == 0 {
+		if atlas.texture != nil {
+			atlas.texture.Deallocate()
+		}
+		atlas.texture = nil
+		atlas.width, atlas.height = 0, 0
+		atlas.usedHeight, atlas.capacityHeight = 0, 0
+		atlas.freeSlots = atlas.freeSlots[:0]
+		return
+	}
+	c.rebuildMotionAtlas(atlas)
+}
+
 func nextMotionAtlasCapacity(height int) int {
 	capacity := 1
 	for capacity < height {
@@ -413,6 +618,7 @@ func (c *GPUCompositor) rebuildMotionAtlas(atlas *gpuMotionAtlas) {
 	if atlas == nil {
 		return
 	}
+	atlas.freeSlots = atlas.freeSlots[:0]
 	keys := make([]string, 0, len(atlas.entries))
 	for key := range atlas.entries {
 		keys = append(keys, key)
@@ -421,10 +627,12 @@ func (c *GPUCompositor) rebuildMotionAtlas(atlas *gpuMotionAtlas) {
 	width, usedHeight := 1, 0
 	for _, key := range keys {
 		entry := atlas.entries[key]
-		if int(entry.width) > width {
-			width = int(entry.width)
+		entryWidth, _ := motionAtlasStorageSize(entry.width, entry.height, atlas.padding)
+		if entryWidth > width {
+			width = entryWidth
 		}
-		usedHeight += int(entry.height)
+		_, entryHeight := motionAtlasStorageSize(entry.width, entry.height, atlas.padding)
+		usedHeight += entryHeight
 	}
 	if usedHeight == 0 {
 		if atlas.texture != nil {
@@ -439,16 +647,16 @@ func (c *GPUCompositor) rebuildMotionAtlas(atlas *gpuMotionAtlas) {
 	texture := newGPUImage(width, capacityHeight)
 	for _, key := range keys {
 		entry := atlas.entries[key]
-		entry.rect = image.Rect(0, nextY, int(entry.width), nextY+int(entry.height))
+		_, entryHeight := motionAtlasStorageSize(entry.width, entry.height, atlas.padding)
+		entry.storage = image.Rect(0, nextY, width, nextY+entryHeight)
+		entry.rect = motionAtlasContentRect(entry.storage, entry.width, entry.height, atlas.padding)
 		if entry.view != nil {
-			op := &ebiten.DrawImageOptions{Blend: gpuReplaceBlend}
-			op.GeoM.Translate(0, float64(nextY))
-			texture.DrawImage(entry.view, op)
+			copyMotionAtlasEntry(texture, entry.view, entry.rect, atlas.padding)
 			entry.view = texture.SubImage(entry.rect).(*ebiten.Image)
 		} else {
 			entry.view = nil
 		}
-		nextY += int(entry.height)
+		nextY += entryHeight
 	}
 	if atlas.texture != nil {
 		atlas.texture.Deallocate()
@@ -465,48 +673,118 @@ func motionSourceKey(draw runtime.RenderMotionDraw) string {
 	return fmt.Sprintf("\x00%d:%d:%d", len(draw.RGBA), draw.Width, draw.Height)
 }
 
-func (c *GPUCompositor) motionAtlasSource(nodeID runtime.LayerID, draw runtime.RenderMotionDraw) (*ebiten.Image, error) {
+func (c *GPUCompositor) motionAtlasSource(nodeID runtime.LayerID, atlas *gpuMotionAtlas, shared bool, padded bool, draw runtime.RenderMotionDraw) (*ebiten.Image, error) {
 	sourceKey := motionSourceKey(draw)
 	if draw.Width <= 0 || draw.Height <= 0 ||
 		uint64(draw.Width)*uint64(draw.Height)*4 != uint64(len(draw.RGBA)) {
 		return nil, fmt.Errorf("invalid deferred motion source for layer %d", nodeID)
 	}
-	if c.motionAtlases == nil {
-		c.motionAtlases = make(map[runtime.LayerID]*gpuMotionAtlas)
-	}
-	atlas := c.motionAtlases[nodeID]
 	if atlas == nil {
-		atlas = &gpuMotionAtlas{entries: make(map[string]*gpuMotionAtlasEntry)}
-		c.motionAtlases[nodeID] = atlas
+		return nil, fmt.Errorf("motion source atlas missing for layer %d", nodeID)
+	}
+	if padded {
+		c.enableMotionAtlasPadding(atlas)
 	}
 	hash := motionSourceHash(draw)
 	entry := atlas.entries[sourceKey]
 	if entry != nil && entry.width == draw.Width && entry.height == draw.Height && entry.hash == hash && entry.view != nil {
+		if shared {
+			entry.sharedLastUsed = c.motionFrame
+			atlas.lastSharedUse = c.motionFrame
+		}
 		return entry.view, nil
 	}
-	upload := c.scratch(len(draw.RGBA))
-	premultipliedPixels(draw.RGBA, upload, false)
+	upload := c.motionUpload(draw.RGBA, draw.Opaque, draw.Premultiplied)
 	if entry != nil && entry.width == draw.Width && entry.height == draw.Height && entry.view != nil {
 		entry.hash = hash
-		entry.view.WritePixels(upload)
+		if shared {
+			entry.sharedLastUsed = c.motionFrame
+			atlas.lastSharedUse = c.motionFrame
+		}
+		if atlas.padding {
+			upload = c.motionPaddedUpload(upload, draw.Width, draw.Height)
+		}
+		c.writeMotionAtlasEntry(atlas, entry, upload)
 		return entry.view, nil
 	}
 	entry = &gpuMotionAtlasEntry{width: draw.Width, height: draw.Height, hash: hash}
+	if previous := atlas.entries[sourceKey]; previous != nil && atlas.texture != nil && !previous.rect.Empty() {
+		atlas.freeSlots = append(atlas.freeSlots, motionAtlasStorageRect(previous))
+	}
+	if shared {
+		entry.sharedLastUsed = c.motionFrame
+		atlas.lastSharedUse = c.motionFrame
+	}
 	atlas.entries[sourceKey] = entry
-	if atlas.texture != nil && int(draw.Width) <= atlas.width &&
-		atlas.usedHeight+int(draw.Height) <= atlas.capacityHeight {
-		entry.rect = image.Rect(0, atlas.usedHeight, int(draw.Width), atlas.usedHeight+int(draw.Height))
-		entry.view = atlas.texture.SubImage(entry.rect).(*ebiten.Image)
-		entry.view.WritePixels(upload)
-		atlas.usedHeight += int(draw.Height)
+	if shared && len(atlas.freeSlots) == 0 {
+		for staleKey, stale := range atlas.entries {
+			if staleKey == sourceKey || stale == nil || stale.sharedLastUsed == c.motionFrame || stale.rect.Empty() {
+				continue
+			}
+			atlas.freeSlots = append(atlas.freeSlots, motionAtlasStorageRect(stale))
+			delete(atlas.entries, staleKey)
+			break
+		}
+	}
+	for index, slot := range atlas.freeSlots {
+		storageWidth, storageHeight := motionAtlasStorageSize(draw.Width, draw.Height, atlas.padding)
+		if slot.Dx() < storageWidth || slot.Dy() < storageHeight {
+			continue
+		}
+		entry.storage = image.Rect(slot.Min.X, slot.Min.Y, slot.Min.X+storageWidth, slot.Min.Y+storageHeight)
+		entry.rect = motionAtlasContentRect(entry.storage, entry.width, entry.height, atlas.padding)
+		if atlas.padding {
+			upload = c.motionPaddedUpload(upload, draw.Width, draw.Height)
+		}
+		c.writeMotionAtlasEntry(atlas, entry, upload)
+		last := len(atlas.freeSlots) - 1
+		atlas.freeSlots[index] = atlas.freeSlots[last]
+		atlas.freeSlots = atlas.freeSlots[:last]
+		return entry.view, nil
+	}
+	storageWidth, storageHeight := motionAtlasStorageSize(draw.Width, draw.Height, atlas.padding)
+	if atlas.texture != nil && storageWidth <= atlas.width &&
+		atlas.usedHeight+storageHeight <= atlas.capacityHeight {
+		entry.storage = image.Rect(0, atlas.usedHeight, storageWidth, atlas.usedHeight+storageHeight)
+		entry.rect = motionAtlasContentRect(entry.storage, entry.width, entry.height, atlas.padding)
+		if atlas.padding {
+			upload = c.motionPaddedUpload(upload, draw.Width, draw.Height)
+		}
+		c.writeMotionAtlasEntry(atlas, entry, upload)
+		atlas.usedHeight += storageHeight
 		return entry.view, nil
 	}
 	c.rebuildMotionAtlas(atlas)
 	if entry.view == nil {
-		entry.view = atlas.texture.SubImage(entry.rect).(*ebiten.Image)
-		entry.view.WritePixels(upload)
+		if atlas.padding {
+			upload = c.motionPaddedUpload(upload, draw.Width, draw.Height)
+		}
+		c.writeMotionAtlasEntry(atlas, entry, upload)
 	}
 	return entry.view, nil
+}
+
+func (c *GPUCompositor) motionAtlasFor(nodeID runtime.LayerID, key string) (*gpuMotionAtlas, bool) {
+	if key == "" {
+		if c.motionAtlases == nil {
+			c.motionAtlases = make(map[runtime.LayerID]*gpuMotionAtlas)
+		}
+		atlas := c.motionAtlases[nodeID]
+		if atlas == nil {
+			atlas = &gpuMotionAtlas{entries: make(map[string]*gpuMotionAtlasEntry)}
+			c.motionAtlases[nodeID] = atlas
+		}
+		return atlas, false
+	}
+	if c.sharedMotionAtlases == nil {
+		c.sharedMotionAtlases = make(map[string]*gpuMotionAtlas)
+	}
+	atlas := c.sharedMotionAtlases[key]
+	if atlas == nil {
+		atlas = &gpuMotionAtlas{entries: make(map[string]*gpuMotionAtlasEntry)}
+		c.sharedMotionAtlases[key] = atlas
+	}
+	return atlas, true
 }
 
 func (c *GPUCompositor) composeMotion(node runtime.RenderNode) (*ebiten.Image, error) {
@@ -530,56 +808,543 @@ func (c *GPUCompositor) composeMotion(node runtime.RenderNode) (*ebiten.Image, e
 	if motion.Filter != 0 {
 		filter = ebiten.FilterLinear
 	}
+	atlas, shared := c.motionAtlasFor(node.ID, motion.AtlasKey)
 	// Drop sources this frame no longer uses before uploading the new ones.
-	// Baked frames never enter the atlas; their key changes every tick.
-	c.evictMotionAtlasEntries(node.ID, motion.Draws)
+	if !shared {
+		c.evictMotionAtlasEntries(node.ID, motion.Draws)
+	}
+	if c.motionBatching && shared && filter == ebiten.FilterLinear && !atlas.padding && len(atlas.entries) != 0 {
+		c.flushMotionBatch()
+	}
 	for _, draw := range motion.Draws {
 		if draw.Baked {
 			continue
 		}
-		if _, err := c.motionAtlasSource(node.ID, draw); err != nil {
+		if _, err := c.motionAtlasSource(node.ID, atlas, shared, filter == ebiten.FilterLinear, draw); err != nil {
 			return nil, err
 		}
 	}
-	streamed := make([]*ebiten.Image, len(motion.Draws))
-	for index, draw := range motion.Draws {
-		if !draw.Baked {
-			continue
-		}
-		image, err := c.motionStreamSource(node.ID, draw)
-		if err != nil {
+	if len(motion.Items) != 0 {
+		if err := c.drawMotionItems(node.ID, atlas, target, motion.Items, filter, 0, 0); err != nil {
 			return nil, err
 		}
-		streamed[index] = image
+		return target, nil
 	}
-	for index, draw := range motion.Draws {
-		var source *ebiten.Image
-		if draw.Baked {
-			source = streamed[index]
-		} else {
-			entry := c.motionAtlases[node.ID].entries[motionSourceKey(draw)]
-			if entry == nil || entry.view == nil {
-				return nil, fmt.Errorf("motion source %q missing from atlas for layer %d", motionSourceKey(draw), node.ID)
-			}
-			source = entry.view
-		}
-		var geo ebiten.GeoM
-		geo.SetElement(0, 0, draw.A)
-		geo.SetElement(0, 1, draw.B)
-		geo.SetElement(0, 2, draw.TX)
-		geo.SetElement(1, 0, draw.C)
-		geo.SetElement(1, 1, draw.D)
-		geo.SetElement(1, 2, draw.TY)
-		options := &ebiten.DrawImageOptions{
-			GeoM:           geo,
-			Blend:          gpuMotionBlend(draw.Blend),
-			Filter:         filter,
-			DisableMipmaps: true,
-		}
-		options.ColorScale.ScaleAlpha(float32(draw.Opacity) / 255)
-		target.DrawImage(source, options)
+	if err := c.drawMotionDraws(node.ID, atlas, target, motion.Draws, filter, 0, 0); err != nil {
+		return nil, err
 	}
 	return target, nil
+}
+
+func (c *GPUCompositor) drawDirectMotionAlpha(node runtime.RenderNode, x0, y0, x1, y1 int64) (bool, error) {
+	motion := node.Motion
+	if motion == nil || !motionSupportsDirectAlpha(motion) {
+		return false, nil
+	}
+	atlas, shared := c.motionAtlasFor(node.ID, motion.AtlasKey)
+	if !shared {
+		c.evictMotionAtlasEntries(node.ID, motion.Draws)
+	}
+	filter := motionFilter(motion)
+	if c.motionBatching && shared && filter == ebiten.FilterLinear && !atlas.padding && len(atlas.entries) != 0 {
+		c.flushMotionBatch()
+	}
+	for _, draw := range motion.Draws {
+		if draw.Baked {
+			continue
+		}
+		if c.motionBatching && shared {
+			key := motionSourceKey(draw)
+			entry := atlas.entries[key]
+			if entry == nil || entry.view == nil || entry.width != draw.Width || entry.height != draw.Height || entry.hash != motionSourceHash(draw) {
+				c.flushMotionBatch()
+			}
+		}
+		if _, err := c.motionAtlasSource(node.ID, atlas, shared, filter == ebiten.FilterLinear, draw); err != nil {
+			return true, err
+		}
+	}
+	left := int64(node.Bounds.X) + int64(node.ImageLeft) + x0
+	top := int64(node.Bounds.Y) + int64(node.ImageTop) + y0
+	right := int64(node.Bounds.X) + int64(node.ImageLeft) + x1
+	bottom := int64(node.Bounds.Y) + int64(node.ImageTop) + y1
+	rect := image.Rect(int(left), int(top), int(right), int(bottom)).Intersect(c.front.Bounds())
+	if rect.Empty() {
+		return true, nil
+	}
+	target := c.front
+	if rect != c.front.Bounds() {
+		target = c.front.SubImage(rect).(*ebiten.Image)
+	}
+	originX := -float64(node.Bounds.X + node.ImageLeft)
+	originY := -float64(node.Bounds.Y + node.ImageTop)
+	opacity := float32(node.Opacity) / 255
+	if c.motionBatching && motion.AtlasKey != "" {
+		return true, c.appendDirectMotionBatch(node.ID, atlas, target, rect, filter, motion, originX, originY, opacity)
+	}
+	if c.motionBatching {
+		c.flushMotionBatch()
+	}
+	if len(motion.Items) != 0 {
+		return true, c.drawMotionItemsWithOpacity(node.ID, atlas, target, motion.Items, filter, originX, originY, opacity)
+	}
+	return true, c.drawMotionBatchWithOpacity(node.ID, atlas, target, motion.Draws, filter, originX, originY, opacity)
+}
+
+func motionSupportsDirectAlpha(motion *runtime.RenderMotion) bool {
+	if motion == nil {
+		return false
+	}
+	for _, draw := range motion.Draws {
+		if draw.Baked || draw.Blend != runtime.MotionBlendAlpha {
+			return false
+		}
+	}
+	if len(motion.Items) == 0 {
+		return true
+	}
+	for _, item := range motion.Items {
+		if item.Group != nil || item.Draw.Baked || item.Draw.Blend != runtime.MotionBlendAlpha {
+			return false
+		}
+	}
+	return true
+}
+
+func motionDirectCandidate(node runtime.RenderNode, targetType runtime.LayerType) bool {
+	return node.Transition == nil && node.Type == runtime.LayerAlpha &&
+		targetType == runtime.LayerBinder && node.Motion != nil
+}
+
+func (c *GPUCompositor) flushMotionBatch() {
+	if !c.motionBatchActive {
+		return
+	}
+	if c.motionBatchTarget != nil && c.motionBatchTexture != nil && len(c.motionVertices) != 0 {
+		c.motionTriangles.Blend = gpuMotionBlend(runtime.MotionBlendAlpha)
+		c.motionTriangles.Filter = c.motionBatchFilter
+		c.motionTriangles.DisableMipmaps = true
+		c.motionTriangles.ColorScaleMode = ebiten.ColorScaleModePremultipliedAlpha
+		c.motionBatchTarget.DrawTriangles(c.motionVertices, c.motionIndices, c.motionBatchTexture, &c.motionTriangles)
+	}
+	c.motionVertices = c.motionVertices[:0]
+	c.motionIndices = c.motionIndices[:0]
+	c.motionBatchActive = false
+	c.motionBatchTarget = nil
+	c.motionBatchAtlas = nil
+	c.motionBatchTexture = nil
+	c.motionBatchRect = image.Rectangle{}
+}
+
+func (c *GPUCompositor) appendDirectMotionBatch(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, rect image.Rectangle, filter ebiten.Filter, motion *runtime.RenderMotion, originX, originY float64, opacity float32) error {
+	if len(motion.Items) == 0 && len(motion.Draws) == 0 {
+		return nil
+	}
+	if !c.motionBatchActive || c.motionBatchAtlas != atlas || c.motionBatchTexture != atlas.texture ||
+		c.motionBatchFilter != filter || c.motionBatchRect != rect {
+		c.flushMotionBatch()
+		c.motionBatchActive = true
+		c.motionBatchTarget = target
+		c.motionBatchAtlas = atlas
+		c.motionBatchTexture = atlas.texture
+		c.motionBatchFilter = filter
+		c.motionBatchRect = rect
+	}
+	if len(motion.Items) != 0 {
+		for _, item := range motion.Items {
+			if err := c.appendMotionBatchDraw(nodeID, atlas, item.Draw, originX, originY, opacity); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, draw := range motion.Draws {
+		if err := c.appendMotionBatchDraw(nodeID, atlas, draw, originX, originY, opacity); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func motionFilter(motion *runtime.RenderMotion) ebiten.Filter {
+	if motion != nil && motion.Filter != 0 {
+		return ebiten.FilterLinear
+	}
+	return ebiten.FilterNearest
+}
+
+func (c *GPUCompositor) drawMotionItems(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, items []runtime.RenderMotionItem, filter ebiten.Filter, originX, originY float64) error {
+	return c.drawMotionItemsWithOpacity(nodeID, atlas, target, items, filter, originX, originY, 1)
+}
+
+func (c *GPUCompositor) drawMotionItemsWithOpacity(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, items []runtime.RenderMotionItem, filter ebiten.Filter, originX, originY float64, opacity float32) error {
+	for index := 0; index < len(items); {
+		if items[index].Group != nil {
+			if err := c.drawMotionGroup(nodeID, atlas, target, items[index].Group, filter, originX, originY); err != nil {
+				return err
+			}
+			index++
+			continue
+		}
+		if items[index].Draw.Baked {
+			if err := c.drawMotionDraw(nodeID, atlas, target, items[index].Draw, filter, originX, originY); err != nil {
+				return err
+			}
+			index++
+			continue
+		}
+		blend := items[index].Draw.Blend
+		end := index + 1
+		for end < len(items) && items[end].Group == nil && !items[end].Draw.Baked && items[end].Draw.Blend == blend {
+			end++
+		}
+		if err := c.drawMotionItemBatchWithOpacity(nodeID, atlas, target, items[index:end], filter, originX, originY, opacity); err != nil {
+			return err
+		}
+		index = end
+	}
+	return nil
+}
+
+func (c *GPUCompositor) drawMotionDraws(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, draws []runtime.RenderMotionDraw, filter ebiten.Filter, originX, originY float64) error {
+	for index := 0; index < len(draws); {
+		if draws[index].Baked {
+			if err := c.drawMotionDraw(nodeID, atlas, target, draws[index], filter, originX, originY); err != nil {
+				return err
+			}
+			index++
+			continue
+		}
+		blend := draws[index].Blend
+		end := index + 1
+		for end < len(draws) && !draws[end].Baked && draws[end].Blend == blend {
+			end++
+		}
+		if err := c.drawMotionBatch(nodeID, atlas, target, draws[index:end], filter, originX, originY); err != nil {
+			return err
+		}
+		index = end
+	}
+	return nil
+}
+
+func (c *GPUCompositor) drawMotionItemBatch(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, items []runtime.RenderMotionItem, filter ebiten.Filter, originX, originY float64) error {
+	return c.drawMotionItemBatchWithOpacity(nodeID, atlas, target, items, filter, originX, originY, 1)
+}
+
+func (c *GPUCompositor) drawMotionItemBatchWithOpacity(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, items []runtime.RenderMotionItem, filter ebiten.Filter, originX, originY float64, opacity float32) error {
+	c.motionVertices = c.motionVertices[:0]
+	c.motionIndices = c.motionIndices[:0]
+	for _, item := range items {
+		if err := c.appendMotionBatchDraw(nodeID, atlas, item.Draw, originX, originY, opacity); err != nil {
+			return err
+		}
+	}
+	if len(c.motionVertices) == 0 {
+		return nil
+	}
+	c.motionTriangles.Blend = gpuMotionBlend(items[0].Draw.Blend)
+	c.motionTriangles.Filter = filter
+	c.motionTriangles.DisableMipmaps = true
+	c.motionTriangles.ColorScaleMode = ebiten.ColorScaleModePremultipliedAlpha
+	target.DrawTriangles(c.motionVertices, c.motionIndices, atlas.texture, &c.motionTriangles)
+	return nil
+}
+
+func (c *GPUCompositor) drawMotionBatch(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, draws []runtime.RenderMotionDraw, filter ebiten.Filter, originX, originY float64) error {
+	return c.drawMotionBatchWithOpacity(nodeID, atlas, target, draws, filter, originX, originY, 1)
+}
+
+func (c *GPUCompositor) drawMotionBatchWithOpacity(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, draws []runtime.RenderMotionDraw, filter ebiten.Filter, originX, originY float64, opacity float32) error {
+	c.motionVertices = c.motionVertices[:0]
+	c.motionIndices = c.motionIndices[:0]
+	for _, draw := range draws {
+		if err := c.appendMotionBatchDraw(nodeID, atlas, draw, originX, originY, opacity); err != nil {
+			return err
+		}
+	}
+	if len(c.motionVertices) == 0 {
+		return nil
+	}
+	c.motionTriangles.Blend = gpuMotionBlend(draws[0].Blend)
+	c.motionTriangles.Filter = filter
+	c.motionTriangles.DisableMipmaps = true
+	c.motionTriangles.ColorScaleMode = ebiten.ColorScaleModePremultipliedAlpha
+	target.DrawTriangles(c.motionVertices, c.motionIndices, atlas.texture, &c.motionTriangles)
+	return nil
+}
+
+func (c *GPUCompositor) appendMotionBatchDraw(nodeID runtime.LayerID, atlas *gpuMotionAtlas, draw runtime.RenderMotionDraw, originX, originY float64, opacity float32) error {
+	if atlas == nil || atlas.texture == nil {
+		return fmt.Errorf("motion source atlas missing for layer %d", nodeID)
+	}
+	entry := atlas.entries[motionSourceKey(draw)]
+	if entry == nil || entry.view == nil {
+		return fmt.Errorf("motion source %q missing from atlas for layer %d", motionSourceKey(draw), nodeID)
+	}
+	base := uint16(len(c.motionVertices))
+	alpha := float32(draw.Opacity) / 255 * opacity
+	if len(draw.Vertices) != 0 {
+		for _, vertex := range draw.Vertices {
+			c.motionVertices = append(c.motionVertices, ebiten.Vertex{
+				DstX: vertex.X - float32(originX), DstY: vertex.Y - float32(originY),
+				SrcX: float32(entry.rect.Min.X) + vertex.U, SrcY: float32(entry.rect.Min.Y) + vertex.V,
+				ColorR: alpha, ColorG: alpha, ColorB: alpha, ColorA: alpha,
+			})
+		}
+		for _, index := range draw.Indices {
+			c.motionIndices = append(c.motionIndices, base+index)
+		}
+		return nil
+	}
+	width, height := float32(draw.Width), float32(draw.Height)
+	points := [4][2]float32{{0, 0}, {width, 0}, {0, height}, {width, height}}
+	for _, point := range points {
+		c.motionVertices = append(c.motionVertices, ebiten.Vertex{
+			DstX: float32(draw.A*float64(point[0]) + draw.B*float64(point[1]) + draw.TX - originX),
+			DstY: float32(draw.C*float64(point[0]) + draw.D*float64(point[1]) + draw.TY - originY),
+			SrcX: float32(entry.rect.Min.X) + point[0], SrcY: float32(entry.rect.Min.Y) + point[1],
+			ColorR: alpha, ColorG: alpha, ColorB: alpha, ColorA: alpha,
+		})
+	}
+	c.motionIndices = append(c.motionIndices, base, base+1, base+2, base+2, base+1, base+3)
+	return nil
+}
+
+func (c *GPUCompositor) drawMotionItem(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, item runtime.RenderMotionItem, filter ebiten.Filter, originX, originY float64) error {
+	if item.Group != nil {
+		return c.drawMotionGroup(nodeID, atlas, target, item.Group, filter, originX, originY)
+	}
+	return c.drawMotionDraw(nodeID, atlas, target, item.Draw, filter, originX, originY)
+}
+
+func (c *GPUCompositor) drawMotionDraw(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, draw runtime.RenderMotionDraw, filter ebiten.Filter, originX, originY float64) error {
+	var source *ebiten.Image
+	var err error
+	if draw.Baked {
+		source, err = c.motionStreamSource(nodeID, draw)
+		if err != nil {
+			return err
+		}
+	} else {
+		if atlas == nil {
+			return fmt.Errorf("motion source atlas missing for layer %d", nodeID)
+		}
+		entry := atlas.entries[motionSourceKey(draw)]
+		if entry == nil || entry.view == nil {
+			return fmt.Errorf("motion source %q missing from atlas for layer %d", motionSourceKey(draw), nodeID)
+		}
+		source = entry.view
+	}
+	if len(draw.Vertices) != 0 {
+		c.motionVertices = c.motionVertices[:0]
+		if cap(c.motionVertices) < len(draw.Vertices) {
+			c.motionVertices = make([]ebiten.Vertex, 0, len(draw.Vertices))
+		}
+		bounds := source.Bounds()
+		alpha := float32(draw.Opacity) / 255
+		for _, vertex := range draw.Vertices {
+			c.motionVertices = append(c.motionVertices, ebiten.Vertex{
+				DstX: vertex.X - float32(originX), DstY: vertex.Y - float32(originY),
+				SrcX:   float32(bounds.Min.X) + vertex.U,
+				SrcY:   float32(bounds.Min.Y) + vertex.V,
+				ColorR: alpha, ColorG: alpha, ColorB: alpha, ColorA: alpha,
+			})
+		}
+		c.motionIndices = c.motionIndices[:0]
+		for _, index := range draw.Indices {
+			c.motionIndices = append(c.motionIndices, index)
+		}
+		target.DrawTriangles(c.motionVertices, c.motionIndices, source, &ebiten.DrawTrianglesOptions{
+			Blend: gpuMotionBlend(draw.Blend), Filter: filter, DisableMipmaps: true,
+			ColorScaleMode: ebiten.ColorScaleModePremultipliedAlpha,
+		})
+		return nil
+	}
+	var geo ebiten.GeoM
+	geo.SetElement(0, 0, draw.A)
+	geo.SetElement(0, 1, draw.B)
+	geo.SetElement(0, 2, draw.TX-originX)
+	geo.SetElement(1, 0, draw.C)
+	geo.SetElement(1, 1, draw.D)
+	geo.SetElement(1, 2, draw.TY-originY)
+	options := &ebiten.DrawImageOptions{
+		GeoM:           geo,
+		Blend:          gpuMotionBlend(draw.Blend),
+		Filter:         filter,
+		DisableMipmaps: true,
+	}
+	options.ColorScale.ScaleAlpha(float32(draw.Opacity) / 255)
+	target.DrawImage(source, options)
+	return nil
+}
+
+func (c *GPUCompositor) drawMotionGroup(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, group *runtime.RenderMotionGroup, filter ebiten.Filter, originX, originY float64) error {
+	width, height := target.Bounds().Dx(), target.Bounds().Dy()
+	parentBounds := motionPixelBounds{minX: originX, minY: originY, maxX: originX + float64(width), maxY: originY + float64(height), valid: true}
+	groupBounds := motionGroupBounds(group).intersect(parentBounds)
+	if !groupBounds.valid {
+		return nil
+	}
+	groupRect := motionBoundsRect(groupBounds, int(originX), int(originY), width, height)
+	if groupRect.Empty() {
+		return nil
+	}
+	groupTarget := c.acquireTexture(int32(groupRect.Dx()), int32(groupRect.Dy()))
+	groupTarget.Clear()
+	if err := c.drawMotionItems(nodeID, atlas, groupTarget, group.Items, filter, float64(groupRect.Min.X), float64(groupRect.Min.Y)); err != nil {
+		c.releaseTexture(groupTarget, int32(groupRect.Dx()), int32(groupRect.Dy()))
+		return err
+	}
+	for _, mask := range group.Masks {
+		maskTarget := c.acquireTexture(int32(groupRect.Dx()), int32(groupRect.Dy()))
+		maskTarget.Clear()
+		if err := c.drawMotionItems(nodeID, atlas, maskTarget, mask.Items, filter, float64(groupRect.Min.X), float64(groupRect.Min.Y)); err != nil {
+			c.releaseTexture(maskTarget, int32(groupRect.Dx()), int32(groupRect.Dy()))
+			c.releaseTexture(groupTarget, int32(groupRect.Dx()), int32(groupRect.Dy()))
+			return err
+		}
+		next, err := c.applyMotionMask(groupTarget, maskTarget, int32(mask.Operation), group.MaskMode)
+		c.releaseTexture(maskTarget, int32(groupRect.Dx()), int32(groupRect.Dy()))
+		if err != nil {
+			c.releaseTexture(groupTarget, int32(groupRect.Dx()), int32(groupRect.Dy()))
+			return err
+		}
+		c.releaseTexture(groupTarget, int32(groupRect.Dx()), int32(groupRect.Dy()))
+		groupTarget = next
+	}
+	var geo ebiten.GeoM
+	geo.Translate(float64(groupRect.Min.X)-originX, float64(groupRect.Min.Y)-originY)
+	target.DrawImage(groupTarget, &ebiten.DrawImageOptions{GeoM: geo, Blend: gpuMotionBlend(runtime.MotionBlendAlpha)})
+	c.releaseTexture(groupTarget, int32(groupRect.Dx()), int32(groupRect.Dy()))
+	return nil
+}
+
+type motionPixelBounds struct {
+	minX, minY float64
+	maxX, maxY float64
+	valid      bool
+}
+
+func (b motionPixelBounds) union(other motionPixelBounds) motionPixelBounds {
+	if !other.valid {
+		return b
+	}
+	if !b.valid {
+		return other
+	}
+	return motionPixelBounds{
+		minX:  math.Min(b.minX, other.minX),
+		minY:  math.Min(b.minY, other.minY),
+		maxX:  math.Max(b.maxX, other.maxX),
+		maxY:  math.Max(b.maxY, other.maxY),
+		valid: true,
+	}
+}
+
+func (b motionPixelBounds) intersect(other motionPixelBounds) motionPixelBounds {
+	if !b.valid || !other.valid {
+		return motionPixelBounds{}
+	}
+	b.minX = math.Max(b.minX, other.minX)
+	b.minY = math.Max(b.minY, other.minY)
+	b.maxX = math.Min(b.maxX, other.maxX)
+	b.maxY = math.Min(b.maxY, other.maxY)
+	if b.maxX <= b.minX || b.maxY <= b.minY {
+		return motionPixelBounds{}
+	}
+	return b
+}
+
+func motionGroupBounds(group *runtime.RenderMotionGroup) motionPixelBounds {
+	if group == nil {
+		return motionPixelBounds{}
+	}
+	var bounds motionPixelBounds
+	for _, item := range group.Items {
+		bounds = bounds.union(motionItemBounds(item))
+	}
+	for _, mask := range group.Masks {
+		if mask.Operation != 5 && mask.Operation != 6 {
+			continue
+		}
+		for _, item := range mask.Items {
+			bounds = bounds.union(motionItemBounds(item))
+		}
+	}
+	return bounds
+}
+
+func motionItemBounds(item runtime.RenderMotionItem) motionPixelBounds {
+	if item.Group != nil {
+		return motionGroupBounds(item.Group)
+	}
+	return motionDrawBounds(item.Draw)
+}
+
+func motionDrawBounds(draw runtime.RenderMotionDraw) motionPixelBounds {
+	var bounds motionPixelBounds
+	if len(draw.Vertices) != 0 {
+		for _, vertex := range draw.Vertices {
+			bounds = bounds.union(motionPixelBounds{minX: float64(vertex.X), minY: float64(vertex.Y), maxX: float64(vertex.X), maxY: float64(vertex.Y), valid: true})
+		}
+	} else if draw.Width > 0 && draw.Height > 0 {
+		for _, point := range [][2]float64{{0, 0}, {float64(draw.Width), 0}, {0, float64(draw.Height)}, {float64(draw.Width), float64(draw.Height)}} {
+			x := draw.A*point[0] + draw.B*point[1] + draw.TX
+			y := draw.C*point[0] + draw.D*point[1] + draw.TY
+			bounds = bounds.union(motionPixelBounds{minX: x, minY: y, maxX: x, maxY: y, valid: true})
+		}
+	}
+	if !bounds.valid {
+		return bounds
+	}
+	return bounds
+}
+
+func motionBoundsRect(bounds motionPixelBounds, originX, originY, width, height int) image.Rectangle {
+	if !bounds.valid {
+		return image.Rect(originX, originY, originX+width, originY+height)
+	}
+	left := maxInt(originX, int(math.Floor(bounds.minX)))
+	top := maxInt(originY, int(math.Floor(bounds.minY)))
+	right := minInt(originX+width, int(math.Ceil(bounds.maxX)))
+	bottom := minInt(originY+height, int(math.Ceil(bounds.maxY)))
+	return image.Rect(left, top, right, bottom)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func (c *GPUCompositor) applyMotionMask(group, mask *ebiten.Image, operation int32, maskMode int64) (*ebiten.Image, error) {
+	width, height := group.Bounds().Dx(), group.Bounds().Dy()
+	result := c.acquireTexture(int32(width), int32(height))
+	c.vertices = c.vertices[:0]
+	c.vertices = append(c.vertices,
+		ebiten.Vertex{DstX: 0, DstY: 0, SrcX: 0, SrcY: 0},
+		ebiten.Vertex{DstX: float32(width), DstY: 0, SrcX: float32(width), SrcY: 0},
+		ebiten.Vertex{DstX: 0, DstY: float32(height), SrcX: 0, SrcY: float32(height)},
+		ebiten.Vertex{DstX: float32(width), DstY: float32(height), SrcX: float32(width), SrcY: float32(height)},
+	)
+	uniforms := c.shaderUniforms()
+	uniforms["Operation"] = float32(operation)
+	uniforms["Threshold"] = boolToFloat(maskMode == 0)
+	result.DrawTrianglesShader(c.vertices, c.indices, c.motionMask, &ebiten.DrawTrianglesShaderOptions{
+		Blend:    gpuReplaceBlend,
+		Uniforms: uniforms,
+		Images:   [4]*ebiten.Image{group, mask, nil, nil},
+	})
+	return result, nil
 }
 
 // evictMotionAtlasEntries removes sources the current frame does not draw and
@@ -590,22 +1355,65 @@ func (c *GPUCompositor) evictMotionAtlasEntries(nodeID runtime.LayerID, draws []
 	if atlas == nil || len(atlas.entries) == 0 {
 		return
 	}
-	live := make(map[string]struct{}, len(draws))
+	atlas.frame++
+	frame := atlas.frame
 	for _, draw := range draws {
 		if draw.Baked {
 			continue
 		}
-		live[motionSourceKey(draw)] = struct{}{}
+		if entry := atlas.entries[motionSourceKey(draw)]; entry != nil {
+			entry.lastUsed = frame
+		}
 	}
 	removed := false
-	for key := range atlas.entries {
-		if _, ok := live[key]; !ok {
+	for key, entry := range atlas.entries {
+		if entry == nil || entry.lastUsed != frame {
+			if entry != nil && atlas.texture != nil && !entry.rect.Empty() {
+				atlas.freeSlots = append(atlas.freeSlots, motionAtlasStorageRect(entry))
+			}
 			delete(atlas.entries, key)
 			removed = true
 		}
 	}
-	if removed {
+	if removed && len(atlas.entries) != 0 {
 		c.rebuildMotionAtlas(atlas)
+	}
+}
+
+func (c *GPUCompositor) evictSharedMotionAtlases() {
+	for key, atlas := range c.sharedMotionAtlases {
+		if atlas == nil {
+			delete(c.sharedMotionAtlases, key)
+			continue
+		}
+		if len(atlas.entries) == 0 {
+			if c.motionFrame > atlas.lastSharedUse+1 {
+				if atlas.texture != nil {
+					atlas.texture.Deallocate()
+				}
+				delete(c.sharedMotionAtlases, key)
+			}
+			continue
+		}
+		removed := false
+		for sourceKey, entry := range atlas.entries {
+			if entry == nil || entry.sharedLastUsed != c.motionFrame {
+				if entry != nil && atlas.texture != nil && !entry.rect.Empty() {
+					atlas.freeSlots = append(atlas.freeSlots, motionAtlasStorageRect(entry))
+				}
+				delete(atlas.entries, sourceKey)
+				removed = true
+			}
+		}
+		if removed && len(atlas.entries) != 0 {
+			c.rebuildMotionAtlas(atlas)
+		}
+		if len(atlas.entries) == 0 && c.motionFrame > atlas.lastSharedUse+1 {
+			if atlas.texture != nil {
+				atlas.texture.Deallocate()
+			}
+			delete(c.sharedMotionAtlases, key)
+		}
 	}
 }
 
@@ -631,8 +1439,7 @@ func (c *GPUCompositor) motionStreamSource(nodeID runtime.LayerID, draw runtime.
 		}
 		c.motionStreams[nodeID] = stream
 	}
-	upload := c.scratch(len(draw.RGBA))
-	premultipliedPixels(draw.RGBA, upload, false)
+	upload := c.motionUpload(draw.RGBA, draw.Opaque, draw.Premultiplied)
 	stream.image.WritePixels(upload)
 	return stream.image, nil
 }
@@ -703,6 +1510,9 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 	if n.TransitionHidden || !n.Visible || n.Opacity == 0 {
 		return nil
 	}
+	if c.motionBatching && !motionDirectCandidate(n, targetType) {
+		c.flushMotionBatch()
+	}
 	if n.Type == runtime.LayerEffect || n.Type == runtime.LayerFilter {
 		return fmt.Errorf("%w: layer %d type %d", runtime.ErrUnsupportedLayerType, n.ID, n.Type)
 	}
@@ -755,6 +1565,7 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 			var source *ebiten.Image
 			var shader *ebiten.Shader
 			var err error
+			directMotion := false
 			if n.Transition != nil {
 				uniforms := c.shaderUniforms()
 				tr := n.Transition
@@ -797,7 +1608,15 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 			} else {
 				sourceWidth, sourceHeight := n.ImageWidth, n.ImageHeight
 				if n.Motion != nil {
-					source, err = c.composeMotion(n)
+					if n.Type == runtime.LayerAlpha && targetType == runtime.LayerBinder {
+						directMotion, err = c.drawDirectMotionAlpha(n, x0, y0, x1, y1)
+					}
+					if !directMotion && c.motionBatching {
+						c.flushMotionBatch()
+					}
+					if !directMotion && err == nil {
+						source, err = c.composeMotion(n)
+					}
 				} else {
 					if n.GPUStretch {
 						sourceWidth, sourceHeight = n.GPUStretchSourceWidth, n.GPUStretchSourceHeight
@@ -807,67 +1626,89 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 				if err != nil {
 					return err
 				}
-				if n.Type == runtime.LayerOpaque {
-					c.drawOpaqueLayer(source, x0, y0, x1, y1, ax, ay, n)
-				} else if n.Type == runtime.LayerAlpha && targetType == runtime.LayerBinder {
-					c.drawAlphaLayer(source, x0, y0, x1, y1, ax, ay, n)
-				} else {
-					shader = c.shaders[gpuMethodKey{n.Type, targetType, n.HoldAlpha}]
-					if shader == nil {
-						return fmt.Errorf("unsupported GPU layer type %d", n.Type)
-					}
-					c.copyFrontToBack()
-					uniforms := c.shaderUniforms()
-					uniforms["Mode"] = float32(n.Type)
-					uniforms["TargetType"] = float32(targetType)
-					uniforms["Opacity"] = float32(n.Opacity) / 255
-					uniforms["HoldAlpha"] = boolToFloat(n.HoldAlpha)
-					destinationWidth, destinationHeight := n.ImageWidth, n.ImageHeight
-					if n.GPUStretch {
-						destinationWidth, destinationHeight = n.GPUStretchDestinationWidth, n.GPUStretchDestinationHeight
-					}
-					c.sourceScale[0], c.sourceScale[1] = 1, 1
-					c.sourceOffset[0], c.sourceOffset[1] = 0, 0
-					c.sourceMin[0], c.sourceMin[1] = 0.5, 0.5
-					c.sourceMax[0], c.sourceMax[1] = float32(sourceWidth)-0.5, float32(sourceHeight)-0.5
-					if n.GPUStretch && n.GPUStretchCropWidth > 0 && n.GPUStretchCropHeight > 0 &&
-						destinationWidth > 0 && destinationHeight > 0 {
-						c.sourceScale[0] = float32(n.GPUStretchCropWidth) / float32(destinationWidth)
-						c.sourceScale[1] = float32(n.GPUStretchCropHeight) / float32(destinationHeight)
-						c.sourceOffset[0] = float32(n.GPUStretchSourceX) - float32(n.GPUStretchDestinationX)*c.sourceScale[0]
-						c.sourceOffset[1] = float32(n.GPUStretchSourceY) - float32(n.GPUStretchDestinationY)*c.sourceScale[1]
-						c.sourceMin[0] = float32(n.GPUStretchSourceX) + 0.5
-						c.sourceMin[1] = float32(n.GPUStretchSourceY) + 0.5
-						c.sourceMax[0] = float32(n.GPUStretchSourceX+n.GPUStretchCropWidth) - 0.5
-						c.sourceMax[1] = float32(n.GPUStretchSourceY+n.GPUStretchCropHeight) - 0.5
-					}
-					uniforms["SourceScale"] = c.sourceScale[:]
-					uniforms["SourceOffset"] = c.sourceOffset[:]
-					uniforms["SourceMin"] = c.sourceMin[:]
-					uniforms["SourceMax"] = c.sourceMax[:]
-					if n.GPUStretch || n.Motion != nil {
-						uniforms["SourceLinear"] = float32(1)
+				if !directMotion {
+					if n.Type == runtime.LayerOpaque {
+						c.drawOpaqueLayer(source, x0, y0, x1, y1, ax, ay, n)
+					} else if n.Type == runtime.LayerAlpha && targetType == runtime.LayerBinder {
+						c.drawAlphaLayer(source, x0, y0, x1, y1, ax, ay, n)
 					} else {
-						uniforms["SourceLinear"] = float32(0)
+						shader = c.shaders[gpuMethodKey{n.Type, targetType, n.HoldAlpha}]
+						if shader == nil {
+							return fmt.Errorf("unsupported GPU layer type %d", n.Type)
+						}
+						c.copyFrontToBack()
+						uniforms := c.shaderUniforms()
+						uniforms["Mode"] = float32(n.Type)
+						uniforms["TargetType"] = float32(targetType)
+						uniforms["Opacity"] = float32(n.Opacity) / 255
+						uniforms["HoldAlpha"] = boolToFloat(n.HoldAlpha)
+						destinationWidth, destinationHeight := n.ImageWidth, n.ImageHeight
+						if n.GPUStretch {
+							destinationWidth, destinationHeight = n.GPUStretchDestinationWidth, n.GPUStretchDestinationHeight
+						}
+						c.sourceScale[0], c.sourceScale[1] = 1, 1
+						c.sourceOffset[0], c.sourceOffset[1] = 0, 0
+						c.sourceMin[0], c.sourceMin[1] = 0.5, 0.5
+						c.sourceMax[0], c.sourceMax[1] = float32(sourceWidth)-0.5, float32(sourceHeight)-0.5
+						if n.GPUStretch && n.GPUStretchCropWidth > 0 && n.GPUStretchCropHeight > 0 &&
+							destinationWidth > 0 && destinationHeight > 0 {
+							c.sourceScale[0] = float32(n.GPUStretchCropWidth) / float32(destinationWidth)
+							c.sourceScale[1] = float32(n.GPUStretchCropHeight) / float32(destinationHeight)
+							c.sourceOffset[0] = float32(n.GPUStretchSourceX) - float32(n.GPUStretchDestinationX)*c.sourceScale[0]
+							c.sourceOffset[1] = float32(n.GPUStretchSourceY) - float32(n.GPUStretchDestinationY)*c.sourceScale[1]
+							c.sourceMin[0] = float32(n.GPUStretchSourceX) + 0.5
+							c.sourceMin[1] = float32(n.GPUStretchSourceY) + 0.5
+							c.sourceMax[0] = float32(n.GPUStretchSourceX+n.GPUStretchCropWidth) - 0.5
+							c.sourceMax[1] = float32(n.GPUStretchSourceY+n.GPUStretchCropHeight) - 0.5
+						}
+						uniforms["SourceScale"] = c.sourceScale[:]
+						uniforms["SourceOffset"] = c.sourceOffset[:]
+						uniforms["SourceMin"] = c.sourceMin[:]
+						uniforms["SourceMax"] = c.sourceMax[:]
+						if n.GPUStretch || n.Motion != nil {
+							uniforms["SourceLinear"] = float32(1)
+						} else {
+							uniforms["SourceLinear"] = float32(0)
+						}
+						c.drawQuad(c.back, shader, [4]*ebiten.Image{c.front, source, nil, nil}, float32(ax+n.ImageLeft+int32(x0)), float32(ay+n.ImageTop+int32(y0)), float32(ax+n.ImageLeft+int32(x1)), float32(ay+n.ImageTop+int32(y1)), float32(ax+n.ImageLeft), float32(ay+n.ImageTop), uniforms)
+						c.front, c.back = c.back, c.front
 					}
-					c.drawQuad(c.back, shader, [4]*ebiten.Image{c.front, source, nil, nil}, float32(ax+n.ImageLeft+int32(x0)), float32(ay+n.ImageTop+int32(y0)), float32(ax+n.ImageLeft+int32(x1)), float32(ay+n.ImageTop+int32(y1)), float32(ax+n.ImageLeft), float32(ay+n.ImageTop), uniforms)
-					c.front, c.back = c.back, c.front
 				}
 			}
 		}
+	}
+	if n.ChildCount > 0 && n.Type != runtime.LayerBinder && c.motionBatching {
+		c.flushMotionBatch()
 	}
 	childTarget := n.Type
 	if n.Type == runtime.LayerBinder {
 		childTarget = targetType
 	}
+	previousBatching := c.motionBatching
+	batchChildren := n.Type == runtime.LayerBinder
+	if batchChildren {
+		c.motionBatching = true
+	}
 	for i := range n.ChildCount {
 		pos := n.ChildStart + i
 		if pos < 0 || pos >= len(plan.ChildIndices) {
+			if batchChildren {
+				c.flushMotionBatch()
+				c.motionBatching = previousBatching
+			}
 			return fmt.Errorf("invalid child range for layer %d", n.ID)
 		}
 		if err := c.drawNode(plan, plan.ChildIndices[pos], childTarget); err != nil {
+			if batchChildren {
+				c.flushMotionBatch()
+				c.motionBatching = previousBatching
+			}
 			return err
 		}
+	}
+	if batchChildren {
+		c.flushMotionBatch()
+		c.motionBatching = previousBatching
 	}
 	return nil
 }
@@ -997,6 +1838,7 @@ func (c *GPUCompositor) Compose(plan runtime.RenderPlan) (*ebiten.Image, error) 
 	if err := c.ensureTargets(int(plan.Width), int(plan.Height), plan.Background); err != nil {
 		return nil, err
 	}
+	c.motionFrame++
 	c.beginTextureFrame()
 	if len(plan.Nodes) != 0 {
 		root := 0
@@ -1005,6 +1847,7 @@ func (c *GPUCompositor) Compose(plan runtime.RenderPlan) (*ebiten.Image, error) 
 		}
 	}
 	c.evictUnusedTextures()
+	c.evictSharedMotionAtlases()
 	return c.front, nil
 }
 

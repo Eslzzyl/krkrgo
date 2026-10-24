@@ -611,7 +611,7 @@ func collectGPUMotionParticles(resource *motionResource, layer map[string]assets
 		particleCtx := motionParticleTransform(ctx, particle)
 		particleCtx.layerTreeKey = fmt.Sprintf("%s/emitter:%d/particle:%d/template:%s", ctx.layerTreeKey, ctx.layerID, particleIndex, particle.template)
 		particleLayerID := 1
-		if err := collectGPUMotionValue(owner, ownerRoot, layers, particle.age, eval, particleCtx, drawMatrix, result, stack, &particleLayerID); err != nil {
+		if err := collectGPUMotionLayers(owner, ownerRoot, layers, particle.age, eval, particleCtx, drawMatrix, result, stack, &particleLayerID); err != nil {
 			return err
 		}
 	}
