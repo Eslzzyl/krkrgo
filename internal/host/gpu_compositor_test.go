@@ -352,6 +352,61 @@ func TestGPUCompositorFlushesSharedBatchBeforeAtlasRebuild(t *testing.T) {
 	}
 }
 
+func TestGPUCompositorRebuildsPaddedAtlasWithNarrowEntry(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	plan := runtime.RenderPlan{
+		Width:        4,
+		Height:       2,
+		ChildIndices: []int{1, 2},
+		Nodes: []runtime.RenderNode{
+			{ID: 1, Type: runtime.LayerBinder, Visible: true, Opacity: 255, ChildCount: 2},
+			{ID: 2, Bounds: runtime.Rect{Width: 2, Height: 2}, Type: runtime.LayerAlpha, Visible: true, Opacity: 255, ImageWidth: 2, ImageHeight: 2, Motion: &runtime.RenderMotion{
+				AtlasKey: "padded-rebuild",
+				Filter:   1,
+				Draws: []runtime.RenderMotionDraw{{
+					SourceKey: "motion/a-large",
+					RGBA:      []byte{0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255},
+					Width:     2,
+					Height:    2,
+					A:         1,
+					D:         1,
+					Opacity:   255,
+				}},
+			}},
+			{ID: 3, Bounds: runtime.Rect{X: 2, Width: 1, Height: 1}, Type: runtime.LayerAlpha, Visible: true, Opacity: 255, ImageWidth: 1, ImageHeight: 1, Motion: &runtime.RenderMotion{
+				AtlasKey: "padded-rebuild",
+				Filter:   1,
+				Draws: []runtime.RenderMotionDraw{{
+					SourceKey: "motion/z-small",
+					RGBA:      []byte{255, 0, 0, 255},
+					Width:     1,
+					Height:    1,
+					A:         1,
+					D:         1,
+					Opacity:   255,
+				}},
+			}},
+		},
+	}
+	if _, err := compositor.Compose(plan); err != nil {
+		t.Fatal(err)
+	}
+	atlas := compositor.sharedMotionAtlases["padded-rebuild"]
+	if atlas == nil || !atlas.padding || len(atlas.entries) != 2 {
+		t.Fatalf("padded rebuilt atlas = %#v, want two entries", atlas)
+	}
+	if got := atlas.entries["motion/a-large"].storage.Dx(); got != 4 {
+		t.Fatalf("large storage width = %d, want 4", got)
+	}
+	if got := atlas.entries["motion/z-small"].storage.Dx(); got != 3 {
+		t.Fatalf("small storage width = %d, want 3", got)
+	}
+}
+
 func TestGPUCompositorReusesSharedMotionAtlasSlot(t *testing.T) {
 	compositor, err := NewGPUCompositor()
 	if err != nil {

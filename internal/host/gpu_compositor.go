@@ -647,8 +647,9 @@ func (c *GPUCompositor) rebuildMotionAtlas(atlas *gpuMotionAtlas) {
 	texture := newGPUImage(width, capacityHeight)
 	for _, key := range keys {
 		entry := atlas.entries[key]
+		entryWidth, _ := motionAtlasStorageSize(entry.width, entry.height, atlas.padding)
 		_, entryHeight := motionAtlasStorageSize(entry.width, entry.height, atlas.padding)
-		entry.storage = image.Rect(0, nextY, width, nextY+entryHeight)
+		entry.storage = image.Rect(0, nextY, entryWidth, nextY+entryHeight)
 		entry.rect = motionAtlasContentRect(entry.storage, entry.width, entry.height, atlas.padding)
 		if entry.view != nil {
 			copyMotionAtlasEntry(texture, entry.view, entry.rect, atlas.padding)
