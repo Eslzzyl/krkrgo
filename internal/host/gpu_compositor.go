@@ -44,6 +44,7 @@ type gpuMotionAtlasEntry struct {
 	width          int32
 	height         int32
 	hash           uint64
+	upload         []byte
 	lastUsed       uint64
 	sharedLastUsed uint64
 }
@@ -543,7 +544,8 @@ func (c *GPUCompositor) writeMotionAtlasEntry(atlas *gpuMotionAtlas, entry *gpuM
 	}
 	entry.storage = motionAtlasStorageRect(entry)
 	storage := atlas.texture.SubImage(entry.storage).(*ebiten.Image)
-	storage.WritePixels(upload)
+	entry.upload = append([]byte(nil), upload...)
+	storage.WritePixels(entry.upload)
 	entry.view = atlas.texture.SubImage(entry.rect).(*ebiten.Image)
 }
 
@@ -551,14 +553,20 @@ func drawMotionAtlasCopy(dst, src *ebiten.Image, x, y float64) {
 	if dst == nil || src == nil {
 		return
 	}
+	bounds := src.Bounds()
 	var geo ebiten.GeoM
-	geo.Translate(x, y)
+	copyX, copyY := motionAtlasCopyPosition(bounds, x, y)
+	geo.Translate(copyX, copyY)
 	dst.DrawImage(src, &ebiten.DrawImageOptions{
 		GeoM:           geo,
 		Blend:          gpuReplaceBlend,
 		Filter:         ebiten.FilterNearest,
 		DisableMipmaps: true,
 	})
+}
+
+func motionAtlasCopyPosition(bounds image.Rectangle, x, y float64) (float64, float64) {
+	return x - float64(bounds.Min.X), y - float64(bounds.Min.Y)
 }
 
 func copyMotionAtlasEntry(dst, src *ebiten.Image, rect image.Rectangle, padded bool) {
@@ -651,7 +659,14 @@ func (c *GPUCompositor) rebuildMotionAtlas(atlas *gpuMotionAtlas) {
 		_, entryHeight := motionAtlasStorageSize(entry.width, entry.height, atlas.padding)
 		entry.storage = image.Rect(0, nextY, entryWidth, nextY+entryHeight)
 		entry.rect = motionAtlasContentRect(entry.storage, entry.width, entry.height, atlas.padding)
-		if entry.view != nil {
+		if len(entry.upload) != 0 {
+			if atlas.padding && len(entry.upload) == int(entry.width)*int(entry.height)*4 {
+				padded := c.motionPaddedUpload(entry.upload, entry.width, entry.height)
+				entry.upload = append([]byte(nil), padded...)
+			}
+			texture.SubImage(entry.storage).(*ebiten.Image).WritePixels(entry.upload)
+			entry.view = texture.SubImage(entry.rect).(*ebiten.Image)
+		} else if entry.view != nil {
 			copyMotionAtlasEntry(texture, entry.view, entry.rect, atlas.padding)
 			entry.view = texture.SubImage(entry.rect).(*ebiten.Image)
 		} else {

@@ -1824,6 +1824,9 @@ func (s *Services) motionPlayerFrameProgress(id tjs.ObjectID, state *motionPlaye
 		last := motionLastTime(resource, state.chara, state.motion)
 		if last >= 0 && state.frameTick >= last {
 			advanceMotionClock(state, last, motionPlayerLoopTime(state, resource))
+			if state.held {
+				state.clampedEvalTime = state.frameTick
+			}
 			if !state.playing {
 				motionTrace("progress-stop id=%d motion=%q frame=%.2f last=%.2f", id, state.motion, state.frameTick, last)
 			}
@@ -2507,8 +2510,14 @@ func (s *Services) motionPlayerTimelineRuntime(state *motionPlayerState, emote *
 }
 
 func motionPlayerActiveClipTime(state *motionPlayerState, runtime *emotePlayerState) float64 {
-	if state == nil || runtime == nil {
+	if state == nil {
 		return 0
+	}
+	if state.held && state.frameTick > 0 {
+		return state.frameTick
+	}
+	if runtime == nil {
+		return state.frameTick
 	}
 	if timeline := runtime.timelines[state.motion]; timeline != nil {
 		return timeline.time
@@ -2532,7 +2541,7 @@ func motionPlayerActiveClipTime(state *motionPlayerState, runtime *emotePlayerSt
 			return timeline.time
 		}
 	}
-	return 0
+	return state.frameTick
 }
 
 func (s *Services) motionPlayerCommitTimelineRuntime(state *motionPlayerState, emote, runtime *emotePlayerState) {
@@ -3093,7 +3102,6 @@ func (s *Services) drawMotionTargetLayer(vm *tjs.VM, state *motionPlayerState, l
 		s.mu.Lock()
 		changed := layer.gpuMotion != motion
 		layer.gpuMotion = motion
-		layer.Visible = true
 		if changed || rebuilt {
 			layer.imageModified = true
 			layer.markImageDirty()
@@ -3140,13 +3148,11 @@ func (s *Services) drawMotionTargetLayer(vm *tjs.VM, state *motionPlayerState, l
 		if err := layer.SetSizeToImageSize(); err != nil {
 			return err
 		}
-		layer.Visible = true
 		layer.imageModified = true
 		layer.markImageDirty()
 		return nil
 	}
 	drawMotionCanvasInto(layer, frame, drawMatrix, 0)
-	layer.Visible = true
 	layer.imageModified = true
 	layer.markImageDirty()
 	return nil

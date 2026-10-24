@@ -219,7 +219,7 @@ func TestLayerTransitionAutomaticCompletionAndIdleStop(t *testing.T) {
 			completedDestination = dest;
 			completedSource = src;
 		};
-		destinationLayer.beginTransition("crossfade", true, sourceLayer, %[time:10, exchange:true]);
+		destinationLayer.beginTransition("crossfade", true, sourceLayer, %[time:10]);
 	`, false); err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestLayerTransitionSimpleCompletionKeepsTreeAndUsesSourceImage(t *testing.T
 			completedDestination = dest;
 			completedSource = src;
 		};
-		destinationLayer.beginTransition("crossfade", true, sourceLayer, %[time:10]);
+		destinationLayer.beginTransition("crossfade", true, sourceLayer, %[time:10, exchange:false]);
 	`, false); err != nil {
 		t.Fatal(err)
 	}

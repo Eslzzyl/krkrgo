@@ -164,7 +164,7 @@ func (s *Services) layerTransition(vm *tjs.VM, context tjs.Value, operation stri
 	if !callback.IsVoid() && (callback.Kind() != tjs.KindObject || callback.IsNull()) {
 		return tjs.VoidValue, fmt.Errorf("Layer.beginTransition: options.callback must be a function")
 	}
-	exchange := false
+	exchange := method == "crossfade" || method == "universal" || method == "spin"
 	if value, ok := options.Get("exchange"); ok && !value.IsVoid() {
 		exchange, err = value.Truth()
 		if err != nil {

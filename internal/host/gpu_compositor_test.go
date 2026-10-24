@@ -273,6 +273,13 @@ func TestMotionPaddedUploadReplicatesEdges(t *testing.T) {
 	}
 }
 
+func TestMotionAtlasCopyPositionNormalizesSourceBounds(t *testing.T) {
+	x, y := motionAtlasCopyPosition(image.Rect(7, 11, 9, 15), 2, 3)
+	if x != -5 || y != -8 {
+		t.Fatalf("motion atlas copy position = (%g, %g), want (-5, -8)", x, y)
+	}
+}
+
 func TestGPUCompositorSharesMotionAtlasAcrossLayers(t *testing.T) {
 	compositor, err := NewGPUCompositor()
 	if err != nil {
@@ -482,6 +489,56 @@ func TestGPUCompositorReusesPaddedSharedMotionAtlasSlot(t *testing.T) {
 	atlas = compositor.sharedMotionAtlases["padded-shared"]
 	if atlas == nil || atlas.texture != texture || len(atlas.entries) != 1 || atlas.entries["motion/b"] == nil {
 		t.Fatalf("padded shared slot reuse = %#v, want same texture with motion/b", atlas)
+	}
+}
+
+func TestGPUCompositorPadsExistingAtlasWhenFilterChanges(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	plan := func(filter int64) runtime.RenderPlan {
+		return runtime.RenderPlan{
+			Width:  1,
+			Height: 1,
+			Nodes: []runtime.RenderNode{{
+				ID:          31,
+				Bounds:      runtime.Rect{Width: 1, Height: 1},
+				Type:        runtime.LayerAlpha,
+				Visible:     true,
+				Opacity:     255,
+				ImageWidth:  1,
+				ImageHeight: 1,
+				Motion: &runtime.RenderMotion{
+					AtlasKey: "filter-change",
+					Filter:   filter,
+					Draws: []runtime.RenderMotionDraw{{
+						SourceKey: "motion/filter-change",
+						RGBA:      []byte{255, 0, 0, 255},
+						Width:     1,
+						Height:    1,
+						A:         1,
+						D:         1,
+						Opacity:   255,
+					}},
+				},
+			}},
+		}
+	}
+	if _, err := compositor.Compose(plan(0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compositor.Compose(plan(1)); err != nil {
+		t.Fatal(err)
+	}
+	atlas := compositor.sharedMotionAtlases["filter-change"]
+	if atlas == nil {
+		t.Fatalf("filter-change atlas = %#v, want padded source upload", atlas)
+	}
+	entry := atlas.entries["motion/filter-change"]
+	if !atlas.padding || entry == nil || len(entry.upload) != 3*3*4 {
+		t.Fatalf("filter-change atlas = %#v, want padded source upload", atlas)
 	}
 }
 

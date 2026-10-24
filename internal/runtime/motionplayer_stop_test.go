@@ -41,3 +41,18 @@ func TestEmotePlayerSkipToSyncUsesActiveTimelineLength(t *testing.T) {
 		t.Fatalf("player time after skip = clamped:%v loop:%v, want 48:48", state.clampedEvalTime, state.frameLoopTime)
 	}
 }
+
+func TestMotionPlayerActiveClipTimeFallsBackToMotionClock(t *testing.T) {
+	state := &motionPlayerState{frameTick: 180}
+	runtime := &emotePlayerState{timelines: map[string]*emoteTimelineState{}}
+
+	if got := motionPlayerActiveClipTime(state, runtime); got != 180 {
+		t.Fatalf("motion clock fallback = %v, want 180", got)
+	}
+
+	state.held = true
+	runtime.timelines["title"] = &emoteTimelineState{time: 0, totalFrames: 180}
+	if got := motionPlayerActiveClipTime(state, runtime); got != 180 {
+		t.Fatalf("held motion clock = %v, want 180", got)
+	}
+}

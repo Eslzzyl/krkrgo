@@ -288,6 +288,10 @@ func TestEmotePlayerMetadataDrawVariablesTimelines(t *testing.T) {
 		transB = new Layer();
 		transB.setImageSize(8, 8);
 		emote.draw(transB);
+		hiddenTarget = new Layer();
+		hiddenTarget.visible = false;
+		emote.draw(hiddenTarget);
+		hiddenTargetVisible = hiddenTarget.visible;
 
 		emote.visible = false;
 		hidden = new Layer();
@@ -310,6 +314,7 @@ func TestEmotePlayerMetadataDrawVariablesTimelines(t *testing.T) {
 		{`restoredPlaying + "|" + restoredVariable + "|" + restoredChara`, "1|1|chara"},
 		{`outerForce`, "1|2"},
 		{`hit + "|" + miss + "|" + shapeMiss + "|" + shapeEdgeMiss + "|" + outside`, "1|0|0|0|0"},
+		{`hiddenTargetVisible`, "0"},
 	} {
 		value, err := session.Evaluate(check.expression)
 		if err != nil {

@@ -1479,7 +1479,11 @@ func (s *Services) emotePlayerProgress(state *motionPlayerState, emote *emotePla
 		s.emoteApplyEvalPostProcess(emote)
 	}
 	state.syncActive = state.syncWaiting && len(emote.playingOrder) > 0
-	state.clampedEvalTime = 0
+	if state.held {
+		state.clampedEvalTime = state.frameTick
+	} else {
+		state.clampedEvalTime = 0
+	}
 	emote.modified = true
 	return tjs.VoidValue, nil
 }
