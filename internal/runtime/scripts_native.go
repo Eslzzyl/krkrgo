@@ -819,6 +819,27 @@ func (s *Services) scriptsNative(vm *tjs.VM, context tjs.Value, operation string
 		}
 		s.setScriptTextEncoding(value.Text())
 		return tjs.VoidValue, nil
+	case "tomlDecodeFromStorage":
+		value, err := arg(0)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		decoded, err := s.tomlDecodeFromStorage(vm, value.Text(), budget)
+		return finish(decoded, err)
+	case "tomlDecodeFromString":
+		value, err := arg(0)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		decoded, err := tomlDecodeFromString(vm, s, value.Text(), budget)
+		return finish(decoded, err)
+	case "tomlEncode":
+		value, err := arg(0)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		encoded, err := tomlEncodeTJS(vm, s, budget, value)
+		return finish(encoded, err)
 	case "execStorage", "evalStorage":
 		nameValue, err := arg(0)
 		if err != nil {

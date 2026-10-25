@@ -51,6 +51,7 @@ func pluginLinkKey(name string) string {
 //   - wuopus.dll: the runtime's audio path decodes no Opus; the FFmpeg sidecar
 //     only enables the Ogg/Vorbis decoder (scripts/build-ffmpeg.sh:183).
 var nativePluginProviders = map[string]string{
+	"toml.dll":           "Scripts.tomlDecodeFromStorage reads TOML text from project storage (toml_native.go; testdata/lllj/plugin/toml.dll)",
 	"addfont.dll":        "System.addFont registers storage font data (system_native.go; cpp/plugins/addFont.cpp)",
 	"alphamovie.dll":     "AlphaMovie path/rectangle playback (alpha_movie_native.go; assets/amv_decode.go)",
 	"csvparser.dll":      "CSVParser (csv_parser_native.go; cpp/plugins/csvParser.cpp)",
