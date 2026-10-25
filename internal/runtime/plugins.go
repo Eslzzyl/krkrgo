@@ -35,10 +35,9 @@ func pluginLinkKey(name string) string {
 // throws from the plugin constructor; reference/krkr2-main/cpp/core/plugin/ncbind.cpp:12
 // returns false).
 //
-// Windows-only modules are deliberately absent: the runtime holds no
-// cross-platform implementation of what they do, and macOS/Linux cannot load the
-// shipped DLLs, so linking them must report the unavailable module instead of a
-// false success.
+// Windows-only modules remain absent unless a portable implementation covers
+// the same native capability. layerStwCopy.dll is the exception: the runtime
+// emulates its Layer buffer operation in Go.
 //
 //   - win32ole.dll: COM/OLE automation; neither reference ships it
 //     (reference/krkr2-main/docs/KRKR_PLUGINS.md has no entry).
@@ -73,6 +72,7 @@ var nativePluginProviders = map[string]string{
 	"layerexdraw.dll":    "link-only: the module's GDI+ surface is not implemented, so Layer reports the missing operations instead of fabricating them (layer_native.go, image_function_native.go)",
 	"layereximage.dll":   "link-only: the game's LayerEx.tjs helpers compose Layer's built-in pixel operations (layer_image.go); other extension operations report ErrUnsupportedNative",
 	"layerexraster.dll":  "link-only: callers guard on the missing Layer method, and Layer's built-in pixel operations (layer_image.go) are all the runtime claims; other extension operations report ErrUnsupportedNative",
+	"layerstwcopy.dll":   "Layer.stitchWrappedCopy wrapped pixel copy (layer_stw_copy_native.go; testdata/lllj/plugin/layerStwCopy.dll)",
 	"motionplayer.dll":   "Motion resource manager subset with layer/shape/play constants (motionplayer_native.go; cpp/plugins/motionplayer)",
 	"msdfrender.dll":     "link-only: the game-side embedded-font loader can continue with the host font path when the optional MSDF renderer is unavailable",
 	"menu.dll":           "MenuItem and Window menu surfaces (menu_native.go)",
@@ -95,7 +95,7 @@ func isImplementedNativePlugin(key string) bool {
 
 func isVirtualNativePluginStorage(name string) bool {
 	switch path.Base(pluginLinkKey(name)) {
-	case "emoteplayer.dll", "motionplayer.dll":
+	case "emoteplayer.dll", "layerstwcopy.dll", "motionplayer.dll":
 		return true
 	default:
 		return false

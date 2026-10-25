@@ -288,6 +288,20 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		return tjs.VoidValue, nil
 	case "beginTransition", "stopTransition":
 		return s.layerTransition(vm, context, operation, args, budget)
+	case "stitchWrappedCopy":
+		return tjs.VoidValue, s.layerStitchWrappedCopy(vm, id, l, args)
+	case "convertType":
+		from, err := intArg(0)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		if err := l.ConvertType(from); err != nil {
+			return tjs.VoidValue, err
+		}
+		// Kirikiri's ConvertLayerType calls Update after changing the pixel
+		// representation. Queue the equivalent onPaint callback here.
+		s.queueLayerPaint(l)
+		return tjs.VoidValue, nil
 	case "update":
 		if len(args) != 0 {
 			if len(args) < 4 {

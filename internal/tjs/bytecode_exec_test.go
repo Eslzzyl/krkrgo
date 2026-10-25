@@ -344,6 +344,9 @@ func TestExecuteLegacyContextProxyLookupAndCallReceiver(t *testing.T) {
 	if err := global.Set("globalOnly", IntegerValue(73)); err != nil {
 		t.Fatal(err)
 	}
+	if err := context.Set("globalOnly", VoidValue); err != nil {
+		t.Fatal(err)
+	}
 	var called bool
 	method := NewNativeFunction(table, "contextMethod", func(receiver ObjectRef, _ []Value) (Value, error) {
 		if receiver.Object != context.ID {
@@ -1086,6 +1089,53 @@ func TestExecuteLegacyCALLDZeroResultRegisterDiscardsReturn(t *testing.T) {
 		t.Fatalf("discarded CALLD overwrote r0: got %v, want preserved string", got)
 	}
 }
+func TestExecuteLegacyCALLDGlobalProxyFallbackPreservesBoundContext(t *testing.T) {
+	vm := NewVM()
+	receiver, err := vm.NewDictionary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundContext, err := vm.NewDictionary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	function, err := vm.RegisterLegacyFunction("global-proxy-fallback", func(context Value, _ []Value, _ Host, _ *uint64, _ bool) (Value, error) {
+		return context, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	global := vm.globalValue()
+	globalObject, ok := vm.Objects.Lookup(0)
+	if !ok {
+		t.Fatal("global object is unavailable")
+	}
+	if err := globalObject.Set("proxyOnly", ObjectValue(NewObjectRef(function.ObjectRef().Object, boundContext.ObjectRef().Object))); err != nil {
+		t.Fatal(err)
+	}
+	bytecode := &DecodedBytecode{Objects: []BytecodeObject{{
+		MaxVariables: 2,
+		Code: []int16{
+			100, 1, -2, 0, 0, // CALLD r1, objthis-proxy.proxyOnly()
+			118, 1, 119, // Return r1.
+		},
+		Constants: []BytecodeConstant{{Value: StringValue("proxyOnly")}},
+	}}}
+	var budget uint64 = 4096
+	invoke := func(callee, context Value, args []Value, resultNeeded bool) (Value, error) {
+		return vm.InvokeLegacy(callee, context, args, nopHost{}, &budget, resultNeeded)
+	}
+	got, err := bytecode.ExecuteLegacyWithContextAndConstructionAndArguments(
+		0, global, receiver, nil, nil, invoke, nil, vm.Objects,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.StrictEqual(boundContext) {
+		t.Fatalf("global proxy CALLD context = %v, want bound context %v", got, boundContext)
+	}
+}
+
 
 func TestExecuteLegacyGlobalEvalUsesOptionalContextArgument(t *testing.T) {
 	for _, test := range []struct {

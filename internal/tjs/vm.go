@@ -580,7 +580,6 @@ func (v *VM) lookupClassMemberWithRuntimeMode(classID ObjectID, name string, dep
 			}
 		}
 	}
-
 	if !skipSuperclassConstructor && meta.legacyClassInitializing {
 		for index := range meta.superclassGetterOffsets {
 			baseID, resolveErr := v.resolveLegacySuperclassBase(classID, index, host, budget)
@@ -669,8 +668,11 @@ func (v *VM) resolveLegacySuperclassBase(classID ObjectID, index int, host Host,
 		return 0, fmt.Errorf("TJS superclass getter at offset %d for class object %d: %w", offset, classID, err)
 	}
 	baseMeta := v.meta[baseID]
-	if baseMeta == nil || baseMeta.category != CategoryClass {
-		return 0, fmt.Errorf("TJS superclass getter at offset %d for class object %d returned a non-class object", offset, classID)
+	if baseMeta == nil || (baseMeta.category != CategoryClass &&
+		baseMeta.category != CategoryFunction &&
+		baseMeta.category != CategoryNative &&
+		baseMeta.category != CategoryMethod) {
+		return 0, fmt.Errorf("TJS superclass getter at offset %d for class object %d returned a non-callable object", offset, classID)
 	}
 	if baseID == classID || v.classHasBase(baseID, classID, 0) {
 		return 0, fmt.Errorf("recursive TJS superclass relation for class object %d", classID)
@@ -1519,8 +1521,12 @@ func (v *VM) RegisterNativeClass(name string) (Value, error) {
 	return x, nil
 }
 
-// RegisterLegacyClass creates a class object for a compiled TJS2100 class.
-// Unlike a native class, its constructor is represented by compiled members.
+// RegisterLegacyClass creates an unbound class object for a compiled TJS2100
+// class. Unlike a native class, its constructor is represented by compiled
+// members. The loader binds the class into the scope that declares it, matching
+// tTJSByteCodeLoader's replay of each object's properties onto its parent
+// context; only top-level declarations reach the global namespace, through
+// RegisterGlobalLegacyClass.
 func (v *VM) RegisterLegacyClass(name string) (Value, error) {
 	value, id, err := v.alloc(CategoryClass)
 	if err != nil {
@@ -1528,8 +1534,18 @@ func (v *VM) RegisterLegacyClass(name string) (Value, error) {
 	}
 	v.meta[id].class = &Class{Name: name}
 	v.meta[id].classObject = id
-	v.Globals[name] = value
 	v.roots[value.ObjectRef()] = struct{}{}
+	return value, nil
+}
+
+// RegisterGlobalLegacyClass creates a compiled class declared in the script's
+// top-level context and exposes it as a global member.
+func (v *VM) RegisterGlobalLegacyClass(name string) (Value, error) {
+	value, err := v.RegisterLegacyClass(name)
+	if err != nil {
+		return VoidValue, err
+	}
+	v.Globals[name] = value
 	return value, nil
 }
 
@@ -4057,6 +4073,22 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 			}
 			return VoidValue, nil
 		}
+		if !m.nativeClass && m.class != nil && context.Kind() == KindObject && !context.IsNull() {
+			initialized := make(map[ObjectID]struct{})
+			initialized[id] = struct{}{}
+			if err := v.initializeCompiledClassBases(id, context.ObjectRef().Object, h, b, initialized); err != nil {
+				return VoidValue, err
+			}
+			// Reference class calls execute the class body against the current
+			// objthis; compiled class bases run their bodies first.
+			if len(m.class.Initializer.Code) == 0 {
+				return VoidValue, nil
+			}
+			return v.run(&m.class.Initializer, h, b, vmFrame{
+				context: context.ObjectRef().Object,
+				args:    args,
+			})
+		}
 	case CategoryProperty:
 		return v.getProperty(id, context, h, b)
 	}
@@ -4107,17 +4139,28 @@ func (v *VM) legacyAutoConstructorActive(classID ObjectID) bool {
 	return false
 }
 
-func (v *VM) initializeClass(classID, instance ObjectID, args []Value, h Host, b *uint64, depth int) error {
-	return v.initializeClassOnce(classID, instance, args, h, b, depth, make(map[ObjectID]bool))
-}
-
-func (v *VM) initializeClassOnce(classID, instance ObjectID, args []Value, h Host, b *uint64, depth int, initialized map[ObjectID]bool) error {
-	if depth >= 128 {
-		return errors.New("class inheritance depth exceeded")
-	}
-	if initialized[classID] {
+func (v *VM) initializeCompiledClassBases(classID, instanceID ObjectID, h Host, b *uint64, initialized map[ObjectID]struct{}) error {
+	class := v.meta[classID]
+	if class == nil || class.category != CategoryClass || class.legacyClassBody != nil {
 		return nil
 	}
+	for _, baseID := range class.classBases {
+		if err := v.initializeClassWithState(baseID, instanceID, nil, h, b, initialized); err != nil {
+			baseName := ""
+			if base := v.meta[baseID]; base != nil && base.class != nil {
+				baseName = base.class.Name
+			}
+			return fmt.Errorf("initialize base class %q (%d): %w", baseName, baseID, err)
+		}
+	}
+	return nil
+}
+
+func (v *VM) initializeClass(classID, instance ObjectID, args []Value, h Host, b *uint64) error {
+	return v.initializeClassWithState(classID, instance, args, h, b, make(map[ObjectID]struct{}))
+}
+
+func (v *VM) initializeClassWithState(classID, instance ObjectID, args []Value, h Host, b *uint64, initialized map[ObjectID]struct{}) error {
 	if err := v.validID(classID); err != nil {
 		return err
 	}
@@ -4125,6 +4168,10 @@ func (v *VM) initializeClassOnce(classID, instance ObjectID, args []Value, h Hos
 	if class == nil || class.category != CategoryClass {
 		return errors.New("TJS class base must be a class")
 	}
+	if _, alreadyInitialized := initialized[classID]; alreadyInitialized {
+		return nil
+	}
+	initialized[classID] = struct{}{}
 	if err := v.initializeLegacyClassNow(classID, h, b); err != nil {
 		return err
 	}
@@ -4132,39 +4179,11 @@ func (v *VM) initializeClassOnce(classID, instance ObjectID, args []Value, h Hos
 	if err := v.resolveLegacyClassBases(classID, h, b); err != nil {
 		return err
 	}
-	for i, base := range class.superclassBases {
-		if base == 0 {
-			continue
-		}
-		alreadyInitialized := false
-		for _, earlier := range class.superclassBases[:i] {
-			if earlier == base {
-				alreadyInitialized = true
-				break
-			}
-		}
-		if alreadyInitialized {
-			continue
-		}
-		if err := v.initializeClassOnce(base, instance, nil, h, b, depth+1, initialized); err != nil {
-			return err
-		}
+	if err := v.initializeCompiledClassBases(classID, instance, h, b, initialized); err != nil {
+		return err
 	}
-	for _, base := range class.classBases {
-		alreadyInitialized := false
-		for _, getterBase := range class.superclassBases {
-			if getterBase == base {
-				alreadyInitialized = true
-				break
-			}
-		}
-		if alreadyInitialized {
-			continue
-		}
-		if err := v.initializeClassOnce(base, instance, nil, h, b, depth+1, initialized); err != nil {
-			return err
-		}
-	}
+	// Legacy bytecode invokes base bodies explicitly; compiled class
+	// descriptors keep evaluated bases separately and initialize them here.
 	if names, registered := v.Objects.ClassInstanceMembers(classID); registered && class.legacyClassBody == nil {
 		classObject, err := v.obj(classID)
 		if err != nil {
@@ -4181,7 +4200,7 @@ func (v *VM) initializeClassOnce(classID, instance ObjectID, args []Value, h Hos
 		}
 	}
 	context := ObjectValue(NewObjectRef(instance, instance))
-	if depth == 0 && class.legacyClassBody != nil {
+	if class.legacyClassBody != nil {
 		if _, err := v.invokeLegacyClassBody(class, context, nil, h, b, false); err != nil {
 			return fmt.Errorf("initialize legacy class instance body %q (%d): %w", class.class.Name, classID, err)
 		}
@@ -4203,7 +4222,6 @@ func (v *VM) initializeClassOnce(classID, instance ObjectID, args []Value, h Hos
 			return err
 		}
 	}
-	initialized[classID] = true
 	return nil
 }
 
@@ -4275,7 +4293,7 @@ func (v *VM) constructWithMemberTarget(callee Value, args []Value, targetObject,
 	if err = v.resolveLegacyClassBases(id, h, b); err != nil {
 		return VoidValue, err
 	}
-	if err = v.initializeClass(id, instanceID, args, h, b, 0); err != nil {
+	if err = v.initializeClass(id, instanceID, args, h, b); err != nil {
 		return VoidValue, err
 	}
 	if meta.class != nil && meta.class.Name != "" {

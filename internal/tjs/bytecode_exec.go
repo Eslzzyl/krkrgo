@@ -308,7 +308,7 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			if os.Getenv("KRKRGO_LEGACY_PROPERTY_TRACE") == "1" && errors.Is(err, ErrMemberNotFound) {
 				fmt.Printf("[legacy-property-read-miss] object=%d receiver=%v property=%q\n", object, thisContext, name)
 			}
-			if errors.Is(err, ErrMemberNotFound) || (err == nil && name == "kag" && (value.IsVoid() || value.IsNull())) {
+			if errors.Is(err, ErrMemberNotFound) || (err == nil && value.IsVoid()) {
 				value, err = read(global, name, flags)
 			}
 		} else {
@@ -336,8 +336,12 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 	}
 	writeProperty := func(target int, name string, value Value, flags uint32, pc int) error {
 		receiver := regs[target]
+		// The reference r-2 proxy uses global directly when objthis is null.
 		if target == registerBase-2 {
 			receiver = thisContext
+			if receiver.IsVoid() || receiver.IsNull() {
+				receiver = global
+			}
 		} else {
 			receiver = memberReceiver(receiver)
 		}
@@ -1822,6 +1826,8 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 					regs[result] = value
 				}
 			} else {
+				// Object-proxy dispatch forwards the current receiver, while a resolved
+				// member closure retains its own bound context.
 				function, e := read(receiver, name, MemberMustExist)
 				if e != nil && callee == registerBase-2 && errors.Is(e, ErrMemberNotFound) {
 					function, e = read(global, name, MemberMustExist)

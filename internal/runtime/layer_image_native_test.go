@@ -3,8 +3,11 @@ package runtime
 import (
 	"math"
 	"math/rand/v2"
+	"slices"
 	"strconv"
 	"testing"
+
+	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
 func TestNativeLayerOperateRectAndStretchCopyPixels(t *testing.T) {
@@ -45,6 +48,46 @@ func TestNativeLayerOperateRectAndStretchCopyPixels(t *testing.T) {
 		if got := readInt("dst.getMainPixel(" + strconv.Itoa(x) + ",0)"); got != expected {
 			t.Fatalf("stretchCopy pixel %d = %#x, want %#x", x, got, expected)
 		}
+	}
+}
+
+func TestLayerConvertTypeMatchesReference(t *testing.T) {
+	layer := NewLayer(1)
+	layer.RGBA = []byte{200, 100, 50, 128}
+	layer.Face = layerFaceAddAlpha
+	if err := layer.ConvertType(layerFaceAlpha); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := layer.RGBA, []byte{100, 50, 25, 128}; !slices.Equal(got, want) {
+		t.Fatalf("alpha to additive-alpha pixels = %v, want %v", got, want)
+	}
+
+	layer.Face = layerFaceAlpha
+	if err := layer.ConvertType(layerFaceAddAlpha); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := layer.RGBA, []byte{199, 99, 49, 128}; !slices.Equal(got, want) {
+		t.Fatalf("additive-alpha to alpha pixels = %v, want %v", got, want)
+	}
+
+	session := NewSession(DefaultServices(), 100_000)
+	value, err := session.executeSource("<layer-convert-type-test>", `
+layer = new Layer();
+layer.face = dfAddAlpha;
+layer.setImageSize(1, 1);
+layer.fillRect(0, 0, 1, 1, 0x80402010);
+layer.convertType(dfAlpha);
+return layer;
+`, false)
+	if err != nil {
+		t.Fatalf("TJS Layer.convertType dispatch: %v", err)
+	}
+	if value.Kind() != tjs.KindObject || value.IsNull() {
+		t.Fatalf("Layer.convertType returned %v, want layer object", value)
+	}
+	native := session.Services.Layer(value.ObjectRef().Object)
+	if native == nil || !native.callOnPaint {
+		t.Fatalf("Layer.convertType did not queue onPaint")
 	}
 }
 func TestBilinearRGBAPreservesTransparentEdgeColor(t *testing.T) {
@@ -466,6 +509,54 @@ overlap.copyRect(0, 0, overlap, 1, 0, 3, 1);
 		mask := readInt("overlap.getMaskPixel(" + strconv.Itoa(x) + ",0)")
 		if main != wantMain[x] || mask != wantMask[x] {
 			t.Fatalf("copyRect overlap/holdAlpha pixel %d = %#x,%d, want %#x,%d", x, main, mask, wantMain[x], wantMask[x])
+		}
+	}
+}
+func TestNativeLayerStitchWrappedCopyTilesAndClips(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	if _, err := session.executeSource("<layer-stitch-wrapped-copy-test>", `
+if (!Storages.isExistentStorage("plugin64/layerStwCopy.dll")) throw "layerStwCopy.dll unavailable";
+Plugins.link("layerStwCopy.dll");
+src = new Layer(); dst = new Layer(); edge = new Layer();
+src.setImageSize(2, 2); dst.setImageSize(4, 3); edge.setImageSize(1, 2);
+src.face = dfMain; dst.face = dfMain; edge.face = dfMain;
+src.setMainPixel(0, 0, 0x110101); src.setMainPixel(1, 0, 0x220202);
+src.setMainPixel(0, 1, 0x330303); src.setMainPixel(1, 1, 0x440404);
+dst.stitchWrappedCopy(-1, 0, 5, 3, src, 0, 0, 2, 2, []);
+src.setClip(1, 0, 1, 2);
+edge.stitchWrappedCopy(0, 0, 1, 2, src, 0, 0, 2, 2, []);
+`, false); err != nil {
+		t.Fatal(err)
+	}
+
+	want := [3][4]int64{
+		{0x220202, 0x110101, 0x220202, 0x110101},
+		{0x440404, 0x330303, 0x440404, 0x330303},
+		{0x220202, 0x110101, 0x220202, 0x110101},
+	}
+	for y, row := range want {
+		for x, expected := range row {
+			value, err := session.Evaluate("dst.getMainPixel(" + strconv.Itoa(x) + "," + strconv.Itoa(y) + ")")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := value.Int()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != expected {
+				t.Errorf("pixel (%d,%d) = %#x, want %#x", x, y, got, expected)
+			}
+		}
+	}
+	for y, expected := range []int64{0x220202, 0x440404} {
+		value, err := session.Evaluate("edge.getMainPixel(0," + strconv.Itoa(y) + ")")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := value.Int()
+		if err != nil || got != expected {
+			t.Fatalf("edge pixel y=%d = %#x, want %#x (err %v)", y, got, expected, err)
 		}
 	}
 }

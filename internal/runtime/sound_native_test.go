@@ -66,6 +66,27 @@ func TestWaveSoundBufferNativeConstructionAndProperties(t *testing.T) {
 	}
 }
 
+func TestWaveSoundBufferFiltersRemainMutableAcrossReads(t *testing.T) {
+	s := NewSession(DefaultServices(), 10_000)
+	defer s.Close()
+	evalSoundValue(t, s, "sound = new WaveSoundBuffer()")
+
+	first := evalSoundValue(t, s, "sound.filters")
+	if first.Kind() != tjs.KindObject || first.IsNull() {
+		t.Fatalf("sound.filters = %v; want an array object", first)
+	}
+	evalSoundValue(t, s, "sound.filters.assign([17, 29])")
+	second := evalSoundValue(t, s, "sound.filters")
+	if second.Kind() != tjs.KindObject || second.IsNull() || first.ObjectRef().Object != second.ObjectRef().Object {
+		t.Fatalf("sound.filters object changed between reads: first=%v second=%v", first, second)
+	}
+	for index, want := range []int64{17, 29} {
+		if got := evalSoundInt(t, s, fmt.Sprintf("sound.filters[%d]", index)); got != want {
+			t.Errorf("sound.filters[%d] = %d, want %d", index, got, want)
+		}
+	}
+}
+
 func TestWaveSoundBufferNativeWaveTransportAndFade(t *testing.T) {
 	requireSidecarWAV(t)
 	s := NewSession(DefaultServices(), 20_000)

@@ -340,7 +340,7 @@ func (s *Session) registerNatives() error {
 	if err != nil {
 		return err
 	}
-	for _, method := range []string{"@initialize", "@invalidate", "Layer", "finalize", "update", "setCursorPos", "releaseCapture", "setPos", "setSize", "setSizeToImageSize", "setImageSize", "setImagePos", "setClip", "resetClip", "loadImages", "loadProvinceImage", "saveLayerImage", "piledCopy", "pileRect", "fillRect", "colorRect", "copyRect", "operateRect", "stretchCopy", "affineCopy", "assignImages", "doBoxBlur", "adjustGamma", "doGrayScale", "drawText", "bringToFront", "move", "addChild", "removeChild", "getLayerAt", "getMainPixel", "setMainPixel", "getMaskPixel", "setMaskPixel", "getProvincePixel", "setProvincePixel", "setMode", "removeMode", "focus", "beginTransition", "stopTransition", "openMovie", "startMovie", "stopMovie", "isPlayingMovie", "onMouseMove", "onHitTest", "onMouseDown", "onMouseUp", "onClick", "onDoubleClick", "onMouseEnter", "onMouseLeave", "onMouseWheel", "onKeyDown", "onKeyUp", "onKeyPress", "onFocus", "onBlur", "onBeforeFocus", "onSearchPrevFocusable", "onSearchNextFocusable", "onNodeEnabled", "onNodeDisabled", "onTouchDown", "onTouchUp", "onTouchMove", "onTouchScaling", "onTouchRotate", "onMultiTouch", "onTransitionCompleted", "onPaint"} {
+	for _, method := range []string{"@initialize", "@invalidate", "Layer", "finalize", "update", "convertType", "setCursorPos", "releaseCapture", "setPos", "setSize", "setSizeToImageSize", "setImageSize", "setImagePos", "setClip", "resetClip", "loadImages", "loadProvinceImage", "saveLayerImage", "piledCopy", "pileRect", "fillRect", "colorRect", "copyRect", "operateRect", "stretchCopy", "affineCopy", "assignImages", "doBoxBlur", "adjustGamma", "doGrayScale", "drawText", "bringToFront", "move", "addChild", "removeChild", "getLayerAt", "getMainPixel", "setMainPixel", "getMaskPixel", "setMaskPixel", "getProvincePixel", "setProvincePixel", "setMode", "removeMode", "focus", "beginTransition", "stopTransition", "openMovie", "startMovie", "stopMovie", "isPlayingMovie", "onMouseMove", "onHitTest", "onMouseDown", "onMouseUp", "onClick", "onDoubleClick", "onMouseEnter", "onMouseLeave", "onMouseWheel", "onKeyDown", "onKeyUp", "onKeyPress", "onFocus", "onBlur", "onBeforeFocus", "onSearchPrevFocusable", "onSearchNextFocusable", "onNodeEnabled", "onNodeDisabled", "onTouchDown", "onTouchUp", "onTouchMove", "onTouchScaling", "onTouchRotate", "onMultiTouch", "onTransitionCompleted", "onPaint"} {
 		if err := s.VM.RegisterNativeMethod(layer, method, "Layer."+method); err != nil {
 			return err
 		}
@@ -487,10 +487,10 @@ func (s *Session) registerNatives() error {
 			return err
 		}
 	}
-	for _, property := range []string{"status", "position", "samplePosition", "totalTime", "frequency", "bits", "channels", "volume", "volume2", "pan", "paused", "looping", "useVisBuffer", "labels", "flags"} {
+	for _, property := range []string{"status", "position", "samplePosition", "totalTime", "frequency", "bits", "channels", "volume", "volume2", "pan", "paused", "looping", "useVisBuffer", "labels", "filters", "flags"} {
 		setter := ""
 		switch property {
-		case "status", "position", "samplePosition", "totalTime", "bits", "channels", "labels", "flags":
+		case "status", "position", "samplePosition", "totalTime", "bits", "channels", "labels", "filters", "flags":
 		default:
 			setter = "WaveSoundBuffer.set:" + property
 		}

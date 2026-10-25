@@ -100,6 +100,39 @@ func TestEvaluateLegacySourceDefaultsToGlobalContext(t *testing.T) {
 	}
 }
 
+func TestLegacySuperclassGetterUsesNullThisContext(t *testing.T) {
+	session := newScriptsTestSession(t, nil)
+	globalObject, ok := session.VM.Objects.Lookup(0)
+	if !ok {
+		t.Fatal("TJS global object is unavailable")
+	}
+
+	decoded := &tjs.DecodedBytecode{
+		Strings: []string{"NullThisSuperclassTest"},
+		Objects: []tjs.BytecodeObject{
+			{Parent: -1, ContextType: 0, Code: []int16{119}},
+			{Parent: 0, Name: 0, ContextType: 6, SuperclassGetter: 2, Code: []int16{119}},
+			{Parent: 1, ContextType: 7, Code: []int16{118, -1, 119}, SuperclassGetters: []int32{0}},
+		},
+	}
+	global := tjs.ObjectValue(globalObject.Ref())
+	if err := bindLegacyScriptFunctions(session.VM, decoded, global, session.Services, &session.Budget); err != nil {
+		t.Fatalf("bind class getter: %v", err)
+	}
+	class, ok := session.VM.Globals["NullThisSuperclassTest"]
+	if !ok {
+		t.Fatal("compiled class was not registered globally")
+	}
+	instance, err := session.VM.Construct(class, nil, session.Services, &session.Budget)
+	if err != nil {
+		t.Fatalf("construct class with null-this superclass getter: %v", err)
+	}
+	if instance.Kind() != tjs.KindObject || instance.IsNull() {
+		t.Fatalf("constructed value = %v; want object instance", instance)
+	}
+}
+
+
 func scriptsTestUTF16LE(source string) []byte {
 	units := utf16.Encode([]rune(source))
 	data := make([]byte, 2+2*len(units))
@@ -673,11 +706,10 @@ func TestLegacyTopLevelClassWithoutObjectConstantIsGlobalAcrossStorages(t *testi
 	newDecoded := func() *tjs.DecodedBytecode {
 		return &tjs.DecodedBytecode{
 			Strings: []string{"", "SharedLegacyClass"},
-			Objects: []tjs.BytecodeObject{{
-				Name:        1,
-				ContextType: 6,
-				Parent:      0,
-			}},
+			Objects: []tjs.BytecodeObject{
+				{ContextType: 0},
+				{Name: 1, ContextType: 6, Parent: 0},
+			},
 		}
 	}
 	first := newDecoded()
@@ -1079,10 +1111,8 @@ func TestLegacyVMOpsReachCompiledFunctionEntry(t *testing.T) {
 	}
 }
 
-// TestLegacyVMOpsReachClassBodyAndSuperclassGetter proves the class body
-// (registration and construction) and the deferred superclass getter execute
-// CHKINS through the VM: without the hooks each entry fails with
-// "CHKINS requires instanceof support", and the getter records that it ran.
+// TestLegacyVMOpsReachClassBodyAndSuperclassGetter verifies that class bodies
+// run on invocation/construction and superclass getters use the global proxy for NULL objthis.
 func TestLegacyVMOpsReachClassBodyAndSuperclassGetter(t *testing.T) {
 	session := NewSession(DefaultServices(), 100_000)
 	defer session.Close()
@@ -1155,8 +1185,7 @@ func TestLegacyVMOpsReachClassBodyAndSuperclassGetter(t *testing.T) {
 	if err := bindLegacyScriptFunctions(session.VM, base, global, session.Services, nil); err != nil {
 		t.Fatalf("bind base class: %v", err)
 	}
-	// Binding runs each top-level class body through the class-initialization
-	// entry point.
+	// Binding declares the class and its members without executing its body.
 	if err := bindLegacyScriptFunctions(session.VM, derived, global, session.Services, nil); err != nil {
 		t.Fatalf("bind derived class with CHKINS in its class body: %v", err)
 	}
@@ -1164,18 +1193,23 @@ func TestLegacyVMOpsReachClassBodyAndSuperclassGetter(t *testing.T) {
 	if derivedClass.Kind() != tjs.KindObject {
 		t.Fatalf("registered class = %v; want a class object", derivedClass)
 	}
-	// Calling the class runs the compiled class body through its registered
-	// dispatcher, the entry point construction uses for superclass setup.
-	if _, err := session.VM.InvokeLegacy(derivedClass, global, nil, session.Services, nil, true); err != nil {
-		t.Fatalf("call compiled class body with CHKINS: %v", err)
-	}
-	// Constructing the class resolves the deferred superclass getter.
-	if _, err := session.VM.Construct(derivedClass, nil, session.Services, nil); err != nil {
-		t.Fatalf("construct class with CHKINS in its superclass getter: %v", err)
-	}
 	globalObject, ok := session.VM.Objects.Lookup(0)
 	if !ok {
 		t.Fatal("global object missing")
+	}
+	if _, exists := globalObject.Get("vm_ops_class_body"); exists {
+		t.Fatal("class body ran during declaration binding")
+	}
+	// Calling a compiled class executes its body using the supplied receiver.
+	if _, err := session.VM.InvokeLegacy(derivedClass, global, nil, session.Services, nil, true); err != nil {
+		t.Fatalf("call compiled class body with CHKINS: %v", err)
+	}
+	if _, exists := globalObject.Get("vm_ops_getter"); exists {
+		t.Fatal("superclass getter ran before construction requested it")
+	}
+	// Construction resolves the superclass getter and runs the body on an instance.
+	if _, err := session.VM.Construct(derivedClass, nil, session.Services, nil); err != nil {
+		t.Fatalf("construct class with CHKINS in its superclass getter: %v", err)
 	}
 	for _, name := range []string{"vm_ops_class_body", "vm_ops_getter"} {
 		value, exists := globalObject.Get(name)

@@ -1006,6 +1006,39 @@ func (l *Layer) AbsolutePosition() (int32, int32) {
 	return x, y
 }
 
+// ConvertType changes the pixel representation to match the current draw face.
+// TJS uses this when switching between straight-alpha and additive-alpha data.
+func (l *Layer) ConvertType(from int32) error {
+	if l == nil {
+		return ErrInvalidLayer
+	}
+	switch {
+	case l.drawFace() == layerFaceAddAlpha && from == layerFaceAlpha:
+		for offset := 0; offset+3 < len(l.RGBA); offset += 4 {
+			alpha := int(l.RGBA[offset+3])
+			l.RGBA[offset] = byte(int(l.RGBA[offset]) * alpha >> 8)
+			l.RGBA[offset+1] = byte(int(l.RGBA[offset+1]) * alpha >> 8)
+			l.RGBA[offset+2] = byte(int(l.RGBA[offset+2]) * alpha >> 8)
+		}
+	case l.drawFace() == layerFaceAlpha && from == layerFaceAddAlpha:
+		for offset := 0; offset+3 < len(l.RGBA); offset += 4 {
+			alpha := int(l.RGBA[offset+3])
+			if alpha == 0 {
+				l.RGBA[offset], l.RGBA[offset+1], l.RGBA[offset+2] = 0, 0, 0
+				continue
+			}
+			l.RGBA[offset] = byte(min(int(l.RGBA[offset])*255/alpha, 255))
+			l.RGBA[offset+1] = byte(min(int(l.RGBA[offset+1])*255/alpha, 255))
+			l.RGBA[offset+2] = byte(min(int(l.RGBA[offset+2])*255/alpha, 255))
+		}
+	default:
+		return fmt.Errorf("cannot convert layer draw face %d from %d", l.drawFace(), from)
+	}
+	l.imageModified = true
+	l.markImageDirty()
+	return nil
+}
+
 // SetType accepts recognized C++ layer discriminators. Binder, effect and
 // filter types cannot own image buffers; Compose reports effect/filter unsupported.
 func (l *Layer) SetType(t LayerType) error {

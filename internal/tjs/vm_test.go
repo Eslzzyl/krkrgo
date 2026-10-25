@@ -135,6 +135,86 @@ func TestLegacyClassCallDispatchesBodyWithCurrentContext(t *testing.T) {
 	}
 }
 
+func TestCompiledClassCallRunsInitializerOnClassContext(t *testing.T) {
+	program, err := compile("compiled-class-call.tjs", "this.baseValue = 29; return this.baseValue;")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vm := NewVM()
+	base, baseID, err := vm.alloc(CategoryClass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm.meta[baseID].class = &Class{Name: "CompiledBaseCallTest", Initializer: program}
+	receiver, receiverID, err := vm.alloc(CategoryClass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm.meta[receiverID].class = &Class{Name: "CompiledDerivedCallTest"}
+
+	budget := uint64(1000)
+	got, err := vm.InvokeLegacy(base, receiver, nil, vmTestHost{}, &budget, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind() != KindInteger || got.IntegerValue() != 29 {
+		t.Fatalf("class initializer result = %v, want 29", got)
+	}
+	if bases := vm.meta[receiverID].classBases; len(bases) != 1 || bases[0] != baseID {
+		t.Fatalf("class base links = %v, want [%d]", bases, baseID)
+	}
+}
+
+func TestLegacyFunctionSuperclassRunsWhenClassBodyCallsIt(t *testing.T) {
+	vm := NewVM()
+	baseCalls := 0
+	base, err := vm.RegisterLegacyFunction("FunctionSuperclassTest", func(context Value, args []Value, _ Host, _ *uint64, needed bool) (Value, error) {
+		baseCalls++
+		if context.Kind() != KindObject || context.IsNull() {
+			t.Fatalf("function superclass context = %v; want instance object", context)
+		}
+		if len(args) != 0 || needed {
+			t.Fatalf("function superclass args = %v, result-needed = %t; want no args and no result", args, needed)
+		}
+		return VoidValue, vm.setMemberString(context.ObjectRef().Object, "functionBaseValue", IntegerValue(41))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	class, err := vm.RegisterLegacyClass("FunctionSuperclassDerivedTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetLegacyClassSuperclassGetter(class, []int{0}, func(int, Host, *uint64) (Value, error) {
+		return base, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetLegacyClassBody(class, func(receiver Value, _ []Value, host Host, budget *uint64, _ bool) (Value, error) {
+		return vm.InvokeLegacy(base, receiver, nil, host, budget, false)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	budget := uint64(1000)
+	instance, err := vm.Construct(class, nil, vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatalf("construct class with explicit function superclass call: %v", err)
+	}
+	object, ok := vm.Objects.Lookup(instance.ObjectRef().Object)
+	if !ok {
+		t.Fatal("constructed instance is unavailable")
+	}
+	value, ok := object.Get("functionBaseValue")
+	if !ok || value.Kind() != KindInteger || value.IntegerValue() != 41 {
+		t.Fatalf("function superclass value = %v, found=%t; want 41", value, ok)
+	}
+	if baseCalls != 1 {
+		t.Fatalf("function superclass calls = %d; want 1", baseCalls)
+	}
+}
+
 func TestLegacyClassConstructionRunsBodyOnEachInstance(t *testing.T) {
 	vm := NewVM()
 	class, err := vm.RegisterLegacyClass("LegacyClassConstructionBodyTest")
@@ -968,6 +1048,46 @@ return instance.read();
 	}
 	if host.calls != 2 || !reflect.DeepEqual(host.values, []int64{0, 17}) {
 		t.Fatalf("native base initializer calls = %d with %v, want 2 calls [0 17]", host.calls, host.values)
+	}
+}
+
+func TestVMCompiledClassInitializesLegacyBaseBody(t *testing.T) {
+	vm := NewVM()
+	base, err := vm.RegisterLegacyClass("LegacyBodyBase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseCalls := 0
+	if err := vm.SetLegacyClassBody(base, func(context Value, _ []Value, _ Host, _ *uint64, _ bool) (Value, error) {
+		baseCalls++
+		if context.Kind() != KindObject || context.IsNull() {
+			t.Fatalf("legacy base body context = %v, want instance", context)
+		}
+		return VoidValue, vm.setMemberString(context.ObjectRef().Object, "baseInitialized", IntegerValue(7))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	vm.Globals["LegacyBodyBase"] = base
+	program, err := compile("compiled-legacy-class-base.tjs", `
+class ScriptChild extends LegacyBodyBase {
+	var childInitialized = 11;
+}
+var instance = new ScriptChild();
+return instance.baseInitialized + instance.childInitialized;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := uint64(10000)
+	got, err := vm.Execute(&program, vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := got.Int(); n != 18 {
+		t.Fatalf("base-to-derived initializer result = %v, want 18", got)
+	}
+	if baseCalls != 1 {
+		t.Fatalf("legacy base body calls = %d, want 1", baseCalls)
 	}
 }
 
@@ -1860,7 +1980,7 @@ func TestLegacySuperclassGetterNestedLookupAndErrorContext(t *testing.T) {
 	})
 }
 
-func TestLegacySuperclassGetterInitializesBaseDuringConstruction(t *testing.T) {
+func TestLegacySuperclassGetterDoesNotInitializeBaseDuringConstruction(t *testing.T) {
 	vm := NewVM()
 	base, err := vm.RegisterLegacyClass("SuperclassGetterConstructBase")
 	if err != nil {
@@ -1883,7 +2003,7 @@ func TestLegacySuperclassGetterInitializesBaseDuringConstruction(t *testing.T) {
 	if _, err := vm.Construct(derived, nil, host, &budget); err != nil {
 		t.Fatal(err)
 	}
-	if !host.called {
-		t.Fatal("base initializer was not called during construction")
+	if host.called {
+		t.Fatal("superclass getter initialized its base without a class-body call")
 	}
 }

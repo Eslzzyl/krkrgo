@@ -125,8 +125,7 @@ func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Ho
 		return vm.Construct(class, args, host, budget)
 	}
 	legacyGlobal := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
-	_, err = bindLegacyScriptFunctionsDeferred(vm, decoded, legacyGlobal, host, budget, sourceName)
-	if err != nil {
+	if err = bindLegacyScriptFunctionsWithSource(vm, decoded, legacyGlobal, host, budget, sourceName); err != nil {
 		return tjs.VoidValue, err
 	}
 	resolve := func(receiver tjs.Value, name string, flags uint32) (tjs.Value, bool, error) {
@@ -233,20 +232,21 @@ func legacyVMOps(vm *tjs.VM, host tjs.Host, budget *uint64) (func(tjs.Value, tjs
 }
 
 func bindLegacyScriptFunctions(vm *tjs.VM, decoded *tjs.DecodedBytecode, global tjs.Value, host tjs.Host, budget *uint64) error {
-	var initializeClasses func() error
-	if err := bindLegacyScriptFunctionsWithOptions(vm, decoded, global, host, budget, false, "", &initializeClasses); err != nil {
-		return err
+	return bindLegacyScriptFunctionsWithSource(vm, decoded, global, host, budget, "")
+}
+
+
+// declaredAtTopLevel reports whether a compiled object is declared directly in
+// the script's top-level context. Only those declarations reach the global
+// namespace; nested ones stay on their enclosing class or function.
+func declaredAtTopLevel(object *tjs.BytecodeObject, objects []tjs.BytecodeObject) bool {
+	if object.Parent < 0 || int(object.Parent) >= len(objects) {
+		return false
 	}
-	return initializeClasses()
+	return objects[object.Parent].ContextType == 0
 }
 
-func bindLegacyScriptFunctionsDeferred(vm *tjs.VM, decoded *tjs.DecodedBytecode, global tjs.Value, host tjs.Host, budget *uint64, sourceName string) (func() error, error) {
-	var initializeClasses func() error
-	err := bindLegacyScriptFunctionsWithOptions(vm, decoded, global, host, budget, true, sourceName, &initializeClasses)
-	return initializeClasses, err
-}
-
-func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedBytecode, global tjs.Value, host tjs.Host, budget *uint64, deferClassInitialization bool, sourceName string, initializer *func() error) error {
+func bindLegacyScriptFunctionsWithSource(vm *tjs.VM, decoded *tjs.DecodedBytecode, global tjs.Value, host tjs.Host, budget *uint64, sourceName string) error {
 	functions := make(map[int]tjs.Value)
 	registerClassInstanceMember := func(owner tjs.Value, name string) error {
 		if owner.Kind() != tjs.KindObject || owner.IsNull() {
@@ -323,7 +323,8 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 				return setLegacyMemberWithRuntime(vm, value, member, assigned, flags, callHost, callBudget)
 			}
 			instanceOf, invalidate, isValid := legacyVMOps(vm, callHost, callBudget)
-			return decoded.ExecuteLegacyAtOffsetAndVMOpsWithRoots(int(getterIndex), offset, global, global, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects)
+			// Reference superclass getters keep NULL as objthis and expose global through r-2.
+			return decoded.ExecuteLegacyAtOffsetAndVMOpsWithRoots(int(getterIndex), offset, global, tjs.VoidValue, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects)
 		})
 	}
 	objectName := func(index int) string {
@@ -448,16 +449,19 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 	}
 	// Top-level class objects are globals even when no object constant refers
 	// to them; superclass-getter bytecode may resolve them by global name.
+	// Classes declared in the script's top-level context are the only ones the
+	// reference loader replays into the global namespace; nested declarations
+	// bind to their enclosing class or function below.
 	for objectIndex := range decoded.Objects {
 		classObject := &decoded.Objects[objectIndex]
-		if classObject.ContextType != 6 || classObject.Parent != 0 {
+		if classObject.ContextType != 6 || !declaredAtTopLevel(classObject, decoded.Objects) {
 			continue
 		}
 		name := ""
 		if classObject.Name >= 0 && int(classObject.Name) < len(decoded.Strings) {
 			name = decoded.Strings[classObject.Name]
 		}
-		class, err := vm.RegisterLegacyClass(name)
+		class, err := vm.RegisterGlobalLegacyClass(name)
 		if err != nil {
 			return fmt.Errorf("register compiled TJS class %q: %w", name, err)
 		}
@@ -730,97 +734,8 @@ func bindLegacyScriptFunctionsWithOptions(vm *tjs.VM, decoded *tjs.DecodedByteco
 			}
 		}
 	}
-	// initializeClass performs the deferred work of one compiled class: it
-	// replays the class member table and then runs the class body, which is
-	// what turns those member placeholders into their final values. The body
-	// runs on the host and budget of the call that first needs the class, so a
-	// lazily triggered initialization keeps the triggering caller's limits.
-	// initializedClasses makes that replay single-shot: the entry is written
-	// before the body runs so a member access that re-enters the same class
-	// during its own initialization returns instead of recursing, mirroring the
-	// VM's in-progress guard for lazily triggered initialization.
-	initializedClasses := make(map[int]bool)
-	initializeClass := func(objectIndex int, callHost tjs.Host, callBudget *uint64) error {
-		class, ok := functions[objectIndex]
-		if !ok {
-			return nil
-		}
-		if initializedClasses[objectIndex] {
-			return nil
-		}
-		initializedClasses[objectIndex] = true
-		callEvaluate := func(source string, evalContext tjs.Value, needed bool) (tjs.Value, error) {
-			return evaluateLegacySource(vm, source, evalContext, callHost, callBudget, needed)
-		}
-		callInvoke := func(callee, receiver tjs.Value, args []tjs.Value, needed bool) (tjs.Value, error) {
-			return vm.InvokeLegacy(callee, receiver, args, callHost, callBudget, needed)
-		}
-		callConstruct := func(value tjs.Value, args []tjs.Value) (tjs.Value, error) {
-			return vm.Construct(value, args, callHost, callBudget)
-		}
-		resolve := func(receiver tjs.Value, name string, flags uint32) (tjs.Value, bool, error) {
-			return resolveLegacyMemberWithRuntime(vm, receiver, name, flags, callHost, callBudget)
-		}
-		set := func(receiver tjs.Value, name string, value tjs.Value, flags uint32) error {
-			return setLegacyMemberWithRuntime(vm, receiver, name, value, flags, callHost, callBudget)
-		}
-		instanceOf, invalidate, isValid := legacyVMOps(vm, callHost, callBudget)
-		if _, err := decoded.ExecuteLegacyWithContextAndConstructionAndMemberResolversAndVMOpsWithRoots(
-			objectIndex, global, class, callEvaluate, callInvoke, callConstruct, resolve, set, instanceOf, invalidate, isValid, vm.PublishLegacyFrameRoots, vm.Objects,
-		); err != nil {
-			return fmt.Errorf("initialize compiled TJS2100 class %d: %w", objectIndex, err)
-		}
-		return nil
-	}
-	// initializeClasses initializes every compiled class through
-	// initializeClass, so classes already initialized lazily stay untouched. It
-	// is the post-execution sweep of the deferred path and the whole body of
-	// the non-deferred path.
-	initializeClasses := func() error {
-		for objectIndex := range decoded.Objects {
-			if decoded.Objects[objectIndex].ContextType != 6 {
-				continue
-			}
-			if _, ok := functions[objectIndex]; !ok {
-				continue
-			}
-			class := functions[objectIndex]
-			var err error
-			if deferClassInitialization {
-				err = vm.InitializeLegacyClass(class, host, budget)
-			} else {
-				err = initializeClass(objectIndex, host, budget)
-			}
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	*initializer = initializeClasses
-	if !deferClassInitialization {
-		return initializeClasses()
-	}
-	// Deferred mode: the top-level body runs before any class body so dynamic
-	// superclass expressions resolve against the enclosing scope, and each
-	// class initializes on the first member access. Every initializer is
-	// installed here, ahead of that execution, so the class bodies never run
-	// during binding.
-	for objectIndex := range decoded.Objects {
-		if decoded.Objects[objectIndex].ContextType != 6 {
-			continue
-		}
-		class, ok := functions[objectIndex]
-		if !ok {
-			continue
-		}
-		index := objectIndex
-		if err := vm.SetLegacyClassInitializer(class, func(triggerHost tjs.Host, triggerBudget *uint64) error {
-			return initializeClass(index, triggerHost, triggerBudget)
-		}); err != nil {
-			return fmt.Errorf("register compiled TJS class initializer %d: %w", index, err)
-		}
-	}
+	// Compiled class bodies run against constructed instances, after declaration
+	// binding. Loading a class only binds its methods, properties, and superclass getter.
 	return nil
 }
 

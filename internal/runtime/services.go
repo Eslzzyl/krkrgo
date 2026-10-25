@@ -1929,6 +1929,8 @@ func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, 
 		return tjs.VoidValue, nil
 	case "get:labels":
 		return s.waveSoundLabels(vm, context, sound, budget)
+	case "get:filters":
+		return s.waveSoundFilters(vm, context, budget)
 	case "get:flags":
 		if vm == nil || s.waveFlagsClass.Kind() != tjs.KindObject {
 			return tjs.VoidValue, fmt.Errorf("WaveSoundBuffer flags require VM")
@@ -2628,6 +2630,11 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 				if e := installEmotePlayerNative(vm); e != nil {
 					return tjs.VoidValue, e
 				}
+			}
+		}
+		if module == "layerstwcopy.dll" {
+			if e := installLayerStwCopyNative(vm); e != nil {
+				return tjs.VoidValue, e
 			}
 		}
 		if module == "kirikiroid2.dll" {
