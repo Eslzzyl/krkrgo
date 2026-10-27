@@ -73,9 +73,11 @@ time, frame capture time, presentation preparation time, and the Go
 swap-chain boundary through the current public API, so these logs do not claim
 hardware refresh timing or end-to-end displayed-frame latency.
 
-The host uses a fixed 16 ms runtime tick. `ActualFPS` and `ActualTPS` come
-from Ebitengine and are included as the closest available real-window timing
-signals.
+Interactive runtime time follows elapsed wall-clock time, capped per host
+update to keep a long stall from requesting an unbounded audio block.
+Headless replay keeps its explicit deterministic step. `ActualFPS` and
+`ActualTPS` come from Ebitengine and remain the closest available real-window
+timing signals.
 
 `KRKRGO_STARTUP_TIMING=1` emits opt-in startup phase records. The records
 include project storage opening, each XP3 archive index parse, session creation,

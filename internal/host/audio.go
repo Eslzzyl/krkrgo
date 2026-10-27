@@ -253,8 +253,6 @@ func (g *Game) AttachAudioOutput(output *AudioOutput) error {
 		return err
 	}
 	g.audioOutput = output
-	g.audioClock = time.Time{}
-	g.audioClockRemainder = 0
 	return nil
 }
 
@@ -263,34 +261,7 @@ func (g *Game) AttachAudioOutput(output *AudioOutput) error {
 func (g *Game) DetachAudioOutput() {
 	if g != nil {
 		g.audioOutput = nil
-		g.audioClock = time.Time{}
-		g.audioClockRemainder = 0
 	}
-}
-
-const maxWallAudioDelta = time.Second
-
-func (g *Game) audioDeltaMilliseconds(now time.Time) uint64 {
-	if g == nil {
-		return fixedTickMS
-	}
-	if g.audioClock.IsZero() {
-		g.audioClock = now
-		return fixedTickMS
-	}
-	elapsed := now.Sub(g.audioClock)
-	g.audioClock = now
-	if elapsed < 0 {
-		elapsed = 0
-	}
-	if elapsed > maxWallAudioDelta {
-		elapsed = maxWallAudioDelta
-		g.audioClockRemainder = 0
-	}
-	total := elapsed + g.audioClockRemainder
-	milliseconds := total / time.Millisecond
-	g.audioClockRemainder = total % time.Millisecond
-	return uint64(milliseconds)
 }
 
 func (g *Game) limitAudioDeltaMilliseconds(milliseconds uint64) uint64 {

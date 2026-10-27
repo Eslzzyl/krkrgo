@@ -19,9 +19,9 @@ import (
 const (
 	DefaultWidth  = 1280
 	DefaultHeight = 720
-	// fixedTickMS is intentionally independent of wall-clock time. Ebiten may
-	// call Update more or less often, but replaying updates uses this exact clock.
-	fixedTickMS = uint64(16)
+	// Interactive runtime time follows elapsed wall-clock time. Headless
+	// replay supplies its own deterministic timestamps through Session.Tick.
+	maxWallClockDelta = time.Second
 )
 
 type rendererMode uint8
@@ -39,8 +39,8 @@ type Game struct {
 	poller               InputPoller
 	runtimeEvents        []runtime.InputEvent
 	audioOutput          *AudioOutput
-	audioClock           time.Time
-	audioClockRemainder  time.Duration
+	clockAt              time.Time
+	clockRemainder       time.Duration
 	timeMS               uint64
 	windowID             uint64
 	resizeWindow         func(int, int)
@@ -485,7 +485,7 @@ func (g *Game) logStartupPhase(phase string) {
 }
 
 // Update polls device state, dispatches transitions to the runtime, and then
-// advances the runtime by one fixed deterministic tick. GPU mode consumes a
+// advances the runtime by elapsed wall-clock time. GPU mode consumes a
 // borrowed RenderPlan synchronously; CPU mode retains the RGBA presentation path.
 func (g *Game) Update() error {
 	if g == nil || g.session == nil {
@@ -558,10 +558,12 @@ func (g *Game) Update() error {
 			g.postProcessor = post
 		}
 	}
+	now := time.Now()
+	logicalDeltaMS := g.wallClockDeltaMilliseconds(now)
+	nextTimeMS := g.timeMS + logicalDeltaMS
 	realtimeAudio := g.audioOutput != nil
-	audioDeltaMS := fixedTickMS
+	audioDeltaMS := logicalDeltaMS
 	if realtimeAudio {
-		audioDeltaMS = g.audioDeltaMilliseconds(time.Now())
 		audioDeltaMS = g.limitAudioDeltaMilliseconds(audioDeltaMS)
 	}
 	var tickTime time.Duration
@@ -573,16 +575,16 @@ func (g *Game) Update() error {
 		if timingEnabled {
 			stageStarted := time.Now()
 			if realtimeAudio {
-				plan, err = g.session.TickForGPUPresentationWithAudioDelta(g.timeMS, audioDeltaMS)
+				plan, err = g.session.TickForGPUPresentationWithAudioDelta(nextTimeMS, audioDeltaMS)
 			} else {
-				plan, err = g.session.TickForGPUPresentation(g.timeMS)
+				plan, err = g.session.TickForGPUPresentation(nextTimeMS)
 			}
 			tickTime = time.Since(stageStarted)
 		} else {
 			if realtimeAudio {
-				plan, err = g.session.TickForGPUPresentationWithAudioDelta(g.timeMS, audioDeltaMS)
+				plan, err = g.session.TickForGPUPresentationWithAudioDelta(nextTimeMS, audioDeltaMS)
 			} else {
-				plan, err = g.session.TickForGPUPresentation(g.timeMS)
+				plan, err = g.session.TickForGPUPresentation(nextTimeMS)
 			}
 		}
 		totalPixels = int(plan.Width) * int(plan.Height)
@@ -590,16 +592,16 @@ func (g *Game) Update() error {
 		if timingEnabled {
 			stageStarted := time.Now()
 			if realtimeAudio {
-				frame, err = g.session.TickForPresentationWithAudioDelta(g.timeMS, audioDeltaMS)
+				frame, err = g.session.TickForPresentationWithAudioDelta(nextTimeMS, audioDeltaMS)
 			} else {
-				frame, err = g.session.TickForPresentation(g.timeMS)
+				frame, err = g.session.TickForPresentation(nextTimeMS)
 			}
 			tickTime = time.Since(stageStarted)
 		} else {
 			if realtimeAudio {
-				frame, err = g.session.TickForPresentationWithAudioDelta(g.timeMS, audioDeltaMS)
+				frame, err = g.session.TickForPresentationWithAudioDelta(nextTimeMS, audioDeltaMS)
 			} else {
-				frame, err = g.session.TickForPresentation(g.timeMS)
+				frame, err = g.session.TickForPresentation(nextTimeMS)
 			}
 		}
 		totalPixels = int(frame.Width) * int(frame.Height)
@@ -652,12 +654,35 @@ func (g *Game) Update() error {
 		return err
 	}
 	logicalMS := g.timeMS
-	g.timeMS += fixedTickMS
+	g.timeMS = nextTimeMS
 	if timingEnabled {
 		g.frameSerial++
 		g.renderStats.recordUpdate(g.frameSerial, logicalMS, g.presentationChanges, totalPixels, updateStarted, time.Since(updateStarted), tickTime, audioTime, captureTime, presentationTime)
 	}
 	return nil
+}
+
+func (g *Game) wallClockDeltaMilliseconds(now time.Time) uint64 {
+	if g == nil {
+		return 0
+	}
+	if g.clockAt.IsZero() {
+		g.clockAt = now
+		return 0
+	}
+	elapsed := now.Sub(g.clockAt)
+	g.clockAt = now
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	if elapsed > maxWallClockDelta {
+		elapsed = maxWallClockDelta
+		g.clockRemainder = 0
+	}
+	total := elapsed + g.clockRemainder
+	milliseconds := total / time.Millisecond
+	g.clockRemainder = total % time.Millisecond
+	return uint64(milliseconds)
 }
 
 func (g *Game) composeGPUPlan(plan runtime.RenderPlan) (*ebiten.Image, error) {

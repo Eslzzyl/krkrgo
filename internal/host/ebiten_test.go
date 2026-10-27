@@ -37,6 +37,31 @@ func TestGameConstructorsSelectGPUAndCPUModes(t *testing.T) {
 		t.Fatal("NewCPUGame did not select CPU mode")
 	}
 }
+func TestGameWallClockDeltaUsesElapsedTimeAndRemainder(t *testing.T) {
+	game := &Game{}
+	start := time.Unix(100, 0)
+	if got := game.wallClockDeltaMilliseconds(start); got != 0 {
+		t.Fatalf("initial wall-clock delta = %d, want 0", got)
+	}
+	if got := game.wallClockDeltaMilliseconds(start.Add(16*time.Millisecond + 500*time.Microsecond)); got != 16 {
+		t.Fatalf("first elapsed delta = %d, want 16", got)
+	}
+	if got := game.wallClockDeltaMilliseconds(start.Add(33 * time.Millisecond)); got != 17 {
+		t.Fatalf("remainder-adjusted delta = %d, want 17", got)
+	}
+}
+
+func TestGameWallClockDeltaCapsLongStalls(t *testing.T) {
+	game := &Game{}
+	start := time.Unix(100, 0)
+	game.wallClockDeltaMilliseconds(start)
+	if got := game.wallClockDeltaMilliseconds(start.Add(2 * time.Second)); got != uint64(maxWallClockDelta/time.Millisecond) {
+		t.Fatalf("long-stall delta = %d, want %d", got, uint64(maxWallClockDelta/time.Millisecond))
+	}
+	if game.clockRemainder != 0 {
+		t.Fatalf("long-stall remainder = %s, want 0", game.clockRemainder)
+	}
+}
 
 func TestGameUpdateTerminatesWhenMainWindowIsClosed(t *testing.T) {
 	services := runtime.DefaultServices()
