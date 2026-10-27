@@ -1398,9 +1398,7 @@ func (s *Services) emoteSkipToSync(state *motionPlayerState, emote *emotePlayerS
 			syncTime = math.Max(syncTime, timeline.loopEnd)
 		}
 	}
-	if resource := s.playerResource(state); resource != nil {
-		syncTime = math.Max(syncTime, motionField(resource, state.chara, state.motion, "totalFrames", 0))
-	}
+	syncTime = math.Max(syncTime, motionPlayerActiveClipTotalFrames(s.playerResource(state), state, emote))
 	for _, timeline := range emote.timelines {
 		timeline.time = syncTime
 		if timeline.control {

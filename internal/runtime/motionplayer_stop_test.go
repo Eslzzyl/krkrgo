@@ -44,6 +44,32 @@ func TestEmotePlayerSkipToSyncUsesActiveMotionLength(t *testing.T) {
 	}
 }
 
+func TestEmotePlayerSkipToSyncUsesPlayingTimelineLength(t *testing.T) {
+	services := &Services{}
+	state := &motionPlayerState{motion: "M2"}
+	emote := newEmotePlayerState()
+	timeline := &emoteTimelineState{
+		label:       "M2Layer",
+		playing:     true,
+		totalFrames: 48,
+		loop:        false,
+	}
+	emote.timelines = map[string]*emoteTimelineState{timeline.label: timeline}
+	emote.playingOrder = []string{timeline.label}
+
+	services.emoteSkipToSync(state, emote)
+
+	if timeline.time != 48 || timeline.playing {
+		t.Fatalf("timeline after skip = time:%v playing:%v, want 48:false", timeline.time, timeline.playing)
+	}
+	if len(emote.playingOrder) != 0 {
+		t.Fatalf("playing order after skip = %v, want empty", emote.playingOrder)
+	}
+	if state.clampedEvalTime != 48 || state.frameLoopTime != 48 {
+		t.Fatalf("player time after skip = clamped:%v loop:%v, want 48:48", state.clampedEvalTime, state.frameLoopTime)
+	}
+}
+
 func TestMotionPlayerActiveClipTimeFallsBackToMotionClock(t *testing.T) {
 	state := &motionPlayerState{frameTick: 180}
 	runtime := &emotePlayerState{timelines: map[string]*emoteTimelineState{}}

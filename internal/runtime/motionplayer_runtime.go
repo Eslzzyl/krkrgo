@@ -1385,7 +1385,7 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 				syncTime = math.Max(syncTime, timeline.loopEnd)
 			}
 		}
-		syncTime = math.Max(syncTime, motionField(state.resource, state.chara, state.motion, "totalFrames", 0))
+		syncTime = math.Max(syncTime, motionPlayerActiveClipTotalFrames(s.playerResource(state), state, runtime))
 		for _, timeline := range runtime.timelines {
 			timeline.time = syncTime
 			if timeline.control {
@@ -2502,6 +2502,54 @@ func (s *Services) motionPlayerTimelineRuntime(state *motionPlayerState, emote *
 	runtime.diffTimelines = state.playerDiffTimelines
 	runtime.playingOrder = append([]string(nil), state.playingTimelineLabels...)
 	return &runtime
+}
+
+func motionPlayerActiveClipTotalFrames(resource *motionResource, state *motionPlayerState, runtime *emotePlayerState) float64 {
+	if state == nil {
+		return 0
+	}
+	if total := motionField(resource, state.chara, state.motion, "totalFrames", 0); total > 0 {
+		return total
+	}
+	if motion := motionEntry(resource, state.chara, state.motion); motion != nil {
+		if total, ok := motionTotalFramesValue(motion); ok && total > 0 {
+			return total
+		}
+	}
+	if runtime == nil {
+		return 0
+	}
+	labels := runtime.playingOrder
+	if len(labels) == 0 {
+		labels = runtime.mainTimelines
+		if len(labels) == 0 {
+			labels = runtime.diffTimelines
+		}
+	}
+	for _, label := range labels {
+		timeline := runtime.timelines[label]
+		if timeline == nil {
+			continue
+		}
+		if timeline.totalFrames > 0 {
+			return timeline.totalFrames
+		}
+		if total := runtime.timelineTotals[label]; total > 0 {
+			return total
+		}
+		return 0
+	}
+	if len(runtime.timelineOrder) > 0 {
+		if timeline := runtime.timelines[runtime.timelineOrder[0]]; timeline != nil {
+			if timeline.totalFrames > 0 {
+				return timeline.totalFrames
+			}
+			if total := runtime.timelineTotals[runtime.timelineOrder[0]]; total > 0 {
+				return total
+			}
+		}
+	}
+	return 0
 }
 
 func motionPlayerActiveClipTime(state *motionPlayerState, runtime *emotePlayerState) float64 {
