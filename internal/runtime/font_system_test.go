@@ -125,6 +125,9 @@ func TestFontFamilyNameNormalizationAndPlatformFallbackPriority(t *testing.T) {
 	if face, err := book.Select("ＭＳ　ゴシック", 12); err != nil || face != requestedFace {
 		t.Fatalf("normalized family alias = %v, %v", face, err)
 	}
+	if face, err := book.Select("MS Gothic", 12); err != nil || face != requestedFace {
+		t.Fatalf("font family alias = %v, %v", face, err)
+	}
 
 	book = NewFontBook()
 	var candidate string
@@ -145,6 +148,26 @@ func TestFontFamilyNameNormalizationAndPlatformFallbackPriority(t *testing.T) {
 	face, err := system.Select("メイリオ,ＭＳ ゴシック", 12)
 	if err != nil || face != fallbackFace {
 		t.Fatalf("platform fallback for missing Japanese aliases = %v, %v", face, err)
+	}
+}
+
+func TestNewFontSystemPinsOnePlatformFallback(t *testing.T) {
+	candidates := systemCJKFallbackCandidates()
+	if len(candidates) == 0 {
+		t.Skip("no platform CJK font fallback list")
+	}
+	fallbackFace := &testFontFace{FontFace: basicfont.Face7x13}
+	book := NewFontBook()
+	if err := book.Register(candidates[0], fallbackFace); err != nil {
+		t.Fatal(err)
+	}
+	system := NewFontSystem(book)
+	if system.FallbackFont != candidates[0] {
+		t.Fatalf("fixed fallback = %q, want %q", system.FallbackFont, candidates[0])
+	}
+	face, err := system.Select("missing", 12)
+	if err != nil || face != fallbackFace {
+		t.Fatalf("fixed fallback selection = %v, %v", face, err)
 	}
 }
 func TestSerifFallbackPreservesMinchoIntentAndRasterizesSelectedGlyph(t *testing.T) {

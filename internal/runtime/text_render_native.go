@@ -180,13 +180,16 @@ func textRenderFace(s *Services, r *textRenderState) (FontFace, error) {
 	if size <= 0 {
 		return nil, fmt.Errorf("TextRender font size must be positive")
 	}
-	s.mu.RLock()
+	s.mu.Lock()
 	system := s.FontSystem
 	if system != nil {
+		if strings.TrimSpace(system.FallbackFont) == "" && system.Book != nil {
+			system.FallbackFont = system.Book.availableName(systemCJKFallbackCandidates())
+		}
 		copy := *system
 		system = &copy
 	}
-	s.mu.RUnlock()
+	s.mu.Unlock()
 	if system == nil {
 		return nil, fmt.Errorf("%w: no font system", ErrUnsupportedNative)
 	}
@@ -194,9 +197,14 @@ func textRenderFace(s *Services, r *textRenderState) (FontFace, error) {
 	if err != nil {
 		return nil, err
 	}
-	face = withGlyphFallback(face)
+	fallback, err := system.fixedFallbackFace(size)
+	if err != nil {
+		return nil, err
+	}
 	bold := textRenderNum(r.current, "Bold") != 0
 	italic := textRenderNum(r.current, "Italic") != 0
+	face = withFixedGlyphFallback(face, fallback)
+	face = withGlyphFallback(face)
 	if bold || italic {
 		face = &styledFontFace{FontFace: face, bold: bold, italic: italic}
 	}

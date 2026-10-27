@@ -36,6 +36,7 @@ func (s *Services) SetFontBook(book *FontBook) {
 		s.FontSystem = NewFontSystem(book)
 	} else {
 		s.FontSystem.Book = book
+		s.FontSystem.FallbackFont = book.availableName(systemCJKFallbackCandidates())
 	}
 	s.mu.Unlock()
 }
@@ -54,6 +55,9 @@ func (s *Services) SetFontSystem(system *FontSystem) {
 	}
 	if strings.TrimSpace(system.DefaultFont) == "" {
 		system.DefaultFont = defaultFontFaceName
+	}
+	if strings.TrimSpace(system.FallbackFont) == "" && system.Book != nil {
+		system.FallbackFont = system.Book.availableName(systemCJKFallbackCandidates())
 	}
 	s.FontSystem = system
 	s.FontBook = system.Book
@@ -97,13 +101,16 @@ func (s *Services) fontFace(f *FontState) (FontFace, error) {
 	}
 	s.ensureInit()
 	state := *f
-	s.mu.RLock()
+	s.mu.Lock()
 	if s.FontSystem == nil {
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		return nil, fmt.Errorf("%w: no font system", ErrUnsupportedFont)
 	}
+	if strings.TrimSpace(s.FontSystem.FallbackFont) == "" && s.FontSystem.Book != nil {
+		s.FontSystem.FallbackFont = s.FontSystem.Book.availableName(systemCJKFallbackCandidates())
+	}
 	system := *s.FontSystem
-	s.mu.RUnlock()
+	s.mu.Unlock()
 	size := math.Abs(float64(state.Height))
 	if size == 0 {
 		size = system.DefaultSize
@@ -112,10 +119,14 @@ func (s *Services) fontFace(f *FontState) (FontFace, error) {
 	if err != nil {
 		return nil, err
 	}
-	if system.Book != nil {
-		face = withGlyphFallback(withGlyphFallbackChain(face, system.Book, state.Face, size))
-	} else {
-		face = withGlyphFallback(face)
+	fallback, err := system.fixedFallbackFace(size)
+	if err != nil {
+		return nil, err
+	}
+	face = withFixedGlyphFallback(face, fallback)
+	face = withGlyphFallback(face)
+	if state.Bold || state.Italic {
+		face = &styledFontFace{FontFace: face, bold: state.Bold, italic: state.Italic}
 	}
 	key := prerenderedFontMapKeyFor(state)
 	s.mu.RLock()
@@ -131,7 +142,6 @@ func (s *Services) fontFace(f *FontState) (FontFace, error) {
 		}
 		return face, nil
 	}
-	face = &styledFontFace{FontFace: face, bold: state.Bold, italic: state.Italic}
 	if storage != "" {
 		prerendered, err := s.loadPrerenderedFont(storage)
 		if err != nil {

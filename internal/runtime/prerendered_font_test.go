@@ -104,7 +104,7 @@ func TestPrerenderedFontRejectsInvalidIndex(t *testing.T) {
 	}
 }
 
-func TestGlyphFallbackChainPrefersRequestedFaceAndFillsMissingGlyphs(t *testing.T) {
+func TestFixedGlyphFallbackPrefersRequestedFaceAndUsesOneFallback(t *testing.T) {
 	primary := &testGlyphFace{glyphs: map[rune]testGlyphData{
 		'A': {advance: fixed.I(7), coverage: 64},
 	}}
@@ -112,14 +112,7 @@ func TestGlyphFallbackChainPrefersRequestedFaceAndFillsMissingGlyphs(t *testing.
 		'A': {advance: fixed.I(12), coverage: 255},
 		'海': {advance: fixed.I(14), coverage: 192},
 	}}
-	book := NewFontBook()
-	if err := book.Register("Original Face", primary); err != nil {
-		t.Fatal(err)
-	}
-	if err := book.Register("CJK Fallback", fallback); err != nil {
-		t.Fatal(err)
-	}
-	face := withGlyphFallbackChain(primary, book, "Original Face", 12)
+	face := withFixedGlyphFallback(primary, fallback)
 
 	advance, ok := face.GlyphAdvance('A')
 	if !ok || advance != fixed.I(7) {
@@ -135,6 +128,6 @@ func TestGlyphFallbackChainPrefersRequestedFaceAndFillsMissingGlyphs(t *testing.
 	}
 	_, mask, _, _, ok = face.Glyph(fixed.P(0, 1), '海')
 	if !ok || color.AlphaModel.Convert(mask.At(0, 0)).(color.Alpha).A != 192 {
-		t.Fatalf("missing glyph was not rendered from the fallback face: %v", mask)
+		t.Fatalf("missing glyph was not rendered from the fixed fallback face: %v", mask)
 	}
 }

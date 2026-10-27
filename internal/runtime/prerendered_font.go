@@ -4,10 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"image"
-	"reflect"
 	"sync"
 
-	"golang.org/x/image/font"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -219,111 +217,3 @@ func (s *Services) loadPrerenderedFont(storage string) (*prerenderedFont, error)
 	s.mu.Unlock()
 	return loaded, nil
 }
-
-type glyphFallbackChainFace struct {
-	FontFace
-	book      *FontBook
-	requested string
-	size      float64
-	once      sync.Once
-	fallbacks []FontFace
-	mu        sync.RWMutex
-	resolved  map[rune]FontFace
-}
-
-func withGlyphFallbackChain(primary FontFace, book *FontBook, requested string, size float64) FontFace {
-	if primary == nil || book == nil {
-		return withGlyphFallback(primary)
-	}
-	return &glyphFallbackChainFace{FontFace: primary, book: book, requested: requested, size: size, resolved: make(map[rune]FontFace)}
-}
-
-func (f *glyphFallbackChainFace) fallbackFaces() []FontFace {
-	f.once.Do(func() {
-		primaryKey := fontKey(f.requested)
-		for _, name := range f.book.Names() {
-			if fontKey(name) == primaryKey {
-				continue
-			}
-			face, err := f.book.Select(name, f.size)
-			if err == nil && face != nil {
-				f.fallbacks = append(f.fallbacks, face)
-			}
-		}
-	})
-	return f.fallbacks
-}
-
-func (f *glyphFallbackChainFace) faceFor(character rune) (FontFace, rune, bool) {
-	f.mu.RLock()
-	if face := f.resolved[character]; face != nil {
-		f.mu.RUnlock()
-		return face, character, true
-	}
-	f.mu.RUnlock()
-	if _, ok := f.FontFace.GlyphAdvance(character); ok {
-		f.mu.Lock()
-		f.resolved[character] = f.FontFace
-		f.mu.Unlock()
-		return f.FontFace, character, true
-	}
-	for _, candidate := range f.fallbackFaces() {
-		if _, ok := candidate.GlyphAdvance(character); ok {
-			f.mu.Lock()
-			f.resolved[character] = candidate
-			f.mu.Unlock()
-			return candidate, character, true
-		}
-	}
-	return nil, 0, false
-}
-
-func (f *glyphFallbackChainFace) Glyph(dot fixed.Point26_6, character rune) (image.Rectangle, image.Image, image.Point, fixed.Int26_6, bool) {
-	face, resolved, ok := f.faceFor(character)
-	if !ok {
-		return f.FontFace.Glyph(dot, character)
-	}
-	return face.Glyph(dot, resolved)
-}
-
-func (f *glyphFallbackChainFace) GlyphAdvance(character rune) (fixed.Int26_6, bool) {
-	face, resolved, ok := f.faceFor(character)
-	if !ok {
-		return f.FontFace.GlyphAdvance(character)
-	}
-	return face.GlyphAdvance(resolved)
-}
-
-func (f *glyphFallbackChainFace) Kern(left, right rune) fixed.Int26_6 {
-	leftFace, leftRune, leftOK := f.faceFor(left)
-	rightFace, rightRune, rightOK := f.faceFor(right)
-	if !leftOK || !rightOK || !sameFontFace(leftFace, rightFace) {
-		return 0
-	}
-	return leftFace.Kern(leftRune, rightRune)
-}
-
-func sameFontFace(left, right FontFace) bool {
-	if left == nil || right == nil {
-		return false
-	}
-	leftType, rightType := reflect.TypeOf(left), reflect.TypeOf(right)
-	return leftType == rightType && leftType.Comparable() && left == right
-}
-
-func (f *glyphFallbackChainFace) Close() error {
-	var first error
-	if err := f.FontFace.Close(); err != nil {
-		first = err
-	}
-	f.once.Do(func() {})
-	for _, face := range f.fallbacks {
-		if err := face.Close(); err != nil && first == nil {
-			first = err
-		}
-	}
-	return first
-}
-
-var _ font.Face = (*prerenderedFontFace)(nil)
-var _ font.Face = (*glyphFallbackChainFace)(nil)

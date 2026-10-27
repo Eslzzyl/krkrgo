@@ -3,15 +3,15 @@ package runtime
 import (
 	"errors"
 	"fmt"
-	"image"
-	"strings"
-	"sync"
-	"unicode"
-
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 	"golang.org/x/text/unicode/norm"
+	"image"
+	"reflect"
+	"strings"
+	"sync"
+	"unicode"
 )
 
 // FontFace is the concrete, size-specific font interface used by the runtime.
@@ -86,6 +86,118 @@ func (f *glyphFallbackFace) Kern(left, right rune) fixed.Int26_6 {
 	return f.FontFace.Kern(resolvedLeft, resolvedRight)
 }
 
+// fixedGlyphFallbackFace mirrors Kirikiri's fallback policy: one requested
+// face and one fixed default face are used for every glyph.
+type fixedGlyphFallbackFace struct {
+	primary         FontFace
+	fallback        FontFace
+	primaryFallback *glyphFallbackFace
+}
+
+func withFixedGlyphFallback(primary, fallback FontFace) FontFace {
+	if primary == nil {
+		return fallback
+	}
+	return &fixedGlyphFallbackFace{
+		primary:         primary,
+		fallback:        fallback,
+		primaryFallback: &glyphFallbackFace{FontFace: primary},
+	}
+}
+
+func (f *fixedGlyphFallbackFace) faceFor(r rune) (FontFace, bool) {
+	if f == nil {
+		return nil, false
+	}
+	if f.primary != nil {
+		if _, ok := f.primary.GlyphAdvance(r); ok {
+			return f.primary, true
+		}
+	}
+	if f.fallback != nil && !sameFontFace(f.primary, f.fallback) {
+		if _, ok := f.fallback.GlyphAdvance(r); ok {
+			return f.fallback, true
+		}
+	}
+	return f.primaryFallback, f.primaryFallback != nil
+}
+
+func (f *fixedGlyphFallbackFace) Glyph(dot fixed.Point26_6, r rune) (image.Rectangle, image.Image, image.Point, fixed.Int26_6, bool) {
+	face, ok := f.faceFor(r)
+	if !ok {
+		return image.Rectangle{}, nil, image.Point{}, 0, false
+	}
+	return face.Glyph(dot, r)
+}
+
+func (f *fixedGlyphFallbackFace) GlyphAdvance(r rune) (fixed.Int26_6, bool) {
+	face, ok := f.faceFor(r)
+	if !ok {
+		return 0, false
+	}
+	return face.GlyphAdvance(r)
+}
+
+func (f *fixedGlyphFallbackFace) GlyphBounds(r rune) (fixed.Rectangle26_6, fixed.Int26_6, bool) {
+	face, ok := f.faceFor(r)
+	if !ok {
+		return fixed.Rectangle26_6{}, 0, false
+	}
+	return face.GlyphBounds(r)
+}
+
+func (f *fixedGlyphFallbackFace) Kern(left, right rune) fixed.Int26_6 {
+	if f == nil {
+		return 0
+	}
+	if f.primary != nil {
+		if _, leftOK := f.primary.GlyphAdvance(left); leftOK {
+			if _, rightOK := f.primary.GlyphAdvance(right); rightOK {
+				return f.primary.Kern(left, right)
+			}
+		}
+	}
+	if f.fallback != nil && !sameFontFace(f.primary, f.fallback) {
+		if _, leftOK := f.fallback.GlyphAdvance(left); leftOK {
+			if _, rightOK := f.fallback.GlyphAdvance(right); rightOK {
+				return f.fallback.Kern(left, right)
+			}
+		}
+	}
+	return 0
+}
+
+func (f *fixedGlyphFallbackFace) Metrics() font.Metrics {
+	if f == nil || f.primary == nil {
+		return font.Metrics{}
+	}
+	return f.primary.Metrics()
+}
+
+func (f *fixedGlyphFallbackFace) Close() error {
+	if f == nil {
+		return nil
+	}
+	var first error
+	if f.primary != nil {
+		first = f.primary.Close()
+	}
+	if f.fallback != nil && !sameFontFace(f.primary, f.fallback) {
+		if err := f.fallback.Close(); first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+func sameFontFace(left, right FontFace) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	leftType, rightType := reflect.TypeOf(left), reflect.TypeOf(right)
+	return leftType == rightType && leftType.Comparable() && left == right
+}
+
 var (
 	// ErrUnsupportedFont is returned when a requested font is not present in the
 	// configured FontBook. Rendering never silently substitutes a fake glyph.
@@ -154,15 +266,70 @@ func (b *FontBook) register(entry fontEntry) error {
 	return nil
 }
 
+var fontFamilyAliasGroups = [][]string{
+	{"MS Gothic", "ＭＳ ゴシック"},
+	{"MS PGothic", "ＭＳ Ｐゴシック"},
+	{"MS Mincho", "ＭＳ 明朝"},
+	{"MS PMincho", "ＭＳ Ｐ明朝"},
+	{"Yu Gothic UI", "游ゴシック UI"},
+	{"Yu Gothic", "游ゴシック"},
+	{"Yu Mincho", "游明朝"},
+	{"Meiryo", "メイリオ"},
+}
+
+func fontSelectionNames(name string) []string {
+	name = strings.TrimSpace(name)
+	names := []string{name}
+	key := fontKey(name)
+	for _, group := range fontFamilyAliasGroups {
+		matched := false
+		for _, alias := range group {
+			if fontKey(alias) == key {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		for _, alias := range group {
+			if fontKey(alias) != key {
+				names = append(names, alias)
+			}
+		}
+		break
+	}
+	return names
+}
+
+func (b *FontBook) lookup(name string) (fontEntry, bool) {
+	if b == nil {
+		return fontEntry{}, false
+	}
+	for _, candidate := range fontSelectionNames(name) {
+		b.mu.RLock()
+		entry, ok := b.entries[fontKey(candidate)]
+		b.mu.RUnlock()
+		if ok {
+			return entry, true
+		}
+	}
+	return fontEntry{}, false
+}
+
+func (b *FontBook) availableName(candidates []string) string {
+	for _, candidate := range candidates {
+		if entry, ok := b.lookup(candidate); ok {
+			return entry.name
+		}
+	}
+	return ""
+}
+
 // Lookup returns a registered size-specific face. Factories are not invoked by
 // Lookup; use Select for size-aware selection.
 func (b *FontBook) Lookup(name string) (FontFace, bool) {
-	if b == nil {
-		return nil, false
-	}
-	b.mu.RLock()
-	entry, ok := b.entries[fontKey(name)]
-	b.mu.RUnlock()
+	entry, ok := b.lookup(name)
 	if !ok || entry.face == nil {
 		return nil, false
 	}
@@ -184,9 +351,7 @@ func (b *FontBook) Select(candidates string, size float64) (FontFace, error) {
 		if name == "" {
 			continue
 		}
-		b.mu.RLock()
-		entry, ok := b.entries[fontKey(name)]
-		b.mu.RUnlock()
+		entry, ok := b.lookup(name)
 		if !ok {
 			continue
 		}
@@ -261,15 +426,27 @@ func ParseOpenType(data []byte) (FontFactory, error) {
 // FontSystem binds selection and metrics to a FontBook. It has no platform or
 // window dependency and is therefore suitable for headless layout.
 type FontSystem struct {
-	Book        *FontBook
-	DefaultFont string
-	DefaultSize float64
+	Book         *FontBook
+	DefaultFont  string
+	DefaultSize  float64
+	FallbackFont string
 }
 
 const defaultFontFaceName = "ＭＳ ゴシック"
 
 func NewFontSystem(book *FontBook) *FontSystem {
-	return &FontSystem{Book: book, DefaultFont: defaultFontFaceName, DefaultSize: 16}
+	system := &FontSystem{Book: book, DefaultFont: defaultFontFaceName, DefaultSize: 16}
+	if book != nil {
+		system.FallbackFont = book.availableName(systemCJKFallbackCandidates())
+	}
+	return system
+}
+
+func (s *FontSystem) fixedFallbackFace(size float64) (FontFace, error) {
+	if s == nil || s.Book == nil || strings.TrimSpace(s.FallbackFont) == "" {
+		return nil, nil
+	}
+	return s.Book.Select(s.FallbackFont, size)
 }
 
 func (s *FontSystem) Select(name string, size float64) (FontFace, error) {
@@ -302,6 +479,31 @@ func (s *FontSystem) Select(name string, size float64) (FontFace, error) {
 	}
 
 	defaultName := strings.TrimSpace(s.DefaultFont)
+	if requested == "" && defaultName != "" {
+		face, err := s.Book.Select(defaultName, size)
+		if err == nil {
+			return face, nil
+		}
+		if !errors.Is(err, ErrUnsupportedFont) {
+			return nil, err
+		}
+		selectionErrors = append(selectionErrors, err)
+	}
+
+	if fallbackName := strings.TrimSpace(s.FallbackFont); fallbackName != "" {
+		if fontKey(requested) != fontKey(fallbackName) {
+			face, err := s.Book.Select(fallbackName, size)
+			if err == nil {
+				return face, nil
+			}
+			if !errors.Is(err, ErrUnsupportedFont) {
+				return nil, err
+			}
+			selectionErrors = append(selectionErrors, err)
+		}
+		return nil, errors.Join(selectionErrors...)
+	}
+
 	if defaultName != "" && fontKey(requested) != fontKey(defaultName) {
 		face, err := s.Book.Select(defaultName, size)
 		if err == nil {

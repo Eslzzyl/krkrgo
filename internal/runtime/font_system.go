@@ -43,6 +43,34 @@ var (
 		"Hiragino Kaku Gothic ProN",
 		"Hiragino Maru Gothic ProN",
 	}
+	iosSystemCJKFallbackFamilies = [...]string{
+		"PingFang SC",
+		"PingFang TC",
+		"PingFang HK",
+	}
+	darwinSystemCJKFallbackFamilies = [...]string{
+		"PingFang SC",
+		"PingFang TC",
+		"PingFang HK",
+		"Hiragino Sans GB",
+		"Hiragino Sans",
+		"STHeiti",
+		"Heiti SC",
+		"Songti SC",
+		"Noto Sans CJK SC",
+		"Noto Sans CJK JP",
+	}
+	linuxSystemCJKFallbackFamilies = [...]string{
+		"Noto Sans CJK SC",
+		"Noto Sans CJK TC",
+		"Noto Sans CJK JP",
+		"Source Han Sans SC",
+		"Source Han Sans CN",
+		"WenQuanYi Zen Hei",
+		"WenQuanYi Micro Hei",
+		"Droid Sans Fallback",
+		"AR PL UMing CN",
+	}
 	linuxSystemFontFallbackFamilies = [...]string{
 		"Noto Sans CJK JP",
 		"Noto Sans JP",
@@ -55,17 +83,27 @@ var (
 		"Droid Sans Japanese",
 	}
 	linuxSystemSerifFontFallbackFamilies = [...]string{
+		"Noto Serif CJK SC",
+		"Noto Serif CJK TC",
 		"Noto Serif CJK JP",
-		"Noto Serif JP",
-		"IPAexMincho",
-		"IPAMincho",
-		"TakaoMincho",
-		"Noto Sans CJK JP",
-		"Noto Sans JP",
-		"IPAexGothic",
-		"IPAGothic",
-		"VL Gothic",
-		"Droid Sans Japanese",
+		"Source Han Serif SC",
+		"Source Han Serif CN",
+		"AR PL UMing CN",
+		"AR PL KaitiM GB",
+	}
+	windowsSystemCJKFallbackFamilies = [...]string{
+		"Microsoft YaHei UI",
+		"Microsoft YaHei",
+		"DengXian",
+		"SimSun",
+		"NSimSun",
+		"SimHei",
+		"Microsoft JhengHei UI",
+		"Yu Gothic UI",
+		"Yu Gothic",
+		"Meiryo",
+		"MS Gothic",
+		"MS PGothic",
 	}
 	windowsSystemFontFallbackFamilies = [...]string{
 		"Yu Gothic UI",
@@ -88,7 +126,29 @@ var (
 		"Meiryo",
 		"MS Gothic",
 	}
+	androidSystemCJKFallbackFamilies = [...]string{
+		"Noto Sans CJK",
+		"Noto Sans",
+		"Droid Sans Fallback",
+	}
 )
+
+func systemCJKFallbackCandidates() []string {
+	switch runtime.GOOS {
+	case "darwin":
+		return darwinSystemCJKFallbackFamilies[:]
+	case "ios":
+		return iosSystemCJKFallbackFamilies[:]
+	case "linux":
+		return linuxSystemCJKFallbackFamilies[:]
+	case "windows":
+		return windowsSystemCJKFallbackFamilies[:]
+	case "android":
+		return androidSystemCJKFallbackFamilies[:]
+	default:
+		return nil
+	}
+}
 
 // systemFontFallbackCandidates lists common Latin/Japanese-capable families.
 // Selection still requires an exact registered family name from FontBook.
