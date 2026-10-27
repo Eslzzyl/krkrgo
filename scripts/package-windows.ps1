@@ -19,8 +19,12 @@ $FontCommit = 'f8d157532fbfaeda587e826d4cd5b21a49186f7c'
 $FontName = 'NotoSansCJK-Regular.ttc'
 $FontUrl = "https://raw.githubusercontent.com/notofonts/noto-cjk/$FontCommit/Sans/OTC/$FontName"
 $FontSha256 = 'b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a'
+$LicenseName = 'NotoSansCJK-OFL.txt'
+$LicenseUrl = "https://raw.githubusercontent.com/notofonts/noto-cjk/$FontCommit/Sans/LICENSE"
+$LicenseSha256 = '6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2'
 $FontDir = Join-Path (Join-Path $Root 'lib') 'fonts'
 $FontPath = Join-Path $FontDir $FontName
+$LicensePath = Join-Path $FontDir $LicenseName
 $VersionFile = Join-Path $Root 'internal/version/version.xcconfig'
 $VersionValues = @{}
 if (-not (Test-Path -LiteralPath $VersionFile)) {
@@ -42,18 +46,31 @@ function Fail {
     Write-Error "package: $Message" -ErrorAction Stop
 }
 
-function Ensure-FontAsset {
-    if ((Test-Path -LiteralPath $FontPath) -and
-        ((Get-FileHash -LiteralPath $FontPath -Algorithm SHA256).Hash.ToLowerInvariant() -eq $FontSha256)) {
+function Ensure-Asset {
+    param(
+        [string]$Url,
+        [string]$Path,
+        [string]$Sha256,
+        [string]$Name
+    )
+    if ((Test-Path -LiteralPath $Path) -and
+        ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() -eq $Sha256)) {
         return
     }
-    New-Item -ItemType Directory -Force -Path $FontDir | Out-Null
-    Invoke-WebRequest -Uri $FontUrl -OutFile $FontPath -UseBasicParsing
-    $actual = (Get-FileHash -LiteralPath $FontPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actual -ne $FontSha256) {
-        Remove-Item -LiteralPath $FontPath -Force -ErrorAction SilentlyContinue
-        Fail "font checksum mismatch: $actual"
+    $temporary = "$Path.tmp.$PID"
+    Invoke-WebRequest -Uri $Url -OutFile $temporary -UseBasicParsing
+    $actual = (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $Sha256) {
+        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        Fail "$Name checksum mismatch: $actual"
     }
+    Move-Item -LiteralPath $temporary -Destination $Path -Force
+}
+
+function Ensure-FontAsset {
+    New-Item -ItemType Directory -Force -Path $FontDir | Out-Null
+    Ensure-Asset $FontUrl $FontPath $FontSha256 $FontName
+    Ensure-Asset $LicenseUrl $LicensePath $LicenseSha256 $LicenseName
 }
 
 function Resolve-SidecarTag {
@@ -197,6 +214,7 @@ foreach ($goArch in $architectures) {
         Pop-Location
     }
     Copy-Item -LiteralPath $FontPath -Destination (Join-Path $packageDir 'lib/fonts') -Force
+    Copy-Item -LiteralPath $LicensePath -Destination (Join-Path $packageDir 'LICENSES') -Force
 
     $sidecarLibDir = Join-Path (Join-Path $sidecarDir 'lib') 'ffmpeg'
     Copy-Item -Path (Join-Path $sidecarLibDir '*.dll') -Destination $packageDir -Force

@@ -93,6 +93,7 @@ for target_arch in $targets; do
 
     build_app_binary linux "$target_arch" "$package_dir/krkrgo" "-s -w"
     cp "$ROOT_DIR/lib/fonts/NotoSansCJK-Regular.ttc" "$package_dir/lib/fonts/"
+    cp "$ROOT_DIR/lib/fonts/NotoSansCJK-OFL.txt" "$package_dir/LICENSES/"
     cp "$sidecar_dir/lib/ffmpeg/"*.so.* "$package_dir/lib/ffmpeg/"
     copy_sidecar_licenses "$sidecar_dir" "$package_dir/LICENSES"
 

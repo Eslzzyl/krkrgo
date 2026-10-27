@@ -125,6 +125,7 @@ for target_arch in $targets; do
 
     build_app_binary darwin "$target_arch" "$app/Contents/MacOS/krkrgo" "-s -w"
     cp "$ROOT_DIR/lib/fonts/NotoSansCJK-Regular.ttc" "$app/Contents/MacOS/lib/fonts/"
+    cp "$ROOT_DIR/lib/fonts/NotoSansCJK-OFL.txt" "$app/Contents/Resources/LICENSES/"
     cp "$sidecar_dir/lib/ffmpeg/"*.dylib "$app/Contents/MacOS/lib/ffmpeg/"
     copy_sidecar_licenses "$sidecar_dir" "$app/Contents/Resources/LICENSES"
 

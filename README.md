@@ -83,9 +83,11 @@ with:
 scripts/fetch-font.sh
 ```
 
-The development path is `lib/fonts/NotoSansCJK-Regular.ttc`. Packaging scripts
-fetch the same resource automatically and place it under `lib/fonts` beside the
-executable. The file is ignored by Git.
+The development paths are `lib/fonts/NotoSansCJK-Regular.ttc` and
+`lib/fonts/NotoSansCJK-OFL.txt`. Packaging scripts fetch both resources
+automatically, place the font under `lib/fonts` beside the executable, and
+place the OFL license under the package `LICENSES` directory. These files are
+ignored by Git.
 
 ### Build the FFmpeg sidecar
 
@@ -155,9 +157,9 @@ powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1 -Arch all
 
 Artifacts:
 
-- `dist/krkrgo-macos-<arch>.zip` with `krkrgo.app`, dylibs under `Contents/MacOS/lib/ffmpeg`, the fixed font under `Contents/MacOS/lib/fonts`, and the LGPL license.
-- `dist/krkrgo-linux-<arch>.tar.gz` with the binary, `lib/ffmpeg`, `lib/fonts`, and the license.
-- `dist/krkrgo-windows-<arch>.zip` with `krkrgo.exe`, `lib/fonts`, FFmpeg and MinGW runtime DLLs beside the executable, and the license.
+- `dist/krkrgo-macos-<arch>.zip` with `krkrgo.app`, dylibs under `Contents/MacOS/lib/ffmpeg`, the fixed font under `Contents/MacOS/lib/fonts`, and FFmpeg/Noto licenses.
+- `dist/krkrgo-linux-<arch>.tar.gz` with the binary, `lib/ffmpeg`, `lib/fonts`, and FFmpeg/Noto licenses.
+- `dist/krkrgo-windows-<arch>.zip` with `krkrgo.exe`, `lib/fonts`, FFmpeg and MinGW runtime DLLs beside the executable, and FFmpeg/Noto licenses.
 
 A `.sha256` file is written next to each archive. `--tag` selects another sidecar release; `--sidecar DIR` uses an extracted sidecar directory. The macOS script signs the bundle ad hoc when `codesign` is available and includes `cmd/krkrgo/appicon.icns` when that file exists.
 
