@@ -279,6 +279,30 @@ func TestMotionAtlasCopyPositionNormalizesSourceBounds(t *testing.T) {
 		t.Fatalf("motion atlas copy position = (%g, %g), want (-5, -8)", x, y)
 	}
 }
+func TestMotionViewportClipRectUsesCanvasCoordinates(t *testing.T) {
+	draw := runtime.RenderMotionDraw{
+		HasViewport: true,
+		Viewport:    [4]float64{-2, -1, 3, 4},
+	}
+	got, ok := motionViewportClipRect(draw, 10, 8, 2, 1, image.Rect(0, 0, 10, 8))
+	if !ok {
+		t.Fatal("viewport clip was rejected")
+	}
+	if want := image.Rect(1, 2, 6, 7); got != want {
+		t.Fatalf("viewport clip = %v, want %v", got, want)
+	}
+}
+
+func TestMotionHasViewportIncludesItems(t *testing.T) {
+	motion := &runtime.RenderMotion{
+		Items: []runtime.RenderMotionItem{{
+			Draw: runtime.RenderMotionDraw{HasViewport: true},
+		}},
+	}
+	if !motionHasViewport(motion) {
+		t.Fatal("item viewport was not detected")
+	}
+}
 
 func TestGPUCompositorSharesMotionAtlasAcrossLayers(t *testing.T) {
 	compositor, err := NewGPUCompositor()

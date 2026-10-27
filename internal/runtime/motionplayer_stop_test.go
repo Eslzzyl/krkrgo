@@ -16,26 +16,28 @@ func TestMotionPlayerAllPlayingUsesPlayerFlag(t *testing.T) {
 	}
 }
 
-func TestEmotePlayerSkipToSyncUsesActiveTimelineLength(t *testing.T) {
+func TestEmotePlayerSkipToSyncUsesActiveMotionLength(t *testing.T) {
 	services := &Services{}
-	state := &motionPlayerState{}
+	resource := emotePlayerTestResource("sync.psb")
+	motionTestIdle(resource)["totalFrames"] = int64(48)
+	state := &motionPlayerState{resource: resource, chara: "chara", motion: "idle"}
 	emote := newEmotePlayerState()
 	timeline := &emoteTimelineState{
-		label:       "once",
+		label:       "unrelated-long-timeline",
 		playing:     true,
-		totalFrames: 48,
+		totalFrames: 120,
 		loop:        false,
 	}
-	emote.timelines = map[string]*emoteTimelineState{"once": timeline}
-	emote.playingOrder = []string{"once"}
+	emote.timelines = map[string]*emoteTimelineState{timeline.label: timeline}
+	emote.playingOrder = []string{timeline.label}
 
 	services.emoteSkipToSync(state, emote)
 
-	if timeline.time != 48 || timeline.playing {
-		t.Fatalf("timeline after skip = time:%v playing:%v, want 48:false", timeline.time, timeline.playing)
+	if timeline.time != 48 || !timeline.playing {
+		t.Fatalf("timeline after skip = time:%v playing:%v, want 48:true", timeline.time, timeline.playing)
 	}
-	if len(emote.playingOrder) != 0 {
-		t.Fatalf("playing order after skip = %v, want empty", emote.playingOrder)
+	if len(emote.playingOrder) != 1 || emote.playingOrder[0] != timeline.label {
+		t.Fatalf("playing order after skip = %v, want [%q]", emote.playingOrder, timeline.label)
 	}
 	if state.clampedEvalTime != 48 || state.frameLoopTime != 48 {
 		t.Fatalf("player time after skip = clamped:%v loop:%v, want 48:48", state.clampedEvalTime, state.frameLoopTime)

@@ -1401,11 +1401,6 @@ func (s *Services) emoteSkipToSync(state *motionPlayerState, emote *emotePlayerS
 	if resource := s.playerResource(state); resource != nil {
 		syncTime = math.Max(syncTime, motionField(resource, state.chara, state.motion, "totalFrames", 0))
 	}
-	for _, label := range emote.playingOrder {
-		if timeline := emote.timelines[label]; timeline != nil && timeline.totalFrames > 0 {
-			syncTime = math.Max(syncTime, timeline.totalFrames)
-		}
-	}
 	for _, timeline := range emote.timelines {
 		timeline.time = syncTime
 		if timeline.control {
@@ -1479,10 +1474,10 @@ func (s *Services) emotePlayerProgress(state *motionPlayerState, emote *emotePla
 		s.emoteApplyEvalPostProcess(emote)
 	}
 	state.syncActive = state.syncWaiting && len(emote.playingOrder) > 0
-	if state.held {
-		state.clampedEvalTime = state.frameTick
-	} else {
+	if emote.freezeBodyMotion() {
 		state.clampedEvalTime = 0
+	} else {
+		state.clampedEvalTime = state.frameTick
 	}
 	emote.modified = true
 	return tjs.VoidValue, nil

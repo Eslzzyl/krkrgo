@@ -536,7 +536,7 @@ func TestMotionResourceManagerMultiCache(t *testing.T) {
 	}
 }
 
-func TestMotionRenderCacheTracksCompletionType(t *testing.T) {
+func TestMotionRenderVisibilityUsesMotionMode(t *testing.T) {
 	resource := emotePlayerTestResource("completion.psb")
 	root := resource.doc.Root.(map[string]assets.Value)
 	objects := root["object"].(map[string]assets.Value)
@@ -557,26 +557,135 @@ func TestMotionRenderCacheTracksCompletionType(t *testing.T) {
 			},
 		},
 	}
-	hidden, err := renderPSBMotionOptions(resource, "chara", "idle", 0, 0, nil, false, 0, 0, nil)
+	hidden, err := renderPSBMotionOptions(resource, "chara", "idle", 0, 0, nil, false, 0, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	hiddenPixels := append([]byte(nil), hidden.RGBA...)
 	for _, channel := range hiddenPixels {
 		if channel != 0 {
-			t.Fatal("completionType 0 rendered a type-3 node")
+			t.Fatal("normal Motion.Player rendered a type-3 node")
 		}
 	}
-	visible, err := renderPSBMotionOptions(resource, "chara", "idle", 0, 0, nil, false, 0, 1, nil)
+	visible, err := renderPSBMotionOptionsZFactorInherit(
+		resource, "chara", "idle", 0, 0, nil, false, 0, 0, 1, nil, false,
+		motionRenderOptions{emoteMode: true},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Equal(hiddenPixels, visible.RGBA) {
-		t.Fatal("completionType change reused the hidden canvas")
+		t.Fatal("emote-like visibility did not render the type-3 node")
 	}
 	if keyA, keyB := motionBakedSourceKey(resource, "chara", "idle", 0, 0, nil, false, 0, 0, nil),
 		motionBakedSourceKey(resource, "chara", "idle", 0, 0, nil, false, 0, 1, nil); keyA == keyB {
 		t.Fatal("GPU baked source key omits completionType")
+	}
+}
+
+func TestEmotePlayerProgressUsesFrameTimeForPlainMotion(t *testing.T) {
+	services := DefaultServices()
+	resource := emotePlayerTestResource("plain-motion.psb")
+	root := resource.doc.Root.(map[string]assets.Value)
+	metadata := root["metadata"].(map[string]assets.Value)
+	base := metadata["base"].(map[string]assets.Value)
+	for _, key := range []string{
+		"variableList", "parameterList", "eyeControl", "mouthControl",
+		"bustControl", "selectorControl", "timelineControl",
+	} {
+		delete(base, key)
+	}
+	motion := motionTestIdle(resource)
+	motion["lastTime"] = float64(91)
+	motion["layer"] = []assets.Value{
+		map[string]assets.Value{
+			"type": int64(0),
+			"frameList": []assets.Value{
+				map[string]assets.Value{
+					"time":    float64(0),
+					"content": map[string]assets.Value{"src": "src/chara/mouth0"},
+				},
+				map[string]assets.Value{
+					"time":    float64(19),
+					"content": map[string]assets.Value{"src": "src/chara/mouth1"},
+				},
+				map[string]assets.Value{"time": float64(91)},
+			},
+		},
+	}
+	state := &motionPlayerState{
+		resource: resource, chara: "chara", motion: "idle",
+		speed: true, speedSet: true, playing: true,
+	}
+	emote := newEmotePlayerState()
+	services.emoteApplyResourceMetadata(emote, resource)
+	if emote.freezeBodyMotion() {
+		t.Fatal("plain motion entered variable-driven body mode")
+	}
+	interval := 20 * 1000.0 / 60.0
+	if _, err := services.emotePlayerProgress(state, emote, []tjs.Value{tjs.RealValue(interval)}); err != nil {
+		t.Fatal(err)
+	}
+	if state.clampedEvalTime < 19 || state.clampedEvalTime > 20 {
+		t.Fatalf("plain motion clamped time = %.3f, want frame time near 20", state.clampedEvalTime)
+	}
+	frame, err := renderPSBMotionOptions(resource, "chara", "idle", state.clampedEvalTime, 0, nil, false, 0, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pixel := frame.RGBA[(4*8+4)*4:]
+	if pixel[2] != 255 || pixel[3] != 255 {
+		t.Fatalf("plain motion frame pixel = %v, want opaque blue", pixel[:4])
+	}
+}
+func TestM2CheesewareLayerAppearsAtFrame19(t *testing.T) {
+	resource := emotePlayerTestResource("m2-cheeseware.psb")
+	root := resource.doc.Root.(map[string]assets.Value)
+	metadata := root["metadata"].(map[string]assets.Value)
+	base := metadata["base"].(map[string]assets.Value)
+	for _, key := range []string{
+		"variableList", "parameterList", "eyeControl", "mouthControl",
+		"bustControl", "selectorControl", "timelineControl",
+	} {
+		delete(base, key)
+	}
+	motion := motionTestIdle(resource)
+	motion["lastTime"] = float64(91)
+	letter := map[string]assets.Value{
+		"type": int64(0),
+		"frameList": []assets.Value{
+			map[string]assets.Value{"time": float64(0)},
+			map[string]assets.Value{
+				"time":    float64(19),
+				"content": map[string]assets.Value{"src": "src/chara/mouth1"},
+			},
+			map[string]assets.Value{"time": float64(91)},
+		},
+	}
+	strLocate := map[string]assets.Value{
+		"type":     int64(2),
+		"children": []assets.Value{letter},
+	}
+	strClip := map[string]assets.Value{
+		"type":     int64(7),
+		"children": []assets.Value{strLocate},
+	}
+	motion["layer"] = []assets.Value{strClip}
+
+	frameAt := func(tick float64) *assets.Image {
+		frame, err := renderPSBMotionOptions(resource, "chara", "idle", tick, 0, nil, false, 0, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return frame
+	}
+	early := frameAt(0)
+	if pixel := early.RGBA[(4*8+4)*4:]; pixel[3] != 0 {
+		t.Fatalf("cheeseware layer at frame 0 = %v, want transparent", pixel[:4])
+	}
+	visible := frameAt(20)
+	if pixel := visible.RGBA[(4*8+4)*4:]; pixel[2] != 255 || pixel[3] != 255 {
+		t.Fatalf("cheeseware layer at frame 20 = %v, want opaque blue", pixel[:4])
 	}
 }
 

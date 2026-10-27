@@ -841,12 +841,12 @@ func (c *GPUCompositor) composeMotion(node runtime.RenderNode) (*ebiten.Image, e
 		}
 	}
 	if len(motion.Items) != 0 {
-		if err := c.drawMotionItems(node.ID, atlas, target, motion.Items, filter, 0, 0); err != nil {
+		if err := c.drawMotionItems(node.ID, atlas, target, motion.Items, filter, 0, 0, motion.Width, motion.Height); err != nil {
 			return nil, err
 		}
 		return target, nil
 	}
-	if err := c.drawMotionDraws(node.ID, atlas, target, motion.Draws, filter, 0, 0); err != nil {
+	if err := c.drawMotionDraws(node.ID, atlas, target, motion.Draws, filter, 0, 0, motion.Width, motion.Height); err != nil {
 		return nil, err
 	}
 	return target, nil
@@ -895,16 +895,68 @@ func (c *GPUCompositor) drawDirectMotionAlpha(node runtime.RenderNode, x0, y0, x
 	originX := -float64(node.Bounds.X + node.ImageLeft)
 	originY := -float64(node.Bounds.Y + node.ImageTop)
 	opacity := float32(node.Opacity) / 255
-	if c.motionBatching && motion.AtlasKey != "" {
+	if c.motionBatching && motion.AtlasKey != "" && !motionHasViewport(motion) {
 		return true, c.appendDirectMotionBatch(node.ID, atlas, target, rect, filter, motion, originX, originY, opacity)
 	}
 	if c.motionBatching {
 		c.flushMotionBatch()
 	}
 	if len(motion.Items) != 0 {
-		return true, c.drawMotionItemsWithOpacity(node.ID, atlas, target, motion.Items, filter, originX, originY, opacity)
+		return true, c.drawMotionItemsWithOpacity(node.ID, atlas, target, motion.Items, filter, originX, originY, opacity, motion.Width, motion.Height)
 	}
-	return true, c.drawMotionBatchWithOpacity(node.ID, atlas, target, motion.Draws, filter, originX, originY, opacity)
+	return true, c.drawMotionBatchWithOpacity(node.ID, atlas, target, motion.Draws, filter, originX, originY, opacity, motion.Width, motion.Height)
+}
+
+func motionDrawsHaveViewport(draws []runtime.RenderMotionDraw) bool {
+	for _, draw := range draws {
+		if draw.HasViewport {
+			return true
+		}
+	}
+	return false
+}
+
+func motionItemsHaveViewport(items []runtime.RenderMotionItem) bool {
+	for _, item := range items {
+		if item.Draw.HasViewport || (item.Group != nil && (motionItemsHaveViewport(item.Group.Items) || motionMasksHaveViewport(item.Group.Masks))) {
+			return true
+		}
+	}
+	return false
+}
+
+func motionMasksHaveViewport(masks []runtime.RenderMotionMask) bool {
+	for _, mask := range masks {
+		if motionItemsHaveViewport(mask.Items) {
+			return true
+		}
+	}
+	return false
+}
+
+func motionHasViewport(motion *runtime.RenderMotion) bool {
+	if motion == nil {
+		return false
+	}
+	return motionDrawsHaveViewport(motion.Draws) || motionItemsHaveViewport(motion.Items)
+}
+
+func motionViewportClipRect(draw runtime.RenderMotionDraw, canvasWidth, canvasHeight int, originX, originY float64, target image.Rectangle) (image.Rectangle, bool) {
+	if !draw.HasViewport {
+		return target, true
+	}
+	if draw.Viewport[2] < draw.Viewport[0] || draw.Viewport[3] < draw.Viewport[1] {
+		return image.Rectangle{}, false
+	}
+	centerX, centerY := float64(canvasWidth)/2, float64(canvasHeight)/2
+	clip := image.Rect(
+		int(math.Floor(centerX+draw.Viewport[0]-originX)),
+		int(math.Floor(centerY+draw.Viewport[1]-originY)),
+		int(math.Ceil(centerX+draw.Viewport[2]-originX)),
+		int(math.Ceil(centerY+draw.Viewport[3]-originY)),
+	)
+	clip = clip.Intersect(target)
+	return clip, !clip.Empty()
 }
 
 func motionSupportsDirectAlpha(motion *runtime.RenderMotion) bool {
@@ -989,21 +1041,21 @@ func motionFilter(motion *runtime.RenderMotion) ebiten.Filter {
 	return ebiten.FilterNearest
 }
 
-func (c *GPUCompositor) drawMotionItems(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, items []runtime.RenderMotionItem, filter ebiten.Filter, originX, originY float64) error {
-	return c.drawMotionItemsWithOpacity(nodeID, atlas, target, items, filter, originX, originY, 1)
+func (c *GPUCompositor) drawMotionItems(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, items []runtime.RenderMotionItem, filter ebiten.Filter, originX, originY float64, canvasWidth, canvasHeight int) error {
+	return c.drawMotionItemsWithOpacity(nodeID, atlas, target, items, filter, originX, originY, 1, canvasWidth, canvasHeight)
 }
 
-func (c *GPUCompositor) drawMotionItemsWithOpacity(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, items []runtime.RenderMotionItem, filter ebiten.Filter, originX, originY float64, opacity float32) error {
+func (c *GPUCompositor) drawMotionItemsWithOpacity(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, items []runtime.RenderMotionItem, filter ebiten.Filter, originX, originY float64, opacity float32, canvasWidth, canvasHeight int) error {
 	for index := 0; index < len(items); {
 		if items[index].Group != nil {
-			if err := c.drawMotionGroup(nodeID, atlas, target, items[index].Group, filter, originX, originY); err != nil {
+			if err := c.drawMotionGroup(nodeID, atlas, target, items[index].Group, filter, originX, originY, canvasWidth, canvasHeight); err != nil {
 				return err
 			}
 			index++
 			continue
 		}
 		if items[index].Draw.Baked {
-			if err := c.drawMotionDraw(nodeID, atlas, target, items[index].Draw, filter, originX, originY); err != nil {
+			if err := c.drawMotionDrawWithViewport(nodeID, atlas, target, items[index].Draw, filter, originX, originY, canvasWidth, canvasHeight, opacity); err != nil {
 				return err
 			}
 			index++
@@ -1014,7 +1066,7 @@ func (c *GPUCompositor) drawMotionItemsWithOpacity(nodeID runtime.LayerID, atlas
 		for end < len(items) && items[end].Group == nil && !items[end].Draw.Baked && items[end].Draw.Blend == blend {
 			end++
 		}
-		if err := c.drawMotionItemBatchWithOpacity(nodeID, atlas, target, items[index:end], filter, originX, originY, opacity); err != nil {
+		if err := c.drawMotionItemBatchWithOpacity(nodeID, atlas, target, items[index:end], filter, originX, originY, opacity, canvasWidth, canvasHeight); err != nil {
 			return err
 		}
 		index = end
@@ -1022,10 +1074,10 @@ func (c *GPUCompositor) drawMotionItemsWithOpacity(nodeID runtime.LayerID, atlas
 	return nil
 }
 
-func (c *GPUCompositor) drawMotionDraws(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, draws []runtime.RenderMotionDraw, filter ebiten.Filter, originX, originY float64) error {
+func (c *GPUCompositor) drawMotionDraws(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, draws []runtime.RenderMotionDraw, filter ebiten.Filter, originX, originY float64, canvasWidth, canvasHeight int) error {
 	for index := 0; index < len(draws); {
 		if draws[index].Baked {
-			if err := c.drawMotionDraw(nodeID, atlas, target, draws[index], filter, originX, originY); err != nil {
+			if err := c.drawMotionDrawWithViewport(nodeID, atlas, target, draws[index], filter, originX, originY, canvasWidth, canvasHeight, 1); err != nil {
 				return err
 			}
 			index++
@@ -1036,7 +1088,7 @@ func (c *GPUCompositor) drawMotionDraws(nodeID runtime.LayerID, atlas *gpuMotion
 		for end < len(draws) && !draws[end].Baked && draws[end].Blend == blend {
 			end++
 		}
-		if err := c.drawMotionBatch(nodeID, atlas, target, draws[index:end], filter, originX, originY); err != nil {
+		if err := c.drawMotionBatch(nodeID, atlas, target, draws[index:end], filter, originX, originY, canvasWidth, canvasHeight); err != nil {
 			return err
 		}
 		index = end
@@ -1044,11 +1096,19 @@ func (c *GPUCompositor) drawMotionDraws(nodeID runtime.LayerID, atlas *gpuMotion
 	return nil
 }
 
-func (c *GPUCompositor) drawMotionItemBatch(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, items []runtime.RenderMotionItem, filter ebiten.Filter, originX, originY float64) error {
-	return c.drawMotionItemBatchWithOpacity(nodeID, atlas, target, items, filter, originX, originY, 1)
+func (c *GPUCompositor) drawMotionItemBatch(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, items []runtime.RenderMotionItem, filter ebiten.Filter, originX, originY float64, canvasWidth, canvasHeight int) error {
+	return c.drawMotionItemBatchWithOpacity(nodeID, atlas, target, items, filter, originX, originY, 1, canvasWidth, canvasHeight)
 }
 
-func (c *GPUCompositor) drawMotionItemBatchWithOpacity(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, items []runtime.RenderMotionItem, filter ebiten.Filter, originX, originY float64, opacity float32) error {
+func (c *GPUCompositor) drawMotionItemBatchWithOpacity(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, items []runtime.RenderMotionItem, filter ebiten.Filter, originX, originY float64, opacity float32, canvasWidth, canvasHeight int) error {
+	if motionItemsHaveViewport(items) {
+		for _, item := range items {
+			if err := c.drawMotionDrawWithViewport(nodeID, atlas, target, item.Draw, filter, originX, originY, canvasWidth, canvasHeight, opacity); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	c.motionVertices = c.motionVertices[:0]
 	c.motionIndices = c.motionIndices[:0]
 	for _, item := range items {
@@ -1067,11 +1127,19 @@ func (c *GPUCompositor) drawMotionItemBatchWithOpacity(nodeID runtime.LayerID, a
 	return nil
 }
 
-func (c *GPUCompositor) drawMotionBatch(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, draws []runtime.RenderMotionDraw, filter ebiten.Filter, originX, originY float64) error {
-	return c.drawMotionBatchWithOpacity(nodeID, atlas, target, draws, filter, originX, originY, 1)
+func (c *GPUCompositor) drawMotionBatch(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, draws []runtime.RenderMotionDraw, filter ebiten.Filter, originX, originY float64, canvasWidth, canvasHeight int) error {
+	return c.drawMotionBatchWithOpacity(nodeID, atlas, target, draws, filter, originX, originY, 1, canvasWidth, canvasHeight)
 }
 
-func (c *GPUCompositor) drawMotionBatchWithOpacity(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, draws []runtime.RenderMotionDraw, filter ebiten.Filter, originX, originY float64, opacity float32) error {
+func (c *GPUCompositor) drawMotionBatchWithOpacity(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, draws []runtime.RenderMotionDraw, filter ebiten.Filter, originX, originY float64, opacity float32, canvasWidth, canvasHeight int) error {
+	if motionDrawsHaveViewport(draws) {
+		for _, draw := range draws {
+			if err := c.drawMotionDrawWithViewport(nodeID, atlas, target, draw, filter, originX, originY, canvasWidth, canvasHeight, opacity); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	c.motionVertices = c.motionVertices[:0]
 	c.motionIndices = c.motionIndices[:0]
 	for _, draw := range draws {
@@ -1127,11 +1195,31 @@ func (c *GPUCompositor) appendMotionBatchDraw(nodeID runtime.LayerID, atlas *gpu
 	return nil
 }
 
-func (c *GPUCompositor) drawMotionItem(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, item runtime.RenderMotionItem, filter ebiten.Filter, originX, originY float64) error {
+func (c *GPUCompositor) drawMotionItem(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, item runtime.RenderMotionItem, filter ebiten.Filter, originX, originY float64, canvasWidth, canvasHeight int) error {
 	if item.Group != nil {
-		return c.drawMotionGroup(nodeID, atlas, target, item.Group, filter, originX, originY)
+		return c.drawMotionGroup(nodeID, atlas, target, item.Group, filter, originX, originY, canvasWidth, canvasHeight)
 	}
-	return c.drawMotionDraw(nodeID, atlas, target, item.Draw, filter, originX, originY)
+	return c.drawMotionDrawWithViewport(nodeID, atlas, target, item.Draw, filter, originX, originY, canvasWidth, canvasHeight, 1)
+}
+
+func (c *GPUCompositor) drawMotionDrawWithViewport(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, draw runtime.RenderMotionDraw, filter ebiten.Filter, originX, originY float64, canvasWidth, canvasHeight int, opacity float32) error {
+	clip, ok := motionViewportClipRect(draw, canvasWidth, canvasHeight, originX, originY, target.Bounds())
+	if !ok {
+		return nil
+	}
+	if draw.HasViewport && clip != target.Bounds() {
+		target = target.SubImage(clip).(*ebiten.Image)
+	}
+	if opacity != 1 {
+		scaled := math.Round(float64(draw.Opacity) * float64(opacity))
+		if scaled < 0 {
+			scaled = 0
+		} else if scaled > 255 {
+			scaled = 255
+		}
+		draw.Opacity = uint8(scaled)
+	}
+	return c.drawMotionDraw(nodeID, atlas, target, draw, filter, originX, originY)
 }
 
 func (c *GPUCompositor) drawMotionDraw(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, draw runtime.RenderMotionDraw, filter ebiten.Filter, originX, originY float64) error {
@@ -1195,7 +1283,7 @@ func (c *GPUCompositor) drawMotionDraw(nodeID runtime.LayerID, atlas *gpuMotionA
 	return nil
 }
 
-func (c *GPUCompositor) drawMotionGroup(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, group *runtime.RenderMotionGroup, filter ebiten.Filter, originX, originY float64) error {
+func (c *GPUCompositor) drawMotionGroup(nodeID runtime.LayerID, atlas *gpuMotionAtlas, target *ebiten.Image, group *runtime.RenderMotionGroup, filter ebiten.Filter, originX, originY float64, canvasWidth, canvasHeight int) error {
 	width, height := target.Bounds().Dx(), target.Bounds().Dy()
 	parentBounds := motionPixelBounds{minX: originX, minY: originY, maxX: originX + float64(width), maxY: originY + float64(height), valid: true}
 	groupBounds := motionGroupBounds(group).intersect(parentBounds)
@@ -1208,14 +1296,14 @@ func (c *GPUCompositor) drawMotionGroup(nodeID runtime.LayerID, atlas *gpuMotion
 	}
 	groupTarget := c.acquireTexture(int32(groupRect.Dx()), int32(groupRect.Dy()))
 	groupTarget.Clear()
-	if err := c.drawMotionItems(nodeID, atlas, groupTarget, group.Items, filter, float64(groupRect.Min.X), float64(groupRect.Min.Y)); err != nil {
+	if err := c.drawMotionItems(nodeID, atlas, groupTarget, group.Items, filter, float64(groupRect.Min.X), float64(groupRect.Min.Y), canvasWidth, canvasHeight); err != nil {
 		c.releaseTexture(groupTarget, int32(groupRect.Dx()), int32(groupRect.Dy()))
 		return err
 	}
 	for _, mask := range group.Masks {
 		maskTarget := c.acquireTexture(int32(groupRect.Dx()), int32(groupRect.Dy()))
 		maskTarget.Clear()
-		if err := c.drawMotionItems(nodeID, atlas, maskTarget, mask.Items, filter, float64(groupRect.Min.X), float64(groupRect.Min.Y)); err != nil {
+		if err := c.drawMotionItems(nodeID, atlas, maskTarget, mask.Items, filter, float64(groupRect.Min.X), float64(groupRect.Min.Y), canvasWidth, canvasHeight); err != nil {
 			c.releaseTexture(maskTarget, int32(groupRect.Dx()), int32(groupRect.Dy()))
 			c.releaseTexture(groupTarget, int32(groupRect.Dx()), int32(groupRect.Dy()))
 			return err

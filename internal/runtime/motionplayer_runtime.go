@@ -1386,11 +1386,6 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 			}
 		}
 		syncTime = math.Max(syncTime, motionField(state.resource, state.chara, state.motion, "totalFrames", 0))
-		for _, label := range runtime.playingOrder {
-			if timeline := runtime.timelines[label]; timeline != nil && timeline.totalFrames > 0 {
-				syncTime = math.Max(syncTime, timeline.totalFrames)
-			}
-		}
 		for _, timeline := range runtime.timelines {
 			timeline.time = syncTime
 			if timeline.control {

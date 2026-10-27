@@ -42,6 +42,17 @@ texture. Textures for layers absent from the current plan are returned to a
 size-bucketed pool, which also releases textures for hidden layers until they are
 visible again.
 
+MotionPlayer source identities include the resource cache generation. `clearCache`
+and `removeAllTextures` advance that generation, clear decoded and derived image
+state, and invalidate the retained canvas before the next render plan is built.
+GPU motion draws also carry the runtime viewport into target clipping; this keeps
+the GPU path aligned with the CPU compositor's centered viewport coordinates.
+
+MotionPlayer item preparation follows KrKr2's mode-specific visibility masks:
+regular Motion.Player content accepts node types 0, 11, and 12 (6145), while
+emote-like content also accepts type 3 (6153). `completionType` remains part of
+the render cache key but does not select the prepared-item mask.
+
 ## GPU composition contract
 
 Interactive Ebitengine mode defaults to GPU. CPU composition remains available for

@@ -75,6 +75,32 @@ func TestMotionScratchForBuildSkipsSharedMotion(t *testing.T) {
 		t.Fatal("unshared motion scratch was not selected")
 	}
 }
+func TestMotionClearSourceCachesInvalidatesRenderState(t *testing.T) {
+	resource := &motionResource{
+		path:        "sync.psb",
+		images:      map[string]*assets.Image{"src/a": {Width: 1, Height: 1}},
+		sourceKeys:  make(map[string]string),
+		canvas:      &assets.Image{Width: 1, Height: 1},
+		canvasValid: true,
+	}
+	before := motionSourceIdentityKey(resource, "src/a")
+
+	motionClearSourceCaches(resource)
+
+	after := motionSourceIdentityKey(resource, "src/a")
+	if before == after {
+		t.Fatalf("source identity stayed stable after cache clear: %q", after)
+	}
+	if resource.sourceCacheGeneration != 1 {
+		t.Fatalf("source cache generation = %d, want 1", resource.sourceCacheGeneration)
+	}
+	if resource.canvas != nil || resource.canvasValid {
+		t.Fatalf("cached canvas survived source cache clear: canvas=%p valid=%v", resource.canvas, resource.canvasValid)
+	}
+	if len(resource.images) != 0 {
+		t.Fatalf("decoded source cache entries = %d, want 0", len(resource.images))
+	}
+}
 
 func TestBlendMotionImageIdentityTranslationBlendsTranslucentPixels(t *testing.T) {
 	src := &assets.Image{
@@ -145,15 +171,15 @@ func TestMaterializeGPUMotionUsesDeferredSourceTransform(t *testing.T) {
 
 func TestSeparateLayerDrawUsesChildLocalCoordinates(t *testing.T) {
 	draw := RenderMotionDraw{
-		TX:          17.5,
-		TY:          23.25,
+		TX:          -462.5,
+		TY:          -246.75,
 		Opacity:     91,
 		Blend:       MotionBlendAdditive,
 		HasViewport: true,
 		Viewport:    [4]float64{2, 3, 10, 12},
 		SortKey:     7,
 	}
-	got := motionSeparateLayerDraw(draw, 5, 8)
+	got := motionSeparateLayerDraw(draw, 5, 8, 960, 540)
 	if got.TX != 12.5 || got.TY != 15.25 {
 		t.Fatalf("local translation = (%g,%g), want (12.5,15.25)", got.TX, got.TY)
 	}
@@ -286,6 +312,36 @@ func TestMotionDrawsNestedMotionUnderChildPlayerNode(t *testing.T) {
 	}
 	if got := frame.RGBA[(4*8+4)*4:]; got[2] != 255 || got[3] != 255 {
 		t.Fatalf("nested motion pixel = %v, want opaque blue", got[:4])
+	}
+}
+
+func TestMotionPlayerType11SourceIsRendered(t *testing.T) {
+	resource := emotePlayerTestResource("type11.psb")
+	motionTestIdle(resource)["layer"] = []assets.Value{
+		map[string]assets.Value{
+			"type": int64(11),
+			"frameList": []assets.Value{
+				map[string]assets.Value{
+					"time":    float64(0),
+					"content": map[string]assets.Value{"src": "src/chara/mouth1"},
+				},
+			},
+		},
+	}
+	frame, err := renderPSBMotionOptions(resource, "chara", "idle", 0, 0, nil, false, 0, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pixel := frame.RGBA[(4*8+4)*4:]
+	if pixel[2] != 255 || pixel[3] != 255 {
+		t.Fatalf("type-11 CPU pixel = %v, want opaque blue", pixel[:4])
+	}
+	gpu, err := buildGPUMotionVariables(resource, "chara", "idle", 0, 0, identityMotionDrawMatrix(), 1, nil, false, 0, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gpu.Draws) != 1 {
+		t.Fatalf("type-11 GPU draws = %d, want 1", len(gpu.Draws))
 	}
 }
 

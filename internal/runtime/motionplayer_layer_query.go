@@ -373,7 +373,7 @@ func motionLayerGetterValues(vm *tjs.VM, resource *motionResource, attached []*m
 		"label":         tjs.StringValue(psbLabel(node)),
 		"visible":       tjs.IntegerValue(boolInt(visible)),
 		"branchVisible": tjs.IntegerValue(boolInt(branchVisible)),
-		"layerVisible":  tjs.IntegerValue(boolInt(motionNodeAllowed(node, completion, false))),
+		"layerVisible":  tjs.IntegerValue(boolInt(motionNodeAllowed(node, completion, false, motionResourceEmoteMode(resource)))),
 		"x":             tjs.RealValue(ctx.x),
 		"y":             tjs.RealValue(ctx.y),
 		"left":          tjs.RealValue(ctx.x),

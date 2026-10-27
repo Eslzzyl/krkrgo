@@ -26,6 +26,7 @@ type motionResource struct {
 	targetNodesNeeded             map[string]bool
 	cameraNodes                   map[string]bool
 	sourceKeys                    map[string]string
+	sourceCacheGeneration         uint64
 	sourceOrigins                 map[string][2]float64
 	targetIndexScratch            []map[string]motionTargetPosition
 	targetIndexScratchUsed        int
@@ -51,6 +52,7 @@ type motionResource struct {
 	canvasRootState               motionPlayerRootState
 	canvasHasRootState            bool
 	canvasPreview                 bool
+	canvasEmoteMode               bool
 	canvasValid                   bool
 	meshIndices                   map[motionMeshIndexKey][]uint16
 	contextArena                  motionContextArena
@@ -71,6 +73,10 @@ func motionClearSourceCaches(resource *motionResource) {
 	clear(resource.scaled)
 	clear(resource.subtractive)
 	clear(resource.opaque)
+	clear(resource.sourceKeys)
+	resource.sourceCacheGeneration++
+	resource.canvas = nil
+	resource.canvasValid = false
 }
 
 func (l *Layer) materializeGPUMotion() error {
@@ -478,6 +484,7 @@ func renderPSBMotionOptionsZFactorInheritDimensions(resource *motionResource, ch
 		resource.canvasRootState == renderOptions.rootState &&
 		resource.canvasHasRootState == renderOptions.hasRootState &&
 		resource.canvasPreview == renderOptions.preview &&
+		resource.canvasEmoteMode == renderOptions.emoteMode &&
 		resource.canvasVariables == paramsKey && resource.canvasMask == maskMode &&
 		resource.canvasCompletion == completion &&
 		resource.canvasFreeze == freezeBody &&
@@ -527,7 +534,8 @@ func renderPSBMotionOptionsZFactorInheritDimensions(resource *motionResource, ch
 	resource.contextArena.reset()
 	eval := motionRenderEval{
 		filter: filter, params: params, freezeBody: freezeBody,
-		maskMode: maskMode, completion: completion, attached: attached,
+		emoteMode: renderOptions.emoteMode,
+		maskMode:  maskMode, completion: completion, attached: attached,
 		zFactor: zFactor, hasZFactor: true, independentLayerInherit: independentLayerInherit,
 		rootCoordinateMode:     rootCoordinate,
 		parentFrameLoopTime:    renderOptions.parentFrameLoopTime,
@@ -564,6 +572,7 @@ func renderPSBMotionOptionsZFactorInheritDimensions(resource *motionResource, ch
 	resource.canvasRootState = renderOptions.rootState
 	resource.canvasHasRootState = renderOptions.hasRootState
 	resource.canvasPreview = renderOptions.preview
+	resource.canvasEmoteMode = renderOptions.emoteMode
 	resource.canvasValid = true
 	return canvas, nil
 }
@@ -627,7 +636,7 @@ func collectMotionValue(resource *motionResource, root map[string]assets.Value, 
 		// node contributes its own draw item; child nodes are separate items in
 		// the flattened node list (PlayerRenderItems.cpp:430-533), so a masked
 		// container keeps its children. Gate only this node's frame here.
-		nodeType, drawFrame := motionNodeTypeAndAllowed(node, eval.completion, eval.preview)
+		nodeType, drawFrame := motionNodeTypeAndAllowed(node, eval.completion, eval.preview, eval.emoteMode)
 		ctx := parent
 		maskGroup := false
 		frameList, hasFrameList := node["frameList"].([]assets.Value)
@@ -716,14 +725,16 @@ func collectMotionValueFiltered(resource *motionResource, root map[string]assets
 	return nil
 }
 
-// motionNodeAllowed mirrors the reference completionType gate
-// (PlayerRenderItems.cpp:129-132): 0x1441 allows node types
-// 0/6/10/12 and a non-zero completionType additionally allows type 3.
+// motionNodeAllowed follows the prepared-item visibility masks in the KrKr2
+// renderer (PlayerRenderItems.cpp:286-294). Normal Motion.Player content uses
+// 6145 (node types 0, 11, and 12); emote-like content uses 6153 (also type 3).
+// completionType is consumed by bounds calculation in KrKr2, while prepared
+// item visibility is selected by the motion mode.
 //
 // The mask selects whether a node contributes its own draw item. It says
 // nothing about the node's children, which the reference keeps in its
 // flattened node list, so callers walk children unconditionally.
-func motionNodeTypeAndAllowed(node map[string]assets.Value, completion int64, preview bool) (int, bool) {
+func motionNodeTypeAndAllowed(node map[string]assets.Value, completion int64, preview, emoteMode bool) (int, bool) {
 	value, ok := psbNumber(node["type"])
 	if !ok {
 		return 0, true
@@ -732,18 +743,17 @@ func motionNodeTypeAndAllowed(node map[string]assets.Value, completion int64, pr
 	if nodeType < 0 || nodeType > 31 {
 		return nodeType, false
 	}
-	// Item masks: 1089 (0x441) normally, 1097 (0x449) for preview, both plus
-	// the type-12 stencil bit the runtime always keeps
-	// (PlayerRenderItems.cpp:556-559).
-	bitmask := int64(0x1441)
-	if completion != 0 || preview {
-		bitmask = 0x1449
+	bitmask := int64(0x1801)
+	if emoteMode {
+		bitmask = 0x1809
 	}
+	_ = completion
+	_ = preview
 	return nodeType, bitmask&(int64(1)<<nodeType) != 0
 }
 
-func motionNodeAllowed(node map[string]assets.Value, completion int64, preview bool) bool {
-	_, allowed := motionNodeTypeAndAllowed(node, completion, preview)
+func motionNodeAllowed(node map[string]assets.Value, completion int64, preview, emoteMode bool) bool {
+	_, allowed := motionNodeTypeAndAllowed(node, completion, preview, emoteMode)
 	return allowed
 }
 
@@ -912,7 +922,7 @@ func motionValueBounds(resource *motionResource, root map[string]assets.Value, v
 			motionValueBounds(resource, root, child, tick, eval, parent, width, height, bounds, stack)
 		}
 	case map[string]assets.Value:
-		nodeType, drawFrame := motionNodeTypeAndAllowed(node, eval.completion, eval.preview)
+		nodeType, drawFrame := motionNodeTypeAndAllowed(node, eval.completion, eval.preview, eval.emoteMode)
 		ctx := parent
 		if frameList, ok := node["frameList"].([]assets.Value); ok {
 			nodeTick := motionNodeTick(node, tick, eval)
@@ -1346,7 +1356,7 @@ func collectGPUMotionValueFiltered(resource *motionResource, root map[string]ass
 	case map[string]assets.Value:
 		layerID := *nextLayerID
 		*nextLayerID = layerID + 2
-		nodeType, drawFrame := motionNodeTypeAndAllowed(node, eval.completion, eval.preview)
+		nodeType, drawFrame := motionNodeTypeAndAllowed(node, eval.completion, eval.preview, eval.emoteMode)
 		ctx := parent
 		ctx.layerID = layerID
 		maskGroup := false
@@ -1593,8 +1603,12 @@ func collectGPUMotionFrame(resource *motionResource, root map[string]assets.Valu
 }
 
 func motionSourceIdentityKey(resource *motionResource, source string) string {
+	generation := uint64(0)
+	if resource != nil {
+		generation = resource.sourceCacheGeneration
+	}
 	if resource == nil || resource.path == "" {
-		return source
+		return fmt.Sprintf("%s\x00gen:%d", source, generation)
 	}
 	if resource.sourceKeys == nil {
 		resource.sourceKeys = make(map[string]string)
@@ -1602,7 +1616,7 @@ func motionSourceIdentityKey(resource *motionResource, source string) string {
 	if key := resource.sourceKeys[source]; key != "" {
 		return key
 	}
-	key := resource.path + "\x00" + source
+	key := fmt.Sprintf("%s\x00gen:%d\x00%s", resource.path, generation, source)
 	resource.sourceKeys[source] = key
 	return key
 }
