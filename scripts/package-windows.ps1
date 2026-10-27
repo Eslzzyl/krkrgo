@@ -15,7 +15,12 @@ $ErrorActionPreference = 'Stop'
 
 $Repo = 'Eslzzyl/krkrgo'
 $Root = Split-Path -Parent $PSScriptRoot
-$SidecarLibraries = @('avutil-61.dll', 'avcodec-63.dll', 'avformat-63.dll', 'swscale-10.dll')
+$FontCommit = 'f8d157532fbfaeda587e826d4cd5b21a49186f7c'
+$FontName = 'NotoSansCJK-Regular.ttc'
+$FontUrl = "https://raw.githubusercontent.com/notofonts/noto-cjk/$FontCommit/Sans/OTC/$FontName"
+$FontSha256 = 'b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a'
+$FontDir = Join-Path (Join-Path $Root 'lib') 'fonts'
+$FontPath = Join-Path $FontDir $FontName
 $VersionFile = Join-Path $Root 'internal/version/version.xcconfig'
 $VersionValues = @{}
 if (-not (Test-Path -LiteralPath $VersionFile)) {
@@ -35,6 +40,20 @@ if ([string]::IsNullOrWhiteSpace($AppVersion) -or [string]::IsNullOrWhiteSpace($
 function Fail {
     param([string]$Message)
     Write-Error "package: $Message" -ErrorAction Stop
+}
+
+function Ensure-FontAsset {
+    if ((Test-Path -LiteralPath $FontPath) -and
+        ((Get-FileHash -LiteralPath $FontPath -Algorithm SHA256).Hash.ToLowerInvariant() -eq $FontSha256)) {
+        return
+    }
+    New-Item -ItemType Directory -Force -Path $FontDir | Out-Null
+    Invoke-WebRequest -Uri $FontUrl -OutFile $FontPath -UseBasicParsing
+    $actual = (Get-FileHash -LiteralPath $FontPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $FontSha256) {
+        Remove-Item -LiteralPath $FontPath -Force -ErrorAction SilentlyContinue
+        Fail "font checksum mismatch: $actual"
+    }
 }
 
 function Resolve-SidecarTag {
@@ -127,6 +146,7 @@ function Assert-Sidecar {
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
     Fail 'required command is missing: go'
 }
+Ensure-FontAsset
 
 $architectures = @()
 if ($Arch -eq 'all') {
@@ -159,7 +179,7 @@ foreach ($goArch in $architectures) {
     if (Test-Path -LiteralPath $stage) {
         Remove-Item -LiteralPath $stage -Recurse -Force
     }
-    New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $packageDir 'lib/fonts') | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $packageDir 'LICENSES') | Out-Null
 
     $exe = Join-Path $packageDir 'krkrgo.exe'
@@ -176,6 +196,7 @@ foreach ($goArch in $architectures) {
     } finally {
         Pop-Location
     }
+    Copy-Item -LiteralPath $FontPath -Destination (Join-Path $packageDir 'lib/fonts') -Force
 
     $sidecarLibDir = Join-Path (Join-Path $sidecarDir 'lib') 'ffmpeg'
     Copy-Item -Path (Join-Path $sidecarLibDir '*.dll') -Destination $packageDir -Force

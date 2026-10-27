@@ -32,11 +32,12 @@ func (s *Services) SetFontBook(book *FontBook) {
 	}
 	s.mu.Lock()
 	s.FontBook = book
+	_ = registerFixedFont(book)
 	if s.FontSystem == nil {
 		s.FontSystem = NewFontSystem(book)
 	} else {
 		s.FontSystem.Book = book
-		s.FontSystem.FallbackFont = book.availableName(systemCJKFallbackCandidates())
+		s.FontSystem.FallbackFont = book.availableName(fixedFontCandidates())
 	}
 	s.mu.Unlock()
 }
@@ -56,8 +57,9 @@ func (s *Services) SetFontSystem(system *FontSystem) {
 	if strings.TrimSpace(system.DefaultFont) == "" {
 		system.DefaultFont = defaultFontFaceName
 	}
-	if strings.TrimSpace(system.FallbackFont) == "" && system.Book != nil {
-		system.FallbackFont = system.Book.availableName(systemCJKFallbackCandidates())
+	if system.Book != nil {
+		_ = registerFixedFont(system.Book)
+		system.FallbackFont = system.Book.availableName(fixedFontCandidates())
 	}
 	s.FontSystem = system
 	s.FontBook = system.Book
@@ -106,8 +108,9 @@ func (s *Services) fontFace(f *FontState) (FontFace, error) {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("%w: no font system", ErrUnsupportedFont)
 	}
-	if strings.TrimSpace(s.FontSystem.FallbackFont) == "" && s.FontSystem.Book != nil {
-		s.FontSystem.FallbackFont = s.FontSystem.Book.availableName(systemCJKFallbackCandidates())
+	if s.FontSystem.Book != nil {
+		_ = registerFixedFont(s.FontSystem.Book)
+		s.FontSystem.FallbackFont = s.FontSystem.Book.availableName(fixedFontCandidates())
 	}
 	system := *s.FontSystem
 	s.mu.Unlock()

@@ -185,6 +185,7 @@ build_app_binary() {
     local ldflags=$4
 
     require_cmd go
+    "$SCRIPT_DIR/fetch-font.sh" >/dev/null
     (
         cd "$ROOT_DIR" || exit 1
         CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \

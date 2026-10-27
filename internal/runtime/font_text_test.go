@@ -150,7 +150,12 @@ func TestFontSystemCandidateSelectionAndDefaultFallback(t *testing.T) {
 	if err := book.Register("Second", second); err != nil {
 		t.Fatal(err)
 	}
-	system := &FontSystem{Book: book, DefaultFont: "Second", DefaultSize: 12}
+	if err := book.Register(fixedFontFamilyName, second); err != nil {
+		t.Fatal(err)
+	}
+	system := NewFontSystem(book)
+	system.DefaultFont = "Second"
+	system.DefaultSize = 12
 
 	tests := []struct {
 		name string
@@ -177,28 +182,34 @@ func TestFontSystemCandidateSelectionAndDefaultFallback(t *testing.T) {
 
 func TestFontSystemFallsBackWhenDefaultMissing(t *testing.T) {
 	book := NewFontBook()
-	if err := book.Register("Chosen", basicfont.Face7x13); err != nil {
+	if err := book.Register(fixedFontFamilyName, basicfont.Face7x13); err != nil {
 		t.Fatal(err)
 	}
-	system := &FontSystem{Book: book, DefaultFont: "unavailable", DefaultSize: 12}
+	system := NewFontSystem(book)
+	system.DefaultFont = "unavailable"
 	for _, name := range []string{"also unavailable", "", "@"} {
 		face, err := system.Select(name, 12)
 		if err != nil {
 			t.Fatalf("Select(%q) error = %v", name, err)
 		}
 		if face != basicfont.Face7x13 {
-			t.Fatalf("Select(%q) = %v, want first registered face", name, face)
+			t.Fatalf("Select(%q) = %v, want fixed fallback face", name, face)
 		}
 	}
 }
 
 func TestFontSystemMissingFontsRemainDiagnosable(t *testing.T) {
-	system := &FontSystem{Book: NewFontBook(), DefaultFont: "unavailable", DefaultSize: 12}
+	system := &FontSystem{
+		Book:         NewFontBook(),
+		DefaultFont:  "unavailable",
+		FallbackFont: fixedFontFamilyName,
+		DefaultSize:  12,
+	}
 	_, err := system.Select("requested", 12)
 	if !errors.Is(err, ErrUnsupportedFont) {
 		t.Fatalf("missing fonts error = %v", err)
 	}
-	for _, name := range []string{"requested", "unavailable", "no explicitly registered fonts", "no discovered system fonts"} {
+	for _, name := range []string{"requested", fixedFontFamilyName} {
 		if !strings.Contains(err.Error(), name) {
 			t.Fatalf("missing fonts error %q does not mention %q", err, name)
 		}

@@ -437,7 +437,7 @@ const defaultFontFaceName = "ＭＳ ゴシック"
 func NewFontSystem(book *FontBook) *FontSystem {
 	system := &FontSystem{Book: book, DefaultFont: defaultFontFaceName, DefaultSize: 16}
 	if book != nil {
-		system.FallbackFont = book.availableName(systemCJKFallbackCandidates())
+		system.FallbackFont = book.availableName(fixedFontCandidates())
 	}
 	return system
 }
@@ -504,81 +504,7 @@ func (s *FontSystem) Select(name string, size float64) (FontFace, error) {
 		return nil, errors.Join(selectionErrors...)
 	}
 
-	if defaultName != "" && fontKey(requested) != fontKey(defaultName) {
-		face, err := s.Book.Select(defaultName, size)
-		if err == nil {
-			return face, nil
-		}
-		if !errors.Is(err, ErrUnsupportedFont) {
-			return nil, err
-		}
-		selectionErrors = append(selectionErrors, err)
-	}
-
-	face, err := s.Book.selectFirst(size, false)
-	if err == nil {
-		return face, nil
-	}
-	if !errors.Is(err, ErrUnsupportedFont) {
-		return nil, err
-	}
-	selectionErrors = append(selectionErrors, err)
-
-	candidates := systemFontFallbackCandidates(requested)
-	for _, candidate := range candidates {
-		face, err := s.Book.Select(candidate, size)
-		if err == nil {
-			return face, nil
-		}
-		if !errors.Is(err, ErrUnsupportedFont) {
-			return nil, err
-		}
-	}
-	if len(candidates) > 0 {
-		selectionErrors = append(selectionErrors, fmt.Errorf("%w: no registered platform fallback family from [%s]", ErrUnsupportedFont, strings.Join(candidates, ", ")))
-	}
-
-	face, err = s.Book.selectFirst(size, true)
-	if err == nil {
-		return face, nil
-	}
-	if !errors.Is(err, ErrUnsupportedFont) {
-		return nil, err
-	}
-	selectionErrors = append(selectionErrors, err)
 	return nil, errors.Join(selectionErrors...)
-}
-
-func (b *FontBook) selectFirst(size float64, discovered bool) (FontFace, error) {
-	if b == nil {
-		return nil, fmt.Errorf("%w: no font book", ErrUnsupportedFont)
-	}
-	b.mu.RLock()
-	var entry fontEntry
-	for _, key := range b.order {
-		if candidate, ok := b.entries[key]; ok && candidate.discovered == discovered {
-			entry = candidate
-			break
-		}
-	}
-	b.mu.RUnlock()
-	if entry.name == "" {
-		if discovered {
-			return nil, fmt.Errorf("%w: no discovered system fonts", ErrUnsupportedFont)
-		}
-		return nil, fmt.Errorf("%w: no explicitly registered fonts", ErrUnsupportedFont)
-	}
-	if entry.face != nil {
-		return entry.face, nil
-	}
-	face, err := entry.factory(size)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s: %w", ErrInvalidFont, entry.name, err)
-	}
-	if face == nil {
-		return nil, fmt.Errorf("%w: %s returned no face", ErrInvalidFont, entry.name)
-	}
-	return face, nil
 }
 
 // FaceMetrics exposes deterministic integer pixel metrics from a selected face.

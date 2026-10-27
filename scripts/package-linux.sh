@@ -89,9 +89,10 @@ for target_arch in $targets; do
     package_name="krkrgo-linux-$target_arch"
     package_dir="$stage/$package_name"
     rm -rf "$stage"
-    mkdir -p "$package_dir/lib/ffmpeg" "$package_dir/LICENSES"
+    mkdir -p "$package_dir/lib/ffmpeg" "$package_dir/lib/fonts" "$package_dir/LICENSES"
 
     build_app_binary linux "$target_arch" "$package_dir/krkrgo" "-s -w"
+    cp "$ROOT_DIR/lib/fonts/NotoSansCJK-Regular.ttc" "$package_dir/lib/fonts/"
     cp "$sidecar_dir/lib/ffmpeg/"*.so.* "$package_dir/lib/ffmpeg/"
     copy_sidecar_licenses "$sidecar_dir" "$package_dir/LICENSES"
 

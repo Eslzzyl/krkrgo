@@ -183,8 +183,9 @@ func textRenderFace(s *Services, r *textRenderState) (FontFace, error) {
 	s.mu.Lock()
 	system := s.FontSystem
 	if system != nil {
-		if strings.TrimSpace(system.FallbackFont) == "" && system.Book != nil {
-			system.FallbackFont = system.Book.availableName(systemCJKFallbackCandidates())
+		if system.Book != nil {
+			_ = registerFixedFont(system.Book)
+			system.FallbackFont = system.Book.availableName(fixedFontCandidates())
 		}
 		copy := *system
 		system = &copy

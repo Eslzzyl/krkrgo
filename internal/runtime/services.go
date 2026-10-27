@@ -372,7 +372,7 @@ func NewServicesWithSaveBackend(storage *assets.Storage, saveDir string, saveBac
 	}
 	events := NewEventQueue()
 	book := NewFontBook()
-	book.DiscoverSystemFonts()
+	_ = registerFixedFont(book)
 	return &Services{
 		Storage:                 storage,
 		SaveDir:                 saveDir,

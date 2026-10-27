@@ -72,6 +72,21 @@ go build -trimpath ./cmd/krkrgo
 go build -trimpath ./cmd/krkrgo-tool
 ```
 
+### Fixed runtime font
+
+Text rendering uses the pinned `NotoSansCJK-Regular.ttc` resource from the
+[official notofonts/noto-cjk repository](https://github.com/notofonts/noto-cjk),
+commit `f8d157532fbfaeda587e826d4cd5b21a49186f7c`. Fetch it for development
+with:
+
+```sh
+scripts/fetch-font.sh
+```
+
+The development path is `lib/fonts/NotoSansCJK-Regular.ttc`. Packaging scripts
+fetch the same resource automatically and place it under `lib/fonts` beside the
+executable. The file is ignored by Git.
+
 ### Build the FFmpeg sidecar
 
 The workflow builds and uploads FFmpeg 9.0.2 shared libraries for six desktop targets plus Android `arm64-v8a` and `x86_64`. It enables Ogg/Vorbis, ASF, VC-1, WMV3, and WMA2 support. Hardware acceleration and FFmpeg command-line programs are disabled; runtime decoding uses the purego loader.
@@ -140,9 +155,9 @@ powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1 -Arch all
 
 Artifacts:
 
-- `dist/krkrgo-macos-<arch>.zip` with `krkrgo.app`, dylibs under `Contents/MacOS/lib/ffmpeg`, and the LGPL license.
-- `dist/krkrgo-linux-<arch>.tar.gz` with the binary, `lib/ffmpeg`, and the license.
-- `dist/krkrgo-windows-<arch>.zip` with `krkrgo.exe`, FFmpeg and MinGW runtime DLLs beside the executable, and the license.
+- `dist/krkrgo-macos-<arch>.zip` with `krkrgo.app`, dylibs under `Contents/MacOS/lib/ffmpeg`, the fixed font under `Contents/MacOS/lib/fonts`, and the LGPL license.
+- `dist/krkrgo-linux-<arch>.tar.gz` with the binary, `lib/ffmpeg`, `lib/fonts`, and the license.
+- `dist/krkrgo-windows-<arch>.zip` with `krkrgo.exe`, `lib/fonts`, FFmpeg and MinGW runtime DLLs beside the executable, and the license.
 
 A `.sha256` file is written next to each archive. `--tag` selects another sidecar release; `--sidecar DIR` uses an extracted sidecar directory. The macOS script signs the bundle ad hoc when `codesign` is available and includes `cmd/krkrgo/appicon.icns` when that file exists.
 

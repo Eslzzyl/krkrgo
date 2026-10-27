@@ -678,14 +678,6 @@ func TestNativeFontHeightUsesConfiguredHeightAndSelectedFace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedWidth, err := session.Evaluate(`f.getTextWidth('A') + f.getTextWidth('B')`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantWidth, err := expectedWidth.Int()
-	if err != nil {
-		t.Fatal(err)
-	}
 	if got != 12 {
 		t.Fatalf("height = %d, want absolute configured font height 12", got)
 	}
@@ -697,12 +689,24 @@ func TestNativeFontHeightUsesConfiguredHeightAndSelectedFace(t *testing.T) {
 		t.Fatalf("selected face = %q, want Deterministic", got)
 	}
 
+	if services.FontSystem.FallbackFont != fixedFontFamilyName {
+		t.Fatalf("fallback font = %q, want %q", services.FontSystem.FallbackFont, fixedFontFamilyName)
+	}
+	fallbackFace, err := services.FontSystem.Select(services.FontSystem.FallbackFont, 12)
+	if err != nil {
+		t.Fatalf("select fixed fallback: %v", err)
+	}
+	wantFallbackWidth, err := fontTextWidth(fallbackFace, "AB")
+	if err != nil {
+		t.Fatalf("measure fixed fallback: %v", err)
+	}
+
 	if _, err := session.Evaluate(`f.face='Missing'`); err != nil {
 		t.Fatal(err)
 	}
 	fallbackHeight, err := session.Evaluate(`f.getTextHeight('A\nB')`)
 	if err != nil {
-		t.Fatalf("height for missing face with registered fallback: %v", err)
+		t.Fatalf("height for missing face with fixed fallback: %v", err)
 	}
 	fallbackHeightValue, err := fallbackHeight.Int()
 	if err != nil {
@@ -710,44 +714,17 @@ func TestNativeFontHeightUsesConfiguredHeightAndSelectedFace(t *testing.T) {
 	}
 	fallbackWidth, err := session.Evaluate(`f.getTextWidth('A\nB')`)
 	if err != nil {
-		t.Fatalf("width for missing face with registered fallback: %v", err)
+		t.Fatalf("width for missing face with fixed fallback: %v", err)
 	}
 	fallbackWidthValue, err := fallbackWidth.Int()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fallbackHeightValue != 12 || fallbackWidthValue != wantWidth {
+	if fallbackHeightValue != 12 || fallbackWidthValue != int64(wantFallbackWidth) {
 		t.Fatalf(
 			"missing face fallback metrics = %d,%d, want width %d and configured height 12",
-			fallbackWidthValue, fallbackHeightValue, wantWidth,
+			fallbackWidthValue, fallbackHeightValue, wantFallbackWidth,
 		)
-	}
-}
-
-func TestNativeFontUnsupportedFace(t *testing.T) {
-	services := DefaultServices()
-	services.SetFontSystem(&FontSystem{
-		Book:        NewFontBook(),
-		DefaultFont: "UnavailableDefault",
-		DefaultSize: 12,
-	})
-	session := NewSession(services, 10_000)
-	if _, err := session.Evaluate(`f = new Font('RequestedMissing',12)`); err != nil {
-		t.Fatal(err)
-	}
-	_, err := session.Evaluate(`f.getTextWidth('A')`)
-	if !errors.Is(err, ErrUnsupportedFont) {
-		t.Fatalf("unsupported face error=%v", err)
-	}
-	for _, detail := range []string{
-		"RequestedMissing",
-		"UnavailableDefault",
-		"no explicitly registered fonts",
-		"no discovered system fonts",
-	} {
-		if !strings.Contains(err.Error(), detail) {
-			t.Fatalf("unsupported face error=%q, want diagnostic detail %q", err, detail)
-		}
 	}
 }
 
@@ -968,7 +945,8 @@ func TestNativeFontGetListReturnsAvailableFamilies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := value.Text(); got != "First Face|Second Face" {
-		t.Fatalf("Font.getList() = %q, want registered available faces in order", got)
+	want := "First Face|Second Face|Noto Sans CJK JP|Noto Sans CJK KR|Noto Sans CJK SC|Noto Sans CJK TC|Noto Sans CJK HK|Noto Sans Mono CJK JP|Noto Sans Mono CJK KR|Noto Sans Mono CJK SC|Noto Sans Mono CJK TC|Noto Sans Mono CJK HK"
+	if got := value.Text(); got != want {
+		t.Fatalf("Font.getList() = %q, want registered and fixed font families", got)
 	}
 }
