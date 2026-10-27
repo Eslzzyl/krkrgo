@@ -284,6 +284,7 @@ type motionRenderOptions struct {
 	hasRootState           bool
 	anchorOutputs          map[string]motionAnchorNodeOutput
 	preview                bool
+	forceBaked             bool
 	stats                  *motionRenderStats
 }
 
@@ -1149,6 +1150,52 @@ func buildGPUMotionVariablesZFactorInheritReuse(reuse *RenderMotion, resource *m
 	if offsetX, offsetY, ok := motionCameraOffsetKnown(layers, tick, eval, drawMatrix, motionCameraNodesNeeded(resource, treeKey, layers)); ok {
 		drawMatrix = motionDrawMatrixWithCameraOffset(drawMatrix, offsetX, offsetY)
 	}
+	if renderOptions.forceBaked {
+		frame, err := renderPSBMotionOptionsZFactorInherit(
+			resource, chara, motion, tick, filter, params, freezeBody,
+			maskMode, completion, zFactor, attached, independentLayerInherit,
+			renderOptions,
+		)
+		if err != nil {
+			return nil, err
+		}
+		source := frame
+		if scale > 1 {
+			source = &assets.Image{
+				Width:  frame.Width * uint32(scale),
+				Height: frame.Height * uint32(scale),
+				RGBA:   scaleRGBA(frame.RGBA, int32(frame.Width), int32(frame.Height), scale),
+			}
+		}
+		centerX, centerY := float64(source.Width)/2, float64(source.Height)/2
+		result.Draws = append(result.Draws, RenderMotionDraw{
+			LayerTreeKey: treeKey,
+			SourceKey: fmt.Sprintf(
+				"%s/%t/%d/%g/%t/%g/%t/%#v/%t/%t/%s",
+				motionBakedSourceKeyWithMatrix(
+					resource, chara, motion, tick, filter, params, freezeBody,
+					maskMode, completion, zFactor, attached, drawMatrix,
+				),
+				independentLayerInherit, eval.rootCoordinateMode,
+				eval.parentFrameLoopTime, eval.hasParentFrameLoopTime,
+				eval.frameLastTime, eval.anyTimelinePlaying, eval.rootState,
+				eval.hasRootState, eval.preview,
+				motionAnchorOutputSignature(eval.anchorOutputs),
+			),
+			RGBA:    source.RGBA,
+			Width:   int32(source.Width),
+			Height:  int32(source.Height),
+			A:       drawMatrix.a,
+			B:       drawMatrix.b,
+			C:       drawMatrix.c,
+			D:       drawMatrix.d,
+			TX:      drawMatrix.tx*float64(scale) - drawMatrix.a*centerX - drawMatrix.b*centerY,
+			TY:      drawMatrix.ty*float64(scale) - drawMatrix.c*centerX - drawMatrix.d*centerY,
+			Opacity: 255,
+			Baked:   true,
+		})
+		return result, nil
+	}
 	if resource.stack == nil {
 		resource.stack = make(map[string]bool)
 	} else {
@@ -1303,6 +1350,11 @@ func motionBakedSourceKey(resource *motionResource, chara, motion string, tick f
 	return fmt.Sprintf("%p\x00baked\x00%s/%s/%v/%d/%t/%d/%d/%s/%s",
 		resource, chara, motion, tick, filter, freezeBody, maskMode, completion,
 		motionVariablesSignature(params), motionAttachmentsSignature(attached))
+}
+func motionBakedSourceKeyWithMatrix(resource *motionResource, chara, motion string, tick float64, filter int64, params []float64, freezeBody bool, maskMode, completion int64, zFactor float64, attached []*motionResource, drawMatrix motionDrawMatrix) string {
+	return fmt.Sprintf("%s\x00%g,%g,%g,%g,%g,%g,%g",
+		motionBakedSourceKey(resource, chara, motion, tick, filter, params, freezeBody, maskMode, completion, attached),
+		drawMatrix.a, drawMatrix.b, drawMatrix.c, drawMatrix.d, drawMatrix.tx, drawMatrix.ty, zFactor)
 }
 
 func collectGPUMotionValue(resource *motionResource, root map[string]assets.Value, value assets.Value, tick float64, eval motionRenderEval, parent motionRenderContext, drawMatrix motionDrawMatrix, result *RenderMotion, stack map[string]bool, nextLayerID *int) error {

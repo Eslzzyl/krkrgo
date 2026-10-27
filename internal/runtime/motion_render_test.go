@@ -171,15 +171,15 @@ func TestMaterializeGPUMotionUsesDeferredSourceTransform(t *testing.T) {
 
 func TestSeparateLayerDrawUsesChildLocalCoordinates(t *testing.T) {
 	draw := RenderMotionDraw{
-		TX:          -462.5,
-		TY:          -246.75,
+		TX:          17.5,
+		TY:          23.25,
 		Opacity:     91,
 		Blend:       MotionBlendAdditive,
 		HasViewport: true,
 		Viewport:    [4]float64{2, 3, 10, 12},
 		SortKey:     7,
 	}
-	got := motionSeparateLayerDraw(draw, 5, 8, 960, 540)
+	got := motionSeparateLayerDraw(draw, 5, 8)
 	if got.TX != 12.5 || got.TY != 15.25 {
 		t.Fatalf("local translation = (%g,%g), want (12.5,15.25)", got.TX, got.TY)
 	}
@@ -414,6 +414,28 @@ func TestGPUMotionUsesGPUStencilComposition(t *testing.T) {
 	}
 	if len(motion.Draws) != 1 || motion.Draws[0].Baked || len(motion.Items) != 1 || motion.Items[0].Group == nil {
 		t.Fatalf("GPU stencil motion = draws:%+v items:%+v, want one grouped source draw", motion.Draws, motion.Items)
+	}
+}
+
+func TestGPUMotionForceBakedForSeparateLayerAdaptor(t *testing.T) {
+	resource := emotePlayerTestResource("baked.psb")
+	motionTestIdle(resource)["layer"] = []assets.Value{
+		map[string]assets.Value{
+			"type":        int64(12),
+			"stencilType": int64(4),
+			"children":    []assets.Value{motionTestSpriteLayer("src/chara/mouth0")},
+		},
+	}
+	motion, err := buildGPUMotionVariablesZFactorInherit(
+		resource, "chara", "idle", 0, 0, identityMotionDrawMatrix(), 1,
+		nil, false, 0, 0, 1, nil, false,
+		motionRenderOptions{forceBaked: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(motion.Draws) != 1 || !motion.Draws[0].Baked || len(motion.Items) != 0 {
+		t.Fatalf("forced SLA motion = draws:%+v items:%+v, want one baked draw", motion.Draws, motion.Items)
 	}
 }
 

@@ -109,7 +109,7 @@ func (s *Services) drawMotionSeparateLayerAdaptor(vm *tjs.VM, player *motionPlay
 		resource, player.chara, player.motion, player.clampedEvalTime, 0, drawMatrix,
 		1, params, freezeBody, maskMode, player.completionType,
 		motionPlayerZFactor(player), attached, player.independentLayerInherit,
-		motionRenderOptions{rootCoordinateMode: player.rootCoordinateMode, emoteMode: motionResourceEmoteMode(resource), parentFrameLoopTime: player.frameLoopTime, hasParentFrameLoopTime: true, frameLastTime: player.frameLastTime, anyTimelinePlaying: len(player.playingTimelineLabels) > 0, rootState: player.rootState, hasRootState: player.hasRootState, anchorOutputs: motionAnchorOutputs(player.anchorStates), preview: player.preview})
+		motionRenderOptions{rootCoordinateMode: player.rootCoordinateMode, emoteMode: motionResourceEmoteMode(resource), parentFrameLoopTime: player.frameLoopTime, hasParentFrameLoopTime: true, frameLastTime: player.frameLastTime, anyTimelinePlaying: len(player.playingTimelineLabels) > 0, rootState: player.rootState, hasRootState: player.hasRootState, anchorOutputs: motionAnchorOutputs(player.anchorStates), preview: player.preview, forceBaked: true})
 	if err != nil {
 		return err
 	}
@@ -157,7 +157,7 @@ func (s *Services) drawMotionSeparateLayerAdaptor(vm *tjs.VM, player *motionPlay
 			s.mu.Unlock()
 			return err
 		}
-		localDraw := motionSeparateLayerDraw(draw, clipLeft, clipTop, canvasWidth, canvasHeight)
+		localDraw := motionSeparateLayerDraw(draw, clipLeft, clipTop)
 		if s.gpuCapture {
 			deferred := child.motionScratch
 			if deferred == nil {
@@ -251,9 +251,9 @@ func motionSeparateLayerKey(tree string, layerID, occurrence int) string {
 	return string(key)
 }
 
-func motionSeparateLayerDraw(draw RenderMotionDraw, clipLeft, clipTop, canvasWidth, canvasHeight int) RenderMotionDraw {
-	draw.TX += float64(canvasWidth)/2 - float64(clipLeft)
-	draw.TY += float64(canvasHeight)/2 - float64(clipTop)
+func motionSeparateLayerDraw(draw RenderMotionDraw, clipLeft, clipTop int) RenderMotionDraw {
+	draw.TX -= float64(clipLeft)
+	draw.TY -= float64(clipTop)
 	// The separate child layer owns the Motion draw's opacity and blend mode.
 	// The deferred draw itself therefore copies the source with source-over.
 	draw.Opacity = 255
@@ -402,7 +402,6 @@ func motionSeparateLayerType(blend MotionBlendMode) LayerType {
 }
 
 func motionSeparateLayerClip(draw RenderMotionDraw, width, height int) (int, int, int, int, bool) {
-	centerX, centerY := float64(width)/2, float64(height)/2
 	left, top := math.Inf(1), math.Inf(1)
 	right, bottom := math.Inf(-1), math.Inf(-1)
 	for _, point := range [][2]float64{
@@ -410,8 +409,8 @@ func motionSeparateLayerClip(draw RenderMotionDraw, width, height int) (int, int
 		{float64(draw.Width) - 0.5, float64(draw.Height) - 0.5},
 		{-0.5, float64(draw.Height) - 0.5},
 	} {
-		x := centerX + draw.A*point[0] + draw.B*point[1] + draw.TX
-		y := centerY + draw.C*point[0] + draw.D*point[1] + draw.TY
+		x := draw.A*point[0] + draw.B*point[1] + draw.TX
+		y := draw.C*point[0] + draw.D*point[1] + draw.TY
 		left, top = math.Min(left, x), math.Min(top, y)
 		right, bottom = math.Max(right, x), math.Max(bottom, y)
 	}
@@ -420,10 +419,10 @@ func motionSeparateLayerClip(draw RenderMotionDraw, width, height int) (int, int
 	clipRight := min(int(math.Ceil(right)), width)
 	clipBottom := min(int(math.Ceil(bottom)), height)
 	if draw.HasViewport {
-		clipLeft = max(clipLeft, int(math.Floor(centerX+draw.Viewport[0])))
-		clipTop = max(clipTop, int(math.Floor(centerY+draw.Viewport[1])))
-		clipRight = min(clipRight, int(math.Ceil(centerX+draw.Viewport[2])))
-		clipBottom = min(clipBottom, int(math.Ceil(centerY+draw.Viewport[3])))
+		clipLeft = max(clipLeft, int(math.Floor(draw.Viewport[0])))
+		clipTop = max(clipTop, int(math.Floor(draw.Viewport[1])))
+		clipRight = min(clipRight, int(math.Ceil(draw.Viewport[2])))
+		clipBottom = min(clipBottom, int(math.Ceil(draw.Viewport[3])))
 	}
 	return clipLeft, clipTop, clipRight, clipBottom, clipLeft < clipRight && clipTop < clipBottom
 }
