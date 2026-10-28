@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"image"
 	"math"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/math/fixed"
 )
 
 func TestNativeLayerConstructionTreeAndInvalidation(t *testing.T) {
@@ -654,6 +656,76 @@ func TestNativeLayerDrawTextUsesSelectedFontHeight(t *testing.T) {
 	}
 	if requestedSize != 24 {
 		t.Fatalf("drawText selected font size = %v, want 24", requestedSize)
+	}
+}
+func TestNativeLayerDrawTextCJKGlyphBottomSurvives(t *testing.T) {
+	services := DefaultServices()
+	face, err := services.FontSystem.Select(fixedFontFamilyName, 26)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer face.Close()
+	metrics, err := MetricsForFace(face)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		text = "久能"
+		x    = 0
+		y    = 4
+	)
+	dot := fixed.P(x, y+metrics.Ascent)
+	bottomX, bottomY := -1, -1
+	for _, r := range text {
+		dr, mask, maskp, advance, ok := face.Glyph(dot, r)
+		if ok && mask != nil && !dr.Empty() {
+			for py := dr.Min.Y; py < dr.Max.Y; py++ {
+				for px := dr.Min.X; px < dr.Max.X; px++ {
+					if glyphMaskCoverage(mask, image.Point{
+						X: maskp.X + px - dr.Min.X,
+						Y: maskp.Y + py - dr.Min.Y,
+					}) == 0 {
+						continue
+					}
+					if py > bottomY {
+						bottomX, bottomY = px, py
+					}
+				}
+			}
+		}
+		dot.X += advance
+	}
+	if bottomY < 26 {
+		t.Fatalf("CJK glyph fixture bottom=%d, want at least 26", bottomY)
+	}
+	if bottomY >= 35 {
+		t.Fatalf("CJK glyph fixture bottom=%d does not fit in 35px layer", bottomY)
+	}
+
+	session := NewSession(services, 100_000)
+	t.Cleanup(func() { _ = session.Close() })
+	if _, err := session.Evaluate(`
+		f = new Font("Noto Sans CJK SC", -26);
+		l = new Layer();
+		l.setImageSize(528, 35);
+		l.setClip(0, 0, 528, 35);
+		l.font = f;
+		l.drawText(0, 4, "久能", 0xffffff);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("l")
+	if err != nil {
+		t.Fatal(err)
+	}
+	layer := services.Layer(value.ObjectRef().Object)
+	if layer == nil {
+		t.Fatal("CJK drawText layer was not registered")
+	}
+	pixel := layer.RGBA[(bottomY*528+bottomX)*4:]
+	if pixel[3] == 0 {
+		t.Fatalf("bottom glyph pixel (%d,%d) was clipped", bottomX, bottomY)
 	}
 }
 

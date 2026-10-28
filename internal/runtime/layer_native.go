@@ -2,11 +2,13 @@ package runtime
 
 import (
 	"fmt"
+	"image"
 	"image/color"
 	"math"
 	"strings"
 
 	"github.com/eslzzyl/krkrgo/internal/tjs"
+	"golang.org/x/image/math/fixed"
 )
 
 const nativeLayerDefaultSize int32 = 32
@@ -1771,43 +1773,67 @@ func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) err
 	if e != nil {
 		return e
 	}
-	img, e := RasterizeText(fontFace, text, foreground)
+	metrics, e := MetricsForFace(fontFace)
 	if e != nil {
 		return e
 	}
+	layout, e := LayoutText(fontFace, text, 0)
+	if e != nil {
+		return e
+	}
+	fg := color.NRGBAModel.Convert(foreground).(color.NRGBA)
 	s.mu.Lock()
 	if len(l.RGBA) == 0 {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
 	}
-	clip, _ := l.Clip()
+	clip, clipSet := l.Clip()
 	deviceWidth, deviceHeight := l.deviceWidth(), l.deviceHeight()
+	drawRect := Rect{Width: deviceWidth, Height: deviceHeight}
+	if clipSet {
+		drawRect = drawRect.Intersect(clip)
+	}
 	minX, minY, maxX, maxY := deviceWidth, deviceHeight, int32(-1), int32(-1)
-	for sy := range img.Rect.Dy() {
-		for sx := range img.Rect.Dx() {
-			dx, dy := int32(x)+int32(sx), int32(y)+int32(sy)
-			if dx < 0 || dy < 0 || dx >= deviceWidth || dy >= deviceHeight ||
-				(l.clipSet && !clip.Contains(dx, dy)) {
-				continue
+	for lineIndex, line := range layout.Lines {
+		baselineY := int(y) + lineIndex*layout.LineHeight + metrics.Ascent
+		dot := fixed.P(int(x), baselineY)
+		for _, r := range line.Text {
+			dr, mask, maskp, advance, ok := fontFace.Glyph(dot, r)
+			if ok && mask != nil && !dr.Empty() && !drawRect.Empty() {
+				glyphRect := Rect{
+					X:      int32(dr.Min.X),
+					Y:      int32(dr.Min.Y),
+					Width:  int32(dr.Dx()),
+					Height: int32(dr.Dy()),
+				}
+				visible := glyphRect.Intersect(drawRect)
+				for py := visible.Y; py < visible.Bottom(); py++ {
+					for px := visible.X; px < visible.Right(); px++ {
+						coverage := glyphMaskCoverage(mask, image.Point{
+							X: maskp.X + int(px) - dr.Min.X,
+							Y: maskp.Y + int(py) - dr.Min.Y,
+						})
+						if coverage == 0 {
+							continue
+						}
+						di := (int(py)*int(deviceWidth) + int(px)) * 4
+						layerDrawTextCoveragePixel(l.RGBA[di:di+4], fg, coverage, face, holdAlpha)
+						if px < minX {
+							minX = px
+						}
+						if py < minY {
+							minY = py
+						}
+						if px > maxX {
+							maxX = px
+						}
+						if py > maxY {
+							maxY = py
+						}
+					}
+				}
 			}
-			si := (sy*img.Rect.Dx() + sx) * 4
-			if img.Pix[si+3] == 0 {
-				continue
-			}
-			di := (int(dy)*int(deviceWidth) + int(dx)) * 4
-			layerDrawTextPixel(l.RGBA[di:di+4], img.Pix[si:si+4], face, holdAlpha)
-			if dx < minX {
-				minX = dx
-			}
-			if dy < minY {
-				minY = dy
-			}
-			if dx > maxX {
-				maxX = dx
-			}
-			if dy > maxY {
-				maxY = dy
-			}
+			dot.X += advance
 		}
 	}
 	s.mu.Unlock()
@@ -1815,6 +1841,31 @@ func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) err
 		l.markImageDirtyRect(Rect{X: minX, Y: minY, Width: maxX - minX + 1, Height: maxY - minY + 1})
 	}
 	return nil
+}
+
+func glyphMaskCoverage(mask image.Image, p image.Point) uint8 {
+	if mask == nil || !p.In(mask.Bounds()) {
+		return 0
+	}
+	if alpha, ok := mask.(*image.Alpha); ok {
+		return alpha.Pix[(p.Y-alpha.Rect.Min.Y)*alpha.Stride+p.X-alpha.Rect.Min.X]
+	}
+	_, _, _, a := mask.At(p.X, p.Y).RGBA()
+	return uint8(a >> 8)
+}
+
+func layerDrawTextCoveragePixel(destination []byte, foreground color.NRGBA, coverage uint8, face int32, holdAlpha bool) {
+	sourceAlpha := int(foreground.A) * int(coverage) / 255
+	if sourceAlpha == 0 {
+		return
+	}
+	source := [4]byte{
+		byte(int(foreground.R) * sourceAlpha / 255),
+		byte(int(foreground.G) * sourceAlpha / 255),
+		byte(int(foreground.B) * sourceAlpha / 255),
+		byte(sourceAlpha),
+	}
+	layerDrawTextPixel(destination, source[:], face, holdAlpha)
 }
 
 // source is a premultiplied RGBA pixel from RasterizeText; layer pixels use

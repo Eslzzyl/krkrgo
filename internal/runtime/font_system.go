@@ -1,7 +1,10 @@
 package runtime
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +12,7 @@ import (
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/font/sfnt"
+	"golang.org/x/image/math/fixed"
 )
 
 const (
@@ -110,7 +114,8 @@ func registerFontData(book *FontBook, data []byte) (int, error) {
 		if err != nil || family == "" {
 			return 0, fmt.Errorf("%w: face %d has no Family name", ErrInvalidFont, i)
 		}
-		registrations = append(registrations, registration{family: family, factory: fontFactoryFor(parsed)})
+		typo := parseTypoMetrics(data, i)
+		registrations = append(registrations, registration{family: family, factory: fontFactoryWithTypo(parsed, typo)})
 	}
 	if len(registrations) == 0 {
 		return 0, fmt.Errorf("%w: font contains no faces", ErrInvalidFont)
@@ -134,11 +139,115 @@ func (s *Services) registerFontData(data []byte) (int, error) {
 	return registerFontData(book, data)
 }
 
-func fontFactoryFor(parsed *sfnt.Font) FontFactory {
+type fontTypoMetrics struct {
+	unitsPerEm     int
+	sTypoAscender  int
+	sTypoDescender int
+	sTypoLineGap   int
+	hasTypo        bool
+}
+
+type typoFace struct {
+	font.Face
+	metrics font.Metrics
+}
+
+func (f *typoFace) Metrics() font.Metrics {
+	if f == nil {
+		return font.Metrics{}
+	}
+	return f.metrics
+}
+
+func parseTypoMetrics(data []byte, fontIndex int) fontTypoMetrics {
+	if len(data) < 12 {
+		return fontTypoMetrics{}
+	}
+	var offset uint32
+	if string(data[:4]) == "ttcf" {
+		if len(data) < 12 {
+			return fontTypoMetrics{}
+		}
+		numFonts := binary.BigEndian.Uint32(data[8:12])
+		if fontIndex < 0 || uint32(fontIndex) >= numFonts {
+			return fontTypoMetrics{}
+		}
+		entryOffset := 12 + uint32(fontIndex)*4
+		if int(entryOffset+4) > len(data) {
+			return fontTypoMetrics{}
+		}
+		offset = binary.BigEndian.Uint32(data[entryOffset : entryOffset+4])
+	}
+	if int(offset+12) > len(data) {
+		return fontTypoMetrics{}
+	}
+	numTables := binary.BigEndian.Uint16(data[offset+4 : offset+6])
+	var typo fontTypoMetrics
+	var foundOS2, foundHead bool
+	for i := 0; i < int(numTables); i++ {
+		entry := offset + 12 + uint32(i*16)
+		if int(entry+16) > len(data) {
+			break
+		}
+		tag := string(data[entry : entry+4])
+		tableOffset := binary.BigEndian.Uint32(data[entry+8 : entry+12])
+		tableLen := binary.BigEndian.Uint32(data[entry+12 : entry+16])
+		if tag == "OS/2" && int(tableOffset+tableLen) <= len(data) && tableLen >= 74 {
+			typo.sTypoAscender = int(int16(binary.BigEndian.Uint16(data[tableOffset+68 : tableOffset+70])))
+			typo.sTypoDescender = int(int16(binary.BigEndian.Uint16(data[tableOffset+70 : tableOffset+72])))
+			typo.sTypoLineGap = int(int16(binary.BigEndian.Uint16(data[tableOffset+72 : tableOffset+74])))
+			foundOS2 = true
+		} else if tag == "head" && int(tableOffset+tableLen) <= len(data) && tableLen >= 20 {
+			typo.unitsPerEm = int(binary.BigEndian.Uint16(data[tableOffset+18 : tableOffset+20]))
+			foundHead = true
+		}
+		if foundOS2 && foundHead {
+			break
+		}
+	}
+	if foundOS2 && foundHead && typo.unitsPerEm > 0 && typo.sTypoAscender > 0 {
+		typo.hasTypo = true
+	}
+	return typo
+}
+
+func fontFactoryWithTypo(parsed *sfnt.Font, typo fontTypoMetrics) FontFactory {
 	return func(size float64) (FontFace, error) {
 		if size <= 0 {
 			return nil, fmt.Errorf("font size must be positive")
 		}
-		return opentype.NewFace(parsed, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
+		face, err := opentype.NewFace(parsed, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
+		if err != nil {
+			return nil, err
+		}
+		if !typo.hasTypo || typo.unitsPerEm <= 0 || typo.sTypoAscender <= 0 {
+			return face, nil
+		}
+		baseMetrics := face.Metrics()
+		ascentPix := int(math.Round(size * float64(typo.sTypoAscender) / float64(typo.unitsPerEm)))
+		heightPix := int(math.Round(size))
+		descentPix := heightPix - ascentPix
+		return &typoFace{
+			Face: face,
+			metrics: font.Metrics{
+				Height:     fixed.I(heightPix),
+				Ascent:     fixed.I(ascentPix),
+				Descent:    fixed.I(descentPix),
+				XHeight:    baseMetrics.XHeight,
+				CapHeight:  baseMetrics.CapHeight,
+				CaretSlope: baseMetrics.CaretSlope,
+			},
+		}, nil
 	}
+}
+
+func fontFactoryFor(parsed *sfnt.Font) FontFactory {
+	var typo fontTypoMetrics
+	if parsed != nil {
+		var buf bytes.Buffer
+		if _, err := parsed.WriteSourceTo(nil, &buf); err == nil {
+			typo = parseTypoMetrics(buf.Bytes(), 0)
+		}
+	}
+	return fontFactoryWithTypo(parsed, typo)
 }

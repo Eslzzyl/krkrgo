@@ -8,6 +8,7 @@ import (
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/math/fixed"
 )
 
 func TestOpenTypeFactoriesKeepAntialiasingWithFullHinting(t *testing.T) {
@@ -69,5 +70,25 @@ func TestOpenTypeFactoriesKeepAntialiasingWithFullHinting(t *testing.T) {
 	}
 	if changed == 0 {
 		t.Fatal("full hinting produced the same softened pixels as no hinting")
+	}
+}
+
+func TestParseOpenTypeAcceptsTrueTypeCollection(t *testing.T) {
+	data, err := loadFixedFontData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	factory, err := ParseOpenType(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	face, err := factory(26)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer face.Close()
+	metrics := face.Metrics()
+	if metrics.Height != fixed.I(26) || metrics.Ascent <= 0 || metrics.Descent != fixed.I(26)-metrics.Ascent {
+		t.Fatalf("TTC metrics = %+v, want height=26 and ascent+descent=26", metrics)
 	}
 }

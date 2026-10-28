@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
 	"golang.org/x/text/unicode/norm"
 	"image"
@@ -413,14 +414,20 @@ func ParseOpenType(data []byte) (FontFactory, error) {
 	}
 	parsed, err := opentype.Parse(data)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidFont, err)
-	}
-	return func(size float64) (FontFace, error) {
-		if size <= 0 {
-			return nil, fmt.Errorf("font size must be positive")
+		collection, collectionErr := sfnt.ParseCollection(data)
+		if collectionErr != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalidFont, err)
 		}
-		return opentype.NewFace(parsed, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
-	}, nil
+		if collection.NumFonts() == 0 {
+			return nil, fmt.Errorf("%w: font collection contains no faces", ErrInvalidFont)
+		}
+		parsed, err = collection.Font(0)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalidFont, err)
+		}
+	}
+	typo := parseTypoMetrics(data, 0)
+	return fontFactoryWithTypo(parsed, typo), nil
 }
 
 // FontSystem binds selection and metrics to a FontBook. It has no platform or
