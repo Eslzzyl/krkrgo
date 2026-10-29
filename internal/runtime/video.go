@@ -122,6 +122,7 @@ type VideoOverlay struct {
 	looping        bool
 	mode           int32
 	layers         [2]*Layer
+	layerAlpha     [2]bool
 	segment        [2]int64
 	period         int64
 	generation     uint64
@@ -743,6 +744,10 @@ func (v *VideoOverlay) CancelPeriodEvent() {
 	}
 }
 func (v *VideoOverlay) SetLayer(index int, layer *Layer) error {
+	return v.SetLayerWithAlpha(index, layer, false)
+}
+
+func (v *VideoOverlay) SetLayerWithAlpha(index int, layer *Layer, alpha bool) error {
 	if index < 0 || index > 1 {
 		return fmt.Errorf("video layer index out of range")
 	}
@@ -752,9 +757,13 @@ func (v *VideoOverlay) SetLayer(index int, layer *Layer) error {
 		return fmt.Errorf("video layer has invalid id")
 	}
 	v.layers[index] = layer
+	v.layerAlpha[index] = alpha
 	return v.presentLocked()
 }
-func (v *VideoOverlay) SetLayerTarget(index int, layer *Layer) error { return v.SetLayer(index, layer) }
+
+func (v *VideoOverlay) SetLayerTarget(index int, layer *Layer) error {
+	return v.SetLayer(index, layer)
+}
 func (v *VideoOverlay) Layer(index int) *Layer {
 	if v == nil || index < 0 || index > 1 {
 		return nil
@@ -820,6 +829,22 @@ func (v *VideoOverlay) AudioBlocks() []VideoAudioBlock {
 	}
 	return out
 }
+func alphaMoviePixels(frame *VideoFrame) (int32, int32, []byte, error) {
+	if frame == nil || frame.Width <= 0 || frame.Height <= 0 || frame.Width%2 != 0 {
+		return 0, 0, nil, fmt.Errorf("alpha movie frame requires a positive even width")
+	}
+	width := frame.Width / 2
+	rowBytes := int(width) * 4
+	rgba := make([]byte, rowBytes*int(frame.Height))
+	sourceRowBytes := int(frame.Width) * 4
+	for y := 0; y < int(frame.Height); y++ {
+		sourceStart := y * sourceRowBytes
+		targetStart := y * rowBytes
+		copy(rgba[targetStart:targetStart+rowBytes], frame.RGBA[sourceStart:sourceStart+rowBytes])
+	}
+	return width, frame.Height, rgba, nil
+}
+
 func (v *VideoOverlay) presentLocked() error {
 	idx := v.frameAtLocked()
 	shouldPresent := false
@@ -867,11 +892,22 @@ func (v *VideoOverlay) presentLocked() error {
 	if !shouldPresent || v.current == nil {
 		return nil
 	}
-	for _, l := range v.layers {
-		if l != nil {
-			if err := l.SetRGBA(v.current.Width, v.current.Height, v.current.RGBA); err != nil {
+	for index, l := range v.layers {
+		if l == nil {
+			continue
+		}
+		if v.layerAlpha[index] {
+			width, height, rgba, err := alphaMoviePixels(v.current)
+			if err != nil {
 				return err
 			}
+			if err := l.SetRGBAOwned(width, height, rgba); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := l.SetRGBA(v.current.Width, v.current.Height, v.current.RGBA); err != nil {
+			return err
 		}
 	}
 	return nil

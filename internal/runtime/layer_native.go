@@ -266,7 +266,7 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 	defer s.syncRootGeometry()
 	switch operation {
 	case "openMovie", "startMovie", "stopMovie", "isPlayingMovie":
-		return tjs.VoidValue, UnsupportedDevice("layerExMovie video decoding and presentation")
+		return s.layerExMovieNative(id, l, operation, args)
 	case "setCursorPos":
 		if len(args) < 2 {
 			return tjs.VoidValue, fmt.Errorf("Layer.setCursorPos requires x and y")
@@ -822,6 +822,13 @@ func (s *Services) invalidateLayer(vm *tjs.VM, id tjs.ObjectID) error {
 	}
 	l.windowID = 0
 	s.releaseLayerDefaultFontLocked(id)
+	if movie := s.LayerMovies[id]; movie != nil {
+		delete(s.LayerMovies, id)
+		if s.AudioMixer != nil {
+			s.AudioMixer.RemoveVideo(movie)
+		}
+		movie.Close()
+	}
 	removedChildren, hadChildren := s.LayerChildren[id]
 	delete(s.LayerCursors, id)
 	delete(s.Layers, id)

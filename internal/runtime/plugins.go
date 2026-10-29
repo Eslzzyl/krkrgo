@@ -71,6 +71,7 @@ var nativePluginProviders = map[string]string{
 	"krmovie.dll":        "link-only: the module backs the core VideoOverlay class and registers no TJS names, so the link installs nothing on top of the runtime's own VideoOverlay and ASF/AMV decoders (video.go, assets/amv.go; krkrz/movie/win32/krmovie.cpp, cpp/core/movie/ffmpeg)",
 	"layerexbtoa.dll":    "link-only: callers guard on the missing Layer method, and Layer's built-in pixel operations (layer_image.go) are all the runtime claims; other extension operations report ErrUnsupportedNative",
 	"layerexdraw.dll":    "link-only: the module's GDI+ surface is not implemented, so Layer reports the missing operations instead of fabricating them (layer_native.go, image_function_native.go)",
+	"layerexmovie.dll":   "Layer.openMovie/startMovie/stopMovie/isPlayingMovie through the runtime VideoOverlay path (layer_ex_movie_native.go)",
 	"layereximage.dll":   "link-only: the game's LayerEx.tjs helpers compose Layer's built-in pixel operations (layer_image.go); other extension operations report ErrUnsupportedNative",
 	"layerexraster.dll":  "link-only: callers guard on the missing Layer method, and Layer's built-in pixel operations (layer_image.go) are all the runtime claims; other extension operations report ErrUnsupportedNative",
 	"layerstwcopy.dll":   "Layer.stitchWrappedCopy wrapped pixel copy (layer_stw_copy_native.go; testdata/lllj/plugin/layerStwCopy.dll)",

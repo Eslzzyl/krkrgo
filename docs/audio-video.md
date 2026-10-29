@@ -18,7 +18,7 @@ Non-AJPM sources are opened through the FFmpeg shared-library sidecar. `VideoOve
 
 The runtime requires `avutil`, `avcodec`, `avformat`, and `swscale` from the deployed FFmpeg 9.0.2 ABI. The loader searches `KRKRGO_FFMPEG_DIR`, `lib/ffmpeg`, and the executable directory; the deployment workflow installs the libraries beside the application. On Windows, dependency lookup includes the directory containing each loaded FFmpeg DLL.
 
-The current video model retains headless transport and frame/audio queue semantics. Audio-stream selection beyond the first decodable stream, movie color/effect controls, and OS video-device parity remain outside this runtime contract.
+The current video model retains headless transport and frame/audio queue semantics. `Layer.openMovie`, `startMovie`, `stopMovie`, and `isPlayingMovie` reuse the same bounded `VideoOverlay` path and copy decoded frames into a Layer. Audio-stream selection beyond the first decodable stream, movie color/effect controls, and OS video-device parity remain outside this runtime contract.
 
 ## Device output
 

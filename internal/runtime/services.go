@@ -138,6 +138,7 @@ type Services struct {
 	KAGParsers                   map[tjs.ObjectID]*KAGParser
 	CSVParsers                   map[tjs.ObjectID]*csvParserState
 	Videos                       map[tjs.ObjectID]*VideoOverlay
+	LayerMovies                  map[tjs.ObjectID]*VideoOverlay
 	PhaseVocoders                map[tjs.ObjectID]*phaseVocoderConfig
 	Sounds                       map[tjs.ObjectID]*WaveSoundBuffer
 	SoundEvents                  map[tjs.ObjectID][]SoundEvent
@@ -395,6 +396,7 @@ func NewServicesWithSaveBackend(storage *assets.Storage, saveDir string, saveBac
 		Dates:                   make(map[tjs.ObjectID]*tjs.Date),
 		LayerCursors:            make(map[tjs.ObjectID]tjs.Value),
 		Arguments:               make(map[string]string), MessageMap: make(map[string]string), Natives: NewNativeRegistry(), KAGParsers: make(map[tjs.ObjectID]*KAGParser), CSVParsers: make(map[tjs.ObjectID]*csvParserState), Videos: make(map[tjs.ObjectID]*VideoOverlay), Sounds: make(map[tjs.ObjectID]*WaveSoundBuffer), SoundEvents: make(map[tjs.ObjectID][]SoundEvent), Layers: make(map[tjs.ObjectID]*Layer), MotionResources: make(map[tjs.ObjectID]*motionResourceStore), MotionModules: make(map[tjs.ObjectID]*motionResource), MotionPlayers: make(map[tjs.ObjectID]*motionPlayerState), MotionAdaptors: make(map[tjs.ObjectID]tjs.ObjectID), MotionValueObjects: make(map[tjs.ObjectID]*motionValueObjectState), Bitmaps: make(map[tjs.ObjectID]*Bitmap), Fonts: make(map[tjs.ObjectID]*FontState), TextRenderers: make(map[tjs.ObjectID]*textRenderState), LayerFonts: make(map[tjs.ObjectID]tjs.ObjectID), LayerDefaultFonts: make(map[tjs.ObjectID]tjs.ObjectID), LayerChildren: make(map[tjs.ObjectID]tjs.Value),
+		LayerMovies: make(map[tjs.ObjectID]*VideoOverlay),
 	}
 }
 func DefaultServices() *Services { return NewServices(nil, "", core.DefaultLimits()) }
@@ -535,6 +537,9 @@ func (s *Services) ensureInit() {
 	}
 	if s.Videos == nil {
 		s.Videos = make(map[tjs.ObjectID]*VideoOverlay)
+	}
+	if s.LayerMovies == nil {
+		s.LayerMovies = make(map[tjs.ObjectID]*VideoOverlay)
 	}
 	if s.PhaseVocoders == nil {
 		s.PhaseVocoders = make(map[tjs.ObjectID]*phaseVocoderConfig)

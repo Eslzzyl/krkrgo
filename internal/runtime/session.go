@@ -1180,7 +1180,20 @@ func (s *Session) AdvanceClock(timeMS uint64) error {
 		stageStarted = time.Now()
 	}
 	videoIDs := s.videoIDsScratch[:0]
-	for id := range s.Services.Videos {
+	if s.videoScratch == nil {
+		s.videoScratch = make(map[tjs.ObjectID]*VideoOverlay, len(s.Services.Videos)+len(s.Services.LayerMovies))
+	} else {
+		clear(s.videoScratch)
+	}
+	for id, video := range s.Services.Videos {
+		s.videoScratch[id] = video
+	}
+	for id, video := range s.Services.LayerMovies {
+		if _, exists := s.videoScratch[id]; !exists {
+			s.videoScratch[id] = video
+		}
+	}
+	for id := range s.videoScratch {
 		videoIDs = append(videoIDs, id)
 	}
 	s.videoIDsScratch = videoIDs
@@ -1189,9 +1202,20 @@ func (s *Session) AdvanceClock(timeMS uint64) error {
 	}
 	videoCount = len(videoIDs)
 	for _, id := range videoIDs {
-		video := s.Services.Videos[id]
+		video := s.videoScratch[id]
+		if video == nil {
+			continue
+		}
+		_, layerMovie := s.Services.LayerMovies[id]
+		wasPlaying := layerMovie && video.Status() == VideoPlaying
 		if err := video.Advance(timeMS); err != nil {
 			return err
+		}
+		if layerMovie {
+			if wasPlaying && video.Status() == VideoStopped {
+				s.Services.clearLayerMovie(id)
+			}
+			continue
 		}
 		if err := s.Services.dispatchVideoEvents(s.VM, id, &s.Budget); err != nil {
 			return err
@@ -1553,8 +1577,13 @@ func (s *Session) tickSnapshot() tickSnapshot {
 	for id, sound := range s.Services.Sounds {
 		serviceSounds[id] = sound
 	}
-	serviceVideos := make(map[*VideoOverlay]struct{}, len(s.Services.Videos))
+	serviceVideos := make(map[*VideoOverlay]struct{}, len(s.Services.Videos)+len(s.Services.LayerMovies))
 	for _, video := range s.Services.Videos {
+		if video != nil {
+			serviceVideos[video] = struct{}{}
+		}
+	}
+	for _, video := range s.Services.LayerMovies {
 		if video != nil {
 			serviceVideos[video] = struct{}{}
 		}
@@ -2213,8 +2242,11 @@ func (s *Session) Close() error {
 		for _, sound := range s.Services.Sounds {
 			sounds = append(sounds, sound)
 		}
-		videos := make([]*VideoOverlay, 0, len(s.Services.Videos))
+		videos := make([]*VideoOverlay, 0, len(s.Services.Videos)+len(s.Services.LayerMovies))
 		for _, video := range s.Services.Videos {
+			videos = append(videos, video)
+		}
+		for _, video := range s.Services.LayerMovies {
 			videos = append(videos, video)
 		}
 		s.Services.mu.RUnlock()
@@ -2233,6 +2265,7 @@ func (s *Session) Close() error {
 		s.Services.mu.Lock()
 		s.Services.xp3ExtractionFilter = tjs.VoidValue
 		s.Services.Videos = make(map[tjs.ObjectID]*VideoOverlay)
+		s.Services.LayerMovies = make(map[tjs.ObjectID]*VideoOverlay)
 		s.Services.audioMixerOwner = nil
 		s.Services.mu.Unlock()
 		s.AudioOutput = nil
