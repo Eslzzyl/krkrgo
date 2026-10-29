@@ -30,7 +30,7 @@ The codebase is incremental and bounded; registered method names do not guarante
 - [Assets, storage, and media](assets-storage-media.md): non-file storage backends, C++ media semantics, and unsupported codec/mode coverage.
 - [Runtime and native services](runtime-natives.md): process/host semantics, injected dialogs/shell, and unavailable devices.
 - [Graphics, layers, and text](graphics-layer-text.md): Bitmap supports PNG/BMP/JPEG saving with bounded metadata/options and asynchronous loading; color-key and raw-pointer paths remain unsupported. ImageFunction operations, complete layer effects, and full text/font behavior remain bounded.
-- [Audio and video](audio-video.md): MPEG picture/chroma limits, absent video audio stream, and headless samples versus device output.
+- [Audio and video](audio-video.md): MPEG picture/chroma limits, audio/video stream selection and processing limits, and headless samples versus device output.
 - [Host, Ebitengine, and platforms](host-platform.md): generic project launching, platform backend qualifications, mobile policy, and Linux clipboard utilities.
 
 ## Lovelyday headless acceptance
@@ -43,7 +43,7 @@ go run ./cmd/krkrgo-tool replay --project DIR --input replay.json --output resul
 
 The full interactive replay ran from 0 through 120,000 ms using 1,000 ms steps and a 100,000,000-instruction budget, and exited with status 0. Its duration is virtual replay time, not wall-clock waiting; the budget is an instruction limit.
 
-The completed 120-second replay exercised KAG macro argument and line/comment handling, pointer-to-script interaction, TJS `Math`, virtual-time waits, native `Date` and `Storages.fstat`, XP3-backed media/resource paths, TLG6 decoding, universal rule-image transitions, and the macOS MS P Mincho to Hiragino Mincho ProN font fallback. These results cover the exercised run, not complete C++ parity. WMV/ASF remains an empty placeholder with no decoding or playback; see [Audio and video](audio-video.md).
+The completed 120-second replay exercised KAG macro argument and line/comment handling, pointer-to-script interaction, TJS `Math`, virtual-time waits, native `Date` and `Storages.fstat`, XP3-backed media/resource paths, TLG6 decoding, universal rule-image transitions, and the macOS MS P Mincho to Hiragino Mincho ProN font fallback. These results cover the exercised run, not complete C++ parity. WMV/ASF support is provided by the FFmpeg-backed `VideoOverlay` path, but this replay did not exercise those formats.
 
 A separate save/load recovery replay continued into chapter two. Stage 43 reached `@0002A_0030.ks`, line 675, with `hitret_cnt=90`, and exited with status 0; replaying the stage-42 checkpoint reproduced it exactly. The earlier 93-second Voice/ImageDraw script error is resolved. This records the verified recovery range, not a claim that the entire game has been cleared. Focused `TextStream.write` offset/mode behavior tests and the full test suite passed; the write semantics are documented in [Runtime and native services](runtime-natives.md).
 

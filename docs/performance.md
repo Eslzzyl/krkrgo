@@ -433,8 +433,3 @@ below are explicit scope or measurement limits:
 - No equivalent real-window C++ or Rust run has been measured on this
   workstation.
 
-## WMV status
-
-WMV/ASF remains a separate capability gap. The Go path currently keeps an
-empty `VideoOverlay` placeholder without decoded video frames or audio. The
-WMV path is excluded from the animation measurements above.
