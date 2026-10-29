@@ -146,6 +146,9 @@ type Services struct {
 	AudioMixer                   *AudioMixer
 	Dialogs                      *DialogService
 	Layers                       map[tjs.ObjectID]*Layer
+	LayerExDraws                 map[tjs.ObjectID]*layerExDrawState
+	LayerExObjects               map[tjs.ObjectID]*layerExObjectState
+	layerExDrawVMs               map[*tjs.VM]struct{}
 	pendingPaintIDs              []tjs.ObjectID
 	pendingPaintScratch          []tjs.ObjectID
 	transitionIDsScratch         []tjs.ObjectID
@@ -552,6 +555,15 @@ func (s *Services) ensureInit() {
 	}
 	if s.Layers == nil {
 		s.Layers = make(map[tjs.ObjectID]*Layer)
+	}
+	if s.LayerExDraws == nil {
+		s.LayerExDraws = make(map[tjs.ObjectID]*layerExDrawState)
+	}
+	if s.LayerExObjects == nil {
+		s.LayerExObjects = make(map[tjs.ObjectID]*layerExObjectState)
+	}
+	if s.layerExDrawVMs == nil {
+		s.layerExDrawVMs = make(map[*tjs.VM]struct{})
 	}
 	if s.Bitmaps == nil {
 		s.Bitmaps = make(map[tjs.ObjectID]*Bitmap)
@@ -2338,6 +2350,12 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 	if strings.HasPrefix(name, "Rect.") {
 		return s.rectNative(vm, context, strings.TrimPrefix(name, "Rect."), args)
 	}
+	if strings.HasPrefix(name, "LayerExDraw.") {
+		return s.layerExDrawNative(vm, context, strings.TrimPrefix(name, "LayerExDraw."), args, budget)
+	}
+	if strings.HasPrefix(name, "GdiPlus.") {
+		return s.gdiPlusNative(vm, context, strings.TrimPrefix(name, "GdiPlus."), args, budget)
+	}
 	if strings.HasPrefix(name, "AsyncTrigger.") {
 		return s.asyncTriggerNative(vm, context, strings.TrimPrefix(name, "AsyncTrigger."), args, budget)
 	}
@@ -2659,6 +2677,11 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		}
 		if strings.HasSuffix(key, "getabout.dll") {
 			if e := installGetAboutNative(vm); e != nil {
+				return tjs.VoidValue, e
+			}
+		}
+		if strings.HasSuffix(key, "layerexdraw.dll") {
+			if e := installLayerExDrawNative(vm, s); e != nil {
 				return tjs.VoidValue, e
 			}
 		}

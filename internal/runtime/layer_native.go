@@ -831,6 +831,7 @@ func (s *Services) invalidateLayer(vm *tjs.VM, id tjs.ObjectID) error {
 	}
 	removedChildren, hadChildren := s.LayerChildren[id]
 	delete(s.LayerCursors, id)
+	delete(s.LayerExDraws, id)
 	delete(s.Layers, id)
 	delete(s.LayerChildren, id)
 	s.mu.Unlock()

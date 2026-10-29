@@ -2278,8 +2278,15 @@ func (s *Session) Close() error {
 		s.Services.Videos = make(map[tjs.ObjectID]*VideoOverlay)
 		s.Services.LayerMovies = make(map[tjs.ObjectID]*VideoOverlay)
 		s.Services.audioMixerOwner = nil
-		s.Services.mu.Unlock()
+		if s.VM != nil {
+			delete(s.Services.layerExDrawVMs, s.VM)
+			if len(s.Services.layerExDrawVMs) == 0 {
+				s.Services.LayerExDraws = make(map[tjs.ObjectID]*layerExDrawState)
+				s.Services.LayerExObjects = make(map[tjs.ObjectID]*layerExObjectState)
+			}
+		}
 		s.AudioOutput = nil
+		s.Services.mu.Unlock()
 	}
 	if s.VM != nil {
 		clearPSDDocuments(s.VM)
