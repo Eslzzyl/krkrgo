@@ -2645,6 +2645,11 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 			return tjs.VoidValue, fmt.Errorf("%w: Plugins.link(%q)", ErrUnsupportedNative, p)
 		}
 		module := path.Base(key)
+		if module == "packinone.dll" || module == "savestruct.dll" {
+			if e := vm.RegisterSaveStruct(); e != nil {
+				return tjs.VoidValue, e
+			}
+		}
 		if path.Base(key) == "toml.dll" {
 			if e := installTOMLNative(vm); e != nil {
 				return tjs.VoidValue, e

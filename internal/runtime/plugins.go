@@ -79,6 +79,7 @@ var nativePluginProviders = map[string]string{
 	"msdfrender.dll":     "link-only: the game-side embedded-font loader can continue with the host font path when the optional MSDF renderer is unavailable",
 	"menu.dll":           "MenuItem and Window menu surfaces (menu_native.go)",
 	"packinone.dll":      "component container for the ScriptsEx/saveStruct/csvParser/LayerExImage exports the runtime already provides (scripts_ex_native.go, tjs/serialization.go, csv_parser_native.go)",
+	"savestruct.dll":     "saveStruct serialization and toStructString methods (tjs/serialization.go; cpp/plugins/PackinOne)",
 	"psbfile.dll":        "PSBFile (psbfile_native.go; cpp/plugins/psbfile)",
 	"psd.dll":            "PSD parser and portable PSD class (psd_native.go, assets/psd.go; cpp/plugins/psdfile)",
 	"scriptsex.dll":      "ScriptsEx helpers on the built-in Scripts class (scripts_ex_native.go; cpp/plugins/scriptsEx.cpp)",

@@ -86,10 +86,25 @@ func quoteTJS(s string, escaped bool) string {
 type textWriter struct {
 	v      *VM
 	core   bool
+	typed  bool
 	lf     string
 	stack  map[ObjectID]bool
 	depth  int
 	budget *uint64
+}
+
+func serializationRealHex(value float64) string {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value == 0 {
+		return RealText(value)
+	}
+	bits := math.Float64bits(value)
+	sign := ""
+	if value < 0 {
+		sign = "-"
+	}
+	fraction := bits & ((uint64(1) << 52) - 1)
+	exponent := int((bits>>52)&0x7ff) - 1023
+	return fmt.Sprintf("%s0x1.%013Xp%d", sign, fraction, exponent)
 }
 
 func (w *textWriter) charge() error {
@@ -112,8 +127,14 @@ func (w *textWriter) value(x Value, indent int) (string, error) {
 	case KindVoid:
 		return "void", nil
 	case KindInteger:
+		if w.typed {
+			return "int " + x.Text(), nil
+		}
 		return x.Text(), nil
 	case KindReal:
+		if w.typed {
+			return "real " + serializationRealHex(x.RealValue()) + " /* " + x.Text() + " */", nil
+		}
 		return x.Text(), nil
 	case KindString:
 		return quoteTJS(x.Text(), w.core), nil
@@ -160,7 +181,9 @@ func (w *textWriter) object(id ObjectID, indent int) (string, error) {
 		for i, x := range m.array {
 			if i > 0 {
 				b.WriteByte(',')
-				b.WriteString(w.lf)
+				if !w.typed {
+					b.WriteString(w.lf)
+				}
 			}
 			s, e := w.value(x, indent+1)
 			if e != nil {
@@ -207,6 +230,9 @@ func (w *textWriter) object(id ObjectID, indent int) (string, error) {
 func (v *VM) SerializeValue(value Value, core bool, budget *uint64) (string, error) {
 	return (&textWriter{v: v, core: core, lf: "\r\n", stack: make(map[ObjectID]bool), budget: budget}).value(value, 0)
 }
+func (v *VM) SerializeStructString(value Value, budget *uint64) (string, error) {
+	return (&textWriter{v: v, typed: true, lf: "\r\n", stack: make(map[ObjectID]bool), budget: budget}).value(value, 0)
+}
 func (v *VM) Serialize(value Value) (string, error) { return v.SerializeValue(value, true, nil) }
 
 func (v *VM) serializationCall(name string, receiver Value, args []Value, h Host, b *uint64, needed bool) (Value, error) {
@@ -229,19 +255,20 @@ func (v *VM) serializationCall(name string, receiver Value, args []Value, h Host
 		}
 		return h.Call(v, operation, args, b)
 	}
-	core := strings.HasSuffix(name, ".save") || strings.HasSuffix(name, ".load") || strings.HasSuffix(name, ".saveStruct")
 	if strings.HasSuffix(name, ".toStructString") {
-		core = false
+		text, e := v.SerializeStructString(receiver, b)
+		if e != nil {
+			return VoidValue, e
+		}
+		return StringValue(text), nil
 	}
+	core := strings.HasSuffix(name, ".save") || strings.HasSuffix(name, ".load") || strings.HasSuffix(name, ".saveStruct")
 	if strings.HasSuffix(name, ".load") {
 		return receiver, nil
 	}
 	text, e := v.SerializeValue(receiver, core, b)
 	if e != nil {
 		return VoidValue, e
-	}
-	if strings.HasSuffix(name, ".toStructString") {
-		return StringValue(text), nil
 	}
 	if len(args) == 0 {
 		return VoidValue, errors.New("save requires stream")

@@ -924,6 +924,29 @@ func (v *VM) GetMember(receiver Value, name string, host Host, budget *uint64) (
 	return value, err
 }
 
+func (v *VM) collectionClassMember(id ObjectID, key Value, host Host, budget *uint64) (Value, bool, error) {
+	meta := v.meta[id]
+	if meta == nil || (meta.category != CategoryArray && meta.category != CategoryDictionary) {
+		return VoidValue, false, nil
+	}
+	className := "Dictionary"
+	if meta.category == CategoryArray {
+		className = "Array"
+	}
+	if !v.nativeSavePlugin && !(className == "Array" && key.Text() == "add") {
+		return VoidValue, false, nil
+	}
+	classValue, exists := v.Globals[className]
+	if !exists {
+		return VoidValue, false, nil
+	}
+	member, found, err := v.getMemberWithRuntime(classValue.ObjectRef().Object, key, host, budget)
+	if err != nil || !found {
+		return VoidValue, found, err
+	}
+	return member, true, nil
+}
+
 // GetMemberIfPresent reads a script-visible member and reports whether it exists.
 func (v *VM) GetMemberIfPresent(receiver Value, name string, host Host, budget *uint64) (Value, bool, error) {
 	if v == nil || v.Objects == nil {
@@ -946,15 +969,26 @@ func (v *VM) GetMemberIfPresent(receiver Value, name string, host Host, budget *
 	if err != nil {
 		return VoidValue, false, err
 	}
-	if !ok && receiver.Kind() == KindObject && !receiver.IsNull() && name == "add" {
-		if arrayClass, exists := v.Globals["Array"]; exists {
-			arrayMember, found, memberErr := v.getMemberWithRuntime(arrayClass.ObjectRef().Object, key, host, budget)
-			if memberErr != nil {
-				return VoidValue, false, memberErr
+	if !ok && receiver.Kind() == KindObject && !receiver.IsNull() {
+		className := ""
+		if meta := v.meta[id]; meta != nil {
+			switch meta.category {
+			case CategoryArray:
+				className = "Array"
+			case CategoryDictionary:
+				className = "Dictionary"
 			}
-			if found {
-				value, valueErr := v.getValue(receiver, arrayMember, false, host, budget)
-				return value, valueErr == nil, valueErr
+		}
+		if className != "" && (className == "Dictionary" || name == "add" || v.nativeSavePlugin) {
+			if arrayClass, exists := v.Globals[className]; exists {
+				classMember, found, memberErr := v.getMemberWithRuntime(arrayClass.ObjectRef().Object, key, host, budget)
+				if memberErr != nil {
+					return VoidValue, false, memberErr
+				}
+				if found {
+					value, valueErr := v.getValue(receiver, classMember, false, host, budget)
+					return value, valueErr == nil, valueErr
+				}
 			}
 		}
 	}
@@ -1134,6 +1168,24 @@ func (v *VM) GetMemberByKey(receiver, key Value, flags uint32, host Host, budget
 		member, found, err = v.vmArrayMethod(id, name)
 		if err != nil {
 			return VoidValue, false, err
+		}
+	}
+	if !found && meta != nil && (meta.category == CategoryArray || meta.category == CategoryDictionary) {
+		className := "Dictionary"
+		if meta.category == CategoryArray {
+			className = "Array"
+		}
+		if v.nativeSavePlugin || (className == "Array" && name == "add") {
+			if classValue, exists := v.Globals[className]; exists {
+				member, found, err = v.getMemberWithRuntime(classValue.ObjectRef().Object, key, host, budget)
+				if err != nil {
+					return VoidValue, false, err
+				}
+				if found {
+					value, discard, valueErr := v.readMemberValue(receiver, member, flags, host, budget)
+					return value, discard, valueErr
+				}
+			}
 		}
 	}
 	if !found {
@@ -1519,6 +1571,29 @@ func (v *VM) RegisterNativeClass(name string) (Value, error) {
 	v.Globals[name] = x
 	v.roots[x.ObjectRef()] = struct{}{}
 	return x, nil
+}
+
+// AddNativeClassAlias adds a script-visible class name used by instanceof while
+// keeping the native class stored under its original global name.
+func (v *VM) AddNativeClassAlias(class Value, alias string) error {
+	if class.Kind() != KindObject || class.IsNull() {
+		return ErrType
+	}
+	id := class.ObjectRef().Object
+	meta := v.meta[id]
+	if meta == nil || meta.category != CategoryClass || meta.class == nil {
+		return ErrType
+	}
+	if alias == "" || alias == meta.class.Name {
+		return nil
+	}
+	for _, existing := range meta.class.Aliases {
+		if existing == alias {
+			return nil
+		}
+	}
+	meta.class.Aliases = append(meta.class.Aliases, alias)
+	return nil
 }
 
 // RegisterLegacyClass creates an unbound class object for a compiled TJS2100
@@ -3164,6 +3239,9 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 							x, ok, e = v.vmArrayMethod(id, key.Text())
 						}
 						if e == nil && !ok {
+							x, ok, e = v.collectionClassMember(id, key, h, b)
+						}
+						if e == nil && !ok {
 							x, ok, e = v.missingMember(receiver, key, nil, h, b)
 						}
 						if e == nil && ok {
@@ -3182,6 +3260,9 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 					e = er
 					if e == nil && !ok {
 						x, ok, e = v.vmRegexpMethod(id, key.Text())
+					}
+					if e == nil && !ok {
+						x, ok, e = v.collectionClassMember(id, key, h, b)
 					}
 					if e == nil && !ok {
 						x, ok, e = v.missingMember(receiver, key, nil, h, b)

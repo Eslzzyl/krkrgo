@@ -49,6 +49,7 @@ type Property struct {
 
 type Class struct {
 	Name        string
+	Aliases     []string
 	Bases       []Program
 	Methods     []Function
 	Properties  []Property
@@ -80,7 +81,7 @@ func (p Property) Clone() Property {
 	return Property{Name: p.Name, Getter: g, Setter: s}
 }
 func (c Class) Clone() Class {
-	r := Class{Name: c.Name, Initializer: c.Initializer}
+	r := Class{Name: c.Name, Aliases: append([]string(nil), c.Aliases...), Initializer: c.Initializer}
 	r.Bases = append([]Program(nil), c.Bases...)
 	r.Methods = make([]Function, len(c.Methods))
 	for i := range c.Methods {

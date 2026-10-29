@@ -774,6 +774,32 @@ GPU capture 模式使用 `Layer.imageRevision` 识别图像变化，GPU 纹理�
 
 `RenderMotion` 针对 MotionPlayer 的源图、矩阵、顶点、索引、混合和 mask。`layerExDraw` 需要处理路径、Pen、Brush、Font、Image、记录回放、裁剪和 `updateWhenDraw`，数据模型不同。复用 `RenderMotion` 会丢失 API 语义。
 
+### 11.4 当前兼容实现的语义基线
+
+以下结论对应当前工作树中的实现与永久测试，适合作为后续模型评估的输入。
+
+#### TJS 几何对象
+
+- `internal/runtime/layer_ex_draw_native.go` 的 `layerExPointNative` 将 `PointF` 的原生状态存入 `Services.LayerExObjects`。构造器读取前两个参数，额外参数被忽略；同一个实例再次调用 `PointF(x, y)` 会覆盖已有坐标；`finalize` 清理对象表项。原生类注册保留 `GdiPlus.PointF` 这个全局入口，同时通过 `tjs.VM.AddNativeClassAlias` 为 `instanceof "PointF"` 提供脚本类名匹配。
+- `layerExPointFromValue`、`layerExRectFromValue`、`layerExMatrixFromValueWithVM` 同时处理原生对象、数组和字典属性。字典属性读取会执行 TJS getter；当前转换顺序和重复读取次数与参考 fixture 的可观察调用序列一致，getter 对目标几何对象的修改会在后续比较或变换中生效。
+- `layerExRectNative` 的 `GdiPlus.RectF.Union` 是静态方法，实例没有 `Union` 成员。`InflatePoint` 会先完成参数转换，再读取当前 RectF 状态，因此参数 getter 对 `x`、`y` 的写入会进入最终计算。
+- `layerExMatrixNative` 使用 `layerExMatrixState` 保存 float32 量化后的六个仿射系数和最后状态码。`Multiply`、`Rotate`、`RotateAt`、`Scale`、`Shear`、`Translate` 要求显式 `MatrixOrder`；`0` 和 `1` 分别对应 prepend/append 计算顺序，其他值返回 `InvalidParameter` 状态。`GetLastStatus` 返回当前状态并清零，成功变换返回 `Ok`，奇异矩阵 `Invert` 返回 `InvalidParameter` 并保留原矩阵。
+
+#### 画刷、画笔与图像
+
+- `layerExPaintColor` 覆盖纯色、线性渐变、PathGradient、Hatch 和 Texture brush；Texture 支持目标矩形以及 Tile、FlipX、FlipY、FlipXY、Clamp 采样模式。
+- `layerExRasterShape` 对 Pen 的宽度扩展绘制包围区域，Flat、Round、Triangle 端点帽进入同一条线段栅格化路径；`layerExDashSegments` 负责虚线段切分。
+- `layerExImageFromValue` 读取 `Layer`、`GdiPlus.Image`、storage name 和图像数组，`drawImageAffine` 使用 float32 仿射系数进行采样。图像对象读取在服务锁保护下完成，随后释放读锁再执行像素转换。
+- 所有图元、文字和图片写入都经过 `layerExTargetsLocked` 与 `layerExMarkLocked`。最终状态仍为 `Layer.RGBA`，GPU 模式只在后续 `GPUCompositor` 阶段上传脏矩形。
+
+#### 序列化与测试
+
+- `internal/tjs/serialization.go` 的 typed serializer 为 `saveStruct.dll` 提供 `toStructString`。整数、实数、数组、字典和嵌套对象均使用参考格式；实数保留 hexadecimal mantissa 与原始十进制注释。
+- `internal/tjs/vm.go` 的集合类成员分派支持数组、字典通过原生插件提供 `toStructString`，并保留数组 `add` 方法。
+- `internal/runtime/layer_ex_draw_native_test.go` 的 `TestLayerExDrawReferenceGeometryCompatibility` 固定几何对象构造、子类、getter 副作用、Matrix 顺序和状态码；`TestLayerExDrawBrushSemantics` 固定渐变、PathGradient、Hatch、Texture、端点帽和像素结果；其他测试覆盖记录、图像、路径、文字和 Layer 生命周期。
+
+这一基线覆盖 LayerExDraw 运行时中可直接由当前 Go 代码控制的几何、画刷、图像、状态码和序列化语义。TJS 表达式求值顺序、插件大小写规范化、`typeof` 的全局对象分类属于 VM 或插件管理器范围，评估 LayerExDraw 像素与对象语义时应单独归类。
+
 ## 12. 需要模型明确回答的技术问题
 
 请基于当前实现和上述代码引用给出明确结论，并逐项说明理由：
@@ -826,4 +852,7 @@ GPU capture 模式使用 `Layer.imageRevision` 识别图像变化，GPU 纹理�
 | 插件能力索引 | `internal/runtime/plugins.go` 的 `layerexdraw.dll` 条目 |
 | Layer 生命周期清理 | `internal/runtime/layer_native.go` 的 `invalidateLayer` |
 | Session VM 生命周期清理 | `internal/runtime/session.go` 的 `Session.Close` |
+| saveStruct typed serializer | `internal/tjs/serialization.go` |
+| 集合类原生成员分派 | `internal/tjs/vm.go` |
+| 原生类名 alias 与 instanceof | `internal/tjs/object.go`、`internal/tjs/instanceof.go` |
 | LayerExDraw API 测试 | `internal/runtime/layer_ex_draw_native_test.go` |

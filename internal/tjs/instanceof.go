@@ -70,6 +70,11 @@ func classHasName(class *Class, name string) bool {
 	if class.Name == name {
 		return true
 	}
+	for _, alias := range class.Aliases {
+		if alias == name {
+			return true
+		}
+	}
 	for _, base := range class.Bases {
 		if base.Storage == name {
 			return true
@@ -88,6 +93,11 @@ func classMetaHasName(class *classMeta, name string, seen map[*classMeta]struct{
 	seen[class] = struct{}{}
 	if class.definition.Name == name {
 		return true
+	}
+	for _, alias := range class.definition.Aliases {
+		if alias == name {
+			return true
+		}
 	}
 	for _, base := range class.bases {
 		if classMetaHasName(base, name, seen) {

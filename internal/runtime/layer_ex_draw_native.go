@@ -36,76 +36,110 @@ type layerExRect struct{ x, y, w, h float64 }
 type layerExAffine struct {
 	a, b, c, d, tx, ty float64
 }
+type layerExMatrixState struct {
+	matrix layerExAffine
+	status int64
+}
 
-func layerExIdentity() layerExAffine { return layerExAffine{a: 1, d: 1} }
+func layerExMatrixInvalidOrder(order int64) bool {
+	return order != 0 && order != 1
+}
+
+func layerExF32(value float64) float64 {
+	return float64(float32(value))
+}
+
+func layerExAffineValue(a, b, c, d, tx, ty float64) layerExAffine {
+	return layerExAffine{
+		a:  layerExF32(a),
+		b:  layerExF32(b),
+		c:  layerExF32(c),
+		d:  layerExF32(d),
+		tx: layerExF32(tx),
+		ty: layerExF32(ty),
+	}
+}
+
+func layerExIdentity() layerExAffine { return layerExAffineValue(1, 0, 0, 1, 0, 0) }
 
 func (m layerExAffine) apply(p layerExPoint) layerExPoint {
-	return layerExPoint{m.a*p.x + m.c*p.y + m.tx, m.b*p.x + m.d*p.y + m.ty}
+	x, y := float32(p.x), float32(p.y)
+	return layerExPoint{
+		float64(float32(m.a)*x + float32(m.c)*y + float32(m.tx)),
+		float64(float32(m.b)*x + float32(m.d)*y + float32(m.ty)),
+	}
 }
 
 func (m layerExAffine) multiply(n layerExAffine) layerExAffine {
-	return layerExAffine{
-		a:  m.a*n.a + m.c*n.b,
-		b:  m.b*n.a + m.d*n.b,
-		c:  m.a*n.c + m.c*n.d,
-		d:  m.b*n.c + m.d*n.d,
-		tx: m.a*n.tx + m.c*n.ty + m.tx,
-		ty: m.b*n.tx + m.d*n.ty + m.ty,
-	}
+	mm := [6]float32{float32(m.a), float32(m.b), float32(m.c), float32(m.d), float32(m.tx), float32(m.ty)}
+	nn := [6]float32{float32(n.a), float32(n.b), float32(n.c), float32(n.d), float32(n.tx), float32(n.ty)}
+	return layerExAffineValue(
+		float64(mm[0]*nn[0]+mm[2]*nn[1]),
+		float64(mm[1]*nn[0]+mm[3]*nn[1]),
+		float64(mm[0]*nn[2]+mm[2]*nn[3]),
+		float64(mm[1]*nn[2]+mm[3]*nn[3]),
+		float64(mm[0]*nn[4]+mm[2]*nn[5]+mm[4]),
+		float64(mm[1]*nn[4]+mm[3]*nn[5]+mm[5]),
+	)
 }
 
 func (m layerExAffine) invert() (layerExAffine, bool) {
-	det := m.a*m.d - m.b*m.c
-	if math.Abs(det) < 1e-12 || math.IsNaN(det) || math.IsInf(det, 0) {
+	a, b, c, d := float32(m.a), float32(m.b), float32(m.c), float32(m.d)
+	tx, ty := float32(m.tx), float32(m.ty)
+	det := a*d - b*c
+	if det == 0 || math.IsNaN(float64(det)) || math.IsInf(float64(det), 0) {
 		return layerExAffine{}, false
 	}
-	inv := 1 / det
-	return layerExAffine{
-		a:  m.d * inv,
-		b:  -m.b * inv,
-		c:  -m.c * inv,
-		d:  m.a * inv,
-		tx: (m.c*m.ty - m.d*m.tx) * inv,
-		ty: (m.b*m.tx - m.a*m.ty) * inv,
-	}, true
+	inv := float32(1) / det
+	return layerExAffineValue(
+		float64(d*inv),
+		float64(-b*inv),
+		float64(-c*inv),
+		float64(a*inv),
+		float64((c*ty-d*tx)*inv),
+		float64((b*tx-a*ty)*inv),
+	), true
 }
 
 func layerExTranslation(x, y float64) layerExAffine {
-	m := layerExIdentity()
-	m.tx, m.ty = x, y
-	return m
+	return layerExAffineValue(1, 0, 0, 1, x, y)
 }
 
 func layerExScale(x, y float64) layerExAffine {
-	m := layerExIdentity()
-	m.a, m.d = x, y
-	return m
+	return layerExAffineValue(x, 0, 0, y, 0, 0)
 }
 
 func layerExRotation(degrees float64) layerExAffine {
-	r := degrees * math.Pi / 180
-	c, s := math.Cos(r), math.Sin(r)
-	return layerExAffine{a: c, b: s, c: -s, d: c}
+	rad := float32(float32(degrees) * float32(math.Pi) / 180)
+	c := float32(math.Cos(float64(rad)))
+	s := float32(math.Sin(float64(rad)))
+	return layerExAffineValue(float64(c), float64(s), -float64(s), float64(c), 0, 0)
 }
 
 type layerExPaint struct {
-	kind       int
-	brushType  int
-	color      uint32
-	color2     uint32
-	p1, p2     layerExPoint
-	center     layerExPoint
-	radius     float64
-	offset     layerExPoint
-	rect       layerExRect
-	hatch      int
-	width      float64
-	dashStyle  int
-	dash       []float64
-	dashOffset float64
-	lineCap    int
-	lineJoin   int
-	texture    *assets.Image
+	kind           int
+	brushType      int
+	color          uint32
+	color2         uint32
+	gradientColors []uint32
+	gradientStops  []float64
+	p1, p2         layerExPoint
+	center         layerExPoint
+	radius         float64
+	offset         layerExPoint
+	rect           layerExRect
+	hatch          int
+	width          float64
+	dashStyle      int
+	dash           []float64
+	dashOffset     float64
+	lineCap        int
+	endCap         int
+	lineJoin       int
+	texture        *assets.Image
+	wrapMode       int
+	textureRect    layerExRect
+	hasTextureRect bool
 }
 
 type layerExAppearance struct{ paints []layerExPaint }
@@ -222,7 +256,7 @@ func layerExFloatMember(vm *tjs.VM, host *Services, value tjs.Value, name string
 
 func layerExPointFromValue(vm *tjs.VM, host *Services, value tjs.Value, budget *uint64) (layerExPoint, error) {
 	if value.Kind() != tjs.KindObject || value.IsNull() {
-		return layerExPoint{}, fmt.Errorf("PointF value requires an object")
+		return layerExPoint{}, nil
 	}
 	if host != nil {
 		host.ensureInit()
@@ -233,15 +267,39 @@ func layerExPointFromValue(vm *tjs.VM, host *Services, value tjs.Value, budget *
 			return state.value.(layerExPoint), nil
 		}
 	}
-	return layerExPoint{
-		x: layerExFloatMember(vm, host, value, "x", 0, budget),
-		y: layerExFloatMember(vm, host, value, "y", 0, budget),
-	}, nil
+	read := func(name, index string) (float64, error) {
+		var member tjs.Value
+		var found bool
+		for i := 0; i < 2; i++ {
+			var err error
+			member, found, err = layerExMember(vm, host, value, name, budget)
+			if err != nil {
+				return 0, err
+			}
+		}
+		if found {
+			n, err := member.Real()
+			if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
+				return 0, nil
+			}
+			return n, nil
+		}
+		return layerExFloatMember(vm, host, value, index, 0, budget), nil
+	}
+	y, err := read("y", "1")
+	if err != nil {
+		return layerExPoint{}, err
+	}
+	x, err := read("x", "0")
+	if err != nil {
+		return layerExPoint{}, err
+	}
+	return layerExPoint{x: x, y: y}, nil
 }
 
 func layerExRectFromValue(vm *tjs.VM, host *Services, value tjs.Value, budget *uint64) (layerExRect, error) {
 	if value.Kind() != tjs.KindObject || value.IsNull() {
-		return layerExRect{}, fmt.Errorf("RectF value requires an object")
+		return layerExRect{}, nil
 	}
 	if host != nil {
 		host.ensureInit()
@@ -252,28 +310,49 @@ func layerExRectFromValue(vm *tjs.VM, host *Services, value tjs.Value, budget *u
 			return state.value.(layerExRect), nil
 		}
 	}
-	return layerExRect{
-		x: layerExFloatMember(vm, host, value, "x", 0, budget),
-		y: layerExFloatMember(vm, host, value, "y", 0, budget),
-		w: layerExFloatMember(vm, host, value, "width", 0, budget),
-		h: layerExFloatMember(vm, host, value, "height", 0, budget),
-	}, nil
+	names := [...]string{"x", "y", "width", "height"}
+	values := [4]float64{}
+	indices := [...]string{"0", "1", "2", "3"}
+	for i, name := range names {
+		member, found, err := layerExMember(vm, host, value, name, budget)
+		if err != nil {
+			return layerExRect{}, err
+		}
+		if !found {
+			values[i] = layerExFloatMember(vm, host, value, indices[i], 0, budget)
+			continue
+		}
+		values[i], err = member.Real()
+		if err != nil || math.IsNaN(values[i]) || math.IsInf(values[i], 0) {
+			values[i] = 0
+		}
+	}
+	return layerExRect{x: values[0], y: values[1], w: values[2], h: values[3]}, nil
+}
+func layerExSequenceLength(vm *tjs.VM, host *Services, value tjs.Value, budget *uint64) (int64, error) {
+	if vm != nil {
+		if length, err := vm.GetArrayLength(value); err == nil {
+			return length, nil
+		}
+	}
+	lengthValue, found, err := layerExMember(vm, host, value, "length", budget)
+	if err != nil || !found {
+		return 0, fmt.Errorf("value requires an array")
+	}
+	length, err := lengthValue.Int()
+	if err != nil || length < 0 || length > 1<<20 {
+		return 0, fmt.Errorf("invalid array length")
+	}
+	return length, nil
 }
 
 func layerExPointsFromValue(vm *tjs.VM, host *Services, value tjs.Value, budget *uint64) ([]layerExPoint, error) {
 	if value.Kind() != tjs.KindObject || value.IsNull() {
 		return nil, fmt.Errorf("point list requires an array or object")
 	}
-	lengthValue, found, err := layerExMember(vm, host, value, "length", budget)
+	length, err := layerExSequenceLength(vm, host, value, budget)
 	if err != nil {
 		return nil, err
-	}
-	if !found {
-		return nil, fmt.Errorf("point list requires an array")
-	}
-	length, err := lengthValue.Int()
-	if err != nil || length < 0 || length > 1<<20 {
-		return nil, fmt.Errorf("invalid point list length")
 	}
 	points := make([]layerExPoint, 0, int(length))
 	for i := int64(0); i < length; i++ {
@@ -297,16 +376,9 @@ func layerExRectsFromValue(vm *tjs.VM, host *Services, value tjs.Value, budget *
 	if value.Kind() != tjs.KindObject || value.IsNull() {
 		return nil, fmt.Errorf("rectangle list requires an array or object")
 	}
-	lengthValue, found, err := layerExMember(vm, host, value, "length", budget)
+	length, err := layerExSequenceLength(vm, host, value, budget)
 	if err != nil {
 		return nil, err
-	}
-	if !found {
-		return nil, fmt.Errorf("rectangle list requires an array")
-	}
-	length, err := lengthValue.Int()
-	if err != nil || length < 0 || length > 1<<20 {
-		return nil, fmt.Errorf("invalid rectangle list length")
 	}
 	rects := make([]layerExRect, 0, int(length))
 	for i := int64(0); i < length; i++ {
@@ -536,6 +608,126 @@ func layerExColorRGBA(value uint32) [4]byte {
 	return [4]byte{byte(value >> 16), byte(value >> 8), byte(value), byte(value >> 24)}
 }
 
+func layerExGradientColor(paint layerExPaint, t float64) [4]byte {
+	colors := paint.gradientColors
+	stops := paint.gradientStops
+	if len(colors) < 2 || len(stops) != len(colors) {
+		one, two := layerExColorRGBA(paint.color), layerExColorRGBA(paint.color2)
+		return [4]byte{
+			byte(float64(one[0])*(1-t) + float64(two[0])*t),
+			byte(float64(one[1])*(1-t) + float64(two[1])*t),
+			byte(float64(one[2])*(1-t) + float64(two[2])*t),
+			byte(float64(one[3])*(1-t) + float64(two[3])*t),
+		}
+	}
+	if t <= stops[0] {
+		return layerExColorRGBA(colors[0])
+	}
+	for i := 1; i < len(colors); i++ {
+		if t <= stops[i] {
+			span := stops[i] - stops[i-1]
+			local := 0.0
+			if span > 0 {
+				local = (t - stops[i-1]) / span
+			}
+			one, two := layerExColorRGBA(colors[i-1]), layerExColorRGBA(colors[i])
+			return [4]byte{
+				byte(float64(one[0])*(1-local) + float64(two[0])*local),
+				byte(float64(one[1])*(1-local) + float64(two[1])*local),
+				byte(float64(one[2])*(1-local) + float64(two[2])*local),
+				byte(float64(one[3])*(1-local) + float64(two[3])*local),
+			}
+		}
+	}
+	return layerExColorRGBA(colors[len(colors)-1])
+}
+
+func layerExModulo(value, size int) int {
+	if size <= 0 {
+		return 0
+	}
+	value %= size
+	if value < 0 {
+		value += size
+	}
+	return value
+}
+
+func layerExHatchPrimary(style, x, y int) bool {
+	x = layerExModulo(x, 8)
+	y = layerExModulo(y, 8)
+	switch style {
+	case 0:
+		return y == 4
+	case 1:
+		return x == 4
+	case 2:
+		return layerExModulo(x-y, 8) <= 1
+	case 3:
+		return layerExModulo(x+y, 8) <= 1
+	case 4:
+		return x == 4 || y == 4
+	case 5:
+		return layerExModulo(x-y, 8) <= 1 || layerExModulo(x+y, 8) <= 1
+	case 6:
+		return x == 0 && y == 0
+	case 7:
+		return (x*17+y*31)%100 < 10
+	case 8:
+		return (x*17+y*31)%100 < 20
+	case 9:
+		return (x*17+y*31)%100 < 25
+	case 10:
+		return (x*17+y*31)%100 < 30
+	case 11:
+		return (x*17+y*31)%100 < 40
+	case 12:
+		return (x+y)&1 == 0
+	case 13:
+		return (x*17+y*31)%100 < 60
+	case 14:
+		return (x*17+y*31)%100 < 70
+	case 15:
+		return (x*17+y*31)%100 < 75
+	case 16:
+		return (x*17+y*31)%100 < 80
+	case 17:
+		return (x*17+y*31)%100 < 90
+	case 36:
+		return y == 0 || y == 2
+	case 40:
+		return x == 0 || x == 1 || y == 0 || y == 1
+	case 43:
+		return x == 0 && y == 0
+	case 48:
+		return x%2 == 0 || y%2 == 0
+	default:
+		return layerExModulo(x+y, 8) <= 1
+	}
+}
+
+func layerExTextureCoordinate(value float64, size, wrapMode int, flipAxis bool) int {
+	if size <= 0 {
+		return 0
+	}
+	if wrapMode == 4 {
+		index := int(math.Floor(value))
+		if index < 0 {
+			return 0
+		}
+		if index >= size {
+			return size - 1
+		}
+		return index
+	}
+	tile := int(math.Floor(value / float64(size)))
+	index := layerExModulo(int(math.Floor(value)), size)
+	if flipAxis && tile&1 != 0 {
+		index = size - 1 - index
+	}
+	return index
+}
+
 func layerExPaintColor(paint layerExPaint, point layerExPoint) [4]byte {
 	if paint.brushType == layerExPathGradient {
 		radius := paint.radius
@@ -549,13 +741,7 @@ func layerExPaintColor(paint layerExPaint, point layerExPoint) [4]byte {
 		if t > 1 {
 			t = 1
 		}
-		one, two := layerExColorRGBA(paint.color), layerExColorRGBA(paint.color2)
-		return [4]byte{
-			byte(float64(one[0])*(1-t) + float64(two[0])*t),
-			byte(float64(one[1])*(1-t) + float64(two[1])*t),
-			byte(float64(one[2])*(1-t) + float64(two[2])*t),
-			byte(float64(one[3])*(1-t) + float64(two[3])*t),
-		}
+		return layerExGradientColor(paint, t)
 	}
 	if paint.brushType == layerExLinearGradient {
 		vx, vy := paint.p2.x-paint.p1.x, paint.p2.y-paint.p1.y
@@ -570,47 +756,23 @@ func layerExPaintColor(paint layerExPaint, point layerExPoint) [4]byte {
 		if t > 1 {
 			t = 1
 		}
-		one, two := layerExColorRGBA(paint.color), layerExColorRGBA(paint.color2)
-		return [4]byte{
-			byte(float64(one[0])*(1-t) + float64(two[0])*t),
-			byte(float64(one[1])*(1-t) + float64(two[1])*t),
-			byte(float64(one[2])*(1-t) + float64(two[2])*t),
-			byte(float64(one[3])*(1-t) + float64(two[3])*t),
-		}
+		return layerExGradientColor(paint, t)
 	}
 	if paint.brushType == layerExHatch {
 		x, y := int(math.Floor(point.x)), int(math.Floor(point.y))
-		primary := false
-		switch paint.hatch {
-		case 0:
-			primary = y&3 == 0
-		case 1:
-			primary = x&3 == 0
-		case 2:
-			primary = (x-y)&3 == 0
-		case 3:
-			primary = (x+y)&3 == 0
-		case 4:
-			primary = x&3 == 0 || y&3 == 0
-		case 5:
-			primary = (x-y)&3 == 0 || (x+y)&3 == 0
-		default:
-			primary = (x+y)&3 == 0
-		}
-		if !primary {
+		if !layerExHatchPrimary(paint.hatch, x, y) {
 			return layerExColorRGBA(paint.color2)
 		}
 	}
 	if paint.brushType == layerExTexture && paint.texture != nil && paint.texture.Width > 0 && paint.texture.Height > 0 {
-		x := int(math.Floor(point.x)) % int(paint.texture.Width)
-		y := int(math.Floor(point.y)) % int(paint.texture.Height)
-		if x < 0 {
-			x += int(paint.texture.Width)
+		x, y := point.x, point.y
+		if paint.hasTextureRect && paint.textureRect.w != 0 && paint.textureRect.h != 0 {
+			x = (x - paint.textureRect.x) * float64(paint.texture.Width) / paint.textureRect.w
+			y = (y - paint.textureRect.y) * float64(paint.texture.Height) / paint.textureRect.h
 		}
-		if y < 0 {
-			y += int(paint.texture.Height)
-		}
-		i := (y*int(paint.texture.Width) + x) * 4
+		ix := layerExTextureCoordinate(x, int(paint.texture.Width), paint.wrapMode, paint.wrapMode == 1 || paint.wrapMode == 3)
+		iy := layerExTextureCoordinate(y, int(paint.texture.Height), paint.wrapMode, paint.wrapMode == 2 || paint.wrapMode == 3)
+		i := (iy*int(paint.texture.Width) + ix) * 4
 		if i+3 < len(paint.texture.RGBA) {
 			return [4]byte{paint.texture.RGBA[i], paint.texture.RGBA[i+1], paint.texture.RGBA[i+2], paint.texture.RGBA[i+3]}
 		}
@@ -663,11 +825,33 @@ func layerExStrokeCovered(point layerExPoint, paths []layerExSubpath, paint laye
 			if segmentLength <= 1e-9 {
 				continue
 			}
-			t := ((point.x-start.x)*dx + (point.y-start.y)*dy) / lengthSquared
+			rawT := ((point.x-start.x)*dx + (point.y-start.y)*dy) / lengthSquared
+			t := rawT
 			if t < 0 {
 				t = 0
 			} else if t > 1 {
 				t = 1
+			}
+			if !path.closed && rawT < 0 || !path.closed && rawT > 1 {
+				cap := paint.lineCap
+				if rawT > 1 {
+					cap = paint.endCap
+				}
+				if cap == 0 {
+					continue
+				}
+				if cap == 3 {
+					along := rawT * segmentLength
+					if along < 0 {
+						along = -along
+					} else {
+						along -= segmentLength
+					}
+					perpendicular := math.Abs((point.x-start.x)*dy-(point.y-start.y)*dx) / segmentLength
+					if along > width/2 || perpendicular > width/2 {
+						continue
+					}
+				}
 			}
 			closest := layerExPoint{x: start.x + t*dx, y: start.y + t*dy}
 			if math.Hypot(point.x-closest.x, point.y-closest.y) <= width/2 {
@@ -716,6 +900,10 @@ func layerExRasterShape(targets [][]byte, width, height int32, paths []layerExSu
 			}
 		}
 		bounds := layerExRectBounds(transformed)
+		if paint.kind == layerExPen {
+			padding := paint.width / 2
+			bounds = layerExRect{x: bounds.x - padding, y: bounds.y - padding, w: bounds.w + padding*2, h: bounds.h + padding*2}
+		}
 		overall = layerExUnionRect(overall, bounds)
 		region := layerExClampRect(bounds, width, height).Intersect(clip)
 		if region.Empty() {
@@ -913,9 +1101,10 @@ func layerExImageFromValue(s *Services, value tjs.Value, budget *uint64) (assets
 	if state := s.LayerExObjects[id]; state != nil && state.kind == "Image" {
 		imageState := state.value.(*layerExImage)
 		out := imageState.image
+		valid := imageState.valid
 		out.RGBA = append([]byte(nil), out.RGBA...)
 		s.mu.RUnlock()
-		if !imageState.valid {
+		if !valid {
 			return assets.Image{}, fmt.Errorf("image is empty")
 		}
 		return out, nil
@@ -1449,6 +1638,7 @@ func (s *Services) layerExPathFromValue(value tjs.Value) (*layerExPath, error) {
 
 func layerExPaintFromValue(vm *tjs.VM, s *Services, value tjs.Value, kind int, widthOrOption tjs.Value, budget *uint64) (layerExPaint, error) {
 	paint := layerExPaint{kind: kind, brushType: layerExSolid, color: 0xffffffff, color2: 0xff000000, width: 1, dashStyle: 0}
+	var err error
 	if value.Kind() != tjs.KindObject || value.IsNull() {
 		paint.color = layerExColor(value, 0xffffffff)
 	} else {
@@ -1462,45 +1652,80 @@ func layerExPaintFromValue(vm *tjs.VM, s *Services, value tjs.Value, kind int, w
 		case layerExLinearGradient:
 			paint.color = uint32(layerExIntMember(vm, s, value, "color1", int64(paint.color), budget))
 			paint.color2 = uint32(layerExIntMember(vm, s, value, "color2", int64(paint.color2), budget))
-			if point, found, err := layerExMember(vm, s, value, "point1", budget); err == nil && found {
-				paint.p1, _ = layerExPointFromValue(vm, s, point, budget)
+			paint.gradientColors = []uint32{paint.color, paint.color2}
+			paint.gradientStops = []float64{0, 1}
+			point1, point1Found, point1Err := layerExMember(vm, s, value, "point1", budget)
+			if point1Err != nil {
+				return layerExPaint{}, point1Err
 			}
-			if point, found, err := layerExMember(vm, s, value, "point2", budget); err == nil && found {
-				paint.p2, _ = layerExPointFromValue(vm, s, point, budget)
+			point2, point2Found, point2Err := layerExMember(vm, s, value, "point2", budget)
+			if point2Err != nil {
+				return layerExPaint{}, point2Err
 			}
-			if paint.p1 == (layerExPoint{}) && paint.p2 == (layerExPoint{}) {
-				if rect, found, err := layerExMember(vm, s, value, "rect", budget); err == nil && found {
-					paint.rect, _ = layerExRectFromValue(vm, s, rect, budget)
-					paint.p1 = layerExPoint{paint.rect.x, paint.rect.y}
-					paint.p2 = layerExPoint{paint.rect.x + paint.rect.w, paint.rect.y}
+			if point1Found != point2Found {
+				return layerExPaint{}, fmt.Errorf("linear gradient requires point1 and point2 together")
+			}
+			if point1Found {
+				paint.p1, err = layerExPointFromValue(vm, s, point1, budget)
+				if err != nil {
+					return layerExPaint{}, err
 				}
+				paint.p2, err = layerExPointFromValue(vm, s, point2, budget)
+				if err != nil {
+					return layerExPaint{}, err
+				}
+			} else {
+				rectValue, rectFound, rectErr := layerExMember(vm, s, value, "rect", budget)
+				if rectErr != nil {
+					return layerExPaint{}, rectErr
+				}
+				if !rectFound {
+					return layerExPaint{}, fmt.Errorf("linear gradient requires point1, point2, or rect")
+				}
+				paint.rect, err = layerExRectFromValue(vm, s, rectValue, budget)
+				if err != nil {
+					return layerExPaint{}, err
+				}
+				angle := layerExFloatMember(vm, s, value, "angle", 0, budget) * math.Pi / 180
+				cx, cy := paint.rect.x+paint.rect.w/2, paint.rect.y+paint.rect.h/2
+				length := math.Hypot(paint.rect.w, paint.rect.h) / 2
+				paint.p1 = layerExPoint{cx - math.Cos(angle)*length, cy - math.Sin(angle)*length}
+				paint.p2 = layerExPoint{cx + math.Cos(angle)*length, cy + math.Sin(angle)*length}
 			}
 		case layerExTexture:
+			paint.wrapMode = int(layerExIntMember(vm, s, value, "wrapMode", 0, budget))
 			if imageValue, found, err := layerExMember(vm, s, value, "image", budget); err == nil && found {
 				if image, imageErr := layerExImageFromValue(s, imageValue, budget); imageErr == nil {
 					paint.texture = &image
 				}
 			}
+			if rectValue, found, err := layerExMember(vm, s, value, "dstRect", budget); err == nil && found {
+				if rect, rectErr := layerExRectFromValue(vm, s, rectValue, budget); rectErr == nil {
+					paint.textureRect = rect
+					paint.hasTextureRect = true
+				}
+			}
 		case layerExPathGradient:
 			paint.color = uint32(layerExIntMember(vm, s, value, "centerColor", int64(paint.color), budget))
 			paint.color2 = uint32(layerExIntMember(vm, s, value, "surroundColor", int64(paint.color2), budget))
+			paint.gradientColors = []uint32{paint.color, paint.color2}
+			paint.gradientStops = []float64{0, 1}
+			var points []layerExPoint
+			if pointsValue, found, pointsErr := layerExMember(vm, s, value, "points", budget); pointsErr == nil && found {
+				points, _ = layerExPointsFromValue(vm, s, pointsValue, budget)
+			}
+			if len(points) > 0 {
+				bounds := layerExRectBounds([]layerExSubpath{{points: points}})
+				paint.center = layerExPoint{bounds.x + bounds.w/2, bounds.y + bounds.h/2}
+				paint.radius = math.Max(bounds.w, bounds.h) / 2
+			}
 			if centerValue, found, centerErr := layerExMember(vm, s, value, "centerPoint", budget); centerErr == nil && found {
 				paint.center, _ = layerExPointFromValue(vm, s, centerValue, budget)
 			}
-			if pointsValue, found, pointsErr := layerExMember(vm, s, value, "points", budget); pointsErr == nil && found {
-				if points, pointsErr := layerExPointsFromValue(vm, s, pointsValue, budget); pointsErr == nil && len(points) > 0 {
-					for _, point := range points {
-						paint.radius = math.Max(paint.radius, math.Hypot(point.x-paint.center.x, point.y-paint.center.y))
-					}
-				}
-			}
 			if colorsValue, found, colorsErr := layerExMember(vm, s, value, "surroundColors", budget); colorsErr == nil && found {
-				if lengthValue, lengthFound, lengthErr := layerExMember(vm, s, colorsValue, "length", budget); lengthErr == nil && lengthFound {
-					if length, lengthErr := lengthValue.Int(); lengthErr == nil && length > 0 {
-						if colorValue, colorFound, colorErr := layerExMember(vm, s, colorsValue, "0", budget); colorErr == nil && colorFound {
-							paint.color2 = layerExColor(colorValue, paint.color2)
-						}
-					}
+				if colors, colorsErr := layerExColorList(vm, s, colorsValue, budget); colorsErr == nil && len(colors) > 0 {
+					paint.color2 = colors[0]
+					paint.gradientColors[1] = colors[0]
 				}
 			}
 		}
@@ -1512,6 +1737,7 @@ func layerExPaintFromValue(vm *tjs.VM, s *Services, value tjs.Value, kind int, w
 			paint.width = layerExFloatMember(vm, s, widthOrOption, "width", 1, budget)
 			paint.dashStyle = int(layerExIntMember(vm, s, widthOrOption, "dashStyle", 0, budget))
 			paint.lineCap = int(layerExIntMember(vm, s, widthOrOption, "startCap", 0, budget))
+			paint.endCap = int(layerExIntMember(vm, s, widthOrOption, "endCap", int64(paint.lineCap), budget))
 			paint.lineJoin = int(layerExIntMember(vm, s, widthOrOption, "lineJoin", 0, budget))
 			paint.dashOffset = layerExFloatMember(vm, s, widthOrOption, "dashOffset", 0, budget)
 			if dash, found, err := layerExMember(vm, s, widthOrOption, "dashStyle", budget); err == nil && found && dash.Kind() == tjs.KindObject {
@@ -1528,12 +1754,11 @@ func layerExPaintFromValue(vm *tjs.VM, s *Services, value tjs.Value, kind int, w
 }
 
 func layerExDashValues(vm *tjs.VM, s *Services, value tjs.Value, budget *uint64) ([]float64, error) {
-	lengthValue, found, err := layerExMember(vm, s, value, "length", budget)
-	if err != nil || !found {
-		return nil, fmt.Errorf("dash pattern requires an array")
+	length, err := layerExSequenceLength(vm, s, value, budget)
+	if err != nil {
+		return nil, fmt.Errorf("dash pattern requires an array: %w", err)
 	}
-	length, err := lengthValue.Int()
-	if err != nil || length < 0 || length > 1<<16 {
+	if length < 0 || length > 1<<16 {
 		return nil, fmt.Errorf("invalid dash pattern length")
 	}
 	values := make([]float64, 0, int(length))
@@ -1549,6 +1774,27 @@ func layerExDashValues(vm *tjs.VM, s *Services, value tjs.Value, budget *uint64)
 		values = append(values, n)
 	}
 	return values, nil
+}
+func layerExColorList(vm *tjs.VM, s *Services, value tjs.Value, budget *uint64) ([]uint32, error) {
+	length, err := layerExSequenceLength(vm, s, value, budget)
+	if err != nil {
+		return nil, fmt.Errorf("color list requires an array: %w", err)
+	}
+	if length < 0 || length > 1<<16 {
+		return nil, fmt.Errorf("invalid color list length")
+	}
+	colors := make([]uint32, 0, int(length))
+	for i := int64(0); i < length; i++ {
+		item, found, err := layerExMember(vm, s, value, fmt.Sprintf("%d", i), budget)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
+		}
+		colors = append(colors, layerExColor(item, 0))
+	}
+	return colors, nil
 }
 
 func (s *Services) layerExAppearanceArgs(vm *tjs.VM, args []tjs.Value, index int, budget *uint64) (*layerExAppearance, error) {
@@ -2011,7 +2257,7 @@ func (s *Services) layerExDrawImage(vm *tjs.VM, l *Layer, id tjs.ObjectID, opera
 			return tjs.VoidValue, fmt.Errorf("LayerExDraw.drawImageStretch source size must be non-zero")
 		}
 		sourceRect = layerExRect{x: sourceValues[0], y: sourceValues[1], w: sourceValues[2], h: sourceValues[3]}
-		mapping = layerExAffine{a: dest[2] / sourceValues[2], d: dest[3] / sourceValues[3], tx: dest[0], ty: dest[1]}
+		mapping = layerExAffineValue(dest[2]/sourceValues[2], 0, 0, dest[3]/sourceValues[3], dest[0], dest[1])
 	case "drawImageAffine":
 		if len(args) != 12 {
 			return tjs.VoidValue, fmt.Errorf("LayerExDraw.drawImageAffine requires 12 arguments")
@@ -2027,19 +2273,19 @@ func (s *Services) layerExDrawImage(vm *tjs.VM, l *Layer, id tjs.ObjectID, opera
 		}
 		sourceRect = layerExRect{x: values[0], y: values[1], w: values[2], h: values[3]}
 		if values[4] != 0 {
-			mapping = layerExAffine{a: values[5], b: values[6], c: values[7], d: values[8], tx: values[9], ty: values[10]}
+			mapping = layerExAffineValue(values[5], values[6], values[7], values[8], values[9], values[10])
 		} else {
 			if sourceRect.w == 0 || sourceRect.h == 0 {
 				return tjs.VoidValue, fmt.Errorf("LayerExDraw.drawImageAffine source size must be non-zero")
 			}
-			mapping = layerExAffine{
-				a:  (values[7] - values[5]) / sourceRect.w,
-				b:  (values[8] - values[6]) / sourceRect.w,
-				c:  (values[9] - values[5]) / sourceRect.h,
-				d:  (values[10] - values[6]) / sourceRect.h,
-				tx: values[5],
-				ty: values[6],
-			}
+			mapping = layerExAffineValue(
+				(values[7]-values[5])/sourceRect.w,
+				(values[8]-values[6])/sourceRect.w,
+				(values[9]-values[5])/sourceRect.h,
+				(values[10]-values[6])/sourceRect.h,
+				values[5],
+				values[6],
+			)
 		}
 	default:
 		return tjs.VoidValue, fmt.Errorf("LayerExDraw.%s is unsupported", operation)
@@ -2130,6 +2376,9 @@ func (s *Services) gdiPlusNative(vm *tjs.VM, context tjs.Value, operation string
 	if operation == "@initialize" {
 		return tjs.VoidValue, nil
 	}
+	if strings.HasSuffix(operation, ".finalize") {
+		return tjs.VoidValue, nil
+	}
 	if operation == "addPrivateFont" {
 		if len(args) != 1 {
 			return tjs.VoidValue, fmt.Errorf("GdiPlus.addPrivateFont requires a storage name")
@@ -2205,14 +2454,19 @@ func (s *Services) layerExPointNative(vm *tjs.VM, context tjs.Value, operation s
 		return tjs.VoidValue, err
 	}
 	if operation == "@initialize" || operation == "PointF" {
-		point := layerExPoint{}
-		if len(args) == 2 {
-			point.x, err = layerExFloat(args[0], "GdiPlus.PointF.x")
-			if err == nil {
-				point.y, err = layerExFloat(args[1], "GdiPlus.PointF.y")
+		if len(args) < 2 {
+			if operation == "@initialize" {
+				if names, namesErr := vm.ClassNames(context); namesErr == nil && len(names) > 1 {
+					layerExStoreObject(s, id, "PointF", layerExPoint{})
+					return tjs.VoidValue, nil
+				}
 			}
-		} else if len(args) != 0 {
-			err = fmt.Errorf("GdiPlus.PointF requires zero or two arguments")
+			return tjs.VoidValue, fmt.Errorf("GdiPlus.PointF requires two arguments")
+		}
+		point := layerExPoint{}
+		point.x, err = layerExFloat(args[0], "GdiPlus.PointF.x")
+		if err == nil {
+			point.y, err = layerExFloat(args[1], "GdiPlus.PointF.y")
 		}
 		if err == nil {
 			layerExStoreObject(s, id, "PointF", point)
@@ -2260,6 +2514,13 @@ func (s *Services) layerExPointNative(vm *tjs.VM, context tjs.Value, operation s
 		if err != nil {
 			return layerExBooleanValue(false), nil
 		}
+		s.mu.RLock()
+		if current := s.LayerExObjects[id]; current != nil {
+			if currentPoint, valid := current.value.(layerExPoint); valid {
+				point = currentPoint
+			}
+		}
+		s.mu.RUnlock()
 		return layerExBooleanValue(point == other), nil
 	}
 	return tjs.VoidValue, fmt.Errorf("unknown GdiPlus.PointF operation %q", operation)
@@ -2271,29 +2532,38 @@ func (s *Services) layerExRectNative(vm *tjs.VM, context tjs.Value, operation st
 		return tjs.VoidValue, err
 	}
 	if operation == "@initialize" || operation == "RectF" {
+		if len(args) != 4 {
+			return tjs.VoidValue, fmt.Errorf("GdiPlus.RectF requires four arguments")
+		}
 		rect := layerExRect{}
-		switch len(args) {
-		case 0:
-		case 1:
-			rect, err = layerExRectFromValue(vm, s, args[0], budget)
-		case 4:
-			rect.x, err = layerExFloat(args[0], "GdiPlus.RectF.x")
-			if err == nil {
-				rect.y, err = layerExFloat(args[1], "GdiPlus.RectF.y")
-			}
-			if err == nil {
-				rect.w, err = layerExFloat(args[2], "GdiPlus.RectF.width")
-			}
-			if err == nil {
-				rect.h, err = layerExFloat(args[3], "GdiPlus.RectF.height")
-			}
-		default:
-			err = fmt.Errorf("GdiPlus.RectF requires zero, one, or four arguments")
+		rect.x, err = layerExFloat(args[0], "GdiPlus.RectF.x")
+		if err == nil {
+			rect.y, err = layerExFloat(args[1], "GdiPlus.RectF.y")
+		}
+		if err == nil {
+			rect.w, err = layerExFloat(args[2], "GdiPlus.RectF.width")
+		}
+		if err == nil {
+			rect.h, err = layerExFloat(args[3], "GdiPlus.RectF.height")
 		}
 		if err == nil {
 			layerExStoreObject(s, id, "RectF", rect)
 		}
 		return tjs.VoidValue, err
+	}
+	if operation == "UnionStatic" {
+		if len(args) != 3 {
+			return tjs.VoidValue, fmt.Errorf("GdiPlus.RectF.Union requires three rectangles")
+		}
+		first, err := layerExRectFromValue(vm, s, args[1], budget)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		second, err := layerExRectFromValue(vm, s, args[2], budget)
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		return layerExBooleanValue((first.w > 0 && first.h > 0) || (second.w > 0 && second.h > 0)), nil
 	}
 	if operation == "@invalidate" || operation == "finalize" {
 		s.mu.Lock()
@@ -2359,7 +2629,17 @@ func (s *Services) layerExRectNative(vm *tjs.VM, context tjs.Value, operation st
 			return layerExBooleanValue(false), nil
 		}
 		other, err := layerExRectFromValue(vm, s, args[0], budget)
-		return layerExBooleanValue(err == nil && rect == other), nil
+		if err != nil {
+			return layerExBooleanValue(false), nil
+		}
+		s.mu.RLock()
+		if current := s.LayerExObjects[id]; current != nil {
+			if currentRect, valid := current.value.(layerExRect); valid {
+				rect = currentRect
+			}
+		}
+		s.mu.RUnlock()
+		return layerExBooleanValue(rect == other), nil
 	case "Inflate":
 		if len(args) != 2 {
 			return tjs.VoidValue, fmt.Errorf("GdiPlus.RectF.Inflate requires two values")
@@ -2382,6 +2662,13 @@ func (s *Services) layerExRectNative(vm *tjs.VM, context tjs.Value, operation st
 		if err != nil {
 			return tjs.VoidValue, err
 		}
+		s.mu.RLock()
+		if current := s.LayerExObjects[id]; current != nil {
+			if currentRect, valid := current.value.(layerExRect); valid {
+				rect = currentRect
+			}
+		}
+		s.mu.RUnlock()
 		rect.x, rect.y, rect.w, rect.h = rect.x-point.x, rect.y-point.y, rect.w+2*point.x, rect.h+2*point.y
 		layerExStoreObject(s, id, "RectF", rect)
 	case "Offset":
@@ -2439,7 +2726,7 @@ func (s *Services) layerExMatrixNative(vm *tjs.VM, context tjs.Value, operation 
 			if pointErr != nil {
 				return tjs.VoidValue, pointErr
 			}
-			matrix = layerExAffine{a: rect.w, d: rect.h, tx: point.x, ty: point.y}
+			matrix = layerExAffineValue(rect.w, 0, 0, rect.h, point.x, point.y)
 		case 6:
 			values := make([]float64, 6)
 			for i := range values {
@@ -2448,11 +2735,11 @@ func (s *Services) layerExMatrixNative(vm *tjs.VM, context tjs.Value, operation 
 					return tjs.VoidValue, err
 				}
 			}
-			matrix = layerExAffine{a: values[0], b: values[1], c: values[2], d: values[3], tx: values[4], ty: values[5]}
+			matrix = layerExAffineValue(values[0], values[1], values[2], values[3], values[4], values[5])
 		default:
 			return tjs.VoidValue, fmt.Errorf("GdiPlus.Matrix requires zero, two, or six arguments")
 		}
-		layerExStoreObject(s, id, "Matrix", matrix)
+		layerExStoreObject(s, id, "Matrix", layerExMatrixState{matrix: matrix})
 		return tjs.VoidValue, nil
 	}
 	if operation == "@invalidate" || operation == "finalize" {
@@ -2467,7 +2754,12 @@ func (s *Services) layerExMatrixNative(vm *tjs.VM, context tjs.Value, operation 
 	if state == nil || state.kind != "Matrix" {
 		return tjs.VoidValue, fmt.Errorf("GdiPlus.Matrix object is unavailable")
 	}
-	matrix := state.value.(layerExAffine)
+	matrixState, ok := state.value.(layerExMatrixState)
+	if !ok {
+		return tjs.VoidValue, fmt.Errorf("GdiPlus.Matrix state is invalid")
+	}
+	matrix := matrixState.matrix
+	status := matrixState.status
 	if strings.HasPrefix(operation, "get:") {
 		switch strings.TrimPrefix(operation, "get:") {
 		case "m11":
@@ -2506,66 +2798,87 @@ func (s *Services) layerExMatrixNative(vm *tjs.VM, context tjs.Value, operation 
 				return tjs.VoidValue, err
 			}
 		}
-		matrix = layerExAffine{a: values[0], b: values[1], c: values[2], d: values[3], tx: values[4], ty: values[5]}
+		matrix = layerExAffineValue(values[0], values[1], values[2], values[3], values[4], values[5])
+		status = 0
 	case "GetLastStatus":
-		return tjs.IntegerValue(0), nil
+		result := status
+		status = 0
+		layerExStoreObject(s, id, "Matrix", layerExMatrixState{matrix: matrix, status: status})
+		return tjs.IntegerValue(result), nil
 	case "Invert":
-		var ok bool
-		matrix, ok = matrix.invert()
-		if !ok {
-			return tjs.IntegerValue(2), nil
+		var invertible bool
+		matrix, invertible = matrix.invert()
+		if !invertible {
+			status = 2
+			layerExStoreObject(s, id, "Matrix", layerExMatrixState{matrix: matrixState.matrix, status: status})
+			return tjs.IntegerValue(status), nil
 		}
+		status = 0
 	case "IsIdentity":
 		return layerExBooleanValue(matrix == layerExIdentity()), nil
 	case "IsInvertible":
 		_, ok := matrix.invert()
 		return layerExBooleanValue(ok), nil
 	case "Multiply":
-		if len(args) < 1 || len(args) > 2 {
-			return tjs.VoidValue, fmt.Errorf("GdiPlus.Matrix.Multiply requires a Matrix and optional order")
+		if len(args) != 2 {
+			return tjs.VoidValue, fmt.Errorf("GdiPlus.Matrix.Multiply requires a Matrix and order")
 		}
 		other, err := s.layerExMatrixFromValueWithVM(vm, args[0], budget)
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		order := int64(1)
-		if len(args) == 2 {
-			order, err = layerExInt(args[1], "GdiPlus.Matrix.Multiply order")
-			if err != nil {
-				return tjs.VoidValue, err
+		order, err := layerExInt(args[1], "GdiPlus.Matrix.Multiply order")
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		if layerExMatrixInvalidOrder(order) {
+			status = 2
+			layerExStoreObject(s, id, "Matrix", layerExMatrixState{matrix: matrix, status: status})
+			return tjs.IntegerValue(status), nil
+		}
+		s.mu.RLock()
+		if current := s.LayerExObjects[id]; current != nil {
+			if currentState, valid := current.value.(layerExMatrixState); valid {
+				matrix = currentState.matrix
 			}
 		}
+		s.mu.RUnlock()
 		if order == 0 {
-			matrix = other.multiply(matrix)
-		} else {
 			matrix = matrix.multiply(other)
+		} else {
+			matrix = other.multiply(matrix)
 		}
+		status = 0
 	case "Reset":
 		matrix = layerExIdentity()
+		status = 0
 	case "Rotate":
-		if len(args) < 1 || len(args) > 2 {
-			return tjs.VoidValue, fmt.Errorf("GdiPlus.Matrix.Rotate requires angle and optional order")
+		if len(args) != 2 {
+			return tjs.VoidValue, fmt.Errorf("GdiPlus.Matrix.Rotate requires angle and order")
 		}
 		angle, err := layerExFloat(args[0], "GdiPlus.Matrix.Rotate")
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		order := int64(1)
-		if len(args) == 2 {
-			order, err = layerExInt(args[1], "GdiPlus.Matrix.Rotate order")
-			if err != nil {
-				return tjs.VoidValue, err
-			}
+		order, err := layerExInt(args[1], "GdiPlus.Matrix.Rotate order")
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		if layerExMatrixInvalidOrder(order) {
+			status = 2
+			layerExStoreObject(s, id, "Matrix", layerExMatrixState{matrix: matrix, status: status})
+			return tjs.IntegerValue(status), nil
 		}
 		rotation := layerExRotation(angle)
 		if order == 0 {
-			matrix = rotation.multiply(matrix)
-		} else {
 			matrix = matrix.multiply(rotation)
+		} else {
+			matrix = rotation.multiply(matrix)
 		}
+		status = 0
 	case "RotateAt":
-		if len(args) < 2 || len(args) > 3 {
-			return tjs.VoidValue, fmt.Errorf("GdiPlus.Matrix.RotateAt requires angle, PointF, and optional order")
+		if len(args) != 3 {
+			return tjs.VoidValue, fmt.Errorf("GdiPlus.Matrix.RotateAt requires angle, PointF, and order")
 		}
 		angle, err := layerExFloat(args[0], "GdiPlus.Matrix.RotateAt")
 		if err != nil {
@@ -2575,23 +2888,25 @@ func (s *Services) layerExMatrixNative(vm *tjs.VM, context tjs.Value, operation 
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		rotation := layerExTranslation(point.x, point.y).multiply(layerExRotation(angle)).multiply(layerExTranslation(-point.x, -point.y))
-		if len(args) == 3 {
-			order, orderErr := layerExInt(args[2], "GdiPlus.Matrix.RotateAt order")
-			if orderErr != nil {
-				return tjs.VoidValue, orderErr
-			}
-			if order == 0 {
-				matrix = rotation.multiply(matrix)
-			} else {
-				matrix = matrix.multiply(rotation)
-			}
-		} else {
-			matrix = matrix.multiply(rotation)
+		order, err := layerExInt(args[2], "GdiPlus.Matrix.RotateAt order")
+		if err != nil {
+			return tjs.VoidValue, err
 		}
+		if layerExMatrixInvalidOrder(order) {
+			status = 2
+			layerExStoreObject(s, id, "Matrix", layerExMatrixState{matrix: matrix, status: status})
+			return tjs.IntegerValue(status), nil
+		}
+		rotation := layerExTranslation(point.x, point.y).multiply(layerExRotation(angle)).multiply(layerExTranslation(-point.x, -point.y))
+		if order == 0 {
+			matrix = matrix.multiply(rotation)
+		} else {
+			matrix = rotation.multiply(matrix)
+		}
+		status = 0
 	case "Scale":
-		if len(args) < 2 || len(args) > 3 {
-			return tjs.VoidValue, fmt.Errorf("GdiPlus.Matrix.Scale requires two values and optional order")
+		if len(args) != 3 {
+			return tjs.VoidValue, fmt.Errorf("GdiPlus.Matrix.Scale requires two values and order")
 		}
 		sx, err := layerExFloat(args[0], "GdiPlus.Matrix.Scale")
 		if err != nil {
@@ -2601,23 +2916,25 @@ func (s *Services) layerExMatrixNative(vm *tjs.VM, context tjs.Value, operation 
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		scale := layerExScale(sx, sy)
-		if len(args) == 3 {
-			order, orderErr := layerExInt(args[2], "GdiPlus.Matrix.Scale order")
-			if orderErr != nil {
-				return tjs.VoidValue, orderErr
-			}
-			if order == 0 {
-				matrix = scale.multiply(matrix)
-			} else {
-				matrix = matrix.multiply(scale)
-			}
-		} else {
-			matrix = matrix.multiply(scale)
+		order, err := layerExInt(args[2], "GdiPlus.Matrix.Scale order")
+		if err != nil {
+			return tjs.VoidValue, err
 		}
+		if layerExMatrixInvalidOrder(order) {
+			status = 2
+			layerExStoreObject(s, id, "Matrix", layerExMatrixState{matrix: matrix, status: status})
+			return tjs.IntegerValue(status), nil
+		}
+		scale := layerExScale(sx, sy)
+		if order == 0 {
+			matrix = matrix.multiply(scale)
+		} else {
+			matrix = scale.multiply(matrix)
+		}
+		status = 0
 	case "Shear":
-		if len(args) < 2 || len(args) > 3 {
-			return tjs.VoidValue, fmt.Errorf("GdiPlus.Matrix.Shear requires two values and optional order")
+		if len(args) != 3 {
+			return tjs.VoidValue, fmt.Errorf("GdiPlus.Matrix.Shear requires two values and order")
 		}
 		shx, err := layerExFloat(args[0], "GdiPlus.Matrix.Shear")
 		if err != nil {
@@ -2627,23 +2944,25 @@ func (s *Services) layerExMatrixNative(vm *tjs.VM, context tjs.Value, operation 
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		shear := layerExAffine{a: 1, b: shy, c: shx, d: 1}
-		if len(args) == 3 {
-			order, orderErr := layerExInt(args[2], "GdiPlus.Matrix.Shear order")
-			if orderErr != nil {
-				return tjs.VoidValue, orderErr
-			}
-			if order == 0 {
-				matrix = shear.multiply(matrix)
-			} else {
-				matrix = matrix.multiply(shear)
-			}
-		} else {
-			matrix = matrix.multiply(shear)
+		order, err := layerExInt(args[2], "GdiPlus.Matrix.Shear order")
+		if err != nil {
+			return tjs.VoidValue, err
 		}
+		if layerExMatrixInvalidOrder(order) {
+			status = 2
+			layerExStoreObject(s, id, "Matrix", layerExMatrixState{matrix: matrix, status: status})
+			return tjs.IntegerValue(status), nil
+		}
+		shear := layerExAffineValue(1, shy, shx, 1, 0, 0)
+		if order == 0 {
+			matrix = matrix.multiply(shear)
+		} else {
+			matrix = shear.multiply(matrix)
+		}
+		status = 0
 	case "Translate":
-		if len(args) < 2 || len(args) > 3 {
-			return tjs.VoidValue, fmt.Errorf("GdiPlus.Matrix.Translate requires two values and optional order")
+		if len(args) != 3 {
+			return tjs.VoidValue, fmt.Errorf("GdiPlus.Matrix.Translate requires two values and order")
 		}
 		tx, err := layerExFloat(args[0], "GdiPlus.Matrix.Translate")
 		if err != nil {
@@ -2653,25 +2972,27 @@ func (s *Services) layerExMatrixNative(vm *tjs.VM, context tjs.Value, operation 
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		translation := layerExTranslation(tx, ty)
-		if len(args) == 3 {
-			order, orderErr := layerExInt(args[2], "GdiPlus.Matrix.Translate order")
-			if orderErr != nil {
-				return tjs.VoidValue, orderErr
-			}
-			if order == 0 {
-				matrix = translation.multiply(matrix)
-			} else {
-				matrix = matrix.multiply(translation)
-			}
-		} else {
-			matrix = matrix.multiply(translation)
+		order, err := layerExInt(args[2], "GdiPlus.Matrix.Translate order")
+		if err != nil {
+			return tjs.VoidValue, err
 		}
+		if layerExMatrixInvalidOrder(order) {
+			status = 2
+			layerExStoreObject(s, id, "Matrix", layerExMatrixState{matrix: matrix, status: status})
+			return tjs.IntegerValue(status), nil
+		}
+		translation := layerExTranslation(tx, ty)
+		if order == 0 {
+			matrix = matrix.multiply(translation)
+		} else {
+			matrix = translation.multiply(matrix)
+		}
+		status = 0
 	default:
 		return tjs.VoidValue, fmt.Errorf("unknown GdiPlus.Matrix operation %q", operation)
 	}
-	layerExStoreObject(s, id, "Matrix", matrix)
-	return tjs.VoidValue, nil
+	layerExStoreObject(s, id, "Matrix", layerExMatrixState{matrix: matrix, status: status})
+	return tjs.IntegerValue(status), nil
 }
 
 func (s *Services) layerExMatrixFromValueWithVM(vm *tjs.VM, value tjs.Value, budget *uint64) (layerExAffine, error) {
@@ -2683,16 +3004,39 @@ func (s *Services) layerExMatrixFromValueWithVM(vm *tjs.VM, value tjs.Value, bud
 	state := s.LayerExObjects[value.ObjectRef().Object]
 	s.mu.RUnlock()
 	if state != nil && state.kind == "Matrix" {
-		return state.value.(layerExAffine), nil
+		matrixState, ok := state.value.(layerExMatrixState)
+		if !ok {
+			return layerExAffine{}, fmt.Errorf("Matrix state is invalid")
+		}
+		return matrixState.matrix, nil
 	}
-	return layerExAffine{
-		a:  layerExFloatMember(vm, s, value, "m11", 1, budget),
-		b:  layerExFloatMember(vm, s, value, "m12", 0, budget),
-		c:  layerExFloatMember(vm, s, value, "m21", 0, budget),
-		d:  layerExFloatMember(vm, s, value, "m22", 1, budget),
-		tx: layerExFloatMember(vm, s, value, "dx", 0, budget),
-		ty: layerExFloatMember(vm, s, value, "dy", 0, budget),
-	}, nil
+	names := [...]string{"m11", "m12", "m21", "m22", "dx", "dy"}
+	indices := [...]string{"0", "1", "2", "3", "4", "5"}
+	defaults := [6]float64{1, 0, 0, 1, 0, 0}
+	values := defaults
+	order := [...]int{3, 2, 1, 0, 5, 4}
+	for _, i := range order {
+		var member tjs.Value
+		var found bool
+		for pass := 0; pass < 2; pass++ {
+			var err error
+			member, found, err = layerExMember(vm, s, value, names[i], budget)
+			if err != nil {
+				return layerExAffine{}, err
+			}
+		}
+		if !found {
+			values[i] = layerExFloatMember(vm, s, value, indices[i], values[i], budget)
+			continue
+		}
+		parsed, parseErr := layerExFloat(member, "Matrix element")
+		if parseErr != nil {
+			values[i] = defaults[i]
+		} else {
+			values[i] = parsed
+		}
+	}
+	return layerExAffineValue(values[0], values[1], values[2], values[3], values[4], values[5]), nil
 }
 
 func (s *Services) layerExImageNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value, budget *uint64) (tjs.Value, error) {
@@ -3092,7 +3436,15 @@ func layerExRegisterNativeClassNamed(vm *tjs.VM, root tjs.Value, nativeName, scr
 	if err != nil {
 		return err
 	}
-	for _, method := range methods {
+	if nativeName != scriptName {
+		if err := vm.AddNativeClassAlias(class, scriptName); err != nil {
+			return err
+		}
+	}
+	allMethods := make([]string, 0, len(methods)+2)
+	allMethods = append(allMethods, scriptName, "finalize")
+	allMethods = append(allMethods, methods...)
+	for _, method := range allMethods {
 		if err := vm.RegisterNativeMethod(class, method, "GdiPlus."+scriptName+"."+method); err != nil {
 			return err
 		}
@@ -3204,7 +3556,14 @@ func installLayerExDrawNative(vm *tjs.VM, s *Services) error {
 	if err := layerExRegisterNativeClass(vm, root, "PointF", []string{"Equals"}, map[string]bool{"x": true, "y": true}); err != nil {
 		return err
 	}
-	if err := layerExRegisterNativeClass(vm, root, "RectF", []string{"Clone", "Equals", "Inflate", "InflatePoint", "IntersectsWith", "IsEmptyArea", "Offset", "Union"}, map[string]bool{"x": true, "y": true, "width": true, "height": true, "left": false, "top": false, "right": false, "bottom": false, "location": false, "bounds": false}); err != nil {
+	if err := layerExRegisterNativeClass(vm, root, "RectF", []string{"Clone", "Equals", "Inflate", "InflatePoint", "IntersectsWith", "IsEmptyArea", "Offset"}, map[string]bool{"x": true, "y": true, "width": true, "height": true, "left": false, "top": false, "right": false, "bottom": false, "location": false, "bounds": false}); err != nil {
+		return err
+	}
+	rectClass, err := vm.GetMember(root, "RectF", s, nil)
+	if err != nil {
+		return err
+	}
+	if err := vm.RegisterNativeStaticMethod(rectClass, "Union", "GdiPlus.RectF.UnionStatic"); err != nil {
 		return err
 	}
 	if err := layerExRegisterNativeClass(vm, root, "Matrix", []string{"OffsetX", "OffsetY", "Equals", "SetElements", "SetElemetns", "GetLastStatus", "Invert", "IsIdentity", "IsInvertible", "Multiply", "Reset", "Rotate", "RotateAt", "Scale", "Shear", "Translate"}, map[string]bool{"m11": false, "m12": false, "m21": false, "m22": false, "dx": false, "dy": false}); err != nil {
