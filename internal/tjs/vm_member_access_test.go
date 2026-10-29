@@ -18,6 +18,7 @@ class MissingMemberDispatchProbe {
 		}
 		return false;
 	}
+	function readVirtual() { return virtual; }
 }
 return new MissingMemberDispatchProbe();
 `)
@@ -52,15 +53,15 @@ return new MissingMemberDispatchProbe();
 		t.Fatalf("missing member API write = %v, %v, %v; want 23", got, found, err)
 	}
 
-	readProgram, err := compile("missing-member-read.tjs", `return proxy.virtual;`)
+	readProgram, err := compile("missing-member-read.tjs", `return proxy.virtual + "|" + proxy.readVirtual();`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	budget = 10000
 	budget = 10000
 	got, err = vm.Execute(&readProgram, vmTestHost{}, &budget)
-	if err != nil || got.IntegerValue() != 37 {
-		t.Fatalf("missing member read = %v, %v; want 37", got, err)
+	if err != nil || got.Text() != "37|37" {
+		t.Fatalf("missing member read = %v, %v; want 37|37", got, err)
 	}
 
 	writeProgram, err := compile("missing-member-write.tjs", `
@@ -138,6 +139,71 @@ func TestVMStringNameMemberAccessMatchesUTF16(t *testing.T) {
 }
 
 func TestVMMemberAccessGlobalClassPropertyAndMutation(t *testing.T) {
+	t.Run("class-method-uses-instance-fields", func(t *testing.T) {
+		got := executeVMSource(t, `
+class Matrix {
+		var m11 = 1;
+		var m14 = 0;
+		function scale(v) { m11 = v; m14 = 7; }
+		function transform(x) { return m11 * x + m14; }
+}
+var value = new Matrix();
+value.scale(0.5);
+return value.transform(10);
+`)
+		if n, err := got.Real(); err != nil || n != 12 {
+			t.Fatalf("class method instance fields = %v, %v; want 12", got, err)
+		}
+	})
+	t.Run("affine-multiply-keeps-homogeneous-denominator", func(t *testing.T) {
+		got := executeVMSource(t, `
+class Matrix {
+		var m11; var m12; var m13; var m14;
+		var m21; var m22; var m23; var m24;
+		var m31; var m32; var m33; var m34;
+		var m41; var m42; var m43; var m44;
+		function Matrix() {
+			m11=1; m12=0; m13=0; m14=0;
+			m21=0; m22=1; m23=0; m24=0;
+			m31=0; m32=0; m33=1; m34=0;
+			m41=0; m42=0; m43=0; m44=1;
+		}
+		function translate(x,y) { m14 += m11*x + m12*y; m24 += m21*x + m22*y; }
+		function scale(sx,sy) { m11*=sx; m21*=sx; m12*=sy; m22*=sy; }
+		function multiply(m) {
+			var x11=m11*m.m11+m12*m.m21+m14*m.m41;
+			var x21=m21*m.m11+m22*m.m21+m24*m.m41;
+			var x31=m31*m.m11+m32*m.m21+m33*m.m31+m34*m.m41;
+			var x41=m41*m.m11+m42*m.m21+m44*m.m41;
+			var x12=m11*m.m12+m12*m.m22+m14*m.m42;
+			var x22=m21*m.m12+m22*m.m22+m24*m.m42;
+			var x32=m31*m.m12+m32*m.m22+m33*m.m32+m34*m.m42;
+			var x42=m41*m.m12+m42*m.m22+m44*m.m42;
+			var x13=m11*m.m13+m12*m.m23+m13*m.m33+m14*m.m43;
+			var x23=m21*m.m13+m22*m.m23+m23*m.m33+m24*m.m43;
+			var x33=m31*m.m13+m32*m.m23+m33*m.m33+m34*m.m43;
+			var x43=m41*m.m13+m42*m.m23+m43*m.m33+m44*m.m43;
+			var x14=m11*m.m14+m12*m.m24+m14*m.m44;
+			var x24=m21*m.m14+m22*m.m24+m24*m.m44;
+			var x34=m31*m.m14+m32*m.m24+m34*m.m44;
+			var x44=m41*m.m14+m42*m.m24+m44*m.m44;
+			m11=x11, m21=x21; m31=x31; m41=x41;
+			m12=x12, m22=x22; m32=x32; m42=x42;
+			m13=x13, m23=x23; m33=x33; m43=x43;
+			m14=x14, m24=x24; m34=x34; m44=x44;
+		}
+}
+var outer=new Matrix(); outer.translate(135,-41.5);
+var inner=new Matrix(); inner.scale(0.5,0.5);
+outer.multiply(inner);
+return outer.m11 == 0.5 && outer.m22 == 0.5 && outer.m14 == 135 && outer.m24 == -41.5 && outer.m44 == 1;
+`)
+		truth, err := got.Truth()
+		if err != nil || !truth {
+			t.Fatalf("affine multiply result = %v; want true", got)
+		}
+	})
+
 	t.Run("global-fallback", func(t *testing.T) {
 		vm := NewVM()
 		vm.Globals["fromGlobals"] = IntegerValue(17)

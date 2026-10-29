@@ -22,10 +22,6 @@ return update();
 }
 
 func TestVMBlockLocalShadowsParameter(t *testing.T) {
-	// Kirikiri scripts redeclare a parameter name inside a loop body, as
-	// KAGEnvironment.entryEnvObject does when it merges an object definition's
-	// init list. The block-local declaration must shadow the parameter, not
-	// silently keep the caller's value.
 	got := executeVMSource(t, `
 function collect(name, list) {
 	var out = [];
@@ -57,5 +53,31 @@ return probe("outer");
 `)
 	if want := "inner|outer"; got.Text() != want {
 		t.Fatalf("block local scope = %q, want %q", got.Text(), want)
+	}
+}
+
+func TestVMWithScopeReadsMember(t *testing.T) {
+	got := executeVMSource(t, `
+var value = %[answer:42];
+with (value) {
+	return answer;
+}
+`)
+	if n, err := got.Int(); err != nil || n != 42 {
+		t.Fatalf("with-scope member = %v, %v; want 42", got, err)
+	}
+}
+
+func TestVMWithScopeAssignsMemberAndBindsFunction(t *testing.T) {
+	got := executeVMSource(t, `
+var value = %[];
+with (value) {
+	.x = 42;
+	.read = function() { return this.x; } incontextof value;
+}
+return value.read();
+`)
+	if n, err := got.Int(); err != nil || n != 42 {
+		t.Fatalf("with-scope assignment = %v, %v; want 42", got, err)
 	}
 }

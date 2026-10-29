@@ -577,6 +577,21 @@ func stringMethod(d *Dispatcher, value Value, name string) (Value, error) {
 					return VoidValue, err
 				}
 			}
+			if len(a) > 0 {
+				if r := regexpValue(a[0]); r != nil {
+					parts := r.SplitPurgeEmpty(v.Text(), purgeEmpty)
+					var o *Object
+					if d != nil && d.Table != nil {
+						o = d.Table.New(CategoryArray)
+					} else {
+						o = NewObject(CategoryArray)
+					}
+					for i, part := range parts {
+						_ = o.Set(strconv.Itoa(i), StringValue(part))
+					}
+					return ObjectValue(o.Ref()), nil
+				}
+			}
 			parts := splitTJSString(v.string, UTF16FromString(separator), purgeEmpty)
 			var o *Object
 			if d != nil && d.Table != nil {

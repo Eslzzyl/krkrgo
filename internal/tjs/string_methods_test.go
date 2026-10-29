@@ -33,6 +33,36 @@ func TestVMStringSplitPurgesEmptyFields(t *testing.T) {
 	}
 }
 
+func TestVMStringSplitRegexp(t *testing.T) {
+	got := executeVMSource(t, `
+var fields = "dress\t仕事服\tdiff\t1\tウエイトレス".split(/\t/);
+return fields.count + "|" + fields[0] + "|" + fields[1] + "|" + fields[2] + "|" + fields[3] + "|" + fields[4];`)
+	if got.Text() != "5|dress|仕事服|diff|1|ウエイトレス" {
+		t.Fatalf("regexp string split = %q", got.Text())
+	}
+}
+
+func TestDispatchStringSplitRegexp(t *testing.T) {
+	table := NewObjectTable()
+	d := NewDispatcher(table)
+	pattern, err := NewRegExp(table, `\t`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := d.CallMember(StringValue("a\tb\t"), "split", ObjectValue(pattern.Ref()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	array, ok := table.Lookup(result.ObjectRef().Object)
+	if !ok || array.Category != CategoryArray {
+		t.Fatalf("regexp string split result = %v, want array", result)
+	}
+	joined, err := d.CallMember(result, "join", StringValue("|"))
+	if err != nil || joined.Text() != "a|b|" {
+		t.Fatalf("dispatcher regexp string split = %q, %v", joined.Text(), err)
+	}
+}
+
 func TestVMStringEscapeUsesTJSStringLiteralEscapes(t *testing.T) {
 	got := executeVMSource(t, `
 var escaped = "quote: \" ' slash: \\ controls:\x07\b\f\n\r\t\v \x01 \x1b9".escape();

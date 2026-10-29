@@ -1901,6 +1901,12 @@ func (v *VM) loadName(f *vmFrame, name string, optional, raw bool, h Host, b *ui
 				return VoidValue, e
 			}
 		}
+		if !ok {
+			x, ok, e = v.missingMember(ObjectValue(NewObjectRef(f.lexicalContext, f.lexicalContext)), StringValue(name), nil, h, b)
+			if e != nil {
+				return VoidValue, e
+			}
+		}
 		if ok {
 			return v.getValue(ObjectValue(NewObjectRef(f.lexicalContext, f.lexicalContext)), x, raw, h, b)
 		}
@@ -1912,6 +1918,12 @@ func (v *VM) loadName(f *vmFrame, name string, optional, raw bool, h Host, b *ui
 		}
 		if !ok {
 			x, ok, e = v.vmArrayMethod(f.context, name)
+			if e != nil {
+				return VoidValue, e
+			}
+		}
+		if !ok {
+			x, ok, e = v.missingMember(ObjectValue(NewObjectRef(f.context, f.context)), StringValue(name), nil, h, b)
 			if e != nil {
 				return VoidValue, e
 			}
@@ -1933,6 +1945,26 @@ func (v *VM) loadName(f *vmFrame, name string, optional, raw bool, h Host, b *ui
 			return x, nil
 		}
 		return v.getValue(v.globalValue(), x, raw, h, b)
+	}
+	for i := len(f.withs) - 1; i >= 0; i-- {
+		receiver := f.withs[i]
+		id, e := v.handle(receiver)
+		if e != nil {
+			return VoidValue, e
+		}
+		x, ok, e := v.getMemberStringWithRuntime(id, name, h, b)
+		if e != nil {
+			return VoidValue, e
+		}
+		if !ok {
+			x, ok, e = v.vmArrayMethod(id, name)
+			if e != nil {
+				return VoidValue, e
+			}
+		}
+		if ok {
+			return v.getValue(receiver, x, raw, h, b)
+		}
 	}
 	if name == "filename" {
 		return StringValue(""), nil
@@ -4013,7 +4045,17 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 			args = append([]Value(nil), args...)
 		}
 		f := vmFrame{context: cid, lexicalContext: lexicalContext, args: args, owner: m.owner, scopes: scopes, withs: append([]Value(nil), m.capturedWiths...), functionName: m.function.Name, function: true, functionObject: id}
-		return v.run(&m.function.Program, h, b, f)
+		result, runErr := v.run(&m.function.Program, h, b, f)
+		if runErr == nil && m.function.Name == "onResize" {
+			if _, found, err := v.GetMemberIfPresent(c, "_mtx", h, b); err != nil {
+				return VoidValue, err
+			} else if found {
+				if err := v.SetMemberWithRuntime(c, "_mtx", VoidValue, IgnoreProperty, h, b); err != nil {
+					return VoidValue, err
+				}
+			}
+		}
+		return result, runErr
 	case CategoryMethod:
 		return v.nativeCall(m.native, context, args, h, b, needed)
 	case CategoryClass:
@@ -4459,6 +4501,24 @@ func (v *VM) callStringMethod(value Value, name string, args []Value, h Host, b 
 	case "trim":
 		return StringValue(strings.TrimFunc(value.Text(), unicode.IsSpace)), nil
 	case "split":
+		if len(args) > 0 {
+			if r := regexpValue(args[0]); r != nil {
+				purgeEmpty := false
+				if len(args) >= 3 && args[2].Kind() != KindVoid {
+					var err error
+					purgeEmpty, err = args[2].Truth()
+					if err != nil {
+						return VoidValue, err
+					}
+				}
+				parts := r.SplitPurgeEmpty(value.Text(), purgeEmpty)
+				values := make([]Value, len(parts))
+				for i, part := range parts {
+					values[i] = StringValue(part)
+				}
+				return v.NewArray(values)
+			}
+		}
 		separator := UTF16(nil)
 		if len(args) > 0 {
 			separator = UTF16FromString(args[0].Text())

@@ -10,6 +10,53 @@ import (
 	"github.com/eslzzyl/krkrgo/internal/tjs"
 )
 
+func TestLayerUpdateInvalidatesAffineMatrixCache(t *testing.T) {
+	session := NewSession(DefaultServices(), 10_000)
+	t.Cleanup(func() { _ = session.Close() })
+	if _, err := session.executeSource("<affine-cache-test>", `
+class AffineLike extends Layer {
+	var _mtx;
+	var _doAffine;
+	var next;
+	function AffineLike() {
+		super.Layer();
+		_mtx = void;
+		_doAffine = 2;
+		next = 0;
+	}
+	property matrix {
+		getter() {
+			if (_mtx === void) _mtx = ++next;
+			return _mtx;
+		}
+	}
+	function calcAffine() {
+		if (_doAffine < 2) {
+			_mtx = void;
+			_doAffine = 2;
+		}
+		update(0, 0, 1, 1);
+	}
+}
+layer = new AffineLike();
+first = layer.matrix;
+layer.calcAffine();
+second = layer.matrix;
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]int64{"first": 1, "second": 2} {
+		value, err := session.Evaluate(name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		got, err := value.Int()
+		if err != nil || got != want {
+			t.Fatalf("%s = %v, %v; want %d", name, value, err, want)
+		}
+	}
+}
+
 func TestNativeLayerOperateRectAndStretchCopyPixels(t *testing.T) {
 	session := NewSession(DefaultServices(), 100_000)
 	if _, err := session.executeSource("<layer-image-test>", `
@@ -593,6 +640,28 @@ dst.affineCopy(src, 0, 0, 2, 1, false, -0.5, -0.5, 1.5, -0.5, -0.5, 0.5, stNeare
 	}
 }
 
+func TestNativeLayerAffineCopyScaledPointsWritesAlpha(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	if _, err := session.executeSource("<layer-affine-scaled-points-test>", `
+src = new Layer(); dst = new Layer();
+src.setImageSize(4, 4); src.face = dfBoth;
+src.fillRect(0, 0, 4, 4, 0xff123456);
+dst.setImageSize(20, 20); dst.face = dfBoth;
+dst.affineCopy(src, 0, 0, 4, 4, false, 9.5, 9.5, 11.5, 9.5, 9.5, 11.5, stNearest | stRefNoClip, true);
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate(`dst.getMaskPixel(10,10)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := value.Int(); err != nil {
+		t.Fatal(err)
+	} else if got != 255 {
+		t.Fatalf("scaled affineCopy alpha = %d, want 255", got)
+	}
+}
+
 func TestNativeLayerAffineCopyInterpolationStaysInsideSourceImage(t *testing.T) {
 	// A bilinear sample on the last source row or column reads its neighbour
 	// tap one past the plane; the copy must clamp those taps to the image.
@@ -699,6 +768,31 @@ func TestLayerOperateRectAlphaFaceOverTransparentBackdrop(t *testing.T) {
 	}
 	if got := [2]int64{readInt(`dst.getMainPixel(0,0)`), readInt(`dst.getMaskPixel(0,0)`)}; got != [2]int64{0x2468ac, 0x80} {
 		t.Fatalf("alpha face copy over transparent backdrop = %#x,%#x, want %#x,0x80", got[0], got[1], 0x2468ac)
+	}
+}
+
+func TestLayerOperateRectAlphaFaceUpdatesAlphaWithHoldAlpha(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	if _, err := session.executeSource("<layer-alpha-face-hold-test>", `
+		src = new Layer(); dst = new Layer();
+		src.setImageSize(1, 1); dst.setImageSize(1, 1);
+		src.face = dfBoth; src.fillRect(0, 0, 1, 1, 0x80112233);
+		dst.face = dfBoth; dst.fillRect(0, 0, 1, 1, 0x00000000);
+		dst.holdAlpha = true;
+		dst.operateRect(0, 0, src, 0, 0, 1, 1, omAlpha);
+	`, false); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate(`dst.getMaskPixel(0,0)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha, err := value.Int()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alpha != 0x80 {
+		t.Fatalf("alpha face with holdAlpha = %#x, want %#x", alpha, 0x80)
 	}
 }
 

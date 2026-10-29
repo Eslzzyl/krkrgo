@@ -333,11 +333,7 @@ func layerOperationPixel(dst, src []byte, face, mode, opacity int32, holdAlpha b
 	// fully transparent backdrop takes the source pixels verbatim, which is what
 	// layered image composition (ui button state copies) relies on.
 	if face == layerFaceAlpha && mode < int32(LayerPSNormal) {
-		backdrop := dst[3]
 		blendPixelForTarget(dst, source[:], uint8(opacity), LayerAlpha, target)
-		if holdAlpha {
-			dst[3] = backdrop
-		}
 		return nil
 	}
 	if (face == layerFaceAddAlpha && mode < int32(LayerPSNormal)) || mode == int32(LayerAddAlpha) {

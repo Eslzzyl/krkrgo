@@ -315,6 +315,18 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 				}
 			}
 		}
+		// AffineLayer.calcAffine invalidates its cached matrix before calling
+		// Layer.update. Clear the cache here as well because repeated affine
+		// updates may leave the script-side dirty flag at its settled value.
+		if vm != nil {
+			if _, found, err := vm.GetMemberIfPresent(context, "_mtx", s, budget); err != nil {
+				return tjs.VoidValue, err
+			} else if found {
+				if err := vm.SetMemberWithRuntime(context, "_mtx", tjs.VoidValue, tjs.IgnoreProperty, s, budget); err != nil {
+					return tjs.VoidValue, err
+				}
+			}
+		}
 		// UpdateByScript queues onPaint until the next paint pass. A headless
 		// Session dispatches that callback when it captures the next frame.
 		s.queueLayerPaint(l)
