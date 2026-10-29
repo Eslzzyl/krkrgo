@@ -21,7 +21,15 @@ import (
 func (s *Services) decodeScriptStorage(data []byte) (string, error) {
 	encoding, explicit := s.scriptTextEncodingConfig()
 	if explicit {
-		return decodeScriptText(data, encoding)
+		source, err := decodeScriptText(data, encoding)
+		if err == nil {
+			return source, nil
+		}
+		trimmed := bytes.TrimSpace(data)
+		if bytes.HasPrefix(trimmed, []byte("(const)")) && utf8.Valid(data) {
+			return string(data), nil
+		}
+		return "", err
 	}
 	return decodeScriptStorageDefault(data)
 }
@@ -234,7 +242,6 @@ func legacyVMOps(vm *tjs.VM, host tjs.Host, budget *uint64) (func(tjs.Value, tjs
 func bindLegacyScriptFunctions(vm *tjs.VM, decoded *tjs.DecodedBytecode, global tjs.Value, host tjs.Host, budget *uint64) error {
 	return bindLegacyScriptFunctionsWithSource(vm, decoded, global, host, budget, "")
 }
-
 
 // declaredAtTopLevel reports whether a compiled object is declared directly in
 // the script's top-level context. Only those declarations reach the global

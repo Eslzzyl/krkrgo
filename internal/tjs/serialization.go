@@ -235,6 +235,48 @@ func (v *VM) SerializeStructString(value Value, budget *uint64) (string, error) 
 }
 func (v *VM) Serialize(value Value) (string, error) { return v.SerializeValue(value, true, nil) }
 
+func (v *VM) serializeArrayLines(receiver Value, core bool, args []Value, budget *uint64) (string, error) {
+	items, err := v.ArrayItems(receiver)
+	if err != nil {
+		return "", err
+	}
+
+	newline := "\r\n"
+	if !core && len(args) > 2 && !args[2].IsVoid() {
+		mode, err := args[2].Int()
+		if err != nil {
+			return "", err
+		}
+		if mode != 0 {
+			newline = "\n"
+		}
+	}
+
+	writer := &textWriter{budget: budget}
+	var text strings.Builder
+	for _, item := range items {
+		if err := writer.charge(); err != nil {
+			return "", err
+		}
+		switch item.Kind() {
+		case KindString:
+			text.WriteString(item.Text())
+		case KindInteger, KindReal:
+			if core {
+				text.WriteString(item.Text())
+			}
+		case KindVoid:
+			// Empty elements produce an empty line.
+		default:
+			if !core {
+				return "", errors.New("save2 requires string elements")
+			}
+		}
+		text.WriteString(newline)
+	}
+	return text.String(), nil
+}
+
 func (v *VM) serializationCall(name string, receiver Value, args []Value, h Host, b *uint64, needed bool) (Value, error) {
 	if !needed && strings.HasSuffix(name, "toStructString") {
 		return VoidValue, nil
@@ -261,6 +303,37 @@ func (v *VM) serializationCall(name string, receiver Value, args []Value, h Host
 			return VoidValue, e
 		}
 		return StringValue(text), nil
+	}
+	if strings.HasSuffix(name, ".save2") {
+		if len(args) == 0 {
+			return VoidValue, ErrBadParamCount
+		}
+		text, e := v.serializeArrayLines(receiver, false, args, b)
+		if e != nil {
+			return VoidValue, e
+		}
+		mode := StringValue("cp932")
+		if len(args) > 1 && !args[1].IsVoid() {
+			utf8Mode, err := args[1].Int()
+			if err != nil {
+				return VoidValue, err
+			}
+			if utf8Mode != 0 {
+				mode = StringValue("utf8")
+			}
+		}
+		if h == nil {
+			h = nopHost{}
+		}
+		if rr, ok := h.(HostResult); ok {
+			_, e = rr.CallWithResult(v, "TextStream.writePlugin", receiver, []Value{args[0], StringValue(text), mode}, b, true)
+		} else {
+			_, e = h.Call(v, "TextStream.writePlugin", []Value{args[0], StringValue(text), mode}, b)
+		}
+		if e != nil {
+			return VoidValue, e
+		}
+		return VoidValue, nil
 	}
 	core := strings.HasSuffix(name, ".save") || strings.HasSuffix(name, ".load") || strings.HasSuffix(name, ".saveStruct")
 	if strings.HasSuffix(name, ".load") {

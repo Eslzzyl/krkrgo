@@ -2779,6 +2779,17 @@ func (s *Services) call(vm *tjs.VM, name string, context tjs.Value, args []tjs.V
 		if e != nil {
 			return tjs.VoidValue, e
 		}
+		var offset uint64
+		if len(args) > 1 && !args[1].IsVoid() {
+			offset, e = scriptReadOffset(args[1].Text())
+			if e != nil {
+				return tjs.VoidValue, fmt.Errorf("TextStream.read: %w", e)
+			}
+			if offset > uint64(len(b)) {
+				return tjs.VoidValue, fmt.Errorf("TextStream.read: offset %d exceeds storage size %d", offset, len(b))
+			}
+			b = b[offset:]
+		}
 		u, e := assets.DecodeUnits(b)
 		if e != nil {
 			return tjs.VoidValue, e

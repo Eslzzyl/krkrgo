@@ -201,6 +201,22 @@ func TestScriptsExSafeEvalStorage(t *testing.T) {
 	}
 }
 
+func TestScriptsEvalStorageReadsUTF8SaveStructWithExplicitGBK(t *testing.T) {
+	session := newScriptsTestSession(t, map[string][]byte{
+		"save-struct.tjs": []byte(`(const) %["value" => "日本語"]`),
+	})
+	if _, err := session.Evaluate(`Scripts.textEncoding = "gbk"; global.save_value = Scripts.evalStorage("save-struct.tjs").value;`); err != nil {
+		t.Fatalf("UTF-8 save struct with GBK setting: %v", err)
+	}
+	got, err := session.Evaluate("global.save_value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Text() != "日本語" {
+		t.Fatalf("decoded save struct value = %q", got.Text())
+	}
+}
+
 func TestScriptsExRehashKeepsMembersResolvable(t *testing.T) {
 	session := newScriptsTestSession(t, nil)
 	if _, err := session.Evaluate(`Plugins.link("ScriptsEx.dll")`); err != nil {

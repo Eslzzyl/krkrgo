@@ -72,3 +72,52 @@ func TestNativeArrayLoadErrorsPreserveReceiver(t *testing.T) {
 		t.Fatalf("Array.load failure changed receiver: %v", got)
 	}
 }
+
+func TestNativeArraySave2WritesArrayLines(t *testing.T) {
+	session := newScriptsTestSession(t, nil)
+	saveDir := t.TempDir()
+	session.Services.SetSaveDir(saveDir)
+
+	if _, err := session.executeSource("<array-save2-test>", `
+Plugins.link("savestruct.dll");
+source = ["name=\"甲\"", "count=\"2\""];
+source.save2("settings.cfu");
+loaded = new Array();
+loaded.load("settings.cfu");
+`, false); err != nil {
+		t.Fatalf("Array.save2: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(saveDir, "settings.cfu"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data), "name=\"甲\"\r\ncount=\"2\"\r\n"; got != want {
+		t.Fatalf("Array.save2 data = %q, want %q", got, want)
+	}
+	got, err := session.Evaluate(`loaded.length == 2 && loaded[0] == "name=\"甲\"" && loaded[1] == "count=\"2\""`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := got.Truth(); !ok {
+		t.Fatalf("Array.save2 round trip = %v", got)
+	}
+}
+
+func TestTextStreamReadHonorsBinaryOffset(t *testing.T) {
+	session := newScriptsTestSession(t, nil)
+	saveDir := t.TempDir()
+	session.Services.SetSaveDir(saveDir)
+	data := append([]byte("BMP-prefix"), []byte(`%["answer" => 42]`)...)
+	if err := os.WriteFile(filepath.Join(saveDir, "thumbnail.bmp"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := session.Evaluate(`TextStream.read("thumbnail.bmp", "o10")`)
+	if err != nil {
+		t.Fatalf("TextStream.read offset: %v", err)
+	}
+	if got.Text() != `%["answer" => 42]` {
+		t.Fatalf("TextStream.read offset = %q", got.Text())
+	}
+}
