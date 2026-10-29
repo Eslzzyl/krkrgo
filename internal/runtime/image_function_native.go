@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"fmt"
-	"image"
 	"image/color"
 	"math"
 	"strconv"
@@ -88,6 +87,25 @@ func imageIntersect(a, b scriptRect) (scriptRect, bool) {
 func imageBounds(b *Bitmap) scriptRect {
 	return imageRect(0, 0, int32(b.Width), int32(b.Height))
 }
+func imageRectValue(s *Services, vm *tjs.VM, rect scriptRect, updated bool) (tjs.Value, error) {
+	if !updated {
+		return tjs.VoidValue, nil
+	}
+	if vm == nil {
+		return tjs.VoidValue, fmt.Errorf("ImageFunction result requires a VM")
+	}
+	global := tjs.ObjectValue(tjs.NewObjectRef(0, 0))
+	class, err := vm.GetMember(global, "Rect", s, nil)
+	if err != nil {
+		return tjs.VoidValue, err
+	}
+	return vm.Construct(class, []tjs.Value{
+		tjs.IntegerValue(int64(rect.left)),
+		tjs.IntegerValue(int64(rect.top)),
+		tjs.IntegerValue(int64(rect.right)),
+		tjs.IntegerValue(int64(rect.bottom)),
+	}, s, nil)
+}
 
 func imageClip(s *Services, vm *tjs.VM, value tjs.Value, b *Bitmap, operation string) (scriptRect, bool, error) {
 	clip, err := imageOptionalRect(s, vm, value, imageBounds(b), operation)
@@ -124,16 +142,17 @@ func imageBlendMode(mode, face int64) (LayerType, LayerType, error) {
 	if mode == 128 { // omAuto
 		mode = int64(LayerAlpha)
 	}
-	if face != 0 && face != 1 && face != 4 { // dfAlpha, dfOpaque, dfAddAlpha
-		return 0, 0, imageFunctionUnsupported(fmt.Sprintf("draw face %d", face))
+	if face != 0 && face != 1 && face != 4 {
+		face = 0
 	}
 	if mode < int64(LayerAlpha) || mode > int64(LayerPSExclusion) {
 		return 0, 0, imageFunctionUnsupported(fmt.Sprintf("blend mode %d", mode))
 	}
+	target := faceToTarget(face)
 	if mode == int64(LayerAddAlpha) && face == 0 {
-		return 0, 0, imageFunctionUnsupported("add-alpha mode on alpha destination")
+		target = LayerAddAlpha
 	}
-	return LayerType(mode), LayerType(faceToTarget(face)), nil
+	return LayerType(mode), target, nil
 }
 
 func faceToTarget(face int64) LayerType {
@@ -148,6 +167,10 @@ func faceToTarget(face int64) LayerType {
 }
 
 func imageBlend(dst, src []byte, mode, face, opa int64) error {
+	return imageBlendWithHDA(dst, src, mode, face, opa, false)
+}
+
+func imageBlendWithHDA(dst, src []byte, mode, face, opa int64, hda bool) error {
 	typ, target, err := imageBlendMode(mode, face)
 	if err != nil {
 		return err
@@ -155,8 +178,263 @@ func imageBlend(dst, src []byte, mode, face, opa int64) error {
 	if opa < 0 || opa > 255 {
 		return fmt.Errorf("ImageFunction opacity %d outside 0..255", opa)
 	}
+	destinationAlpha := dst[3]
 	blendPixelForTarget(dst, src, uint8(opa), typ, target)
+	if hda {
+		dst[3] = destinationAlpha
+	}
 	return nil
+}
+func imageBlendTargetWithHDA(dst, src []byte, opacity int64, mode, target LayerType, hda bool) {
+	destinationAlpha := dst[3]
+	blendPixelForTarget(dst, src, uint8(opacity), mode, target)
+	if hda {
+		dst[3] = destinationAlpha
+	}
+}
+
+func imageSampleRGBA(source []byte, stride int, rect scriptRect, x, y float64, filter int64) [4]byte {
+	width, height := int(rect.right-rect.left), int(rect.bottom-rect.top)
+	clampX := func(value int) int {
+		if value < int(rect.left) {
+			return int(rect.left)
+		}
+		if value >= int(rect.right) {
+			return int(rect.right) - 1
+		}
+		return value
+	}
+	clampY := func(value int) int {
+		if value < int(rect.top) {
+			return int(rect.top)
+		}
+		if value >= int(rect.bottom) {
+			return int(rect.bottom) - 1
+		}
+		return value
+	}
+	if filter == 0 || width == 1 || height == 1 {
+		ix := clampX(int(math.Floor(x + 0.5)))
+		iy := clampY(int(math.Floor(y + 0.5)))
+		index := (iy*stride + ix) * 4
+		return [4]byte{source[index], source[index+1], source[index+2], source[index+3]}
+	}
+	x0 := int(math.Floor(x))
+	y0 := int(math.Floor(y))
+	fx, fy := x-float64(x0), y-float64(y0)
+	x1, y1 := x0+1, y0+1
+	x0, x1 = clampX(x0), clampX(x1)
+	y0, y1 = clampY(y0), clampY(y1)
+	topLeft := (y0*stride + x0) * 4
+	topRight := (y0*stride + x1) * 4
+	bottomLeft := (y1*stride + x0) * 4
+	bottomRight := (y1*stride + x1) * 4
+	return bilinearRGBA(source, int64(topLeft), int64(topRight), int64(bottomLeft), int64(bottomRight), fx, fy, false)
+}
+
+type imageAxisWeight struct {
+	index  int
+	weight float64
+}
+
+func imageFilterRadius(filter int64) float64 {
+	switch filter & 0xffff {
+	case 3, 5:
+		return 2
+	case 6, 7:
+		return 2
+	case 8, 9:
+		return 3
+	case 10, 11:
+		return 2
+	case 12, 13:
+		return 3
+	case 16, 17:
+		return 2
+	case 18, 19:
+		return 4
+	default:
+		return 1
+	}
+}
+
+func imageFilterWeight(filter int64, distance, typeOpt float64) float64 {
+	x := math.Abs(distance)
+	switch filter & 0xffff {
+	case 1, 2, 4:
+		if x < 1 {
+			return 1 - x
+		}
+	case 3, 5:
+		coeff := typeOpt
+		p0, p1 := coeff+3, coeff+2
+		p2, p3, p4 := -coeff*4, coeff*8, coeff*5
+		if x <= 1 {
+			return 1 - p0*x*x + p1*x*x*x
+		}
+		if x <= 2 {
+			return p2 + p3*x - p4*x*x + coeff*x*x*x
+		}
+	case 6, 7:
+		if x < 1e-12 {
+			return 1
+		}
+		if x < 2 {
+			return math.Sin(math.Pi*distance) * math.Sin(math.Pi*distance/2) / (math.Pi * math.Pi * distance * distance / 2)
+		}
+	case 8, 9:
+		if x < 1e-12 {
+			return 1
+		}
+		if x < 3 {
+			return math.Sin(math.Pi*distance) * math.Sin(math.Pi*distance/3) / (math.Pi * math.Pi * distance * distance / 3)
+		}
+	case 10, 11:
+		if x <= 1 {
+			return x*x*x - x*x*9/5 - x/5 + 1
+		}
+		if x <= 2 {
+			return -x*x*x/3 + x*x*9/5 - x*46/15 + 8/5
+		}
+	case 12, 13:
+		if x <= 1 {
+			return x*x*x*13/11 - x*x*453/209 - x*3/209 + 1
+		}
+		if x <= 2 {
+			return -x*x*x*6/11 + x*x*612/209 - x*1038/209 + 540.0/209
+		}
+		if x <= 3 {
+			return x*x*x/11 - x*x*159/209 + x*434/209 - 384.0/209
+		}
+	case 16, 17:
+		if x <= 2 {
+			return math.Exp(-2*x*x) * math.Sqrt(2/math.Pi)
+		}
+	case 18, 19:
+		if x < 1e-12 {
+			return 1
+		}
+		if x < 4 {
+			return (0.42 + 0.5*math.Cos(math.Pi*x/4) + 0.08*math.Cos(2*math.Pi*x/4)) *
+				(math.Sin(math.Pi*x) / (math.Pi * x))
+		}
+	}
+	return 0
+}
+
+func imageAxisWeights(center, sourceStart, sourceEnd, sourceLength, destinationLength float64, filter int64, typeOpt float64) []imageAxisWeight {
+	radius := imageFilterRadius(filter)
+	distanceScale := 1.0
+	if sourceLength > destinationLength {
+		radius *= sourceLength / destinationLength
+		distanceScale = destinationLength / sourceLength
+	}
+	left := int(math.Floor(center - radius))
+	right := int(math.Floor(center + radius))
+	weights := make([]imageAxisWeight, 0, max(1, right-left))
+	for index := left; index < right; index++ {
+		distance := (float64(index) + 0.5 - center) * distanceScale
+		weight := imageFilterWeight(filter, distance, typeOpt)
+		if weight == 0 {
+			continue
+		}
+		clamped := index
+		if clamped < int(sourceStart) {
+			clamped = int(sourceStart)
+		}
+		if clamped >= int(sourceEnd) {
+			clamped = int(sourceEnd) - 1
+		}
+		found := false
+		for position := range weights {
+			if weights[position].index == clamped {
+				weights[position].weight += weight
+				found = true
+				break
+			}
+		}
+		if !found {
+			weights = append(weights, imageAxisWeight{index: clamped, weight: weight})
+		}
+	}
+	sum := 0.0
+	for _, item := range weights {
+		sum += item.weight
+	}
+	if sum == 0 {
+		return []imageAxisWeight{{index: max(int(sourceStart), min(int(sourceEnd)-1, int(math.Floor(center)))), weight: 1}}
+	}
+	for position := range weights {
+		weights[position].weight /= sum
+	}
+	return weights
+}
+
+func imageAreaAxisWeights(center, sourceStart, sourceEnd, sourceLength, destinationLength float64) []imageAxisWeight {
+	if sourceLength <= destinationLength {
+		return imageAxisWeights(center, sourceStart, sourceEnd, sourceLength, destinationLength, 2, 0)
+	}
+	scale := sourceLength / destinationLength
+	left, right := center-scale/2, center+scale/2
+	start := int(math.Floor(left - 0.5))
+	end := int(math.Ceil(right - 0.5))
+	weights := make([]imageAxisWeight, 0, max(1, end-start+1))
+	for index := start; index <= end; index++ {
+		pixelLeft, pixelRight := float64(index), float64(index+1)
+		overlap := math.Min(pixelRight, right) - math.Max(pixelLeft, left)
+		if overlap <= 0 {
+			continue
+		}
+		clamped := index
+		if clamped < int(sourceStart) {
+			clamped = int(sourceStart)
+		}
+		if clamped >= int(sourceEnd) {
+			clamped = int(sourceEnd) - 1
+		}
+		found := false
+		for position := range weights {
+			if weights[position].index == clamped {
+				weights[position].weight += overlap / scale
+				found = true
+				break
+			}
+		}
+		if !found {
+			weights = append(weights, imageAxisWeight{index: clamped, weight: overlap / scale})
+		}
+	}
+	return weights
+}
+
+func imageSampleStretchRGBA(source []byte, stride int, rect scriptRect, x, y, destinationWidth, destinationHeight float64, filter int64, typeOpt float64) [4]byte {
+	if filter == 0 {
+		return imageSampleRGBA(source, stride, rect, x, y, 0)
+	}
+	centerX, centerY := x+0.5, y+0.5
+	sourceWidth, sourceHeight := float64(rect.right-rect.left), float64(rect.bottom-rect.top)
+	filterID := filter & 0xffff
+	xWeights := imageAxisWeights(centerX, float64(rect.left), float64(rect.right), sourceWidth, destinationWidth, filterID, typeOpt)
+	yWeights := imageAxisWeights(centerY, float64(rect.top), float64(rect.bottom), sourceHeight, destinationHeight, filterID, typeOpt)
+	if filterID == 14 || filterID == 15 {
+		xWeights = imageAreaAxisWeights(centerX, float64(rect.left), float64(rect.right), sourceWidth, destinationWidth)
+		yWeights = imageAreaAxisWeights(centerY, float64(rect.top), float64(rect.bottom), sourceHeight, destinationHeight)
+	}
+	var values [4]float64
+	for _, yw := range yWeights {
+		for _, xw := range xWeights {
+			index := (yw.index*stride + xw.index) * 4
+			weight := yw.weight * xw.weight
+			for channel := range values {
+				values[channel] += float64(source[index+channel]) * weight
+			}
+		}
+	}
+	var pixel [4]byte
+	for channel, value := range values {
+		pixel[channel] = imageClampByte(int64(math.Round(value)))
+	}
+	return pixel
 }
 
 func imageCopySource(src *Bitmap, same bool) []byte {
@@ -263,9 +541,6 @@ func (s *Services) imageOperateRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, er
 	if err != nil {
 		return tjs.VoidValue, err
 	}
-	if hda {
-		return tjs.VoidValue, imageFunctionUnsupported("hda=true")
-	}
 	if _, _, err := imageBlendMode(mode, face); err != nil {
 		return tjs.VoidValue, err
 	}
@@ -274,22 +549,23 @@ func (s *Services) imageOperateRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, er
 		return tjs.VoidValue, nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	source := imageCopySource(src, dstID == srcID)
 	for y := dr.top; y < dr.bottom; y++ {
 		for x := dr.left; x < dr.right; x++ {
 			sx := sr.left + (x - dr.left)
 			sy := sr.top + (y - dr.top)
+
 			si := (int(sy)*int(src.deviceWidth()) + int(sx)) * 4
 			dstPixel := append([]byte(nil), dst.blockAt(int64(x), int64(y))...)
-			if err := imageBlend(dstPixel, source[si:si+4], mode, face, opa); err != nil {
+			if err := imageBlendWithHDA(dstPixel, source[si:si+4], mode, face, opa, hda); err != nil {
+				s.mu.Unlock()
 				return tjs.VoidValue, err
 			}
 			dst.setBlock(int64(x), int64(y), dstPixel)
 		}
 	}
-	dst.markDirty()
-	return tjs.VoidValue, nil
+	s.mu.Unlock()
+	return imageRectValue(s, vm, dr, true)
 }
 
 func valueAt(args []tjs.Value, index int) tjs.Value {
@@ -299,7 +575,35 @@ func valueAt(args []tjs.Value, index int) tjs.Value {
 	return args[index]
 }
 
-func (s *Services) imageStretch(dst, src *Bitmap, dstID, srcID tjs.ObjectID, dr, sr, clip scriptRect, mode, face, opa int64) error {
+func imageStretchResult(dst *Bitmap, dr, sr, clip scriptRect, filter int64) (scriptRect, bool) {
+	if dr.left > dr.right {
+		dr.left, dr.right = dr.right, dr.left
+	}
+	if dr.top > dr.bottom {
+		dr.top, dr.bottom = dr.bottom, dr.top
+	}
+	if sr.left > sr.right {
+		sr.left, sr.right = sr.right, sr.left
+	}
+	if sr.top > sr.bottom {
+		sr.top, sr.bottom = sr.bottom, sr.top
+	}
+	if dr.right <= dr.left || dr.bottom <= dr.top || sr.right <= sr.left || sr.bottom <= sr.top {
+		return scriptRect{}, false
+	}
+	clip, ok := imageIntersect(clip, imageBounds(dst))
+	if !ok {
+		return scriptRect{}, false
+	}
+	result, ok := imageIntersect(dr, clip)
+	if filter&0xffff >= 14 && filter&0xffff <= 15 &&
+		(dr.right-dr.left > sr.right-sr.left || dr.bottom-dr.top > sr.bottom-sr.top) {
+		return scriptRect{}, false
+	}
+	return result, ok
+}
+
+func (s *Services) imageStretch(dst, src *Bitmap, dstID, srcID tjs.ObjectID, dr, sr, clip scriptRect, mode, face, opa, filter int64, typeOpt float64, hda bool) error {
 	if dr.left > dr.right {
 		dr.left, dr.right = dr.right, dr.left
 	}
@@ -315,8 +619,16 @@ func (s *Services) imageStretch(dst, src *Bitmap, dstID, srcID tjs.ObjectID, dr,
 	if dr.right <= dr.left || dr.bottom <= dr.top || sr.right <= sr.left || sr.bottom <= sr.top {
 		return nil
 	}
+	filter &= 0xffff
+	if filter < 0 || filter > 19 {
+		return imageFunctionUnsupported(fmt.Sprintf("stretch type %d", filter))
+	}
 	if sr.left < 0 || sr.top < 0 || sr.right > int32(src.Width) || sr.bottom > int32(src.Height) {
 		return imageFunctionUnsupported("stretch source rectangle outside source bitmap")
+	}
+	if (filter == 14 || filter == 15) &&
+		(dr.right-dr.left > sr.right-sr.left || dr.bottom-dr.top > sr.bottom-sr.top) {
+		return nil
 	}
 	clip, ok := imageIntersect(clip, imageBounds(dst))
 	if !ok {
@@ -330,20 +642,14 @@ func (s *Services) imageStretch(dst, src *Bitmap, dstID, srcID tjs.ObjectID, dr,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	source := imageCopySource(src, dstID == srcID)
-	mapDW, mapDH := int64(orig.right-orig.left), int64(orig.bottom-orig.top)
+	mapDW, mapDH := float64(orig.right-orig.left), float64(orig.bottom-orig.top)
 	for y := dr.top; y < dr.bottom; y++ {
 		for x := dr.left; x < dr.right; x++ {
-			sx := sr.left + int32(int64(x-orig.left)*int64(sr.right-sr.left)/mapDW)
-			sy := sr.top + int32(int64(y-orig.top)*int64(sr.bottom-sr.top)/mapDH)
-			if sx >= sr.right {
-				sx = sr.right - 1
-			}
-			if sy >= sr.bottom {
-				sy = sr.bottom - 1
-			}
-			si := (int(sy)*int(src.deviceWidth()) + int(sx)) * 4
+			sourceX := float64(sr.left) + (float64(x-orig.left)+0.5)*float64(sr.right-sr.left)/mapDW - 0.5
+			sourceY := float64(sr.top) + (float64(y-orig.top)+0.5)*float64(sr.bottom-sr.top)/mapDH - 0.5
+			sample := imageSampleStretchRGBA(source, int(src.deviceWidth()), sr, sourceX, sourceY, mapDW, mapDH, filter, typeOpt)
 			dstPixel := append([]byte(nil), dst.blockAt(int64(x), int64(y))...)
-			if err := imageBlend(dstPixel, source[si:si+4], mode, face, opa); err != nil {
+			if err := imageBlendWithHDA(dstPixel, sample[:], mode, face, opa, hda); err != nil {
 				return err
 			}
 			dst.setBlock(int64(x), int64(y), dstPixel)
@@ -353,15 +659,47 @@ func (s *Services) imageStretch(dst, src *Bitmap, dstID, srcID tjs.ObjectID, dr,
 	return nil
 }
 
+func imageAffineResult(dst *Bitmap, clip scriptRect, corners [4][2]float64) (scriptRect, bool) {
+	minX, maxX := corners[0][0], corners[0][0]
+	minY, maxY := corners[0][1], corners[0][1]
+	for _, corner := range corners[1:] {
+		minX, maxX = math.Min(minX, corner[0]), math.Max(maxX, corner[0])
+		minY, maxY = math.Min(minY, corner[1]), math.Max(maxY, corner[1])
+	}
+	clip, ok := imageIntersect(clip, imageBounds(dst))
+	if !ok || maxX <= float64(clip.left) || minX >= float64(clip.right) ||
+		maxY <= float64(clip.top) || minY >= float64(clip.bottom) {
+		return scriptRect{}, false
+	}
+	result := clip
+	if minX > float64(result.left) {
+		result.left = int32(math.Ceil(minX))
+	}
+	if maxX < float64(result.right) {
+		result.right = int32(math.Ceil(maxX))
+	}
+	if minY > float64(result.top) {
+		result.top = int32(math.Ceil(minY))
+	}
+	if maxY < float64(result.bottom) {
+		result.bottom = int32(math.Ceil(maxY))
+	}
+	return result, result.left < result.right && result.top < result.bottom
+}
+
 // imageAffine applies an affine matrix to source pixel centers. The scan is
 // limited to the transformed source bounds intersected with the destination
 // clip, so its work and any overlap snapshot are bounded by the bitmaps.
-func (s *Services) imageAffine(dst, src *Bitmap, dstID, srcID tjs.ObjectID, matrix [6]float64, sr, clip scriptRect, mode, face, opa int64) error {
+func (s *Services) imageAffine(dst, src *Bitmap, dstID, srcID tjs.ObjectID, matrix [6]float64, sr, clip scriptRect, mode, face, opa, filter int64, hda bool) error {
 	if sr.left >= sr.right || sr.top >= sr.bottom {
 		return nil
 	}
 	if sr.left < 0 || sr.top < 0 || sr.right > int32(src.Width) || sr.bottom > int32(src.Height) {
 		return imageFunctionUnsupported("affine source rectangle outside source bitmap")
+	}
+	filter &= 0xffff
+	if filter < 0 || filter > 19 {
+		return imageFunctionUnsupported(fmt.Sprintf("affine type %d", filter))
 	}
 
 	a, b, c, d, tx, ty := matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]
@@ -425,8 +763,7 @@ func (s *Services) imageAffine(dst, src *Bitmap, dstID, srcID tjs.ObjectID, matr
 		return nil
 	}
 
-	blendType, target, err := imageBlendMode(mode, face)
-	if err != nil {
+	if _, _, err := imageBlendMode(mode, face); err != nil {
 		return err
 	}
 	if opa < 0 || opa > 255 {
@@ -445,12 +782,104 @@ func (s *Services) imageAffine(dst, src *Bitmap, dstID, srcID tjs.ObjectID, matr
 				sx < -0.5 || sx >= sourceWidth-0.5 || sy < -0.5 || sy >= sourceHeight-0.5 {
 				continue
 			}
-			sourceX := sr.left + int32(math.Floor(sx+0.5))
-			sourceY := sr.top + int32(math.Floor(sy+0.5))
-			si := (int(sourceY)*int(src.deviceWidth()) + int(sourceX)) * 4
+			sourceX := float64(sr.left) + sx
+			sourceY := float64(sr.top) + sy
+			sample := imageSampleRGBA(source, int(src.deviceWidth()), sr, sourceX, sourceY, filter)
 			dstPixel := append([]byte(nil), dst.blockAt(int64(x), int64(y))...)
-			blendPixelForTarget(dstPixel, source[si:si+4], uint8(opa), blendType, target)
+			if err := imageBlendWithHDA(dstPixel, sample[:], mode, face, opa, hda); err != nil {
+				return err
+			}
 			dst.setBlock(int64(x), int64(y), dstPixel)
+		}
+	}
+	dst.markDirty()
+	return nil
+}
+
+func (s *Services) imagePointAffine(dst, src *Bitmap, dstID, srcID tjs.ObjectID, points [6]float64, sr, clip scriptRect, mode, face, opa, filter int64, hda bool) error {
+	if sr.left >= sr.right || sr.top >= sr.bottom {
+		return nil
+	}
+	if sr.left < 0 || sr.top < 0 || sr.right > int32(src.Width) || sr.bottom > int32(src.Height) {
+		return imageFunctionUnsupported("point affine source rectangle outside source bitmap")
+	}
+	filter &= 0xffff
+	if filter < 0 || filter > 19 {
+		return imageFunctionUnsupported(fmt.Sprintf("point affine type %d", filter))
+	}
+	sourceWidth := float64(sr.right - sr.left)
+	sourceHeight := float64(sr.bottom - sr.top)
+	exX := (points[2] - points[0]) / sourceWidth
+	exY := (points[3] - points[1]) / sourceWidth
+	eyX := (points[4] - points[0]) / sourceHeight
+	eyY := (points[5] - points[1]) / sourceHeight
+	determinant := exX*eyY - exY*eyX
+	if determinant == 0 || math.IsNaN(determinant) || math.IsInf(determinant, 0) {
+		return nil
+	}
+	corners := [4][2]float64{
+		{points[0], points[1]},
+		{points[2], points[3]},
+		{points[2] + points[4] - points[0], points[3] + points[5] - points[1]},
+		{points[4], points[5]},
+	}
+	minX, maxX := corners[0][0], corners[0][0]
+	minY, maxY := corners[0][1], corners[0][1]
+	for _, corner := range corners[1:] {
+		if math.IsNaN(corner[0]) || math.IsInf(corner[0], 0) || math.IsNaN(corner[1]) || math.IsInf(corner[1], 0) {
+			return imageFunctionUnsupported("point affine transform outside safe numeric range")
+		}
+		minX, maxX = math.Min(minX, corner[0]), math.Max(maxX, corner[0])
+		minY, maxY = math.Min(minY, corner[1]), math.Max(maxY, corner[1])
+	}
+	clip, ok := imageIntersect(clip, imageBounds(dst))
+	if !ok || maxX <= float64(clip.left) || minX >= float64(clip.right) ||
+		maxY <= float64(clip.top) || minY >= float64(clip.bottom) {
+		return nil
+	}
+	left, top := int64(clip.left), int64(clip.top)
+	right, bottom := int64(clip.right), int64(clip.bottom)
+	if minX > float64(clip.left) {
+		left = int64(math.Ceil(minX))
+	}
+	if minY > float64(clip.top) {
+		top = int64(math.Ceil(minY))
+	}
+	if maxX < float64(clip.right) {
+		right = int64(math.Ceil(maxX))
+	}
+	if maxY < float64(clip.bottom) {
+		bottom = int64(math.Ceil(maxY))
+	}
+	if left >= right || top >= bottom {
+		return nil
+	}
+	if _, _, err := imageBlendMode(mode, face); err != nil {
+		return err
+	}
+	if opa < 0 || opa > 255 {
+		return fmt.Errorf("ImageFunction opacity %d outside 0..255", opa)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	source := imageCopySource(src, dstID == srcID)
+	for y := top; y < bottom; y++ {
+		for x := left; x < right; x++ {
+			dx := float64(x) + 0.5 - points[0]
+			dy := float64(y) + 0.5 - points[1]
+			u := (dx*eyY - dy*eyX) / determinant
+			v := (dy*exX - dx*exY) / determinant
+			if u < 0 || u >= 1 || v < 0 || v >= 1 {
+				continue
+			}
+			sourceX := float64(sr.left) + u*sourceWidth - 0.5
+			sourceY := float64(sr.top) + v*sourceHeight - 0.5
+			sample := imageSampleRGBA(source, int(src.deviceWidth()), sr, sourceX, sourceY, filter)
+			dstPixel := append([]byte(nil), dst.blockAt(x, y)...)
+			if err := imageBlendWithHDA(dstPixel, sample[:], mode, face, opa, hda); err != nil {
+				return err
+			}
+			dst.setBlock(x, y, dstPixel)
 		}
 	}
 	dst.markDirty()
@@ -502,19 +931,22 @@ func (s *Services) imageOperateStretch(vm *tjs.VM, args []tjs.Value) (tjs.Value,
 	if err != nil {
 		return tjs.VoidValue, err
 	}
-	if typ != 0 {
-		return tjs.VoidValue, imageFunctionUnsupported(fmt.Sprintf("stretch type %d", typ))
+	typeOpt := 0.0
+	if typ == 3 || typ == 5 {
+		typeOpt = -1
 	}
-	if hda {
-		return tjs.VoidValue, imageFunctionUnsupported("hda=true")
+	typeOpt, err = imageOptionalFloat(args, 10, typeOpt, operation)
+	if err != nil {
+		return tjs.VoidValue, err
 	}
 	if _, _, err := imageBlendMode(mode, face); err != nil {
 		return tjs.VoidValue, err
 	}
-	if err := s.imageStretch(dst, src, dstID, srcID, dr, sr, clip, mode, face, opa); err != nil {
+	if err := s.imageStretch(dst, src, dstID, srcID, dr, sr, clip, mode, face, opa, typ, typeOpt, hda); err != nil {
 		return tjs.VoidValue, err
 	}
-	return tjs.VoidValue, nil
+	result, updated := imageStretchResult(dst, dr, sr, clip, typ)
+	return imageRectValue(s, vm, result, updated)
 }
 
 func (s *Services) imageOperateAffine(vm *tjs.VM, args []tjs.Value) (tjs.Value, error) {
@@ -569,30 +1001,58 @@ func (s *Services) imageOperateAffine(vm *tjs.VM, args []tjs.Value) (tjs.Value, 
 	if err != nil {
 		return tjs.VoidValue, err
 	}
-	if typ != 0 {
-		return tjs.VoidValue, imageFunctionUnsupported(fmt.Sprintf("affine type %d", typ))
-	}
-	if hda {
-		return tjs.VoidValue, imageFunctionUnsupported("hda=true")
-	}
 	if _, _, err := imageBlendMode(mode, face); err != nil {
 		return tjs.VoidValue, err
 	}
-	if affine {
-		if err := s.imageAffine(dst, src, dstID, srcID, values, sr, clip, mode, face, opa); err != nil {
-			return tjs.VoidValue, err
-		}
+	if sr.left >= sr.right || sr.top >= sr.bottom {
 		return tjs.VoidValue, nil
 	}
-	// Point mode is supported only for an axis-aligned rectangle.
-	if values[1] != values[3] || values[0] != values[4] {
-		return tjs.VoidValue, imageFunctionUnsupported("rotated point transform")
+	if affine {
+		if values[0]*values[3]-values[1]*values[2] == 0 {
+			return tjs.VoidValue, nil
+		}
+		if err := s.imageAffine(dst, src, dstID, srcID, values, sr, clip, mode, face, opa, typ, hda); err != nil {
+			return tjs.VoidValue, err
+		}
+		sourceWidth := float64(sr.right - sr.left)
+		sourceHeight := float64(sr.bottom - sr.top)
+		a, b, c, d, tx, ty := values[0], values[1], values[2], values[3], values[4], values[5]
+		sourceCorners := [4][2]float64{
+			{-0.5, -0.5},
+			{sourceWidth - 0.5, -0.5},
+			{sourceWidth - 0.5, sourceHeight - 0.5},
+			{-0.5, sourceHeight - 0.5},
+		}
+		var corners [4][2]float64
+		for i, corner := range sourceCorners {
+			corners[i] = [2]float64{
+				a*corner[0] + c*corner[1] + tx,
+				b*corner[0] + d*corner[1] + ty,
+			}
+		}
+		result, updated := imageAffineResult(dst, clip, corners)
+		return imageRectValue(s, vm, result, updated)
 	}
-	dr := imageRect(int32(values[0]), int32(values[1]), int32(values[2]), int32(values[5]))
-	if err := s.imageStretch(dst, src, dstID, srcID, dr, sr, clip, mode, face, opa); err != nil {
+	sourceWidth := float64(sr.right - sr.left)
+	sourceHeight := float64(sr.bottom - sr.top)
+	exX := (values[2] - values[0]) / sourceWidth
+	exY := (values[3] - values[1]) / sourceWidth
+	eyX := (values[4] - values[0]) / sourceHeight
+	eyY := (values[5] - values[1]) / sourceHeight
+	if exX*eyY-exY*eyX == 0 {
+		return tjs.VoidValue, nil
+	}
+	if err := s.imagePointAffine(dst, src, dstID, srcID, values, sr, clip, mode, face, opa, typ, hda); err != nil {
 		return tjs.VoidValue, err
 	}
-	return tjs.VoidValue, nil
+	corners := [4][2]float64{
+		{values[0], values[1]},
+		{values[2], values[3]},
+		{values[2] + values[4] - values[0], values[3] + values[5] - values[1]},
+		{values[4], values[5]},
+	}
+	result, updated := imageAffineResult(dst, clip, corners)
+	return imageRectValue(s, vm, result, updated)
 }
 
 func (s *Services) imageFlip(vm *tjs.VM, args []tjs.Value, horizontal bool) (tjs.Value, error) {
@@ -615,7 +1075,6 @@ func (s *Services) imageFlip(vm *tjs.VM, args []tjs.Value, horizontal bool) (tjs
 		return tjs.VoidValue, nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if horizontal {
 		for y := rect.top; y < rect.bottom; y++ {
 			for left, right := rect.left, rect.right-1; left < right; left, right = left+1, right-1 {
@@ -638,7 +1097,8 @@ func (s *Services) imageFlip(vm *tjs.VM, args []tjs.Value, horizontal bool) (tjs
 		}
 	}
 	b.markDirty()
-	return tjs.VoidValue, nil
+	s.mu.Unlock()
+	return imageRectValue(s, vm, rect, true)
 }
 
 func (s *Services) imageAdjustGamma(vm *tjs.VM, args []tjs.Value) (tjs.Value, error) {
@@ -694,31 +1154,63 @@ func (s *Services) imageAdjustGamma(vm *tjs.VM, args []tjs.Value) (tjs.Value, er
 	if err != nil {
 		return tjs.VoidValue, err
 	}
-	if addAlpha {
-		return tjs.VoidValue, imageFunctionUnsupported("additive-alpha gamma adjustment")
-	}
 	if !ok {
 		return tjs.VoidValue, nil
 	}
-	transform := func(value uint8, gamma, floor, ceil float64) uint8 {
-		result := floor + math.Pow(float64(value)/255, gamma)*(ceil-floor)
-		if result < 0 {
-			result = 0
-		} else if result > 255 {
-			result = 255
+	gammaTable := func(gamma, floor, ceil float64) [256]uint8 {
+		var table [256]uint8
+		inverse := 1 / gamma
+		for value := range table {
+			rate := math.Log(float64(value) / 255)
+			result := math.Exp(rate*inverse)*(ceil-floor) + floor
+			if value == 0 && gamma == 0 {
+				result = floor
+			}
+			if math.IsNaN(result) || result < 0 {
+				result = 0
+			} else if math.IsInf(result, 0) || result > 255 {
+				result = 255
+			}
+			table[value] = uint8(math.Round(result))
 		}
-		return uint8(math.Round(result))
+		return table
 	}
+	tables := [3][256]uint8{gammaTable(rg, rf, rc), gammaTable(gg, gf, gc), gammaTable(bg, bf, bc)}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for y := clip.top; y < clip.bottom; y++ {
 		for x := clip.left; x < clip.right; x++ {
 			i := (int(y)*int(b.deviceWidth()) + int(x)) * 4
-			b.RGBA[i], b.RGBA[i+1], b.RGBA[i+2] = transform(b.RGBA[i], rg, rf, rc), transform(b.RGBA[i+1], gg, gf, gc), transform(b.RGBA[i+2], bg, bf, bc)
+			alpha := b.RGBA[i+3]
+			if alpha == 0 {
+				continue
+			}
+			if addAlpha && alpha < 255 {
+				adjusted := int(alpha) + int(alpha>>7)
+				reciprocal := 65536 / int(alpha)
+				if reciprocal > 32767 {
+					reciprocal = 32767
+				}
+				for channel := 0; channel < 3; channel++ {
+					value := int(b.RGBA[i+channel])
+					if value > int(alpha) {
+						value = int(tables[channel][255])*adjusted>>8 + value - int(alpha)
+					} else {
+						index := reciprocal * value >> 8
+						if index > 255 {
+							index = 255
+						}
+						value = int(tables[channel][index]) * adjusted >> 8
+					}
+					b.RGBA[i+channel] = imageClampByte(int64(value))
+				}
+				continue
+			}
+			b.RGBA[i], b.RGBA[i+1], b.RGBA[i+2] = tables[0][b.RGBA[i]], tables[1][b.RGBA[i+1]], tables[2][b.RGBA[i+2]]
 		}
 	}
 	b.markDirty()
-	return tjs.VoidValue, nil
+	s.mu.Unlock()
+	return imageRectValue(s, vm, clip, true)
 }
 
 func (s *Services) imageGrayScale(vm *tjs.VM, args []tjs.Value) (tjs.Value, error) {
@@ -738,7 +1230,6 @@ func (s *Services) imageGrayScale(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 		return tjs.VoidValue, nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for y := clip.top; y < clip.bottom; y++ {
 		for x := clip.left; x < clip.right; x++ {
 			i := (int(y)*int(b.deviceWidth()) + int(x)) * 4
@@ -747,7 +1238,8 @@ func (s *Services) imageGrayScale(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 		}
 	}
 	b.markDirty()
-	return tjs.VoidValue, nil
+	s.mu.Unlock()
+	return imageRectValue(s, vm, clip, true)
 }
 
 func (s *Services) imageFillRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, error) {
@@ -784,7 +1276,6 @@ func (s *Services) imageFillRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, error
 	}
 	r, g, bl, a := imageColor(value)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for y := rect.top; y < rect.bottom; y++ {
 		for x := rect.left; x < rect.right; x++ {
 			pixel := [4]byte{r, g, bl, 0}
@@ -795,7 +1286,8 @@ func (s *Services) imageFillRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, error
 		}
 	}
 	b.markDirty()
-	return tjs.VoidValue, nil
+	s.mu.Unlock()
+	return imageRectValue(s, vm, rect, true)
 }
 
 func (s *Services) imageColorRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, error) {
@@ -815,17 +1307,17 @@ func (s *Services) imageColorRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 	if err != nil {
 		return tjs.VoidValue, err
 	}
+	face, err := imageOptionalInt(args, 4, 0, operation)
+	if err != nil {
+		return tjs.VoidValue, err
+	}
 	if opa < -255 {
 		opa = -255
 	} else if opa > 255 {
 		opa = 255
 	}
-	face, err := imageOptionalInt(args, 4, 0, operation)
-	if err != nil {
-		return tjs.VoidValue, err
-	}
-	if face != 0 && face != 1 && face != 4 {
-		return tjs.VoidValue, imageFunctionUnsupported(fmt.Sprintf("draw face %d", face))
+	if face != 0 && face != 1 && face != 2 && face != 4 {
+		face = 0
 	}
 	rect, err := imageOptionalRect(s, vm, valueAt(args, 3), imageBounds(b), operation)
 	if err != nil {
@@ -845,7 +1337,6 @@ func (s *Services) imageColorRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 	r, g, bl, a := imageColor(value)
 	src := [4]byte{r, g, bl, 0}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for y := rect.top; y < rect.bottom; y++ {
 		for x := rect.left; x < rect.right; x++ {
 			dstPixel := append([]byte(nil), b.blockAt(int64(x), int64(y))...)
@@ -857,6 +1348,8 @@ func (s *Services) imageColorRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 				for c := 0; c < 3; c++ {
 					dstPixel[c] = byte((int(dstPixel[c])*(255-int(opa)) + int(src[c])*int(opa) + 127) / 255)
 				}
+			case 2:
+				dstPixel[3] = uint8(value)
 			case 0:
 				if opa < 0 {
 					level := -opa
@@ -865,6 +1358,7 @@ func (s *Services) imageColorRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 				}
 				src[3] = uint8(int(a) * int(opa) / 255)
 				if err := imageBlend(dstPixel, src[:], int64(LayerAlpha), face, 255); err != nil {
+					s.mu.Unlock()
 					return tjs.VoidValue, err
 				}
 			case 4:
@@ -873,6 +1367,7 @@ func (s *Services) imageColorRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 				}
 				src[3] = uint8(int(a) * int(opa) / 255)
 				if err := imageBlend(dstPixel, src[:], int64(LayerAddAlpha), face, 255); err != nil {
+					s.mu.Unlock()
 					return tjs.VoidValue, err
 				}
 			}
@@ -880,7 +1375,8 @@ func (s *Services) imageColorRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 		}
 	}
 	b.markDirty()
-	return tjs.VoidValue, nil
+	s.mu.Unlock()
+	return imageRectValue(s, vm, rect, true)
 }
 
 func (s *Services) imageBoxBlur(vm *tjs.VM, args []tjs.Value) (tjs.Value, error) {
@@ -915,7 +1411,6 @@ func (s *Services) imageBoxBlur(vm *tjs.VM, args []tjs.Value) (tjs.Value, error)
 		return tjs.VoidValue, nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	source := append([]byte(nil), b.RGBA...)
 	for y := clip.top; y < clip.bottom; y++ {
 		for x := clip.left; x < clip.right; x++ {
@@ -954,19 +1449,26 @@ func (s *Services) imageBoxBlur(vm *tjs.VM, args []tjs.Value) (tjs.Value, error)
 		}
 	}
 	b.markDirty()
-	return tjs.VoidValue, nil
+	s.mu.Unlock()
+	return imageRectValue(s, vm, clip, true)
 }
 
 type imageDrawConfig struct {
-	x, y    int64
-	color   [3]uint8
-	opacity uint8
-	mode    LayerType
-	target  LayerType
-	clip    scriptRect
+	x, y                         int64
+	color                        [3]uint8
+	opacity                      int64
+	mode                         LayerType
+	target                       LayerType
+	antialias                    bool
+	hda                          bool
+	shadowLevel                  int64
+	shadowColor                  [3]uint8
+	shadowWidth                  int64
+	shadowOffsetX, shadowOffsetY int64
+	clip                         scriptRect
 }
 
-func imageDrawOptions(args []tjs.Value, operation string, xIndex, yIndex, colorIndex int, allowNoAntialias bool) (imageDrawConfig, error) {
+func imageDrawOptions(args []tjs.Value, operation string, xIndex, yIndex, colorIndex int, _ bool) (imageDrawConfig, error) {
 	var config imageDrawConfig
 	x, err := imageOptionalInt(args, xIndex, 0, operation)
 	if err != nil {
@@ -985,12 +1487,11 @@ func imageDrawOptions(args []tjs.Value, operation string, xIndex, yIndex, colorI
 	}
 	r, g, b, _ := imageColor(colorValue)
 	config.x, config.y, config.color = x, y, [3]uint8{r, g, b}
-
 	opacity, err := imageOptionalInt(args, colorIndex+1, 255, operation)
 	if err != nil {
 		return config, err
 	}
-	antialias, err := imageOptionalBool(args, colorIndex+2, true, operation)
+	config.antialias, err = imageOptionalBool(args, colorIndex+2, true, operation)
 	if err != nil {
 		return config, err
 	}
@@ -1006,35 +1507,49 @@ func imageDrawOptions(args []tjs.Value, operation string, xIndex, yIndex, colorI
 	if err != nil {
 		return config, err
 	}
-	shadowLevel, err := imageOptionalInt(args, colorIndex+4, 0, operation)
+	config.shadowLevel, err = imageOptionalInt(args, colorIndex+4, 0, operation)
 	if err != nil {
 		return config, err
 	}
-	if shadowLevel != 0 {
-		return config, imageFunctionUnsupported("text and glyph shadows")
+	if config.shadowLevel < 0 {
+		config.shadowLevel = 0
+	} else if config.shadowLevel > 255 {
+		config.shadowLevel = 255
 	}
-	hda, err := imageOptionalBool(args, colorIndex+9, false, operation)
+	shadowColor, err := imageOptionalInt(args, colorIndex+5, 0, operation)
 	if err != nil {
 		return config, err
 	}
-	if hda {
-		return config, imageFunctionUnsupported("hda text and glyph drawing")
+	sr, sg, sb, _ := imageColor(shadowColor)
+	config.shadowColor = [3]uint8{sr, sg, sb}
+	config.shadowWidth, err = imageOptionalInt(args, colorIndex+6, 0, operation)
+	if err != nil {
+		return config, err
 	}
-	if !antialias && !allowNoAntialias {
-		return config, imageFunctionUnsupported("non-antialiased text rasterization")
+	if config.shadowWidth < 0 {
+		config.shadowWidth = 0
 	}
-	if face == 4 && opacity < 0 {
-		return config, fmt.Errorf("ImageFunction.%s: negative opacity on add-alpha draw face", operation)
+	config.shadowOffsetX, err = imageOptionalInt(args, colorIndex+7, 0, operation)
+	if err != nil {
+		return config, err
 	}
-	if face == 0 && opacity < 0 {
-		return config, imageFunctionUnsupported("negative text and glyph opacity")
+	config.shadowOffsetY, err = imageOptionalInt(args, colorIndex+8, 0, operation)
+	if err != nil {
+		return config, err
 	}
-	if opacity < 0 {
+	config.hda, err = imageOptionalBool(args, colorIndex+9, false, operation)
+	if err != nil {
+		return config, err
+	}
+	if face != 0 && opacity < 0 {
 		opacity = 0
+	}
+	if opacity < -255 {
+		opacity = -255
 	} else if opacity > 255 {
 		opacity = 255
 	}
-	config.opacity = uint8(opacity)
+	config.opacity = opacity
 	return config, nil
 }
 
@@ -1052,6 +1567,55 @@ func (s *Services) imageDrawClip(vm *tjs.VM, args []tjs.Value, b *Bitmap, clipIn
 	}
 	clip, _ = imageIntersect(clip, bounds)
 	return clip, nil
+}
+
+func imageMaskValue(mask []byte, width, height, stride, pixelStride, alphaOffset, x, y int) uint8 {
+	if x < 0 || y < 0 || x >= width || y >= height {
+		return 0
+	}
+	return mask[y*stride+x*pixelStride+alphaOffset]
+}
+
+func imageShadowMask(mask []byte, width, height, stride, pixelStride, alphaOffset int, radius, level int64) []byte {
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	output := make([]byte, width*height)
+	if radius <= 0 {
+		for y := 0; y < height; y++ {
+			for x := 0; x < width; x++ {
+				value := int64(imageMaskValue(mask, width, height, stride, pixelStride, alphaOffset, x, y)) * level / 255
+				output[y*width+x] = imageClampByte(value)
+			}
+		}
+		return output
+	}
+	if radius > int64(max(width, height)) {
+		radius = int64(max(width, height))
+	}
+	integral := make([]int64, (width+1)*(height+1))
+	for y := 0; y < height; y++ {
+		row := int64(0)
+		for x := 0; x < width; x++ {
+			row += int64(imageMaskValue(mask, width, height, stride, pixelStride, alphaOffset, x, y))
+			integral[(y+1)*(width+1)+x+1] = integral[y*(width+1)+x+1] + row
+		}
+	}
+	for y := 0; y < height; y++ {
+		top := max(0, y-int(radius))
+		bottom := min(height-1, y+int(radius))
+		for x := 0; x < width; x++ {
+			left := max(0, x-int(radius))
+			right := min(width-1, x+int(radius))
+			sum := integral[(bottom+1)*(width+1)+right+1] -
+				integral[top*(width+1)+right+1] -
+				integral[(bottom+1)*(width+1)+left] +
+				integral[top*(width+1)+left]
+			count := int64((right - left + 1) * (bottom - top + 1))
+			output[y*width+x] = imageClampByte(sum * level / (count * 255))
+		}
+	}
+	return output
 }
 
 func imageDrawMaskLocked(b *Bitmap, mask []byte, maskWidth, maskHeight, maskStride, pixelStride, alphaOffset int, maskScale int32, x, y int64, clip scriptRect, config imageDrawConfig) {
@@ -1074,16 +1638,139 @@ func imageDrawMaskLocked(b *Bitmap, mask []byte, maskWidth, maskHeight, maskStri
 		sy := int((dy - originY) / int64(maskScale))
 		for dx := left; dx < right; dx++ {
 			sx := int((dx - originX) / int64(maskScale))
-			coverage := mask[sy*maskStride+sx*pixelStride+alphaOffset]
+			coverage := imageMaskValue(mask, maskWidth, maskHeight, maskStride, pixelStride, alphaOffset, sx, sy)
+			if !config.antialias && coverage < 128 {
+				coverage = 0
+			} else if !config.antialias {
+				coverage = 255
+			}
+			if coverage == 0 {
+				continue
+			}
+			destinationIndex := (int(dy)*int(b.deviceWidth()) + int(dx)) * 4
+			destination := b.RGBA[destinationIndex : destinationIndex+4]
+			if config.opacity < 0 {
+				destination[3] = uint8(int(destination[3]) * (255 - int(coverage)) / 255)
+				continue
+			}
 			opacity := uint8(int(coverage) * int(config.opacity) / 255)
 			if opacity == 0 {
 				continue
 			}
 			source := [4]byte{config.color[0], config.color[1], config.color[2], 255}
-			destinationIndex := (int(dy)*int(b.deviceWidth()) + int(dx)) * 4
-			blendPixelForTarget(b.RGBA[destinationIndex:destinationIndex+4], source[:], opacity, config.mode, config.target)
+			imageBlendTargetWithHDA(destination, source[:], int64(opacity), config.mode, config.target, config.hda)
 		}
 	}
+}
+
+func imageAlphaMaskFromRGBA(rgba []byte, width, height, stride int) []byte {
+	mask := make([]byte, width*height)
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			mask[y*width+x] = rgba[y*stride+x*4+3]
+		}
+	}
+	return mask
+}
+
+func imageRotateMask(mask []byte, width, height int, angle float64) ([]byte, int, int, int64, int64) {
+	if angle == 0 {
+		return mask, width, height, 0, 0
+	}
+	cosine, sine := math.Cos(angle), math.Sin(angle)
+	corners := [4][2]float64{{0, 0}, {float64(width), 0}, {float64(width), float64(height)}, {0, float64(height)}}
+	minX, maxX := math.Inf(1), math.Inf(-1)
+	minY, maxY := math.Inf(1), math.Inf(-1)
+	for _, corner := range corners {
+		x := cosine*corner[0] - sine*corner[1]
+		y := sine*corner[0] + cosine*corner[1]
+		minX, maxX = math.Min(minX, x), math.Max(maxX, x)
+		minY, maxY = math.Min(minY, y), math.Max(maxY, y)
+	}
+	left, top := math.Floor(minX), math.Floor(minY)
+	rotatedWidth := int(math.Ceil(maxX) - left)
+	rotatedHeight := int(math.Ceil(maxY) - top)
+	output := make([]byte, rotatedWidth*rotatedHeight)
+	for y := 0; y < rotatedHeight; y++ {
+		for x := 0; x < rotatedWidth; x++ {
+			worldX := left + float64(x) + 0.5
+			worldY := top + float64(y) + 0.5
+			sourceX := cosine*worldX + sine*worldY
+			sourceY := -sine*worldX + cosine*worldY
+			if sourceX < 0 || sourceY < 0 || sourceX >= float64(width) || sourceY >= float64(height) {
+				continue
+			}
+			output[y*rotatedWidth+x] = mask[int(sourceY)*width+int(sourceX)]
+		}
+	}
+	return output, rotatedWidth, rotatedHeight, int64(left), int64(top)
+}
+
+func imageDrawResultRect(b *Bitmap, clip scriptRect, x, y int64, width, height int, config imageDrawConfig) (scriptRect, bool) {
+	if config.opacity == 0 || width <= 0 || height <= 0 {
+		return scriptRect{}, false
+	}
+	clip, ok := imageIntersect(clip, imageBounds(b))
+	if !ok {
+		return scriptRect{}, false
+	}
+	result := scriptRect{}
+	hasResult := false
+	include := func(left, top, right, bottom int64) {
+		if right <= left || bottom <= top {
+			return
+		}
+		if left < int64(clip.left) {
+			left = int64(clip.left)
+		}
+		if top < int64(clip.top) {
+			top = int64(clip.top)
+		}
+		if right > int64(clip.right) {
+			right = int64(clip.right)
+		}
+		if bottom > int64(clip.bottom) {
+			bottom = int64(clip.bottom)
+		}
+		if right <= left || bottom <= top {
+			return
+		}
+		rect := imageRect(int32(left), int32(top), int32(right), int32(bottom))
+		if !hasResult {
+			result, hasResult = rect, true
+			return
+		}
+		if rect.left < result.left {
+			result.left = rect.left
+		}
+		if rect.top < result.top {
+			result.top = rect.top
+		}
+		if rect.right > result.right {
+			result.right = rect.right
+		}
+		if rect.bottom > result.bottom {
+			result.bottom = rect.bottom
+		}
+	}
+	include(x, y, x+int64(width), y+int64(height))
+	if config.shadowLevel > 0 {
+		include(x+config.shadowOffsetX, y+config.shadowOffsetY,
+			x+config.shadowOffsetX+int64(width), y+config.shadowOffsetY+int64(height))
+	}
+	return result, hasResult
+}
+
+func imageDrawMaskWithShadowLocked(b *Bitmap, mask []byte, width, height int, x, y int64, clip scriptRect, config imageDrawConfig) {
+	if config.shadowLevel > 0 {
+		shadow := imageShadowMask(mask, width, height, width, 1, 0, config.shadowWidth, 255)
+		shadowConfig := config
+		shadowConfig.color = config.shadowColor
+		shadowConfig.opacity = config.opacity * config.shadowLevel / 255
+		imageDrawMaskLocked(b, shadow, width, height, width, 1, 0, 1,
+			x+config.shadowOffsetX, y+config.shadowOffsetY, clip, shadowConfig)
+	}
+	imageDrawMaskLocked(b, mask, width, height, width, 1, 0, 1, x, y, clip, config)
 }
 
 func (s *Services) imageDrawText(vm *tjs.VM, args []tjs.Value) (tjs.Value, error) {
@@ -1120,27 +1807,98 @@ func (s *Services) imageDrawText(vm *tjs.VM, args []tjs.Value) (tjs.Value, error
 	s.mu.Lock()
 	b.font = state
 	s.mu.Unlock()
-	var rasterized *image.RGBA
+	var mask []byte
+	maskWidth, maskHeight := 0, 0
+	originX, originY := int64(0), int64(0)
 	if config.opacity != 0 {
-		if state.Angle != 0 {
-			return tjs.VoidValue, imageFunctionUnsupported("rotated text")
-		}
 		face, faceErr := s.fontFace(&state)
 		if faceErr != nil {
 			return tjs.VoidValue, faceErr
 		}
-		rasterized, err = RasterizeText(face, args[4].Text(), color.NRGBA{R: config.color[0], G: config.color[1], B: config.color[2], A: 255})
-		if err != nil {
-			return tjs.VoidValue, err
+		rasterized, rasterErr := RasterizeText(face, args[4].Text(), color.White)
+		if rasterErr != nil {
+			return tjs.VoidValue, rasterErr
 		}
+		mask = imageAlphaMaskFromRGBA(rasterized.Pix, rasterized.Rect.Dx(), rasterized.Rect.Dy(), rasterized.Stride)
+		mask, maskWidth, maskHeight, originX, originY = imageRotateMask(mask, rasterized.Rect.Dx(), rasterized.Rect.Dy(), float64(state.Angle)*math.Pi/1800)
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if rasterized != nil {
-		imageDrawMaskLocked(b, rasterized.Pix, rasterized.Rect.Dx(), rasterized.Rect.Dy(), rasterized.Stride, 4, 3, 1, config.x, config.y, config.clip, config)
+	if mask != nil && maskWidth > 0 && maskHeight > 0 {
+		imageDrawMaskWithShadowLocked(b, mask, maskWidth, maskHeight,
+			config.x+originX, config.y+originY, config.clip, config)
 		b.markDirty()
 	}
-	return tjs.VoidValue, nil
+	result, updated := imageDrawResultRect(b, config.clip, config.x+originX, config.y+originY, maskWidth, maskHeight, config)
+	s.mu.Unlock()
+	return imageRectValue(s, vm, result, updated)
+}
+
+func imageRotateRGBA(pixels []byte, width, height int, angle float64) ([]byte, int, int, int64, int64) {
+	if angle == 0 {
+		return pixels, width, height, 0, 0
+	}
+	cosine, sine := math.Cos(angle), math.Sin(angle)
+	corners := [4][2]float64{{0, 0}, {float64(width), 0}, {float64(width), float64(height)}, {0, float64(height)}}
+	minX, maxX := math.Inf(1), math.Inf(-1)
+	minY, maxY := math.Inf(1), math.Inf(-1)
+	for _, corner := range corners {
+		x := cosine*corner[0] - sine*corner[1]
+		y := sine*corner[0] + cosine*corner[1]
+		minX, maxX = math.Min(minX, x), math.Max(maxX, x)
+		minY, maxY = math.Min(minY, y), math.Max(maxY, y)
+	}
+	left, top := math.Floor(minX), math.Floor(minY)
+	rotatedWidth := int(math.Ceil(maxX) - left)
+	rotatedHeight := int(math.Ceil(maxY) - top)
+	output := make([]byte, rotatedWidth*rotatedHeight*4)
+	for y := 0; y < rotatedHeight; y++ {
+		for x := 0; x < rotatedWidth; x++ {
+			worldX := left + float64(x) + 0.5
+			worldY := top + float64(y) + 0.5
+			sourceX := cosine*worldX + sine*worldY
+			sourceY := -sine*worldX + cosine*worldY
+			if sourceX < 0 || sourceY < 0 || sourceX >= float64(width) || sourceY >= float64(height) {
+				continue
+			}
+			sourceIndex := (int(sourceY)*width + int(sourceX)) * 4
+			destinationIndex := (y*rotatedWidth + x) * 4
+			copy(output[destinationIndex:destinationIndex+4], pixels[sourceIndex:sourceIndex+4])
+		}
+	}
+	return output, rotatedWidth, rotatedHeight, int64(left), int64(top)
+}
+
+func imageDrawColorMaskLocked(b *Bitmap, pixels []byte, width, height, x, y int64, clip scriptRect, config imageDrawConfig) {
+	clip, ok := imageIntersect(clip, imageBounds(b))
+	if !ok || config.opacity == 0 || width <= 0 || height <= 0 {
+		return
+	}
+	left := max64(int64(clip.left), x)
+	top := max64(int64(clip.top), y)
+	right := min64(int64(clip.right), x+width)
+	bottom := min64(int64(clip.bottom), y+height)
+	for dy := top; dy < bottom; dy++ {
+		for dx := left; dx < right; dx++ {
+			sourceIndex := ((dy-y)*width + (dx - x)) * 4
+			source := pixels[sourceIndex : sourceIndex+4]
+			if !config.antialias && source[3] < 128 {
+				continue
+			}
+			if config.opacity < 0 {
+				destinationIndex := (int(dy)*int(b.deviceWidth()) + int(dx)) * 4
+				b.RGBA[destinationIndex+3] = uint8(int(b.RGBA[destinationIndex+3]) * (255 - int(source[3])) / 255)
+				continue
+			}
+			opacity := int64(source[3]) * config.opacity / 255
+			if !config.antialias {
+				opacity = config.opacity
+				sourceCopy := [4]byte{source[0], source[1], source[2], 255}
+				source = sourceCopy[:]
+			}
+			destinationIndex := (int(dy)*int(b.deviceWidth()) + int(dx)) * 4
+			imageBlendTargetWithHDA(b.RGBA[destinationIndex:destinationIndex+4], source, int64(opacity), config.mode, config.target, config.hda)
+		}
+	}
 }
 
 type imageGlyphData struct {
@@ -1148,6 +1906,8 @@ type imageGlyphData struct {
 	originX       int64
 	originY       int64
 	mask          []byte
+	colors        int64
+	colored       bool
 }
 
 func imageGlyphDataFromValue(vm *tjs.VM, value tjs.Value) (imageGlyphData, error) {
@@ -1205,13 +1965,15 @@ func imageGlyphDataFromValue(vm *tjs.VM, value tjs.Value) (imageGlyphData, error
 		uint64(width)*uint64(height) > maxTextPixels {
 		return glyph, imageFunctionUnsupported("drawGlyph bitmap dimensions")
 	}
+	colors := int64(256)
 	if count >= 9 {
-		colors, exists := field(8)
+		colorValue, exists := field(8)
 		if !exists {
 			return glyph, imageFunctionUnsupported("invalid drawGlyph glyph data")
 		}
-		number, err := colors.Int()
-		if err != nil || number != 256 {
+		var colorErr error
+		colors, colorErr = colorValue.Int()
+		if colorErr != nil || colors <= 0 {
 			return glyph, imageFunctionUnsupported("drawGlyph bitmap format")
 		}
 	}
@@ -1221,12 +1983,31 @@ func imageGlyphDataFromValue(vm *tjs.VM, value tjs.Value) (imageGlyphData, error
 	}
 	mask := bitmapValue.Octets()
 	pixels := uint64(width) * uint64(height)
-	if uint64(len(mask)) < pixels {
+	colored := colors > 256
+	bytesPerPixel := uint64(1)
+	if colored {
+		bytesPerPixel = 4
+	}
+	if uint64(len(mask)) < pixels*bytesPerPixel {
 		return glyph, imageFunctionUnsupported("truncated drawGlyph bitmap")
+	}
+	mask = mask[:pixels*bytesPerPixel]
+	if !colored && colors != 256 {
+		normalized := make([]byte, int(pixels))
+		for i, value := range mask {
+			if colors == 1 {
+				if value != 0 {
+					normalized[i] = 255
+				}
+			} else {
+				normalized[i] = uint8((int64(value) * 255) / (colors - 1))
+			}
+		}
+		mask = normalized
 	}
 	glyph.width, glyph.height = int(width), int(height)
 	glyph.originX, glyph.originY = values[2], values[3]
-	glyph.mask = mask
+	glyph.mask, glyph.colors, glyph.colored = mask, colors, colored
 	return glyph, nil
 }
 
@@ -1261,9 +2042,6 @@ func (s *Services) imageDrawGlyph(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 	if err != nil {
 		return tjs.VoidValue, err
 	}
-	if state.Angle != 0 {
-		return tjs.VoidValue, imageFunctionUnsupported("rotated glyph drawing")
-	}
 	metrics, err := MetricsForFace(face)
 	if err != nil {
 		return tjs.VoidValue, err
@@ -1272,10 +2050,29 @@ func (s *Services) imageDrawGlyph(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 	x := config.x + glyph.originX
 	y := config.y - glyph.originY + offsetY
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	imageDrawMaskLocked(b, glyph.mask, glyph.width, glyph.height, glyph.width, 1, 0, 1, x, y, config.clip, config)
+	angle := float64(state.Angle) * math.Pi / 1800
+	drawWidth, drawHeight := glyph.width, glyph.height
+	if glyph.colored {
+		pixels, width, height, originX, originY := imageRotateRGBA(glyph.mask, glyph.width, glyph.height, angle)
+		x += originX
+		y += originY
+		drawWidth, drawHeight = width, height
+		if config.shadowLevel > 0 {
+			shadowMask := imageAlphaMaskFromRGBA(pixels, width, height, width*4)
+			imageDrawMaskWithShadowLocked(b, shadowMask, width, height, x, y, config.clip, config)
+		}
+		imageDrawColorMaskLocked(b, pixels, int64(width), int64(height), x, y, config.clip, config)
+	} else {
+		mask, width, height, originX, originY := imageRotateMask(glyph.mask, glyph.width, glyph.height, angle)
+		x += originX
+		y += originY
+		drawWidth, drawHeight = width, height
+		imageDrawMaskWithShadowLocked(b, mask, width, height, x, y, config.clip, config)
+	}
 	b.markDirty()
-	return tjs.VoidValue, nil
+	result, updated := imageDrawResultRect(b, config.clip, x, y, drawWidth, drawHeight, config)
+	s.mu.Unlock()
+	return imageRectValue(s, vm, result, updated)
 }
 
 func (s *Services) imageFunctionNative(vm *tjs.VM, operation string, args []tjs.Value) (tjs.Value, error) {

@@ -61,7 +61,7 @@ A second replay enters `setting.ks` through the title setting button at `(1147,5
 
 The original CAWorks scenario requests Japanese MS Gothic, which is unavailable on the Darwin host. The external acceptance copy uses the real `Hiragino Mincho ProN` family for that project-specific setting; the runtime keeps generic system discovery and real-face fallback for other requests.
 
-Focused runtime verification also passes for KAGParser `curLineStr`, `clear`, `assign`, `popMacroArgs`, active `mp`/`macroParams`, nearest-neighbor general affine matrices including rotation, and pure-Go ImageFunction text/glyph rendering. The implementation keeps explicit unsupported errors for non-nearest sampling, `hda`, rotated point-mode transforms, shadows, and non-256-level glyph masks.
+Focused runtime verification also passes for KAGParser `curLineStr`, `clear`, `assign`, `popMacroArgs`, active `mp`/`macroParams`, nearest-neighbor and filtered ImageFunction sampling, HDA, arbitrary matrix and three-point affine transforms, shadows, non-256-level glyph masks, and updated-rectangle result reporting.
 
 The current Darwin verification commands are:
 

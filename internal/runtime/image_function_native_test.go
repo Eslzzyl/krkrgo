@@ -79,6 +79,45 @@ ImageFunction.operateAffine(dst, src, 0, 1, -1, 0, 1, 0, null, null, true, 2, 1,
 		}
 	}
 }
+
+func TestImageFunctionSupportsSamplingHDAAndMaskModes(t *testing.T) {
+	session := NewSession(DefaultServices(), 20_000)
+	if _, err := session.executeSource("<image-function-advanced>", `
+src = new Bitmap(2, 2);
+src.setPixel(0, 0, 16711680); src.setMaskPixel(0, 0, 255);
+src.setPixel(1, 0, 65280); src.setMaskPixel(1, 0, 255);
+src.setPixel(0, 1, 255); src.setMaskPixel(0, 1, 255);
+src.setPixel(1, 1, 16776960); src.setMaskPixel(1, 1, 255);
+dst = new Bitmap(4, 4);
+for (y = 0; y < 4; y++) for (x = 0; x < 4; x++) {
+  dst.setPixel(x, y, 8421504); dst.setMaskPixel(x, y, 100);
+}
+ImageFunction.operateStretch(dst, src, new Rect(0, 0, 4, 4), null, null, 2, 0, 255, 2, true);
+heldAlpha = dst.getMaskPixel(0, 0);
+ImageFunction.operateAffine(dst, src, 0, 0, 0, 4, 4, 0, null, null, false, 2, 0, 255, 1, true);
+ImageFunction.adjustGamma(dst, 2, 10, 240, 1, 20, 220, 0.5, 0, 255, null, true);
+ImageFunction.colorRect(dst, 64, 255, null, 2);
+glyph = [2, 1, 0, 0, 0, 0, 0, <% 00 0f %>, 16];
+font = new Font("", -13);
+ImageFunction.drawGlyph(dst, 0, 0, glyph, 16777215, 255, true);
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("heldAlpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := value.Int(); got != 100 {
+		t.Fatalf("hda changed destination alpha: %d", got)
+	}
+	value, err = session.Evaluate("dst.getMaskPixel(0, 0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := value.Int(); got != 64 {
+		t.Fatalf("mask face alpha=%d want=64", got)
+	}
+}
 func TestImageFunctionDrawTextUsesSelectedFaceOpacityAndClip(t *testing.T) {
 	services := DefaultServices()
 	var requestedSize float64
@@ -227,37 +266,34 @@ ImageFunction.drawGlyph(addAlpha, 0, 0, glyph, 16711680, 128, true, 4);
 	}
 }
 
-func TestImageFunctionDrawTextAndGlyphRejectUnsupportedOptions(t *testing.T) {
+func TestImageFunctionDrawTextAndGlyphSupportsOptions(t *testing.T) {
 	services := DefaultServices()
 	services.SetFontBook(NewFontBook())
 	if err := services.RegisterFontFace("ImageFunctionFace", basicfont.Face7x13); err != nil {
 		t.Fatal(err)
 	}
-	session := NewSession(services, 10_000)
-	if _, err := session.executeSource("<image-function-draw-errors>", `
+	session := NewSession(services, 20_000)
+	if _, err := session.executeSource("<image-function-draw-options>", `
 bitmap = new Bitmap(8, 13);
 font = new Font("ImageFunctionFace", -13);
 glyph = [1, 1, 0, 0, 0, 0, 0, <% ff %>];
+ImageFunction.drawText(bitmap, font, 0, 0, "A", 16777215, 255, false, 0, 255, 255, 1, 1, 1, true);
+ImageFunction.drawText(bitmap, font, 0, 0, "A", 16711680, 128, true, 2);
+ImageFunction.drawGlyph(bitmap, 0, 0, glyph, 65280, 255, false, 0, 255, 255, 1, 1, 1, true);
+ImageFunction.drawGlyph(bitmap, 0, 0, glyph, 255, 128, true, 3);
 `, false); err != nil {
 		t.Fatal(err)
 	}
-	for _, test := range []struct {
-		name string
-		src  string
-		want error
-	}{
-		{"text shadow", `ImageFunction.drawText(bitmap, font, 0, 0, "A", 16777215, 255, true, 0, 1)`, ErrUnsupportedNative},
-		{"text face", `ImageFunction.drawText(bitmap, font, 0, 0, "A", 16777215, 255, true, 2)`, ErrUnsupportedNative},
-		{"text hda", `ImageFunction.drawText(bitmap, font, 0, 0, "A", 16777215, 255, true, 0, 0, 0, 0, 0, 0, true)`, ErrUnsupportedNative},
-		{"glyph shadow", `ImageFunction.drawGlyph(bitmap, 0, 0, glyph, 16777215, 255, true, 0, 1)`, ErrUnsupportedNative},
-		{"glyph face", `ImageFunction.drawGlyph(bitmap, 0, 0, glyph, 16777215, 255, true, 3)`, ErrUnsupportedNative},
-		{"glyph hda", `ImageFunction.drawGlyph(bitmap, 0, 0, glyph, 16777215, 255, true, 0, 0, 0, 0, 0, 0, true)`, ErrUnsupportedNative},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if _, err := session.Evaluate(test.src); !errors.Is(err, test.want) {
-				t.Fatalf("error = %v, want %v", err, test.want)
-			}
-		})
+	value, err := session.Evaluate(`
+sum = 0;
+for (y = 0; y < 13; y++) for (x = 0; x < 8; x++) sum += bitmap.getMaskPixel(x, y);
+sum
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := value.Int(); got == 0 {
+		t.Fatal("drawText and drawGlyph produced no pixels")
 	}
 	if _, err := session.Evaluate(`ImageFunction.drawText(bitmap, font, 0, 0, "Ω", 16777215)`); err != nil {
 		t.Fatalf("missing glyph did not use the selected face fallback: %v", err)
@@ -269,7 +305,88 @@ func TestImageFunctionRejectsUnsupportedRendering(t *testing.T) {
 	if _, err := session.executeSource("<image-function-unsupported>", "a = new Bitmap(2, 2); ImageFunction.drawText(a, null, 0, 0, 'x', 16777215)", false); err == nil {
 		t.Fatal("drawText accepted a null Font")
 	}
-	if _, err := session.Evaluate("ImageFunction.operateStretch(a, a, null, null, null, 2, 0, 255, 1)"); !errors.Is(err, ErrUnsupportedNative) {
+	if _, err := session.Evaluate("ImageFunction.operateStretch(a, a, null, null, null, 2, 0, 255, 20)"); !errors.Is(err, ErrUnsupportedNative) {
 		t.Fatalf("stretch type error=%v", err)
+	}
+}
+
+func TestImageFunctionMutatingCallsReturnUpdatedRect(t *testing.T) {
+	session := NewSession(DefaultServices(), 20_000)
+	if _, err := session.executeSource("<image-function-results>", `
+a = new Bitmap(8, 8);
+b = new Bitmap(2, 2);
+rFill = ImageFunction.fillRect(a, 16711680, new Rect(1, 2, 4, 6));
+rRect = ImageFunction.operateRect(a, 3, 1, b, new Rect(0, 0, 2, 2));
+rStretch = ImageFunction.operateStretch(a, b, new Rect(0, 0, 6, 4), null, null, 2, 0, 255, 1);
+rAffine = ImageFunction.operateAffine(a, b, 0, 1, 1, 0, 1, 1, null, null, true, 2, 0, 255, 0);
+rFlip = ImageFunction.flipLR(a);
+resultOK = rFill.left == 1 && rFill.top == 2 && rFill.right == 4 && rFill.bottom == 6
+  && rRect.left == 3 && rRect.top == 1 && rRect.right == 5 && rRect.bottom == 3
+  && rStretch.left == 0 && rStretch.top == 0 && rStretch.right == 6 && rStretch.bottom == 4
+  && rAffine.left == 1 && rAffine.top == 1 && rAffine.right == 3 && rAffine.bottom == 3
+  && rFlip.left == 0 && rFlip.top == 0 && rFlip.right == 8 && rFlip.bottom == 8;
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("resultOK ? 1 : 0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := value.Int(); got != 1 {
+		t.Fatal("mutating ImageFunction calls returned incorrect Rect values")
+	}
+}
+
+func TestImageFunctionStretchFiltersUseDistinctKernels(t *testing.T) {
+	services := DefaultServices()
+	session := NewSession(services, 40_000)
+	if _, err := session.executeSource("<image-function-filters>", `
+src = new Bitmap(4, 1);
+src.setPixel(0, 0, 0); src.setMaskPixel(0, 0, 255);
+src.setPixel(1, 0, 16777215); src.setMaskPixel(1, 0, 255);
+src.setPixel(2, 0, 4194304); src.setMaskPixel(2, 0, 255);
+src.setPixel(3, 0, 8388608); src.setMaskPixel(3, 0, 255);
+	linear = new Bitmap(3, 1);
+	cubic = new Bitmap(3, 1);
+	lanczos2 = new Bitmap(3, 1);
+	lanczos3 = new Bitmap(3, 1);
+	spline16 = new Bitmap(3, 1);
+	spline36 = new Bitmap(3, 1);
+	area = new Bitmap(3, 1);
+	gaussian = new Bitmap(3, 1);
+	blackmanSinc = new Bitmap(3, 1);
+	ImageFunction.operateStretch(linear, src, new Rect(0, 0, 3, 1), null, null, 2, 0, 255, 1);
+	ImageFunction.operateStretch(cubic, src, new Rect(0, 0, 3, 1), null, null, 2, 0, 255, 3);
+	ImageFunction.operateStretch(lanczos2, src, new Rect(0, 0, 3, 1), null, null, 2, 0, 255, 6);
+	ImageFunction.operateStretch(lanczos3, src, new Rect(0, 0, 3, 1), null, null, 2, 0, 255, 8);
+	ImageFunction.operateStretch(spline16, src, new Rect(0, 0, 3, 1), null, null, 2, 0, 255, 10);
+	ImageFunction.operateStretch(spline36, src, new Rect(0, 0, 3, 1), null, null, 2, 0, 255, 12);
+	ImageFunction.operateStretch(area, src, new Rect(0, 0, 3, 1), null, null, 2, 0, 255, 14);
+	ImageFunction.operateStretch(gaussian, src, new Rect(0, 0, 3, 1), null, null, 2, 0, 255, 16);
+	ImageFunction.operateStretch(blackmanSinc, src, new Rect(0, 0, 3, 1), null, null, 2, 0, 255, 18);
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	value, err := session.Evaluate("linear")
+	if err != nil {
+		t.Fatal(err)
+	}
+	linear := services.Bitmap(value.ObjectRef().Object)
+	for _, name := range []string{"cubic", "lanczos2", "lanczos3", "spline16", "spline36", "area", "gaussian", "blackmanSinc"} {
+		value, err := session.Evaluate(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		filtered := services.Bitmap(value.ObjectRef().Object)
+		different := false
+		for index, got := range filtered.RGBA {
+			if got != linear.RGBA[index] {
+				different = true
+				break
+			}
+		}
+		if !different {
+			t.Errorf("%s produced the same pixels as bilinear filtering", name)
+		}
 	}
 }

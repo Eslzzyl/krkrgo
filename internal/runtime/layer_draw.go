@@ -343,7 +343,7 @@ func blendPixelForTarget(dst, src []byte, opacity uint8, typ, targetType LayerTy
 		return
 	}
 	if typ == LayerAddAlpha && targetType != LayerAddAlpha {
-		// The official bmAddAlphaOnAlpha path is intentionally unimplemented.
+		// The official bmAddAlphaOnAlpha path remains outside the generic layer compositor.
 		return
 	}
 	if typ == LayerAlpha {
