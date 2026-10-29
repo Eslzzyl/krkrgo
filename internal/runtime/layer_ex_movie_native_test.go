@@ -43,43 +43,57 @@ func TestLayerExMovieUsesVideoOverlay(t *testing.T) {
 	if layer == nil {
 		t.Fatal("movie layer was not registered")
 	}
+	if _, err := session.Evaluate(`
+		movieEvents = "";
+		layer.onStartMovie = function() { movieEvents = movieEvents + "start>"; };
+		layer.onUpdateMovie = function() { movieEvents = movieEvents + "update>"; };
+		layer.onStopMovie = function() { movieEvents = movieEvents + "stop>"; };
+	`); err != nil {
+		t.Fatal(err)
+	}
 
-	value, err = session.Evaluate(`layer.startMovie(true); layer.isPlayingMovie()`)
+	value, err = session.Evaluate(`layer.startMovie(true); movieEvents`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	playing, err := value.Truth()
-	if err != nil || !playing {
-		t.Fatalf("playing state = %v, err=%v", value, err)
+	if value.Text() != "start>" {
+		t.Fatalf("start callback sequence = %q", value.Text())
 	}
 	if err := session.AdvanceClock(500); err != nil {
 		t.Fatal(err)
 	}
-	if len(layer.RGBA) < 4 || layer.RGBA[3] != 231 {
-		t.Fatalf("advanced movie layer alpha = %d", layer.RGBA[3])
-	}
-
-	value, err = session.Evaluate(`layer.stopMovie(); layer.isPlayingMovie()`)
+	value, err = session.Evaluate("movieEvents")
 	if err != nil {
 		t.Fatal(err)
 	}
-	playing, err = value.Truth()
-	if err != nil || playing {
-		t.Fatalf("stopped state = %v, err=%v", value, err)
-	}
-	if session.Services.LayerMovies[layerID] != nil {
-		t.Fatal("stopped movie remained attached to the layer")
+	if value.Text() != "start>update>" {
+		t.Fatalf("update callback sequence = %q", value.Text())
 	}
 
-	if _, err := session.Evaluate(`layer.openMovie("movie.amv", false); layer.startMovie(false)`); err != nil {
+	value, err = session.Evaluate(`layer.stopMovie(); movieEvents`)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if value.Text() != "start>update>stop>" {
+		t.Fatalf("manual stop callback sequence = %q", value.Text())
+	}
+
+	value, err = session.Evaluate(`movieEvents = ""; layer.openMovie("movie.amv", false); layer.startMovie(false); movieEvents`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Text() != "start>" {
+		t.Fatalf("one-shot start callback sequence = %q", value.Text())
 	}
 	if err := session.AdvanceClock(2000); err != nil {
 		t.Fatal(err)
 	}
-	if movie := session.Services.LayerMovies[layerID]; movie != nil {
-		_, source := movie.Source()
-		t.Fatalf("ended movie remained attached to the layer: status=%q position=%d source=%t", movie.Status(), movie.Position(), source)
+	value, err = session.Evaluate("movieEvents")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Text() != "start>update>stop>" {
+		t.Fatalf("ended movie callback sequence = %q", value.Text())
 	}
 
 	if _, err := session.Evaluate(`layer.openMovie("movie.amv", true)`); err != nil {

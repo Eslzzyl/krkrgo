@@ -22,7 +22,7 @@ func (s *Services) clearLayerMovie(id tjs.ObjectID) {
 	movie.Close()
 }
 
-func (s *Services) layerExMovieNative(id tjs.ObjectID, layer *Layer, operation string, args []tjs.Value) (tjs.Value, error) {
+func (s *Services) layerExMovieNative(vm *tjs.VM, id tjs.ObjectID, layer *Layer, operation string, args []tjs.Value, budget *uint64) (tjs.Value, error) {
 	s.ensureInit()
 	movie := s.LayerMovies[id]
 	switch operation {
@@ -85,14 +85,24 @@ func (s *Services) layerExMovieNative(id tjs.ObjectID, layer *Layer, operation s
 			}
 		}
 		movie.SetLoop(loop)
-		return tjs.VoidValue, movie.Play()
+		if err := movie.Play(); err != nil {
+			return tjs.VoidValue, err
+		}
+		return tjs.VoidValue, s.layerEvent(vm, layer, "onStartMovie", nil, budget)
 	case "stopMovie":
 		if movie == nil {
 			return tjs.VoidValue, nil
 		}
+		wasPlaying := movie.Status() == VideoPlaying
 		err := movie.Stop()
 		s.clearLayerMovie(id)
-		return tjs.VoidValue, err
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		if wasPlaying {
+			return tjs.VoidValue, s.layerEvent(vm, layer, "onStopMovie", nil, budget)
+		}
+		return tjs.VoidValue, nil
 	case "isPlayingMovie":
 		return tjs.IntegerValue(boolInt(movie != nil && movie.Status() == VideoPlaying)), nil
 	default:

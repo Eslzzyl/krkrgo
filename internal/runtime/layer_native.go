@@ -266,7 +266,7 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 	defer s.syncRootGeometry()
 	switch operation {
 	case "openMovie", "startMovie", "stopMovie", "isPlayingMovie":
-		return s.layerExMovieNative(id, l, operation, args)
+		return s.layerExMovieNative(vm, id, l, operation, args, budget)
 	case "setCursorPos":
 		if len(args) < 2 {
 			return tjs.VoidValue, fmt.Errorf("Layer.setCursorPos requires x and y")

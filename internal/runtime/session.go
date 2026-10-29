@@ -1212,8 +1212,19 @@ func (s *Session) AdvanceClock(timeMS uint64) error {
 			return err
 		}
 		if layerMovie {
+			for _, event := range video.Events() {
+				if event.Kind != "frame" {
+					continue
+				}
+				if err := s.Services.layerEvent(s.VM, s.Services.Layer(id), "onUpdateMovie", nil, &s.Budget); err != nil {
+					return err
+				}
+			}
 			if wasPlaying && video.Status() == VideoStopped {
 				s.Services.clearLayerMovie(id)
+				if err := s.Services.layerEvent(s.VM, s.Services.Layer(id), "onStopMovie", nil, &s.Budget); err != nil {
+					return err
+				}
 			}
 			continue
 		}
