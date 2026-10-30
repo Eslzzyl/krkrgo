@@ -534,6 +534,42 @@ func hitLayer(l *Layer, x, y, parentX, parentY int32) *Layer {
 	return l
 }
 
+func deferredStretchHitAlpha(l *Layer, x, y int32) (uint8, bool) {
+	if l == nil || l.gpuStretch == nil {
+		return 0, false
+	}
+	pending := l.gpuStretch
+	if len(pending.sourcePixels) == 0 || pending.destinationWidth <= 0 || pending.destinationHeight <= 0 ||
+		pending.cropWidth <= 0 || pending.cropHeight <= 0 || x < pending.destinationX || y < pending.destinationY ||
+		x >= pending.destinationX+pending.destinationWidth || y >= pending.destinationY+pending.destinationHeight ||
+		pending.sourceX < 0 || pending.sourceY < 0 ||
+		pending.sourceX+pending.cropWidth > pending.sourceWidth ||
+		pending.sourceY+pending.cropHeight > pending.sourceHeight {
+		return 0, false
+	}
+	relativeX := x - pending.destinationX
+	relativeY := y - pending.destinationY
+	sourceX := pending.sourceX + int32((int64(2*relativeX+1)*int64(pending.cropWidth))/(2*int64(pending.destinationWidth)))
+	sourceY := pending.sourceY + int32((int64(2*relativeY+1)*int64(pending.cropHeight))/(2*int64(pending.destinationHeight)))
+	if sourceX < pending.sourceX {
+		sourceX = pending.sourceX
+	}
+	if sourceY < pending.sourceY {
+		sourceY = pending.sourceY
+	}
+	if sourceX >= pending.sourceX+pending.cropWidth {
+		sourceX = pending.sourceX + pending.cropWidth - 1
+	}
+	if sourceY >= pending.sourceY+pending.cropHeight {
+		sourceY = pending.sourceY + pending.cropHeight - 1
+	}
+	offset := (int64(sourceY)*int64(pending.sourceWidth) + int64(sourceX)) * 4
+	if offset < 0 || offset+4 > int64(len(pending.sourcePixels)) {
+		return 0, false
+	}
+	return pending.sourcePixels[offset+3], true
+}
+
 func layerHitAt(l *Layer, x, y, absoluteX, absoluteY int32) bool {
 	if l.EventTransparent {
 		return false
@@ -547,7 +583,15 @@ func layerHitAt(l *Layer, x, y, absoluteX, absoluteY int32) bool {
 		return false
 	}
 	sx, sy := localX-l.ImageLeft, localY-l.ImageTop
-	if sx < 0 || sy < 0 || sx >= l.ImageWidth || sy >= l.ImageHeight || len(l.RGBA) == 0 {
+	if sx < 0 || sy < 0 || sx >= l.ImageWidth || sy >= l.ImageHeight {
+		return false
+	}
+	if l.Hit != HitProvince {
+		if alpha, ok := deferredStretchHitAlpha(l, sx, sy); ok {
+			return int(alpha)*int(l.Opacity)/255 >= l.HitThreshold
+		}
+	}
+	if len(l.RGBA) == 0 {
 		return false
 	}
 	px, py := sx, sy

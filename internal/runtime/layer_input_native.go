@@ -78,18 +78,39 @@ func inputTrace(format string, args ...any) {
 	fmt.Printf("input-trace "+format+"\n", args...)
 }
 
-// hitTestLayer adds scriptable onHitTest filtering while preserving the current
-// hit result across nested getLayerAt calls.
-func (s *Services) hitTestLayer(vm *tjs.VM, root *Layer, x, y int32, budget *uint64) (*Layer, error) {
+func deferredStretchCoversImage(layer *Layer) bool {
+	if layer == nil || layer.gpuStretch == nil {
+		return false
+	}
+	pending := layer.gpuStretch
+	return pending.destinationX <= 0 && pending.destinationY <= 0 &&
+		pending.destinationX+pending.destinationWidth >= layer.ImageWidth &&
+		pending.destinationY+pending.destinationHeight >= layer.ImageHeight &&
+		(!layer.clipSet || (layer.clip.X <= 0 && layer.clip.Y <= 0 &&
+			layer.clip.Right() >= layer.ImageWidth && layer.clip.Bottom() >= layer.ImageHeight))
+}
+
+func (s *Services) materializeLayerHitPixels(layer *Layer) error {
+	if layer == nil || (layer.Hit != HitProvince && layer.HitThreshold == 0) ||
+		(layer.Hit != HitProvince && deferredStretchCoversImage(layer)) {
+		return nil
+	}
+	if layer.gpuMotion == nil && layer.gpuStretch == nil && len(layer.gpuImageOps) == 0 {
+		return nil
+	}
 	s.mu.Lock()
-	err := materializeLayerTree(root)
-	s.mu.Unlock()
-	if err != nil {
-		return nil, err
+	defer s.mu.Unlock()
+	return validLayerPixels(layer)
+}
+
+// hitTestLayer keeps deferred GPU images intact unless alpha or province data
+// is required to answer the hit test.
+func (s *Services) hitTestLayer(vm *tjs.VM, root *Layer, x, y int32, budget *uint64) (*Layer, error) {
+	if root == nil {
+		return nil, nil
 	}
 	return s.hitLayerForInput(vm, root, x, y, 0, 0, budget)
 }
-
 func (s *Services) hitLayerForInput(vm *tjs.VM, l *Layer, x, y, parentX, parentY int32, budget *uint64) (*Layer, error) {
 	if l == nil || !l.Visible || !l.Enabled || l.Opacity == 0 {
 		return nil, nil
@@ -99,6 +120,9 @@ func (s *Services) hitLayerForInput(vm *tjs.VM, l *Layer, x, y, parentX, parentY
 		if hit, err := s.hitLayerForInput(vm, l.children[i], x, y, absoluteX, absoluteY, budget); err != nil || hit != nil {
 			return hit, err
 		}
+	}
+	if err := s.materializeLayerHitPixels(l); err != nil {
+		return nil, err
 	}
 	if !layerHitAt(l, x, y, absoluteX, absoluteY) {
 		return nil, nil

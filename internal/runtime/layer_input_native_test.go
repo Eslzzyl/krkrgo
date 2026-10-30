@@ -94,6 +94,51 @@ try { button.update(0, 0, 0); } catch(e) { invalidUpdate = true; }
 	}
 }
 
+func TestPointerMovePreservesDeferredGPUImage(t *testing.T) {
+	session := NewSession(DefaultServices(), 50_000)
+	defer session.Close()
+	session.Services.gpuCapture = true
+	if _, err := session.executeSource("<pointer-move-gpu-image-test>", `
+window = new Window();
+root = new Layer(window);
+root.setSize(40, 40);
+root.visible = true;
+source = new Layer(window, root);
+source.setImageSize(2, 1);
+source.fillRect(0, 0, 2, 1, 0xff204060);
+source.visible = false;
+image = new Layer(window, root);
+image.setPos(10, 10);
+image.setImageSize(10, 10);
+image.visible = true;
+image.stretchCopy(0, 0, 10, 10, source, 0, 0, 2, 1, stFastLinear);
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	windowValue, err := session.Evaluate("window")
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowState := session.Services.Window(tjs.ObjectID(windowValue.ObjectRef().Object))
+	if windowState == nil {
+		t.Fatal("window state missing")
+	}
+	imageValue, err := session.Evaluate("image")
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageLayer := session.Services.Layer(tjs.ObjectID(imageValue.ObjectRef().Object))
+	if imageLayer == nil || imageLayer.gpuStretch == nil {
+		t.Fatal("GPU stretch was not deferred")
+	}
+	if err := session.Input(windowValue.ObjectRef().Object, PointerMove(12, 12)); err != nil {
+		t.Fatal(err)
+	}
+	if imageLayer.gpuStretch == nil {
+		t.Fatal("pointer move materialized the deferred GPU stretch")
+	}
+}
+
 func TestLayerReleaseCaptureClearsWindowMouseCapture(t *testing.T) {
 	session := NewSession(DefaultServices(), 20_000)
 	defer session.Close()

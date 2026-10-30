@@ -263,6 +263,27 @@ func TestGPUPlanCacheTracksBitmapStretchSource(t *testing.T) {
 	}
 }
 
+func TestDeferredImageSourceRevisionUsesCapturedPixels(t *testing.T) {
+	source, err := newBitmap(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.retainDeferredImageSource()
+	captured := source.RGBA
+	capturedRevision := source.imageRevision()
+	source.ensureImageWritable()
+	source.markDirty()
+	if &source.RGBA[0] == &captured[0] {
+		t.Fatal("bitmap writable copy did not detach the deferred source")
+	}
+	if got := deferredImageSourceRevision(nil, source, captured, capturedRevision); got != capturedRevision {
+		t.Fatalf("detached source revision = %d, want captured revision %d", got, capturedRevision)
+	}
+	if got := deferredImageSourceRevision(nil, source, source.RGBA, capturedRevision); got != source.imageRevision() {
+		t.Fatalf("current source revision = %d, want %d", got, source.imageRevision())
+	}
+}
+
 func TestGPUStretchRenderPlanDefersAndCPUCaptureMaterializes(t *testing.T) {
 	root := NewRootLayer(1, 4, 2)
 	if err := root.SetRGBA(4, 2, make([]byte, 4*2*4)); err != nil {
