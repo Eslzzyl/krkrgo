@@ -229,7 +229,7 @@ func (l *Layer) deferGPUCopyRect(source nativeLayerImage, dx, dy, sx, sy, width,
 		sourceOpaque:   source.layer != nil && source.layer.Type == LayerOpaque,
 		sourceRevision: layerImageSourceRevision(source),
 		dx:             dx, dy: dy, sx: sx, sy: sy, width: width, height: height,
-		face: face, holdAlpha: l.HoldAlpha, clip: layerImageClip(l),
+		face: face, holdAlpha: l.HoldAlpha, clip: layerImageClipRect(l),
 	})
 }
 
@@ -248,7 +248,7 @@ func (l *Layer) deferGPUOperateRect(source nativeLayerImage, dx, dy, sx, sy, wid
 		sourceOpaque:   source.layer != nil && source.layer.Type == LayerOpaque,
 		sourceRevision: layerImageSourceRevision(source),
 		dx:             dx, dy: dy, sx: sx, sy: sy, width: width, height: height,
-		mode: mode, opacity: opacity, face: face, holdAlpha: l.HoldAlpha, clip: layerImageClip(l),
+		mode: mode, opacity: opacity, face: face, holdAlpha: l.HoldAlpha, clip: layerImageClipRect(l),
 	})
 }
 
@@ -269,7 +269,7 @@ func (l *Layer) deferGPUAffineCopy(source nativeLayerImage, sleft, stop, swidth,
 		sourceOpaque:   source.layer != nil && source.layer.Type == LayerOpaque,
 		sourceRevision: layerImageSourceRevision(source),
 		sx:             sleft, sy: stop, width: swidth, height: sheight,
-		face: l.drawFace(), holdAlpha: l.HoldAlpha, clip: layerImageClip(l),
+		face: l.drawFace(), holdAlpha: l.HoldAlpha, clip: layerImageClipRect(l),
 		matrix: matrix, filter: filter,
 	})
 }
@@ -360,6 +360,11 @@ func layerImageClip(l *Layer) (left, top, right, bottom int32) {
 		bottom = top
 	}
 	return
+}
+
+func layerImageClipRect(l *Layer) Rect {
+	left, top, right, bottom := layerImageClip(l)
+	return Rect{X: left, Y: top, Width: right - left, Height: bottom - top}
 }
 
 func (l *Layer) AssignImages(source *Layer) error {
