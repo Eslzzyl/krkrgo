@@ -185,18 +185,25 @@ const (
 	RenderTransitionUniversal
 )
 
+func deferredImageSourceRevision(sourceLayer *Layer, sourceBitmap *Bitmap, fallback uint64) uint64 {
+	switch {
+	case sourceLayer != nil:
+		return sourceLayer.renderImageRevision()
+	case sourceBitmap != nil:
+		return sourceBitmap.imageRevision()
+	case fallback != 0:
+		return fallback
+	default:
+		return 1
+	}
+}
+
 func renderPlanImageRevision(layer *Layer) uint64 {
 	if layer == nil {
 		return 1
 	}
 	if pending := layer.gpuStretch; pending != nil {
-		sourceRevision := pending.sourceRevision
-		if sourceRevision == 0 && pending.sourceLayer != nil {
-			sourceRevision = pending.sourceLayer.renderImageRevision()
-		}
-		if sourceRevision == 0 && pending.sourceBitmap != nil {
-			sourceRevision = pending.sourceBitmap.imageRevision()
-		}
+		sourceRevision := deferredImageSourceRevision(pending.sourceLayer, pending.sourceBitmap, pending.sourceRevision)
 		return mixGPUStretchImageRevision(pending.sourceID, sourceRevision, pending.sourceWidth, pending.sourceHeight)
 	}
 	return layer.renderImageRevision()
@@ -244,20 +251,14 @@ func renderImageOp(op layerImageOp) RenderImageOp {
 		if rendered.SourceID == 0 {
 			rendered.SourceID = uint64(op.sourceLayer.ID)
 		}
-		rendered.SourceHash = op.sourceRevision
-		if rendered.SourceHash == 0 {
-			rendered.SourceHash = op.sourceLayer.renderImageRevision()
-		}
+		rendered.SourceHash = deferredImageSourceRevision(op.sourceLayer, nil, op.sourceRevision)
 		rendered.SourceOpaque = op.sourceOpaque
 		if len(rendered.SourceRGBA) == 0 {
 			rendered.SourceRGBA = op.sourceLayer.RGBA
 		}
 	} else if op.sourceBitmap != nil {
 		rendered.SourceKind = RenderImageSourceBitmap
-		rendered.SourceHash = op.sourceRevision
-		if rendered.SourceHash == 0 {
-			rendered.SourceHash = op.sourceBitmap.imageRevision()
-		}
+		rendered.SourceHash = deferredImageSourceRevision(nil, op.sourceBitmap, op.sourceRevision)
 		if len(rendered.SourceRGBA) == 0 {
 			rendered.SourceRGBA = op.sourceBitmap.RGBA
 		}
@@ -277,14 +278,7 @@ func renderImageOpsHash(layer *Layer) uint64 {
 		value ^= part + 0x9e3779b97f4a7c15 + (value << 6) + (value >> 2)
 	}
 	for _, op := range layer.gpuImageOps {
-		sourceRevision := uint64(1)
-		if op.sourceRevision != 0 {
-			sourceRevision = op.sourceRevision
-		} else if op.sourceLayer != nil {
-			sourceRevision = op.sourceLayer.renderImageRevision()
-		} else if op.sourceBitmap != nil {
-			sourceRevision = op.sourceBitmap.imageRevision()
-		}
+		sourceRevision := deferredImageSourceRevision(op.sourceLayer, op.sourceBitmap, op.sourceRevision)
 		mix(sourceRevision)
 		mix(op.sourceID)
 		mix(uint64(op.kind))
