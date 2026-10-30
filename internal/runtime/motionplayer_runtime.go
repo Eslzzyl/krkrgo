@@ -2870,6 +2870,7 @@ func (s *Services) clearMotionTarget(vm *tjs.VM, value tjs.Value) error {
 	if len(layer.RGBA) == 0 {
 		return nil
 	}
+	layer.ensureImageWritable()
 	for i := range layer.RGBA {
 		layer.RGBA[i] = 0
 	}

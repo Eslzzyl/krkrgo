@@ -593,10 +593,16 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		s.mu.RLock()
+		s.mu.Lock()
+		if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+			if err := validLayerPixels(l); err != nil {
+				s.mu.Unlock()
+				return tjs.VoidValue, err
+			}
+		}
 		p, err := layerPixel(l, x, y)
 		if err != nil {
-			s.mu.RUnlock()
+			s.mu.Unlock()
 			return tjs.VoidValue, err
 		}
 		var value int64
@@ -605,7 +611,7 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		} else {
 			value = int64(p[0])<<16 | int64(p[1])<<8 | int64(p[2])
 		}
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		return tjs.IntegerValue(value), nil
 	case "setMainPixel", "setMaskPixel":
 		x, err := intArg(0)
@@ -621,6 +627,13 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 			return tjs.VoidValue, err
 		}
 		s.mu.Lock()
+		if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+			if err := validLayerPixels(l); err != nil {
+				s.mu.Unlock()
+				return tjs.VoidValue, err
+			}
+		}
+		l.ensureImageWritable()
 		p, err := layerPixel(l, x, y)
 		if err == nil {
 			valueBytes := [4]byte{p[0], p[1], p[2], p[3]}
@@ -820,6 +833,8 @@ func (s *Services) invalidateLayer(vm *tjs.VM, id tjs.ObjectID) error {
 	if window := s.WindowObjects[tjs.ObjectID(l.windowID)]; window != nil && window.primaryLayer == LayerID(id) {
 		window.primaryLayer = 0
 	}
+	l.discardGPUStretch()
+	l.discardGPUImageOps()
 	l.windowID = 0
 	s.releaseLayerDefaultFontLocked(id)
 	if movie := s.LayerMovies[id]; movie != nil {
@@ -848,7 +863,7 @@ func (s *Services) invalidateLayer(vm *tjs.VM, id tjs.ObjectID) error {
 func (s *Services) layerGet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, budget *uint64) (tjs.Value, error) {
 	if key == "imageLeft" || key == "imageTop" || key == "imageWidth" || key == "imageHeight" {
 		s.mu.RLock()
-		hasImage := len(l.RGBA) != 0
+		hasImage := len(l.RGBA) != 0 || l.gpuMotion != nil
 		s.mu.RUnlock()
 		if !hasImage {
 			return tjs.VoidValue, fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
@@ -996,7 +1011,7 @@ func (s *Services) layerGet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, b
 	case "name":
 		return tjs.StringValue(l.Name), nil
 	case "hasImage":
-		return tjs.IntegerValue(boolInt(len(l.RGBA) != 0)), nil
+		return tjs.IntegerValue(boolInt(len(l.RGBA) != 0 || l.gpuMotion != nil)), nil
 	case "clipLeft", "clipTop", "clipWidth", "clipHeight":
 		clip, _ := l.Clip()
 		switch key {
@@ -1273,6 +1288,11 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 		if e != nil {
 			return tjs.VoidValue, e
 		}
+		if l.gpuStretch != nil {
+			if e = validLayerPixels(l); e != nil {
+				return tjs.VoidValue, e
+			}
+		}
 		l.Face = n
 		l.markRenderDirty()
 		return tjs.VoidValue, nil
@@ -1280,6 +1300,11 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 		b, e := boolArg(0)
 		if e != nil {
 			return tjs.VoidValue, e
+		}
+		if l.gpuStretch != nil {
+			if e = validLayerPixels(l); e != nil {
+				return tjs.VoidValue, e
+			}
 		}
 		l.HoldAlpha = b
 		l.markRenderDirty()
@@ -1351,6 +1376,11 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 		}
 		if l.Type == LayerBinder || l.Type == LayerEffect || l.Type == LayerFilter {
 			return tjs.VoidValue, fmt.Errorf("%w: layer type cannot have an image", ErrInvalidLayer)
+		}
+		if l.gpuMotion != nil {
+			if e = validLayerPixels(l); e != nil {
+				return tjs.VoidValue, e
+			}
 		}
 		if len(l.RGBA) == 0 {
 			e = resizeLayerImage(l, layerNativeDimension(l.Bounds.Width), layerNativeDimension(l.Bounds.Height))
@@ -1424,6 +1454,7 @@ func fillLayerPixelBlock(l *Layer, x, y int32, value [4]byte) error {
 	if x < 0 || y < 0 || x >= l.ImageWidth || y >= l.ImageHeight {
 		return fmt.Errorf("%w: pixel outside image", ErrInvalidLayer)
 	}
+	l.ensureImageWritable()
 	deviceWidth := l.deviceWidth()
 	offset := (int64(y)*int64(deviceWidth) + int64(x)) * 4
 	copy(l.RGBA[offset:offset+4], value[:])
@@ -1494,6 +1525,12 @@ func (s *Services) layerFillRect(l *Layer, operation string, args []tjs.Value, i
 	if e != nil {
 		return e
 	}
+	if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+		if err := validLayerPixels(l); err != nil {
+			return err
+		}
+	}
+	l.ensureImageWritable()
 	face := l.drawFace()
 	opacity := int32(255)
 	if operation == "colorRect" && len(args) > 5 && args[5].Kind() != tjs.KindVoid {
@@ -1714,10 +1751,16 @@ func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) err
 	if e = chargeTextBudget(budget, len(text)); e != nil {
 		return e
 	}
-	s.mu.RLock()
+	s.mu.Lock()
+	if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+		if err := validLayerPixels(l); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
 	hasImage := len(l.RGBA) != 0
 	face, holdAlpha := l.drawFace(), l.HoldAlpha
-	s.mu.RUnlock()
+	s.mu.Unlock()
 	if !hasImage {
 		return fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
 	}
@@ -1803,6 +1846,13 @@ func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) err
 	}
 	fg := color.NRGBAModel.Convert(foreground).(color.NRGBA)
 	s.mu.Lock()
+	if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+		if err := validLayerPixels(l); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
+	l.ensureImageWritable()
 	if len(l.RGBA) == 0 {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: layer has no image", ErrInvalidLayer)

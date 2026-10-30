@@ -102,6 +102,7 @@ func (s *Services) layerPiledCopy(dst *Layer, dstID tjs.ObjectID, args []tjs.Val
 	if err := validLayerPixels(dst); err != nil {
 		return err
 	}
+	dst.ensureImageWritable()
 	if err := validLayerPixels(src); err != nil {
 		return fmt.Errorf("Layer.%s: source layer has no image: %w", operation, err)
 	}

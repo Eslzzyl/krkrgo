@@ -30,6 +30,33 @@ testing. The host presents that frame at 1:1 physical pixels by default; the
 `-window-scale` option changes the requested physical window size without
 changing runtime pixels or script-visible coordinates.
 
+## Frame pipeline
+
+Every frame follows the same runtime stages:
+
+1. TJS/KAG updates layer state, decoded assets, text, video frames, audio state,
+   and input state.
+2. Image APIs that have a GPU implementation record an ordered operation on the
+   destination layer. The record contains source pixels, source dimensions, draw
+   face, hold-alpha state, clip, blend parameters, and source revision.
+3. `RenderPlan` captures the tree and keeps the ordered image records for the
+   interactive GPU host. Source buffers use copy-on-write protection: a later
+   CPU mutation receives a private buffer, so the queued operation keeps the
+   pixels seen at its original script position.
+4. The GPU host uploads the base layer once, applies copy/operate/affine/stretch
+   records through reusable textures and shaders, then composites the resulting
+   layer with the normal layer shader path.
+5. CPU capture materializes the same records in order before the existing pixel
+   compositor runs. A CPU request therefore has no dependency on the GPU host.
+
+The CPU-owned stages are asset decode, text rasterization, video frame decode,
+audio mixing, hit testing, and script-visible bitmap state. The GPU-owned stages
+are interactive presentation texture uploads, deferred image operations, layer
+blending, Motion affine composition, and GPU transitions. A layer can use the GPU
+operation path while its text or video source was prepared by the CPU.
+State changes that alter an operation's pixel meaning materialize that operation
+first; geometry and presentation-only changes remain in the render plan.
+
 
 The GPU compositor uploads direct (non-premultiplied) runtime RGBA into cached
 premultiplied textures. Uploads are selected by layer identity, dimensions, and the
@@ -107,6 +134,12 @@ GPU output is compared with the CPU reference using per-channel tolerances. Exac
 bytes can differ across graphics drivers, shader precision, and premultiplied
 intermediate rounding; such differences are expected and must not alter layer order,
 visibility, alpha semantics, transition phase, or hit testing.
+
+Generic `Layer.copyRect`, `Layer.operateRect`, `Layer.affineCopy`, and supported
+filtered `Layer.stretchCopy` calls can stay in the GPU plan. Their CPU equivalents
+remain the materialization path for replay, CPU presentation, hit testing, and
+state-changing layer APIs. Source revisions and reusable ping-pong textures keep
+successive operations ordered without a full CPU image copy per call.
 
 ## Ten-item optimization status
 

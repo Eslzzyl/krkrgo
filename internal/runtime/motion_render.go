@@ -87,8 +87,10 @@ func (l *Layer) materializeGPUMotion() error {
 		return fmt.Errorf("%w: deferred motion has invalid layer size", ErrInvalidLayer)
 	}
 	want := int(l.deviceWidth()) * int(l.deviceHeight()) * 4
+	l.ensureImageWritable()
 	if len(l.RGBA) != want {
 		l.RGBA = make([]byte, want)
+		l.deferredImageSourceRefs = 0
 	}
 	clear(l.RGBA)
 	motion := l.gpuMotion
@@ -4778,6 +4780,7 @@ func drawMotionCanvasInto(layer *Layer, frame *assets.Image, matrix motionDrawMa
 	if len(layer.RGBA) < width*height*4 || len(frame.RGBA) < canvasWidth*canvasHeight*4 {
 		return
 	}
+	layer.ensureImageWritable()
 	det := matrix.a*matrix.d - matrix.b*matrix.c
 	if det == 0 || math.IsNaN(det) || math.IsInf(det, 0) {
 		return

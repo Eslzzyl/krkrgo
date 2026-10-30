@@ -79,6 +79,7 @@ func (s *Services) layerStitchWrappedCopy(vm *tjs.VM, dstID tjs.ObjectID, dst *L
 	if err := validLayerPixels(dst); err != nil {
 		return fmt.Errorf("Layer.%s destination: %w", operation, err)
 	}
+	dst.ensureImageWritable()
 	if err := validLayerPixels(source); err != nil {
 		return fmt.Errorf("Layer.%s source: %w", operation, err)
 	}

@@ -19,17 +19,22 @@ const (
 	gpuTextureDestination
 	gpuTextureSource
 	gpuTextureRule
+	gpuTextureOperationSource
 )
 
 type gpuTextureKey struct {
-	id   runtime.LayerID
-	role gpuTextureRole
+	id         runtime.LayerID
+	role       gpuTextureRole
+	sourceKind runtime.RenderImageSourceKind
 }
 
 type gpuTexture struct {
 	image         *ebiten.Image
+	base          *ebiten.Image
+	operationTemp *ebiten.Image
 	width, height int32
 	hash          uint64
+	opsHash       uint64
 	opaque        bool
 	uploaded      bool
 }
@@ -85,6 +90,8 @@ type GPUCompositor struct {
 	sharedMotionAtlases map[string]*gpuMotionAtlas
 	motionStreams       map[runtime.LayerID]*gpuMotionStream
 	shaders             map[gpuMethodKey]*ebiten.Shader
+	imageOp             *ebiten.Shader
+	copyOp              *ebiten.Shader
 	vertices            []ebiten.Vertex
 	motionVertices      []ebiten.Vertex
 	motionIndices       []uint16
@@ -141,6 +148,16 @@ func NewGPUCompositor() (*GPUCompositor, error) {
 		universal.Deallocate()
 		return nil, err
 	}
+	imageOp, copyOp, err := compileGPUImageOpShaders()
+	if err != nil {
+		motionMask.Deallocate()
+		crossfade.Deallocate()
+		universal.Deallocate()
+		for _, shader := range methods {
+			shader.Deallocate()
+		}
+		return nil, err
+	}
 	return &GPUCompositor{
 		textures:            make(map[gpuTextureKey]*gpuTexture),
 		usedTextures:        make(map[gpuTextureKey]struct{}),
@@ -150,6 +167,8 @@ func NewGPUCompositor() (*GPUCompositor, error) {
 		sharedMotionAtlases: make(map[string]*gpuMotionAtlas),
 		motionStreams:       make(map[runtime.LayerID]*gpuMotionStream),
 		shaders:             methods,
+		imageOp:             imageOp,
+		copyOp:              copyOp,
 		crossfade:           crossfade,
 		universal:           universal,
 		motionMask:          motionMask,
@@ -236,13 +255,17 @@ func (c *GPUCompositor) Deallocate() {
 	if c.motionMask != nil {
 		seen[c.motionMask] = struct{}{}
 	}
+	if c.imageOp != nil {
+		seen[c.imageOp] = struct{}{}
+	}
+	if c.copyOp != nil {
+		seen[c.copyOp] = struct{}{}
+	}
 	for shader := range seen {
 		shader.Deallocate()
 	}
 	for key, texture := range c.textures {
-		if texture != nil && texture.image != nil {
-			texture.image.Deallocate()
-		}
+		c.releaseGPUTexture(texture)
 		delete(c.textures, key)
 	}
 	for size, images := range c.texturePool {
@@ -280,7 +303,7 @@ func (c *GPUCompositor) Deallocate() {
 		delete(c.motionStreams, id)
 	}
 	c.shaders = nil
-	c.crossfade, c.universal = nil, nil
+	c.crossfade, c.universal, c.imageOp, c.copyOp = nil, nil, nil, nil
 	c.vertices, c.motionVertices, c.motionIndices, c.indices = nil, nil, nil, nil
 	c.motionPaddedScratch = nil
 	c.motionFrame = 0
@@ -340,6 +363,35 @@ func (c *GPUCompositor) releaseTexture(image *ebiten.Image, width, height int32)
 	c.pooledBytes += bytes
 }
 
+func (c *GPUCompositor) releaseGPUTexture(texture *gpuTexture) {
+	if texture == nil {
+		return
+	}
+	if texture.image != nil {
+		c.releaseTexture(texture.image, texture.width, texture.height)
+	}
+	if texture.base != nil && texture.base != texture.image {
+		c.releaseTexture(texture.base, texture.width, texture.height)
+	}
+	if texture.operationTemp != nil && texture.operationTemp != texture.image && texture.operationTemp != texture.base {
+		c.releaseTexture(texture.operationTemp, texture.width, texture.height)
+	}
+}
+
+func (c *GPUCompositor) releaseGPUTextureAux(texture *gpuTexture) {
+	if texture == nil {
+		return
+	}
+	if texture.base != nil {
+		c.releaseTexture(texture.base, texture.width, texture.height)
+		texture.base = nil
+	}
+	if texture.operationTemp != nil {
+		c.releaseTexture(texture.operationTemp, texture.width, texture.height)
+		texture.operationTemp = nil
+	}
+}
+
 func (c *GPUCompositor) beginTextureFrame() {
 	clear(c.usedTextures)
 }
@@ -349,9 +401,7 @@ func (c *GPUCompositor) evictUnusedTextures() {
 		if _, ok := c.usedTextures[key]; ok {
 			continue
 		}
-		if texture != nil && texture.image != nil {
-			c.releaseTexture(texture.image, texture.width, texture.height)
-		}
+		c.releaseGPUTexture(texture)
 		delete(c.textures, key)
 	}
 }
@@ -418,11 +468,14 @@ func (c *GPUCompositor) texture(key gpuTextureKey, width, height int32, src []by
 	t := c.textures[key]
 	if t == nil || t.width != width || t.height != height || t.image == nil {
 		if t != nil && t.image != nil {
-			c.releaseTexture(t.image, t.width, t.height)
+			c.releaseGPUTexture(t)
 		}
 		t = &gpuTexture{image: c.acquireTexture(width, height), width: width, height: height}
 		c.textures[key] = t
 		t.hash = ^uint64(0)
+		t.opsHash = ^uint64(0)
+	} else if t.base != nil || t.operationTemp != nil {
+		c.releaseGPUTextureAux(t)
 	}
 	if t.hash != hash || t.opaque != opaque {
 		partial := dirtyValid && t.uploaded && t.opaque == opaque && dirty.X >= 0 && dirty.Y >= 0 &&
@@ -437,10 +490,199 @@ func (c *GPUCompositor) texture(key gpuTextureKey, width, height int32, src []by
 			t.image.WritePixels(upload)
 		}
 		t.hash = hash
+		t.opsHash = ^uint64(0)
 		t.uploaded = true
 	}
 	t.opaque = opaque
 	return t.image, nil
+}
+
+func (c *GPUCompositor) textureWithImageOps(key gpuTextureKey, width, height int32, src []byte, baseHash, opsHash uint64, opaque bool, ops []runtime.RenderImageOp) (*ebiten.Image, error) {
+	if width <= 0 || height <= 0 || uint64(width)*uint64(height)*4 != uint64(len(src)) {
+		return nil, fmt.Errorf("invalid GPU operation texture %d: %dx%d with %d bytes", key.id, width, height, len(src))
+	}
+	c.usedTextures[key] = struct{}{}
+	t := c.textures[key]
+	if t == nil || t.width != width || t.height != height || t.image == nil || t.base == nil {
+		if t != nil {
+			c.releaseGPUTexture(t)
+		}
+		t = &gpuTexture{
+			image: c.acquireTexture(width, height),
+			base:  c.acquireTexture(width, height),
+			width: width, height: height,
+			hash: ^uint64(0), opsHash: ^uint64(0),
+		}
+		c.textures[key] = t
+	}
+	if t.hash != baseHash || t.opaque != opaque || !t.uploaded {
+		t.base.WritePixels(c.premultipliedUpload(src, opaque))
+		t.hash = baseHash
+		t.opaque = opaque
+		t.uploaded = true
+		t.opsHash = ^uint64(0)
+	}
+	if t.opsHash == opsHash {
+		return t.image, nil
+	}
+	if t.operationTemp == nil || t.operationTemp.Bounds().Dx() != int(width) || t.operationTemp.Bounds().Dy() != int(height) {
+		if t.operationTemp != nil {
+			t.operationTemp.Deallocate()
+		}
+		t.operationTemp = c.acquireTexture(width, height)
+	}
+	t.image.DrawImage(t.base, &ebiten.DrawImageOptions{Blend: gpuReplaceBlend})
+	current, next := t.image, t.operationTemp
+	for _, op := range ops {
+		sourceKey := gpuTextureKey{
+			id:         runtime.LayerID(op.SourceID),
+			role:       gpuTextureOperationSource,
+			sourceKind: op.SourceKind,
+		}
+		source, err := c.texture(sourceKey, op.SourceWidth, op.SourceHeight, op.SourceRGBA,
+			op.SourceHash, op.SourceOpaque, runtime.Rect{}, false)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.applyImageOp(next, current, source, op); err != nil {
+			return nil, err
+		}
+		current, next = next, current
+	}
+	t.image, t.operationTemp = current, next
+	t.opsHash = opsHash
+	return t.image, nil
+}
+
+func imageOpTargetType(face int32) runtime.LayerType {
+	switch face {
+	case 0:
+		return runtime.LayerAlpha
+	case 1:
+		return runtime.LayerOpaque
+	case 4:
+		return runtime.LayerAddAlpha
+	default:
+		return runtime.LayerAlpha
+	}
+}
+
+func imageOpAxisBounds(op runtime.RenderImageOp, width, height int32) (int32, int32, int32, int32, bool) {
+	if op.Width <= 0 || op.Height <= 0 || op.SourceWidth <= 0 || op.SourceHeight <= 0 {
+		return 0, 0, 0, 0, false
+	}
+	left := maxInt32(0, op.DX)
+	top := maxInt32(0, op.DY)
+	right := minInt32(width, op.DX+op.Width, op.DX+op.SourceWidth-op.SX)
+	bottom := minInt32(height, op.DY+op.Height, op.DY+op.SourceHeight-op.SY)
+	if right <= left || bottom <= top {
+		return 0, 0, 0, 0, false
+	}
+	return left, top, right, bottom, true
+}
+
+func minInt32(values ...int32) int32 {
+	value := values[0]
+	for _, candidate := range values[1:] {
+		if candidate < value {
+			value = candidate
+		}
+	}
+	return value
+}
+
+func maxInt32(a, b int32) int32 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func (c *GPUCompositor) applyImageOp(target, current, source *ebiten.Image, op runtime.RenderImageOp) error {
+	if target == nil || current == nil || source == nil {
+		return fmt.Errorf("GPU image operation has a missing texture")
+	}
+	target.DrawImage(current, &ebiten.DrawImageOptions{Blend: gpuReplaceBlend})
+	uniforms := c.shaderUniforms()
+	uniforms["SourceOrigin"] = []float32{float32(op.DX), float32(op.DY)}
+	uniforms["SourceScale"] = []float32{1, 1}
+	uniforms["SourceOffset"] = []float32{float32(op.SX), float32(op.SY)}
+	uniforms["SourceMin"] = []float32{float32(op.SX) + 0.5, float32(op.SY) + 0.5}
+	uniforms["SourceMax"] = []float32{float32(op.SX+op.Width) - 0.5, float32(op.SY+op.Height) - 0.5}
+	uniforms["SourceLinear"] = float32(0)
+	shader := c.copyOp
+	left, top, right, bottom, ok := imageOpAxisBounds(op, int32(target.Bounds().Dx()), int32(target.Bounds().Dy()))
+	if op.Kind == runtime.RenderImageOpAffine {
+		a, b, cc, d, tx, ty := op.Matrix[0], op.Matrix[1], op.Matrix[2], op.Matrix[3], op.Matrix[4], op.Matrix[5]
+		determinant := a*d - b*cc
+		if determinant == 0 {
+			return nil
+		}
+		minX, maxX := math.Inf(1), math.Inf(-1)
+		minY, maxY := math.Inf(1), math.Inf(-1)
+		for _, corner := range [4][2]float64{{-0.5, -0.5}, {float64(op.Width) - 0.5, -0.5}, {float64(op.Width) - 0.5, float64(op.Height) - 0.5}, {-0.5, float64(op.Height) - 0.5}} {
+			x := a*corner[0] + cc*corner[1] + tx
+			y := b*corner[0] + d*corner[1] + ty
+			minX, maxX = math.Min(minX, x), math.Max(maxX, x)
+			minY, maxY = math.Min(minY, y), math.Max(maxY, y)
+		}
+		left = maxInt32(0, int32(math.Floor(minX)))
+		top = maxInt32(0, int32(math.Floor(minY)))
+		right = minInt32(int32(target.Bounds().Dx()), int32(math.Ceil(maxX))+1)
+		bottom = minInt32(int32(target.Bounds().Dy()), int32(math.Ceil(maxY))+1)
+		ok = right > left && bottom > top
+		uniforms["Affine"] = float32(1)
+		uniforms["AffineInverse"] = []float32{float32(d / determinant), float32(-cc / determinant), float32(-b / determinant), float32(a / determinant)}
+		uniforms["AffineTranslation"] = []float32{float32(tx), float32(ty)}
+		uniforms["SourceRectOrigin"] = []float32{float32(op.SX), float32(op.SY)}
+		uniforms["SourceRectSize"] = []float32{float32(op.Width), float32(op.Height)}
+		uniforms["SourceMin"] = []float32{float32(op.SX) + 0.5, float32(op.SY) + 0.5}
+		uniforms["SourceMax"] = []float32{float32(op.SX+op.Width) - 0.5, float32(op.SY+op.Height) - 0.5}
+		uniforms["SourceLinear"] = float32(boolToInt(op.Filter != 0))
+	} else {
+		uniforms["Affine"] = float32(0)
+	}
+	if !op.Clip.Empty() {
+		left = maxInt32(left, op.Clip.X)
+		top = maxInt32(top, op.Clip.Y)
+		right = minInt32(right, op.Clip.Right())
+		bottom = minInt32(bottom, op.Clip.Bottom())
+	}
+	if !ok {
+		return nil
+	}
+	if right <= left || bottom <= top {
+		return nil
+	}
+	if op.Kind == runtime.RenderImageOpOperate {
+		shader = c.imageOp
+		uniforms["Mode"] = float32(op.Mode)
+		uniforms["TargetType"] = float32(imageOpTargetType(op.Face))
+		uniforms["Opacity"] = float32(op.Opacity) / 255
+		uniforms["HoldAlpha"] = boolToFloat(op.HoldAlpha)
+	}
+	c.vertices = c.vertices[:0]
+	c.vertices = append(c.vertices,
+		ebiten.Vertex{DstX: float32(left), DstY: float32(top), SrcX: float32(left), SrcY: float32(top)},
+		ebiten.Vertex{DstX: float32(right), DstY: float32(top), SrcX: float32(right), SrcY: float32(top)},
+		ebiten.Vertex{DstX: float32(left), DstY: float32(bottom), SrcX: float32(left), SrcY: float32(bottom)},
+		ebiten.Vertex{DstX: float32(right), DstY: float32(bottom), SrcX: float32(right), SrcY: float32(bottom)},
+	)
+	if op.Kind == runtime.RenderImageOpCopy {
+		uniforms["Face"] = float32(op.Face)
+		uniforms["HoldAlpha"] = boolToFloat(op.HoldAlpha)
+	}
+	target.DrawTrianglesShader(c.vertices, c.indices, shader, &ebiten.DrawTrianglesShaderOptions{
+		Blend: gpuReplaceBlend, Uniforms: uniforms, Images: [4]*ebiten.Image{current, source, nil, nil},
+	})
+	return nil
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (c *GPUCompositor) copyFrontToBack() {
@@ -1721,6 +1963,12 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 					if !directMotion && err == nil {
 						source, err = c.composeMotion(n)
 					}
+				} else if len(n.ImageOps) != 0 {
+					source, err = c.textureWithImageOps(
+						gpuTextureKey{id: n.ID, role: gpuTextureLayer},
+						n.ImageWidth, n.ImageHeight, n.RGBA,
+						n.ImageBaseHash, n.ImageOpsHash, n.Type == runtime.LayerOpaque, n.ImageOps,
+					)
 				} else {
 					if n.GPUStretch {
 						sourceWidth, sourceHeight = n.GPUStretchSourceWidth, n.GPUStretchSourceHeight

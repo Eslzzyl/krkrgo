@@ -549,6 +549,7 @@ func (s *Services) imageOperateRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, er
 		return tjs.VoidValue, nil
 	}
 	s.mu.Lock()
+	dst.ensureImageWritable()
 	source := imageCopySource(src, dstID == srcID)
 	for y := dr.top; y < dr.bottom; y++ {
 		for x := dr.left; x < dr.right; x++ {
@@ -641,6 +642,7 @@ func (s *Services) imageStretch(dst, src *Bitmap, dstID, srcID tjs.ObjectID, dr,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	dst.ensureImageWritable()
 	source := imageCopySource(src, dstID == srcID)
 	mapDW, mapDH := float64(orig.right-orig.left), float64(orig.bottom-orig.top)
 	for y := dr.top; y < dr.bottom; y++ {
@@ -772,6 +774,7 @@ func (s *Services) imageAffine(dst, src *Bitmap, dstID, srcID tjs.ObjectID, matr
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	dst.ensureImageWritable()
 	source := imageCopySource(src, dstID == srcID)
 	for y := top; y < bottom; y++ {
 		for x := left; x < right; x++ {
@@ -862,6 +865,7 @@ func (s *Services) imagePointAffine(dst, src *Bitmap, dstID, srcID tjs.ObjectID,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	dst.ensureImageWritable()
 	source := imageCopySource(src, dstID == srcID)
 	for y := top; y < bottom; y++ {
 		for x := left; x < right; x++ {
@@ -1075,6 +1079,7 @@ func (s *Services) imageFlip(vm *tjs.VM, args []tjs.Value, horizontal bool) (tjs
 		return tjs.VoidValue, nil
 	}
 	s.mu.Lock()
+	b.ensureImageWritable()
 	if horizontal {
 		for y := rect.top; y < rect.bottom; y++ {
 			for left, right := rect.left, rect.right-1; left < right; left, right = left+1, right-1 {
@@ -1177,6 +1182,7 @@ func (s *Services) imageAdjustGamma(vm *tjs.VM, args []tjs.Value) (tjs.Value, er
 	}
 	tables := [3][256]uint8{gammaTable(rg, rf, rc), gammaTable(gg, gf, gc), gammaTable(bg, bf, bc)}
 	s.mu.Lock()
+	b.ensureImageWritable()
 	for y := clip.top; y < clip.bottom; y++ {
 		for x := clip.left; x < clip.right; x++ {
 			i := (int(y)*int(b.deviceWidth()) + int(x)) * 4
@@ -1230,6 +1236,7 @@ func (s *Services) imageGrayScale(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 		return tjs.VoidValue, nil
 	}
 	s.mu.Lock()
+	b.ensureImageWritable()
 	for y := clip.top; y < clip.bottom; y++ {
 		for x := clip.left; x < clip.right; x++ {
 			i := (int(y)*int(b.deviceWidth()) + int(x)) * 4
@@ -1276,6 +1283,7 @@ func (s *Services) imageFillRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, error
 	}
 	r, g, bl, a := imageColor(value)
 	s.mu.Lock()
+	b.ensureImageWritable()
 	for y := rect.top; y < rect.bottom; y++ {
 		for x := rect.left; x < rect.right; x++ {
 			pixel := [4]byte{r, g, bl, 0}
@@ -1337,6 +1345,7 @@ func (s *Services) imageColorRect(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 	r, g, bl, a := imageColor(value)
 	src := [4]byte{r, g, bl, 0}
 	s.mu.Lock()
+	b.ensureImageWritable()
 	for y := rect.top; y < rect.bottom; y++ {
 		for x := rect.left; x < rect.right; x++ {
 			dstPixel := append([]byte(nil), b.blockAt(int64(x), int64(y))...)
@@ -1411,6 +1420,7 @@ func (s *Services) imageBoxBlur(vm *tjs.VM, args []tjs.Value) (tjs.Value, error)
 		return tjs.VoidValue, nil
 	}
 	s.mu.Lock()
+	b.ensureImageWritable()
 	source := append([]byte(nil), b.RGBA...)
 	for y := clip.top; y < clip.bottom; y++ {
 		for x := clip.left; x < clip.right; x++ {
@@ -1805,6 +1815,7 @@ func (s *Services) imageDrawText(vm *tjs.VM, args []tjs.Value) (tjs.Value, error
 		return tjs.VoidValue, err
 	}
 	s.mu.Lock()
+	b.ensureImageWritable()
 	b.font = state
 	s.mu.Unlock()
 	var mask []byte
@@ -1823,6 +1834,7 @@ func (s *Services) imageDrawText(vm *tjs.VM, args []tjs.Value) (tjs.Value, error
 		mask, maskWidth, maskHeight, originX, originY = imageRotateMask(mask, rasterized.Rect.Dx(), rasterized.Rect.Dy(), float64(state.Angle)*math.Pi/1800)
 	}
 	s.mu.Lock()
+	b.ensureImageWritable()
 	if mask != nil && maskWidth > 0 && maskHeight > 0 {
 		imageDrawMaskWithShadowLocked(b, mask, maskWidth, maskHeight,
 			config.x+originX, config.y+originY, config.clip, config)
@@ -2050,6 +2062,7 @@ func (s *Services) imageDrawGlyph(vm *tjs.VM, args []tjs.Value) (tjs.Value, erro
 	x := config.x + glyph.originX
 	y := config.y - glyph.originY + offsetY
 	s.mu.Lock()
+	b.ensureImageWritable()
 	angle := float64(state.Angle) * math.Pi / 1800
 	drawWidth, drawHeight := glyph.width, glyph.height
 	if glyph.colored {

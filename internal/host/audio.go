@@ -1,6 +1,7 @@
 package host
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -358,9 +359,14 @@ func (q *audioQueue) write(samples []float32) error {
 		return ErrAudioOutputBackpressure
 	}
 	capacity := len(q.data) / 2
-	for frame := range frames {
-		at := (q.head + q.frames + frame) % capacity
-		copy(q.data[at*2:at*2+2], samples[frame*2:frame*2+2])
+	start := ((q.head + q.frames) % capacity) * 2
+	first := len(samples)
+	if first > len(q.data)-start {
+		first = len(q.data) - start
+	}
+	copy(q.data[start:start+first], samples[:first])
+	if first < len(samples) {
+		copy(q.data[:len(samples)-first], samples[first:])
 	}
 	q.frames += frames
 	q.written = true
@@ -417,6 +423,15 @@ func (q *audioQueue) Read(p []byte) (int, error) {
 	capacity := len(q.data) / 2
 	for n < len(p) && q.frames > 0 {
 		frame := q.data[q.head*2 : q.head*2+2]
+		if q.readByte == 0 && len(p)-n >= 8 {
+			binary.LittleEndian.PutUint32(p[n:n+4], math.Float32bits(frame[0]))
+			binary.LittleEndian.PutUint32(p[n+4:n+8], math.Float32bits(frame[1]))
+			n += 8
+			frame[0], frame[1] = 0, 0
+			q.head = (q.head + 1) % capacity
+			q.frames--
+			continue
+		}
 		bits := math.Float32bits(frame[q.readByte/4])
 		shift := uint((q.readByte % 4) * 8)
 		p[n] = byte(bits >> shift)

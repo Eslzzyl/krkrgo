@@ -142,6 +142,12 @@ func (s *Services) layerTransition(vm *tjs.VM, context tjs.Value, operation stri
 	if layerTreeRoot(source) != layerTreeRoot(layer) {
 		return tjs.VoidValue, fmt.Errorf("Layer.beginTransition: transition layers must belong to the same tree")
 	}
+	if err := validLayerPixels(layer); err != nil {
+		return tjs.VoidValue, err
+	}
+	if err := validLayerPixels(source); err != nil {
+		return tjs.VoidValue, err
+	}
 	if len(args) != 4 || args[3].Kind() != tjs.KindObject || args[3].IsNull() {
 		return tjs.VoidValue, fmt.Errorf("Layer.beginTransition: options.time is required")
 	}
@@ -724,6 +730,8 @@ func (s *Services) stopLayerTransition(vm *tjs.VM, layer *Layer, notify bool, bu
 	if layer.transitionExchange {
 		destX, destY, destVisible := layer.Bounds.X, layer.Bounds.Y, layer.Visible
 		srcX, srcY, srcVisible := source.Bounds.X, source.Bounds.Y, source.Visible
+		layer.ensureImageWritable()
+		source.ensureImageWritable()
 		layer.RGBA = append(layer.RGBA[:0], layer.transitionSourceImage...)
 		source.RGBA = append(source.RGBA[:0], layer.transitionDestImage...)
 		layer.ImageWidth, source.ImageWidth = source.ImageWidth, layer.ImageWidth
@@ -738,6 +746,7 @@ func (s *Services) stopLayerTransition(vm *tjs.VM, layer *Layer, notify bool, bu
 	} else {
 		// KAG's simple completion callback assigns the source to the existing
 		// layer; preserve source pixels and tree identity for that path.
+		layer.ensureImageWritable()
 		layer.RGBA = append(layer.RGBA[:0], layer.transitionSourceImage...)
 	}
 	layer.markImageDirty()

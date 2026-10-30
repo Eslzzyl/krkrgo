@@ -3,8 +3,6 @@ package runtime
 import (
 	"fmt"
 	"math"
-
-	"github.com/eslzzyl/krkrgo/internal/assets"
 )
 
 const (
@@ -153,6 +151,7 @@ type AudioMixer struct {
 	videos       []*VideoOverlay
 	videoStates  map[*VideoOverlay]videoMixerState
 	output       []float32
+	mixScratch   []float32
 }
 
 // NewAudioMixer creates a mixer with full global volume.
@@ -248,9 +247,17 @@ func (m *AudioMixer) Mix(frames int) ([]float32, error) {
 	if frames > math.MaxInt/2 {
 		return nil, fmt.Errorf("audio output size overflow")
 	}
-	output := make([]float32, frames*2)
+	outputSize := frames * 2
+	previousOutput := m.output
+	if cap(m.mixScratch) < outputSize {
+		m.mixScratch = make([]float32, outputSize)
+	} else {
+		m.mixScratch = m.mixScratch[:outputSize]
+		clear(m.mixScratch)
+	}
+	output := m.mixScratch
 	if frames == 0 {
-		m.output = output
+		m.output, m.mixScratch = output, previousOutput
 		return m.output, nil
 	}
 	global := clampGain(m.GlobalVolume)
@@ -309,11 +316,7 @@ func (m *AudioMixer) Mix(frames int) ([]float32, error) {
 			video.mu.Unlock()
 			continue
 		}
-		blocks := make([]VideoAudioBlock, len(video.audioQueue))
-		for i, block := range video.audioQueue {
-			blocks[i] = block
-			blocks[i].Samples = append([]float32(nil), block.Samples...)
-		}
+		blocks := append([]VideoAudioBlock(nil), video.audioQueue...)
 		volume := clampGain(video.volume) * global
 		balance := video.balance
 		video.mu.Unlock()
@@ -350,7 +353,7 @@ func (m *AudioMixer) Mix(frames int) ([]float32, error) {
 		state.video.audioQueue = append(state.video.audioQueue[:0], state.video.audioQueue[state.takeBlocks:]...)
 		state.video.mu.Unlock()
 	}
-	m.output = output
+	m.output, m.mixScratch = output, previousOutput
 	return m.output, nil
 }
 
@@ -374,16 +377,13 @@ func cloneSoundStream(source *SoundStream) *SoundStream {
 		info:         source.info,
 		flags:        flags,
 		flagEpoch:    flagEpoch,
-		sortedLabels: append([]assets.Label(nil), source.sortedLabels...),
+		sortedLabels: source.sortedLabels,
 		position:     source.position,
 		IgnoreLinks:  source.IgnoreLinks,
 		LoopAtEnd:    source.LoopAtEnd,
 	}
-	clone.info.Links = append([]assets.Link(nil), source.info.Links...)
-	clone.info.Labels = append([]assets.Label(nil), source.info.Labels...)
 	if source.crossfade != nil {
 		fade := *source.crossfade
-		fade.samples = append([]int16(nil), source.crossfade.samples...)
 		clone.crossfade = &fade
 	}
 	return &clone

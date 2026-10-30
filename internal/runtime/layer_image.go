@@ -20,12 +20,30 @@ type nativeLayerImage struct {
 	mode                          int32
 }
 
+func layerImageSourceRevision(source nativeLayerImage) uint64 {
+	if source.layer != nil {
+		return source.layer.renderImageRevision()
+	}
+	if source.bitmap != nil {
+		return source.bitmap.imageRevision()
+	}
+	return 1
+}
+
 func (l *Layer) materializeGPUStretch() error {
 	if l == nil || l.gpuStretch == nil {
 		return nil
 	}
 	pending := l.gpuStretch
 	l.gpuStretch = nil
+	defer func() {
+		if pending.sourceLayer != nil {
+			pending.sourceLayer.releaseDeferredImageSource(pending.sourcePixels)
+		}
+		if pending.sourceBitmap != nil {
+			pending.sourceBitmap.releaseDeferredImageSource(pending.sourcePixels)
+		}
+	}()
 	var source []byte
 	if len(pending.sourcePixels) != 0 {
 		source = pending.sourcePixels
@@ -63,10 +81,197 @@ func validLayerPixels(l *Layer) error {
 	if err := l.materializeGPUStretch(); err != nil {
 		return err
 	}
+	if err := l.materializeGPUImageOps(); err != nil {
+		return err
+	}
 	if !l.validImage() {
 		return fmt.Errorf("%w: layer has no valid image", ErrInvalidLayer)
 	}
 	return nil
+}
+
+func (l *Layer) retainDeferredImageSource() {
+	if l == nil || len(l.RGBA) == 0 {
+		return
+	}
+	l.deferredImageSourceRefs++
+}
+
+func (l *Layer) ensureImageWritable() {
+	if l == nil || l.deferredImageSourceRefs == 0 || len(l.RGBA) == 0 {
+		return
+	}
+	l.RGBA = append([]byte(nil), l.RGBA...)
+	l.deferredImageSourceRefs = 0
+}
+
+func (l *Layer) releaseDeferredImageSource(pixels []byte) {
+	if l == nil || l.deferredImageSourceRefs == 0 || len(pixels) == 0 || len(l.RGBA) == 0 {
+		return
+	}
+	if &l.RGBA[0] == &pixels[0] {
+		l.deferredImageSourceRefs--
+	}
+}
+
+func releaseDeferredImageSource(op layerImageOp) {
+	if op.sourceLayer != nil {
+		op.sourceLayer.releaseDeferredImageSource(op.sourcePixels)
+	}
+	if op.sourceBitmap != nil {
+		op.sourceBitmap.releaseDeferredImageSource(op.sourcePixels)
+	}
+}
+
+func (l *Layer) discardGPUImageOps() {
+	if l == nil {
+		return
+	}
+	for _, op := range l.gpuImageOps {
+		releaseDeferredImageSource(op)
+	}
+	l.gpuImageOps = nil
+}
+
+func (l *Layer) discardGPUStretch() {
+	if l == nil || l.gpuStretch == nil {
+		return
+	}
+	pending := l.gpuStretch
+	l.gpuStretch = nil
+	if pending.sourceLayer != nil {
+		pending.sourceLayer.releaseDeferredImageSource(pending.sourcePixels)
+	}
+	if pending.sourceBitmap != nil {
+		pending.sourceBitmap.releaseDeferredImageSource(pending.sourcePixels)
+	}
+}
+
+func (l *Layer) materializeGPUImageOps() error {
+	if l == nil || len(l.gpuImageOps) == 0 {
+		return nil
+	}
+	ops := l.gpuImageOps
+	l.gpuImageOps = nil
+	for _, op := range ops {
+		defer releaseDeferredImageSource(op)
+		source := op.sourcePixels
+		if len(source) == 0 {
+			switch {
+			case op.sourceLayer != nil:
+				if op.sourceLayer != l {
+					if err := validLayerPixels(op.sourceLayer); err != nil {
+						return err
+					}
+				}
+				source = op.sourceLayer.RGBA
+			case op.sourceBitmap != nil:
+				source = op.sourceBitmap.RGBA
+			}
+		}
+		if len(source) == 0 {
+			return fmt.Errorf("%w: deferred image source is empty", ErrInvalidLayer)
+		}
+		var err error
+		switch op.kind {
+		case layerImageOpCopy:
+			err = l.copyRectPixels(source, op.sourceWidth, op.sourceHeight, nil, 0, 0,
+				op.dx, op.dy, op.sx, op.sy, op.width, op.height)
+		case layerImageOpOperate:
+			err = l.operateRectPixels(source, op.sourceWidth, op.sourceHeight,
+				op.dx, op.dy, op.sx, op.sy, op.width, op.height, op.mode, op.opacity)
+		case layerImageOpAffine:
+			err = l.affineCopyPixels(source, op.sourceWidth, op.sourceHeight,
+				op.sx, op.sy, op.width, op.height, op.matrix, op.filter, op.clear)
+			if err == nil {
+				l.markImageDirty()
+			}
+		default:
+			err = fmt.Errorf("%w: unknown deferred image operation %d", ErrInvalidLayer, op.kind)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (l *Layer) deferGPUImageOp(op layerImageOp) bool {
+	if l == nil || !l.validImage() || l.gpuMotion != nil || l.gpuStretch != nil {
+		return false
+	}
+	if op.sourceLayer != nil {
+		op.sourceLayer.retainDeferredImageSource()
+	}
+	if op.sourceBitmap != nil {
+		op.sourceBitmap.retainDeferredImageSource()
+	}
+	l.gpuImageOps = append(l.gpuImageOps, op)
+	if op.kind == layerImageOpAffine {
+		l.markDeferredImageDirtyRect(Rect{Width: l.deviceWidth(), Height: l.deviceHeight()})
+	} else {
+		l.markDeferredImageDirtyRect(Rect{X: op.dx, Y: op.dy, Width: op.width, Height: op.height})
+	}
+	return true
+}
+
+func (l *Layer) deferGPUCopyRect(source nativeLayerImage, dx, dy, sx, sy, width, height int32) bool {
+	face := l.drawFace()
+	if source.layer == l || !layerCopyFaceSupported(face) || source.width <= 0 || source.height <= 0 ||
+		width <= 0 || height <= 0 || sx < 0 || sy < 0 ||
+		int64(sx)+int64(width) > int64(source.width) || int64(sy)+int64(height) > int64(source.height) {
+		return false
+	}
+	return l.deferGPUImageOp(layerImageOp{
+		kind: layerImageOpCopy, sourceLayer: source.layer, sourceBitmap: source.bitmap,
+		sourcePixels: source.pixels, sourceID: uint64(source.id),
+		sourceWidth: source.width, sourceHeight: source.height,
+		sourceOpaque:   source.layer != nil && source.layer.Type == LayerOpaque,
+		sourceRevision: layerImageSourceRevision(source),
+		dx:             dx, dy: dy, sx: sx, sy: sy, width: width, height: height,
+		face: face, holdAlpha: l.HoldAlpha, clip: layerImageClip(l),
+	})
+}
+
+func (l *Layer) deferGPUOperateRect(source nativeLayerImage, dx, dy, sx, sy, width, height, mode, opacity int32) bool {
+	face := l.drawFace()
+	_, faceOK := layerFaceTarget(face)
+	if source.layer == l || !faceOK || !validLayerOperationMode(mode) ||
+		source.width <= 0 || source.height <= 0 || width <= 0 || height <= 0 || sx < 0 || sy < 0 ||
+		int64(sx)+int64(width) > int64(source.width) || int64(sy)+int64(height) > int64(source.height) {
+		return false
+	}
+	return l.deferGPUImageOp(layerImageOp{
+		kind: layerImageOpOperate, sourceLayer: source.layer, sourceBitmap: source.bitmap,
+		sourcePixels: source.pixels, sourceID: uint64(source.id),
+		sourceWidth: source.width, sourceHeight: source.height,
+		sourceOpaque:   source.layer != nil && source.layer.Type == LayerOpaque,
+		sourceRevision: layerImageSourceRevision(source),
+		dx:             dx, dy: dy, sx: sx, sy: sy, width: width, height: height,
+		mode: mode, opacity: opacity, face: face, holdAlpha: l.HoldAlpha, clip: layerImageClip(l),
+	})
+}
+
+func (l *Layer) deferGPUAffineCopy(source nativeLayerImage, sleft, stop, swidth, sheight int32, matrix [6]float64, filter int32, clear bool) bool {
+	if source.layer == l || !layerCopyFaceSupported(l.drawFace()) || clear || swidth <= 0 || sheight <= 0 ||
+		filter < 0 || filter > 2 || source.width <= 0 || source.height <= 0 || sleft < 0 || stop < 0 ||
+		int64(sleft)+int64(swidth) > int64(source.width) || int64(stop)+int64(sheight) > int64(source.height) {
+		return false
+	}
+	determinant := matrix[0]*matrix[3] - matrix[1]*matrix[2]
+	if math.IsNaN(determinant) || math.IsInf(determinant, 0) || determinant == 0 {
+		return false
+	}
+	return l.deferGPUImageOp(layerImageOp{
+		kind: layerImageOpAffine, sourceLayer: source.layer, sourceBitmap: source.bitmap,
+		sourcePixels: source.pixels, sourceID: uint64(source.id),
+		sourceWidth: source.width, sourceHeight: source.height,
+		sourceOpaque:   source.layer != nil && source.layer.Type == LayerOpaque,
+		sourceRevision: layerImageSourceRevision(source),
+		sx:             sleft, sy: stop, width: swidth, height: sheight,
+		face: l.drawFace(), holdAlpha: l.HoldAlpha, clip: layerImageClip(l),
+		matrix: matrix, filter: filter,
+	})
 }
 func (l *Layer) deferGPUStretchCopy(source nativeLayerImage, width, height, sourceWidth, sourceHeight, stretchType int32) bool {
 	return l.deferGPUStretchCopyRect(source, 0, 0, width, height, 0, 0,
@@ -81,7 +286,7 @@ func (l *Layer) deferGPUStretchCopyRect(source nativeLayerImage, dx, dy, width, 
 		cropWidth <= 0 || cropHeight <= 0 || sx < 0 || sy < 0 ||
 		int64(sx)+int64(cropWidth) > int64(source.width) ||
 		int64(sy)+int64(cropHeight) > int64(source.height) ||
-		source.layer == l || source.layer != nil && source.layer.gpuStretch != nil {
+		source.layer == l || source.layer != nil && source.layer.gpuStretch != nil || len(l.gpuImageOps) != 0 {
 		return false
 	}
 	filter := stretchType & 0xffff
@@ -98,6 +303,11 @@ func (l *Layer) deferGPUStretchCopyRect(source nativeLayerImage, dx, dy, width, 
 			return false
 		}
 	}
+	if l.gpuStretch != nil {
+		if err := l.materializeGPUStretch(); err != nil {
+			return false
+		}
+	}
 	l.gpuStretch = &gpuStretchCopy{
 		sourceLayer: source.layer, sourceBitmap: source.bitmap, sourcePixels: source.pixels,
 		sourceID:    uint64(source.id),
@@ -105,7 +315,13 @@ func (l *Layer) deferGPUStretchCopyRect(source nativeLayerImage, dx, dy, width, 
 		sourceX: sx, sourceY: sy, cropWidth: cropWidth, cropHeight: cropHeight,
 		destinationX: dx, destinationY: dy,
 		destinationWidth: width, destinationHeight: height,
-		stretchType: stretchType,
+		stretchType: stretchType, sourceRevision: layerImageSourceRevision(source),
+	}
+	if source.layer != nil {
+		source.layer.retainDeferredImageSource()
+	}
+	if source.bitmap != nil {
+		source.bitmap.retainDeferredImageSource()
 	}
 	l.markRenderDirty()
 	return true
@@ -158,6 +374,9 @@ func (l *Layer) AssignImages(source *Layer) error {
 		}
 		return nil
 	}
+	l.discardGPUStretch()
+	l.gpuMotion = nil
+	l.discardGPUImageOps()
 	if source.gpuMotion != nil {
 		width, height := source.ImageWidth, source.ImageHeight
 		sameMotion := l.gpuMotion == source.gpuMotion && l.gpuStretch == nil && len(l.RGBA) == 0 &&
@@ -176,8 +395,9 @@ func (l *Layer) AssignImages(source *Layer) error {
 		if int64(height)+int64(l.ImageTop) < int64(l.Bounds.Height) {
 			l.ImageTop = l.Bounds.Height - height
 		}
-		l.gpuStretch = nil
+		l.discardGPUStretch()
 		l.RGBA = nil
+		l.deferredImageSourceRefs = 0
 		l.ImageWidth, l.ImageHeight = width, height
 		l.gpuMotion = source.gpuMotion
 		if len(l.Province) != 0 {
@@ -225,7 +445,7 @@ func (l *Layer) AssignImages(source *Layer) error {
 	if int64(height)+int64(l.ImageTop) < int64(l.Bounds.Height) {
 		l.ImageTop = l.Bounds.Height - height
 	}
-	l.gpuStretch = nil
+	l.ensureImageWritable()
 	l.RGBA = append(l.RGBA[:0], source.RGBA...)
 	l.ImageWidth, l.ImageHeight = width, height
 	if len(source.Province) == 0 {
@@ -416,6 +636,9 @@ func (l *Layer) CopyRect(source *Layer, dx, dy, sx, sy, width, height int32) err
 	if source == nil {
 		return fmt.Errorf("%w: copyRect source is nil", ErrInvalidLayer)
 	}
+	if err := validLayerPixels(source); err != nil {
+		return err
+	}
 	sourceWidth, sourceHeight := source.deviceWidth(), source.deviceHeight()
 	if sourceWidth <= 0 || sourceHeight <= 0 {
 		sourceWidth, sourceHeight = source.ProvinceWidth, source.ProvinceHeight
@@ -432,6 +655,7 @@ func (l *Layer) copyRectPixels(source []byte, sourceWidth, sourceHeight int32, s
 	if err := validLayerPixels(l); err != nil {
 		return err
 	}
+	l.ensureImageWritable()
 
 	face := l.drawFace()
 	sourceLogicalWidth, sourceLogicalHeight := sourceWidth, sourceHeight
@@ -555,6 +779,7 @@ func (l *Layer) operateRectPixels(source []byte, sourceWidth, sourceHeight, dx, 
 	if err := validLayerPixels(l); err != nil {
 		return err
 	}
+	l.ensureImageWritable()
 	if sourceWidth <= 0 || sourceHeight <= 0 || uint64(sourceWidth)*uint64(sourceHeight)*4 != uint64(len(source)) {
 		return fmt.Errorf("%w: invalid operateRect source image", ErrInvalidLayer)
 	}
@@ -650,6 +875,7 @@ func (l *Layer) stretchCopyPixelsImpl(source []byte, sourceWidth, sourceHeight, 
 	if err := validLayerPixels(l); err != nil {
 		return err
 	}
+	l.ensureImageWritable()
 	if sourceWidth <= 0 || sourceHeight <= 0 || uint64(sourceWidth)*uint64(sourceHeight)*4 != uint64(len(source)) {
 		return fmt.Errorf("%w: invalid stretchCopy source image", ErrInvalidLayer)
 	}
@@ -886,6 +1112,7 @@ func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft
 	if err := validLayerPixels(l); err != nil {
 		return err
 	}
+	l.ensureImageWritable()
 	if sourceWidth <= 0 || sourceHeight <= 0 || uint64(sourceWidth)*uint64(sourceHeight)*4 != uint64(len(source)) {
 		return fmt.Errorf("%w: invalid affineCopy source image", ErrInvalidLayer)
 	}
@@ -1103,6 +1330,7 @@ func (l *Layer) DoGrayScale() error {
 	if err := validLayerPixels(l); err != nil {
 		return err
 	}
+	l.ensureImageWritable()
 	left, top, right, bottom := layerImageClip(l)
 	for y := top; y < bottom; y++ {
 		for x := left; x < right; x++ {
@@ -1142,6 +1370,7 @@ func (l *Layer) AdjustGamma(channels [3]LayerGammaChannel) error {
 	if err := validLayerPixels(l); err != nil {
 		return err
 	}
+	l.ensureImageWritable()
 	for i, channel := range channels {
 		if math.IsNaN(channel.Gamma) || math.IsInf(channel.Gamma, 0) {
 			return fmt.Errorf("%w: Layer.adjustGamma gamma must be finite", ErrInvalidLayer)
@@ -1164,6 +1393,7 @@ func (l *Layer) Light(light, contrast int32) error {
 	if err := validLayerPixels(l); err != nil {
 		return err
 	}
+	l.ensureImageWritable()
 	scale := 100 + int64(contrast)
 	offset := int64(light) + 128
 	var tables [3][256]byte
@@ -1223,6 +1453,7 @@ func (l *Layer) DoBoxBlur(xRadius, yRadius int32) error {
 	if err := validLayerPixels(l); err != nil {
 		return err
 	}
+	l.ensureImageWritable()
 	rx, ry := int64(xRadius), int64(yRadius)
 	if rx < 0 {
 		rx = -rx
@@ -1423,6 +1654,10 @@ func (s *Services) layerAffineCopy(l *Layer, args []tjs.Value) error {
 	if !s.nativeLayerImageStillValid(source) {
 		return fmt.Errorf("Layer.%s source was invalidated", operation)
 	}
+	if s.gpuCapture && l.deferGPUAffineCopy(source, sleft, stop, swidth, sheight, matrix, stretchType&0xffff, clear) {
+		l.imageModified = true
+		return nil
+	}
 	if err := l.affineCopyPixels(source.pixels, source.width, source.height, sleft, stop, swidth, sheight, matrix, stretchType&0xffff, clear); err != nil {
 		return err
 	}
@@ -1577,6 +1812,9 @@ func (s *Services) layerImageNative(l *Layer, operation string, args []tjs.Value
 		if !s.nativeLayerImageStillValid(source) {
 			return fmt.Errorf("Layer.%s source was invalidated", operation)
 		}
+		if s.gpuCapture && l.deferGPUCopyRect(source, dx, dy, sx, sy, width, height) {
+			return nil
+		}
 		return l.copyRectPixels(source.pixels, source.width, source.height, source.province,
 			source.provinceWidth, source.provinceHeight, dx, dy, sx, sy, width, height)
 	case "operateRect":
@@ -1626,6 +1864,9 @@ func (s *Services) layerImageNative(l *Layer, operation string, args []tjs.Value
 		defer s.mu.Unlock()
 		if !s.nativeLayerImageStillValid(source) {
 			return fmt.Errorf("Layer.%s source was invalidated", operation)
+		}
+		if s.gpuCapture && l.deferGPUOperateRect(source, dx, dy, sx, sy, width, height, mode, opacity) {
+			return nil
 		}
 		return l.operateRectPixels(source.pixels, source.width, source.height, dx, dy, sx, sy, width, height, mode, opacity)
 	case "stretchCopy":

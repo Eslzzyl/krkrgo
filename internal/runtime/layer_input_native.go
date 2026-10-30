@@ -81,6 +81,12 @@ func inputTrace(format string, args ...any) {
 // hitTestLayer adds scriptable onHitTest filtering while preserving the current
 // hit result across nested getLayerAt calls.
 func (s *Services) hitTestLayer(vm *tjs.VM, root *Layer, x, y int32, budget *uint64) (*Layer, error) {
+	s.mu.Lock()
+	err := materializeLayerTree(root)
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	return s.hitLayerForInput(vm, root, x, y, 0, 0, budget)
 }
 

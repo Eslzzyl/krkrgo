@@ -463,6 +463,44 @@ dst.stretchCopy(0, 0, 4, 2, src, 0, 0, 2, 1, stFastLinear);
 	}
 }
 
+func TestNativeGPUCaptureDefersGenericImageOperations(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	session.Services.gpuCapture = true
+	if _, err := session.executeSource("<gpu-image-op-native-test>", `
+src = new Layer(); copied = new Layer(); blended = new Layer(); affine = new Layer();
+src.setImageSize(2, 1); copied.setImageSize(2, 1); blended.setImageSize(2, 1); affine.setImageSize(2, 1);
+src.fillRect(0, 0, 2, 1, 0xff204060);
+copied.copyRect(0, 0, src, 0, 0, 2, 1);
+blended.operateRect(0, 0, src, 0, 0, 2, 1);
+affine.affineCopy(src, 0, 0, 2, 1, false, 0, 0, 2, 0, 0, 1);
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"copied", "blended", "affine"} {
+		value, err := session.Evaluate(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		layer := session.Services.Layers[value.ObjectRef().Object]
+		if layer == nil || len(layer.gpuImageOps) != 1 {
+			t.Fatalf("%s deferred operations = %d", name, len(layer.gpuImageOps))
+		}
+	}
+	session.Services.gpuCapture = false
+	value, err := session.Evaluate("copied.getMainPixel(0,0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := value.Int()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0x204060 {
+		t.Fatalf("materialized deferred copy pixel = %#x, want %#x", got, 0x204060)
+	}
+}
+
 func TestNativeLayerLightAdjustsRGBAndPreservesAlpha(t *testing.T) {
 	session := NewSession(DefaultServices(), 100_000)
 	if _, err := session.executeSource("<layer-light-test>", `

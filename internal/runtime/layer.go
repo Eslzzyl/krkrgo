@@ -194,53 +194,56 @@ type Layer struct {
 	Parent   *Layer
 	children []*Layer
 
-	inTransition          bool
-	transitionSource      *Layer
-	transitionMethod      string
-	transitionType1       int32
-	transitionType2       int32
-	transitionAccel       int32
-	transitionChildren    bool
-	transitionExchange    bool // Provider-style transitions exchange layer trees at completion.
-	transitionCallback    tjs.Value
-	transitionDuration    uint64
-	transitionStart       uint64
-	transitionTick        uint64
-	transitionSelfUpdate  bool
-	transitionVague       int32
-	transitionRule        []byte
-	transitionDestImage   []byte
-	transitionSourceImage []byte
-	transitionPixels      []byte
-	transitionOpaque      bool
-	transitionZeroOpaque  bool
-	transitionDestHash    uint64
-	transitionSourceHash  uint64
-	transitionRuleHash    uint64
-	transitionHashesValid bool
-	transitionSourceAlpha transitionAlphaClass
-	transitionDestAlpha   transitionAlphaClass
-	transitionHidden      bool
-	absoluteOrderIndex    int32
-	absoluteOrderMode     bool
-	clip                  Rect
-	clipSet               bool
-	hitTestWork           bool
-	callOnPaint           bool
-	gpuStretch            *gpuStretchCopy
-	gpuMotion             *RenderMotion
-	imageModified         bool
-	imageRevision         uint64
-	subtreeRevision       uint64
-	completionRGBA        []byte
-	completionRevision    uint64
-	completionWidth       int32
-	completionHeight      int32
-	dirtyRect             Rect
-	dirtyRectValid        bool
-	fillScratch           []byte
-	motionScratch         *RenderMotion
-	windowID              uint64
+	inTransition            bool
+	transitionSource        *Layer
+	transitionMethod        string
+	transitionType1         int32
+	transitionType2         int32
+	transitionAccel         int32
+	transitionChildren      bool
+	transitionExchange      bool // Provider-style transitions exchange layer trees at completion.
+	transitionCallback      tjs.Value
+	transitionDuration      uint64
+	transitionStart         uint64
+	transitionTick          uint64
+	transitionSelfUpdate    bool
+	transitionVague         int32
+	transitionRule          []byte
+	transitionDestImage     []byte
+	transitionSourceImage   []byte
+	transitionPixels        []byte
+	transitionOpaque        bool
+	transitionZeroOpaque    bool
+	transitionDestHash      uint64
+	transitionSourceHash    uint64
+	transitionRuleHash      uint64
+	transitionHashesValid   bool
+	transitionSourceAlpha   transitionAlphaClass
+	transitionDestAlpha     transitionAlphaClass
+	transitionHidden        bool
+	absoluteOrderIndex      int32
+	absoluteOrderMode       bool
+	clip                    Rect
+	clipSet                 bool
+	hitTestWork             bool
+	callOnPaint             bool
+	gpuStretch              *gpuStretchCopy
+	gpuMotion               *RenderMotion
+	imageModified           bool
+	imageRevision           uint64
+	baseImageRevision       uint64
+	subtreeRevision         uint64
+	completionRGBA          []byte
+	completionRevision      uint64
+	completionWidth         int32
+	completionHeight        int32
+	dirtyRect               Rect
+	dirtyRectValid          bool
+	fillScratch             []byte
+	motionScratch           *RenderMotion
+	gpuImageOps             []layerImageOp
+	deferredImageSourceRefs int
+	windowID                uint64
 }
 
 func (l *Layer) markRenderDirty() {
@@ -260,6 +263,34 @@ func (l *Layer) markImageDirty() {
 // rectangle is intersected with the current image and cleared after the next
 // render-plan capture, when the host has consumed it.
 func (l *Layer) markImageDirtyRect(rect Rect) {
+	if l == nil {
+		return
+	}
+	l.imageRevision++
+	l.baseImageRevision++
+	l.markRenderDirty()
+	width, height := l.deviceWidth(), l.deviceHeight()
+	if width <= 0 || height <= 0 {
+		l.dirtyRect = Rect{}
+		l.dirtyRectValid = false
+		return
+	}
+	rect = rect.Intersect(Rect{Width: width, Height: height})
+	if rect.Empty() {
+		return
+	}
+	if l.dirtyRectValid {
+		l.dirtyRect = unionRect(l.dirtyRect, rect)
+	} else {
+		l.dirtyRect = rect
+		l.dirtyRectValid = true
+	}
+}
+
+// markDeferredImageDirtyRect records a change represented by a backend image
+// operation. The logical image revision advances while the CPU base surface
+// remains unchanged.
+func (l *Layer) markDeferredImageDirtyRect(rect Rect) {
 	if l == nil {
 		return
 	}
@@ -317,6 +348,13 @@ func (l *Layer) renderImageRevision() uint64 {
 	return l.imageRevision
 }
 
+func (l *Layer) renderBaseImageRevision() uint64 {
+	if l == nil || l.baseImageRevision == 0 {
+		return 1
+	}
+	return l.baseImageRevision
+}
+
 type gpuStretchCopy struct {
 	sourceLayer       *Layer
 	sourceBitmap      *Bitmap
@@ -333,13 +371,44 @@ type gpuStretchCopy struct {
 	destinationWidth  int32
 	destinationHeight int32
 	stretchType       int32
+	sourceRevision    uint64
+}
+
+type layerImageOpKind uint8
+
+const (
+	layerImageOpCopy layerImageOpKind = iota
+	layerImageOpOperate
+	layerImageOpAffine
+)
+
+type layerImageOp struct {
+	kind           layerImageOpKind
+	sourceLayer    *Layer
+	sourceBitmap   *Bitmap
+	sourcePixels   []byte
+	sourceID       uint64
+	sourceWidth    int32
+	sourceHeight   int32
+	sourceOpaque   bool
+	sourceRevision uint64
+	dx, dy         int32
+	sx, sy         int32
+	width, height  int32
+	mode, opacity  int32
+	face           int32
+	holdAlpha      bool
+	clip           Rect
+	matrix         [6]float64
+	filter         int32
+	clear          bool
 }
 
 // NewLayer constructs a layer with an immutable-by-convention stable ID.
 func NewLayer(id LayerID) *Layer {
 	return &Layer{ID: id, Opacity: 255, Visible: true, Enabled: true,
 		Type: LayerAlpha, Hit: HitMask, HitThreshold: 1, Face: 128,
-		imageRevision: 1, subtreeRevision: 1}
+		imageRevision: 1, baseImageRevision: 1, subtreeRevision: 1}
 }
 
 func (l *Layer) deviceWidth() int32 {
@@ -599,11 +668,21 @@ func (l *Layer) SetClip(r Rect) error {
 	if l.clipSet && l.clip == r {
 		return nil
 	}
+	if l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+		if err := validLayerPixels(l); err != nil {
+			return err
+		}
+	}
 	l.clip, l.clipSet = r, true
 	l.markRenderDirty()
 	return nil
 }
 func (l *Layer) ResetClip() {
+	if l.clipSet && (l.gpuStretch != nil || len(l.gpuImageOps) != 0) {
+		if err := validLayerPixels(l); err != nil {
+			return
+		}
+	}
 	l.clip, l.clipSet = Rect{}, false
 	l.markRenderDirty()
 }
@@ -635,13 +714,15 @@ func (l *Layer) setRGBA(width, height int32, rgba []byte, owned bool) error {
 	if len(l.Province) != 0 && (l.ProvinceWidth != width || l.ProvinceHeight != height) {
 		return ErrProvinceSizeMismatch
 	}
-	l.gpuStretch = nil
+	l.discardGPUStretch()
 	l.gpuMotion = nil
+	l.discardGPUImageOps()
 	if owned {
 		l.RGBA = rgba
 	} else {
 		l.RGBA = append([]byte(nil), rgba...)
 	}
+	l.deferredImageSourceRefs = 0
 	l.ImageWidth, l.ImageHeight = width, height
 	if l.Bounds.Width == 0 {
 		l.Bounds.Width = width
@@ -664,9 +745,11 @@ func (l *Layer) setDeferredMotion(width, height int32, motion *RenderMotion) err
 	if len(l.Province) != 0 && (l.ProvinceWidth != width || l.ProvinceHeight != height) {
 		return ErrProvinceSizeMismatch
 	}
-	l.gpuStretch = nil
+	l.discardGPUStretch()
 	l.gpuMotion = motion
+	l.discardGPUImageOps()
 	l.RGBA = nil
+	l.deferredImageSourceRefs = 0
 	l.ImageWidth, l.ImageHeight = width, height
 	if l.Bounds.Width == 0 {
 		l.Bounds.Width = width
@@ -698,6 +781,11 @@ func (l *Layer) SetSize(width, height int32) error {
 	if l.Bounds.Width == width && l.Bounds.Height == height {
 		return nil
 	}
+	if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+		if err := validLayerPixels(l); err != nil {
+			return err
+		}
+	}
 	imageWidth, imageHeight := l.ImageWidth, l.ImageHeight
 	imageLeft := maxInt32(l.ImageLeft, width-maxInt32(imageWidth, width))
 	imageTop := maxInt32(l.ImageTop, height-maxInt32(imageHeight, height))
@@ -724,6 +812,9 @@ func (l *Layer) SetImageSize(width, height int32) error {
 		return err
 	}
 	if err := l.materializeGPUStretch(); err != nil {
+		return err
+	}
+	if err := l.materializeGPUImageOps(); err != nil {
 		return err
 	}
 	if width < 0 || height < 0 || uint64(width)*uint64(height) > maxLayerPixels {
@@ -771,21 +862,33 @@ func (l *Layer) SetImageSize(width, height int32) error {
 }
 
 func (l *Layer) SetImageWidth(width int32) error {
-	if l == nil || len(l.RGBA) == 0 {
+	if l == nil {
 		return fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
+	}
+	if err := validLayerPixels(l); err != nil {
+		return err
 	}
 	return l.SetImageSize(width, l.ImageHeight)
 }
 
 func (l *Layer) SetImageHeight(height int32) error {
-	if l == nil || len(l.RGBA) == 0 {
+	if l == nil {
 		return fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
+	}
+	if err := validLayerPixels(l); err != nil {
+		return err
 	}
 	return l.SetImageSize(l.ImageWidth, height)
 }
 
 func (l *Layer) SetSizeToImageSize() error {
-	if l == nil || len(l.RGBA) == 0 {
+	if l == nil {
+		return fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
+	}
+	if err := validLayerPixels(l); err != nil {
+		return err
+	}
+	if len(l.RGBA) == 0 {
 		return fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
 	}
 	if l.ImageWidth <= 0 || l.ImageHeight <= 0 {
@@ -837,6 +940,7 @@ func resizeLayerImage(l *Layer, width, height int32) error {
 		}
 	}
 	l.RGBA, l.ImageWidth, l.ImageHeight = rgba, width, height
+	l.deferredImageSourceRefs = 0
 	if len(l.Province) != 0 {
 		l.Province, l.ProvinceWidth, l.ProvinceHeight = province, width, height
 	}
@@ -919,9 +1023,11 @@ func (l *Layer) SetImageOwned(im assets.Image) error {
 	return l.SetRGBAOwned(int32(im.Width), int32(im.Height), im.RGBA)
 }
 func (l *Layer) ClearImage() {
-	l.gpuStretch = nil
+	l.discardGPUStretch()
 	l.gpuMotion = nil
+	l.discardGPUImageOps()
 	l.RGBA = nil
+	l.deferredImageSourceRefs = 0
 	l.ImageWidth, l.ImageHeight = 0, 0
 	l.markImageDirty()
 	l.ClearProvince()
@@ -966,7 +1072,13 @@ func (l *Layer) ClearProvince() {
 }
 
 func (l *Layer) SetImagePosition(x, y int32) error {
-	if l == nil || len(l.RGBA) == 0 {
+	if l == nil {
+		return fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
+	}
+	if err := validLayerPixels(l); err != nil {
+		return err
+	}
+	if len(l.RGBA) == 0 {
 		return fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
 	}
 	if x > 0 || y > 0 || int64(l.ImageWidth)+int64(x) < int64(l.Bounds.Width) ||
@@ -1012,6 +1124,12 @@ func (l *Layer) ConvertType(from int32) error {
 	if l == nil {
 		return ErrInvalidLayer
 	}
+	if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+		if err := validLayerPixels(l); err != nil {
+			return err
+		}
+	}
+	l.ensureImageWritable()
 	switch {
 	case l.drawFace() == layerFaceAddAlpha && from == layerFaceAlpha:
 		for offset := 0; offset+3 < len(l.RGBA); offset += 4 {
@@ -1047,6 +1165,11 @@ func (l *Layer) SetType(t LayerType) error {
 	}
 	if l.Type == t {
 		return nil
+	}
+	if l.gpuStretch != nil {
+		if err := validLayerPixels(l); err != nil {
+			return err
+		}
 	}
 	if t == LayerBinder || t == LayerEffect || t == LayerFilter {
 		l.Type = t

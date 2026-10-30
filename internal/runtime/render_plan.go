@@ -3,6 +3,7 @@ package runtime
 import (
 	"encoding/binary"
 	"hash/maphash"
+	"math"
 )
 
 type RenderPlan struct {
@@ -28,6 +29,9 @@ type RenderNode struct {
 	RGBA                                                    []byte
 	Motion                                                  *RenderMotion
 	ImageHash                                               uint64
+	ImageBaseHash                                           uint64
+	ImageOpsHash                                            uint64
+	ImageOps                                                []RenderImageOp
 	ImageDirty                                              Rect
 	ImageDirtyValid                                         bool
 	GPUStretch                                              bool
@@ -37,10 +41,50 @@ type RenderNode struct {
 	GPUStretchDestinationX, GPUStretchDestinationY          int32
 	GPUStretchDestinationWidth, GPUStretchDestinationHeight int32
 	gpuStretchSourceBitmap                                  *Bitmap
+	gpuImageOpBitmaps                                       []*Bitmap
+	gpuImageOpLayers                                        []*Layer
 	Clip                                                    Rect
 	ClipSet                                                 bool
 	ChildStart, ChildCount                                  int
 	Transition                                              *RenderTransition
+}
+
+type RenderImageOpKind uint8
+
+const (
+	RenderImageOpCopy RenderImageOpKind = iota
+	RenderImageOpOperate
+	RenderImageOpAffine
+)
+
+type RenderImageSourceKind uint8
+
+const (
+	RenderImageSourceLayer RenderImageSourceKind = iota + 1
+	RenderImageSourceBitmap
+)
+
+// RenderImageOp is a backend-neutral image operation. SourceRGBA is borrowed
+// from the runtime until the next render-plan capture.
+type RenderImageOp struct {
+	Kind          RenderImageOpKind
+	SourceKind    RenderImageSourceKind
+	SourceID      uint64
+	SourceRGBA    []byte
+	SourceWidth   int32
+	SourceHeight  int32
+	SourceHash    uint64
+	SourceOpaque  bool
+	DX, DY        int32
+	SX, SY        int32
+	Width, Height int32
+	Mode, Opacity int32
+	Face          int32
+	HoldAlpha     bool
+	Clip          Rect
+	Matrix        [6]float64
+	Filter        int32
+	Clear         bool
 }
 
 // RenderMotion describes one deferred Motion.Player composition. Draws map
@@ -146,11 +190,11 @@ func renderPlanImageRevision(layer *Layer) uint64 {
 		return 1
 	}
 	if pending := layer.gpuStretch; pending != nil {
-		var sourceRevision uint64
-		if pending.sourceLayer != nil {
+		sourceRevision := pending.sourceRevision
+		if sourceRevision == 0 && pending.sourceLayer != nil {
 			sourceRevision = pending.sourceLayer.renderImageRevision()
 		}
-		if pending.sourceBitmap != nil {
+		if sourceRevision == 0 && pending.sourceBitmap != nil {
 			sourceRevision = pending.sourceBitmap.imageRevision()
 		}
 		return mixGPUStretchImageRevision(pending.sourceID, sourceRevision, pending.sourceWidth, pending.sourceHeight)
@@ -167,6 +211,96 @@ func mixGPUStretchImageRevision(sourceID, revision uint64, width, height int32) 
 	value ^= value >> 27
 	value *= 0x94d049bb133111eb
 	value ^= value >> 31
+	if value == 0 {
+		return 1
+	}
+	return value
+}
+
+func renderImageOp(op layerImageOp) RenderImageOp {
+	rendered := RenderImageOp{
+		Kind:         RenderImageOpKind(op.kind),
+		SourceID:     op.sourceID,
+		SourceRGBA:   op.sourcePixels,
+		SourceWidth:  op.sourceWidth,
+		SourceHeight: op.sourceHeight,
+		DX:           op.dx,
+		DY:           op.dy,
+		SX:           op.sx,
+		SY:           op.sy,
+		Width:        op.width,
+		Height:       op.height,
+		Mode:         op.mode,
+		Opacity:      op.opacity,
+		Face:         op.face,
+		HoldAlpha:    op.holdAlpha,
+		Clip:         op.clip,
+		Matrix:       op.matrix,
+		Filter:       op.filter,
+		Clear:        op.clear,
+	}
+	if op.sourceLayer != nil {
+		rendered.SourceKind = RenderImageSourceLayer
+		if rendered.SourceID == 0 {
+			rendered.SourceID = uint64(op.sourceLayer.ID)
+		}
+		rendered.SourceHash = op.sourceRevision
+		if rendered.SourceHash == 0 {
+			rendered.SourceHash = op.sourceLayer.renderImageRevision()
+		}
+		rendered.SourceOpaque = op.sourceOpaque
+		if len(rendered.SourceRGBA) == 0 {
+			rendered.SourceRGBA = op.sourceLayer.RGBA
+		}
+	} else if op.sourceBitmap != nil {
+		rendered.SourceKind = RenderImageSourceBitmap
+		rendered.SourceHash = op.sourceRevision
+		if rendered.SourceHash == 0 {
+			rendered.SourceHash = op.sourceBitmap.imageRevision()
+		}
+		if len(rendered.SourceRGBA) == 0 {
+			rendered.SourceRGBA = op.sourceBitmap.RGBA
+		}
+	}
+	if rendered.SourceHash == 0 {
+		rendered.SourceHash = 1
+	}
+	return rendered
+}
+
+func renderImageOpsHash(layer *Layer) uint64 {
+	if layer == nil {
+		return 1
+	}
+	value := layer.renderImageRevision()
+	mix := func(part uint64) {
+		value ^= part + 0x9e3779b97f4a7c15 + (value << 6) + (value >> 2)
+	}
+	for _, op := range layer.gpuImageOps {
+		sourceRevision := uint64(1)
+		if op.sourceRevision != 0 {
+			sourceRevision = op.sourceRevision
+		} else if op.sourceLayer != nil {
+			sourceRevision = op.sourceLayer.renderImageRevision()
+		} else if op.sourceBitmap != nil {
+			sourceRevision = op.sourceBitmap.imageRevision()
+		}
+		mix(sourceRevision)
+		mix(op.sourceID)
+		mix(uint64(op.kind))
+		mix(uint64(op.sourceWidth)<<32 | uint64(uint32(op.sourceHeight)))
+		mix(uint64(uint32(op.dx))<<32 | uint64(uint32(op.dy)))
+		mix(uint64(uint32(op.sx))<<32 | uint64(uint32(op.sy)))
+		mix(uint64(uint32(op.width))<<32 | uint64(uint32(op.height)))
+		mix(uint64(uint32(op.mode))<<32 | uint64(uint32(op.opacity)))
+		mix(uint64(uint32(op.face))<<32 | uint64(boolUint64(op.holdAlpha)))
+		mix(uint64(uint32(op.clip.X))<<32 | uint64(uint32(op.clip.Y)))
+		mix(uint64(uint32(op.clip.Width))<<32 | uint64(uint32(op.clip.Height)))
+		mix(uint64(uint32(op.filter))<<32 | uint64(boolUint64(op.clear)))
+		for _, part := range op.matrix {
+			mix(math.Float64bits(part))
+		}
+	}
 	if value == 0 {
 		return 1
 	}
@@ -239,7 +373,7 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		rgba, province, transition uint64
 	}
 	writeLayerState := func(layer *Layer, visible bool, hashes renderHashes) {
-		var values [40]uint64
+		var values [42]uint64
 		values[0] = 1
 		values[1] = uint64(uint32(layer.Bounds.X))
 		values[2] = uint64(uint32(layer.Bounds.Y))
@@ -282,6 +416,8 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		values[37] = layer.renderImageRevision()
 		values[38] = uint64(uint32(layer.Face))
 		values[39] = boolUint64(layer.HoldAlpha)
+		values[40] = layer.renderBaseImageRevision()
+		values[41] = uint64(len(layer.gpuImageOps))
 		var encoded [len(values) * 8]byte
 		for i, value := range values {
 			binary.LittleEndian.PutUint64(encoded[i*8:], value)
@@ -301,6 +437,7 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		write(uint64(uint32(node.Bounds.Height)))
 		write(uint64(node.Opacity))
 		write(uint64(node.ImageHash))
+		write(uint64(node.ImageOpsHash))
 		write(uint64(node.ChildStart))
 		write(uint64(node.ChildCount))
 		if node.Transition != nil {
@@ -338,7 +475,28 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		n.ImageHeight = l.deviceHeight()
 		n.ImageLeft = l.ImageLeft
 		n.ImageTop = l.ImageTop
+		n.ImageBaseHash = l.renderBaseImageRevision()
 		n.RGBA = l.RGBA
+		if (!s.gpuCapture || len(l.transitionPixels) != 0) && len(l.gpuImageOps) != 0 {
+			if err := l.materializeGPUImageOps(); err != nil {
+				return -1, err
+			}
+			n.RGBA = l.RGBA
+			n.ImageBaseHash = l.renderBaseImageRevision()
+		}
+		if s.gpuCapture && len(l.gpuImageOps) != 0 && len(l.transitionPixels) == 0 {
+			n.ImageOps = n.ImageOps[:0]
+			for _, op := range l.gpuImageOps {
+				n.ImageOps = append(n.ImageOps, renderImageOp(op))
+				if op.sourceBitmap != nil {
+					n.gpuImageOpBitmaps = append(n.gpuImageOpBitmaps, op.sourceBitmap)
+				}
+				if op.sourceLayer != nil && op.sourceLayer != l {
+					n.gpuImageOpLayers = append(n.gpuImageOpLayers, op.sourceLayer)
+				}
+			}
+			n.ImageOpsHash = renderImageOpsHash(l)
+		}
 		hashes := renderHashes{}
 		if l.gpuStretch != nil && len(l.transitionPixels) == 0 {
 			pending := l.gpuStretch
@@ -383,7 +541,11 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 			(l.transitionMethod == "crossfade" || l.transitionMethod == "universal")
 		if len(l.transitionPixels) == 0 {
 			if s.gpuCapture {
-				hashes.rgba = renderPlanImageRevision(l)
+				if len(l.gpuImageOps) != 0 {
+					hashes.rgba = renderImageOpsHash(l)
+				} else {
+					hashes.rgba = renderPlanImageRevision(l)
+				}
 			} else {
 				hashes.rgba = hashBytes(n.RGBA)
 			}

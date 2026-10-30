@@ -25,11 +25,12 @@ const (
 // 0xAARRGGBB (getPixel/setPixel expose RGB and getMaskPixel/setMaskPixel
 // expose alpha, matching Kirikiri's Bitmap API).
 type Bitmap struct {
-	Width, Height uint32
-	RGBA          []byte
-	font          FontState
-	loading       bool
-	revision      uint64
+	Width, Height           uint32
+	RGBA                    []byte
+	font                    FontState
+	loading                 bool
+	revision                uint64
+	deferredImageSourceRefs int
 }
 
 // setImageOwned adopts decoded pixels. The caller must not mutate or reuse the
@@ -37,6 +38,7 @@ type Bitmap struct {
 func (b *Bitmap) setImageOwned(image assets.Image) {
 	b.Width, b.Height = image.Width, image.Height
 	b.RGBA = image.RGBA
+	b.deferredImageSourceRefs = 0
 	b.markDirty()
 }
 
@@ -64,6 +66,30 @@ func (b *Bitmap) imageRevision() uint64 {
 		return 1
 	}
 	return b.revision
+}
+
+func (b *Bitmap) retainDeferredImageSource() {
+	if b == nil || len(b.RGBA) == 0 {
+		return
+	}
+	b.deferredImageSourceRefs++
+}
+
+func (b *Bitmap) ensureImageWritable() {
+	if b == nil || b.deferredImageSourceRefs == 0 || len(b.RGBA) == 0 {
+		return
+	}
+	b.RGBA = append([]byte(nil), b.RGBA...)
+	b.deferredImageSourceRefs = 0
+}
+
+func (b *Bitmap) releaseDeferredImageSource(pixels []byte) {
+	if b == nil || b.deferredImageSourceRefs == 0 || len(pixels) == 0 || len(b.RGBA) == 0 {
+		return
+	}
+	if &b.RGBA[0] == &pixels[0] {
+		b.deferredImageSourceRefs--
+	}
 }
 
 type bitmapAsyncResult struct {
@@ -762,6 +788,7 @@ func (s *Services) bitmapNative(vm *tjs.VM, context tjs.Value, operation string,
 			return tjs.VoidValue, err
 		}
 		s.mu.Lock()
+		b.ensureImageWritable()
 		p, err := b.pixel(x, y)
 		if err == nil {
 			pixel := [4]byte{p[0], p[1], p[2], p[3]}
@@ -787,6 +814,7 @@ func (s *Services) bitmapNative(vm *tjs.VM, context tjs.Value, operation string,
 		if copyImage {
 			s.mu.Lock()
 			b.RGBA = append([]byte(nil), b.RGBA...)
+			b.deferredImageSourceRefs = 0
 			s.mu.Unlock()
 		}
 		return tjs.VoidValue, nil
@@ -826,6 +854,7 @@ func (s *Services) bitmapNative(vm *tjs.VM, context tjs.Value, operation string,
 			return tjs.VoidValue, err
 		}
 		s.mu.Lock()
+		b.ensureImageWritable()
 		b.Width, b.Height = src.Width, src.Height
 		b.RGBA = append(b.RGBA[:0], src.RGBA...)
 		b.font = src.font

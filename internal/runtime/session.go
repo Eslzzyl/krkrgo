@@ -62,6 +62,11 @@ type gpuPlanBitmapDependency struct {
 	revision uint64
 }
 
+type gpuPlanLayerDependency struct {
+	layer    *Layer
+	revision uint64
+}
+
 type Session struct {
 	VM                           *tjs.VM
 	Services                     *Services
@@ -88,6 +93,7 @@ type Session struct {
 	gpuPlanCacheHeight           int32
 	gpuPlanCacheBackground       [4]uint8
 	gpuPlanCacheBitmaps          []gpuPlanBitmapDependency
+	gpuPlanCacheLayers           []gpuPlanLayerDependency
 }
 
 func NewSession(services *Services, budget uint64) *Session {
@@ -1971,6 +1977,11 @@ func (s *Session) gpuPlanReusable() bool {
 			return false
 		}
 	}
+	for _, dependency := range s.gpuPlanCacheLayers {
+		if dependency.layer == nil || dependency.layer.renderImageRevision() != dependency.revision {
+			return false
+		}
+	}
 	return true
 }
 
@@ -1979,6 +1990,7 @@ func (s *Session) rememberGPUPlanCache() {
 	s.gpuPlanCacheValid = root != nil
 	s.gpuPlanCacheRoot = root
 	s.gpuPlanCacheBitmaps = s.gpuPlanCacheBitmaps[:0]
+	s.gpuPlanCacheLayers = s.gpuPlanCacheLayers[:0]
 	if root == nil {
 		return
 	}
@@ -1988,20 +2000,43 @@ func (s *Session) rememberGPUPlanCache() {
 	s.gpuPlanCacheBackground = s.Services.Compositor.Background
 	for _, node := range s.gpuPlan.Nodes {
 		bitmap := node.gpuStretchSourceBitmap
-		if bitmap == nil {
-			continue
+		bitmaps := node.gpuImageOpBitmaps
+		if bitmap != nil {
+			bitmaps = append(bitmaps, bitmap)
 		}
-		known := false
-		for _, dependency := range s.gpuPlanCacheBitmaps {
-			if dependency.bitmap == bitmap {
-				known = true
-				break
+		for _, bitmap := range bitmaps {
+			if bitmap == nil {
+				continue
+			}
+			known := false
+			for _, dependency := range s.gpuPlanCacheBitmaps {
+				if dependency.bitmap == bitmap {
+					known = true
+					break
+				}
+			}
+			if !known {
+				s.gpuPlanCacheBitmaps = append(s.gpuPlanCacheBitmaps, gpuPlanBitmapDependency{
+					bitmap: bitmap, revision: bitmap.imageRevision(),
+				})
 			}
 		}
-		if !known {
-			s.gpuPlanCacheBitmaps = append(s.gpuPlanCacheBitmaps, gpuPlanBitmapDependency{
-				bitmap: bitmap, revision: bitmap.imageRevision(),
-			})
+		for _, layer := range node.gpuImageOpLayers {
+			if layer == nil {
+				continue
+			}
+			known := false
+			for _, dependency := range s.gpuPlanCacheLayers {
+				if dependency.layer == layer {
+					known = true
+					break
+				}
+			}
+			if !known {
+				s.gpuPlanCacheLayers = append(s.gpuPlanCacheLayers, gpuPlanLayerDependency{
+					layer: layer, revision: layer.renderImageRevision(),
+				})
+			}
 		}
 	}
 }

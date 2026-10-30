@@ -562,4 +562,7 @@ func layerHitAt(l *Layer, x, y, absoluteX, absoluteY int32) bool {
 
 // HitTest performs the same foremost-child search as Compositor.HitTest, but
 // starts at this layer and accepts coordinates in the containing space.
-func (l *Layer) HitTest(x, y int32) *Layer { return hitLayer(l, x, y, 0, 0) }
+func (l *Layer) HitTest(x, y int32) *Layer {
+	_ = materializeLayerTree(l)
+	return hitLayer(l, x, y, 0, 0)
+}

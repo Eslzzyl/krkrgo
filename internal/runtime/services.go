@@ -1076,6 +1076,9 @@ func materializeLayerTree(layer *Layer) error {
 	if err := layer.materializeGPUStretch(); err != nil {
 		return err
 	}
+	if err := layer.materializeGPUImageOps(); err != nil {
+		return err
+	}
 	for _, child := range layer.children {
 		if err := materializeLayerTree(child); err != nil {
 			return err

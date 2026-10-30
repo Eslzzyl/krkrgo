@@ -272,6 +272,163 @@ func Fragment(dstPos vec4, src0Pos vec2, color vec4) vec4 {
 }
 `
 
+const gpuImageOpShaderSource = `//kage:unit pixels
+package main
+
+var Mode float
+var TargetType float
+var Opacity float
+var HoldAlpha float
+var SourceOrigin vec2
+var SourceScale vec2
+var SourceOffset vec2
+var SourceMin vec2
+var SourceMax vec2
+var SourceLinear float
+var Affine float
+var AffineInverse vec4
+var AffineTranslation vec2
+var SourceRectOrigin vec2
+var SourceRectSize vec2
+
+func clamp01(v float) float {
+	if v < 0 { return 0 }
+	if v > 1 { return 1 }
+	return v
+}
+func minf(a, b float) float { if a < b { return a }; return b }
+func maxf(a, b float) float { if a > b { return a }; return b }
+func dodge(a, b float) float {
+	if b >= 1 { return 1 }
+	return minf(1, a/(1-b))
+}
+func absf(v float) float { if v < 0 { return -v }; return v }
+func burn(a, b float) float {
+	if b <= 0 { return 0 }
+	return maxf(0, 1-(1-a)/b)
+}
+func overlay(a, b float) float {
+	if a < .5 { return 2*a*b }
+	return 1-2*(1-a)*(1-b)
+}
+func blendChannel(base, source, mode float) float {
+	if mode == 1 { return source }
+	if mode == 3 || mode == 14 { return minf(1, base+source) }
+	if mode == 4 || mode == 15 { return maxf(0, base-source) }
+	if mode == 5 || mode == 16 { return base*source }
+	if mode == 11 || mode == 17 { return 1-(1-base)*(1-source) }
+	if mode == 8 || mode == 18 || mode == 19 { return dodge(base, source) }
+	if mode == 9 || mode == 27 { return minf(base, source) }
+	if mode == 10 || mode == 26 { return maxf(base, source) }
+	if mode == 20 { return overlay(base, source) }
+	if mode == 21 { return overlay(source, base) }
+	if mode == 22 { return base*(1-source)+overlay(base, source)*source }
+	if mode == 23 { return burn(base, source) }
+	if mode == 24 || mode == 25 { return absf(base-source) }
+	if mode == 28 { return base+source-2*base*source }
+	return source
+}
+func sourceSample(pos vec2) vec4 {
+	if SourceLinear <= 0 {
+		return imageSrc1AtFromSrc0Pos(pos)
+	}
+	p := pos - vec2(0.5)
+	f := fract(p)
+	base := floor(p) + vec2(0.5)
+	tl := imageSrc1AtFromSrc0Pos(clamp(base, SourceMin, SourceMax))
+	tr := imageSrc1AtFromSrc0Pos(clamp(base+vec2(1, 0), SourceMin, SourceMax))
+	bl := imageSrc1AtFromSrc0Pos(clamp(base+vec2(0, 1), SourceMin, SourceMax))
+	br := imageSrc1AtFromSrc0Pos(clamp(base+vec2(1, 1), SourceMin, SourceMax))
+	return mix(mix(tl, tr, f.x), mix(bl, br, f.x), f.y)
+}
+func Fragment(dstPos vec4, src0Pos vec2, color vec4) vec4 {
+	d := imageSrc0At(src0Pos)
+	pos := SourceOffset+(src0Pos-SourceOrigin)*SourceScale
+	if Affine > 0 {
+		delta := src0Pos-AffineTranslation
+		u := AffineInverse.x*delta.x + AffineInverse.y*delta.y
+		v := AffineInverse.z*delta.x + AffineInverse.w*delta.y
+		if u < -0.5 || u >= SourceRectSize.x-0.5 || v < -0.5 || v >= SourceRectSize.y-0.5 {
+			return d
+		}
+		pos = SourceRectOrigin + vec2(u, v)
+	}
+	s := sourceSample(pos)
+	da := clamp01(d.a)
+	sa := clamp01(s.a)
+	drgb := d.rgb
+	srgb := s.rgb
+	if da > 0 { drgb /= da }
+	if sa > 0 { srgb /= sa }
+	op := clamp01(Opacity)
+	if Mode == 1 {
+		outA := op + da*(1-op)
+		outRGB := drgb*(1-op) + srgb*op
+		return vec4(outRGB*outA, outA)
+	}
+	if Mode == 2 {
+		saop := sa*op
+		if saop <= 0 { return d }
+		if TargetType == 1 {
+			outA := da*(1-saop)+sa*saop
+			return vec4((drgb*(1-saop)+srgb*saop)*outA, outA)
+		}
+		outA := saop+da*(1-saop)
+		if outA <= 0 { return vec4(0) }
+		outRGB := (srgb*saop+drgb*da*(1-saop))/outA
+		return vec4(outRGB*outA, outA)
+	}
+	if Mode == 12 && TargetType != 12 { return d }
+	factor := op
+	if Mode >= 13 { factor = sa*op }
+	if factor <= 0 { return d }
+	blend := vec3(blendChannel(drgb.r, srgb.r, Mode), blendChannel(drgb.g, srgb.g, Mode), blendChannel(drgb.b, srgb.b, Mode))
+	outRGB := drgb*(1-factor)+blend*factor
+	outA := da
+	if TargetType != 2 && TargetType != 12 && !(TargetType >= 13 && TargetType <= 28) {
+		outA = da*(1-factor)+sa*factor
+	}
+	if Mode == 12 { outA = minf(1, da+sa*op) }
+	if HoldAlpha > 0 { outA = da }
+	return vec4(outRGB*outA, outA)
+}
+`
+
+const gpuCopyOpShaderSource = `//kage:unit pixels
+package main
+
+var SourceOrigin vec2
+var SourceScale vec2
+var SourceOffset vec2
+var SourceLinear float
+var SourceMin vec2
+var SourceMax vec2
+var Face float
+var HoldAlpha float
+
+func sourceSample(pos vec2) vec4 {
+	if SourceLinear <= 0 { return imageSrc1AtFromSrc0Pos(pos) }
+	p := pos - vec2(0.5)
+	f := fract(p)
+	base := floor(p) + vec2(0.5)
+	tl := imageSrc1AtFromSrc0Pos(clamp(base, SourceMin, SourceMax))
+	tr := imageSrc1AtFromSrc0Pos(clamp(base+vec2(1, 0), SourceMin, SourceMax))
+	bl := imageSrc1AtFromSrc0Pos(clamp(base+vec2(0, 1), SourceMin, SourceMax))
+	br := imageSrc1AtFromSrc0Pos(clamp(base+vec2(1, 1), SourceMin, SourceMax))
+	return mix(mix(tl, tr, f.x), mix(bl, br, f.x), f.y)
+}
+func Fragment(dstPos vec4, src0Pos vec2, color vec4) vec4 {
+	d := imageSrc0At(src0Pos)
+	s := sourceSample(SourceOffset+(src0Pos-SourceOrigin)*SourceScale)
+	if Face == 1 && HoldAlpha > 0 {
+		rgb := vec3(0)
+		if s.a > 0 { rgb = s.rgb/s.a }
+		return vec4(rgb*d.a, d.a)
+	}
+	return s
+}
+`
+
 // gpuShaderSources is the one-source-per-method registry. All supported blend
 // keys intentionally point at the same generic source: Mode is a uniform, so
 // the driver compiles only one blend program.
@@ -335,4 +492,17 @@ func compileMotionMaskShader() (*ebiten.Shader, error) {
 		return nil, fmt.Errorf("compile GPU Motion mask shader: %w", err)
 	}
 	return shader, nil
+}
+
+func compileGPUImageOpShaders() (*ebiten.Shader, *ebiten.Shader, error) {
+	imageOp, err := ebiten.NewShader([]byte(gpuImageOpShaderSource))
+	if err != nil {
+		return nil, nil, fmt.Errorf("compile GPU image operation shader: %w", err)
+	}
+	copyOp, err := ebiten.NewShader([]byte(gpuCopyOpShaderSource))
+	if err != nil {
+		imageOp.Deallocate()
+		return nil, nil, fmt.Errorf("compile GPU copy operation shader: %w", err)
+	}
+	return imageOp, copyOp, nil
 }

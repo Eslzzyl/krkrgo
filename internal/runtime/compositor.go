@@ -125,6 +125,9 @@ func (c *Compositor) composeInto(rgba, province []byte, skipValidation bool) (Fr
 		clear(province)
 		return FrameSnapshot{Width: c.Width, Height: c.Height, RGBA: rgba, Province: province}, nil
 	}
+	if err := materializeLayerTree(c.Root); err != nil {
+		return FrameSnapshot{}, err
+	}
 	if !skipValidation {
 		if err := validateTree(c.Root, nil); err != nil {
 			return FrameSnapshot{}, err
@@ -392,6 +395,9 @@ func supportedLayerType(t LayerType) bool {
 // coordinates. Children are searched front-to-back, matching draw order.
 func (c *Compositor) HitTest(x, y int32) (LayerID, bool) {
 	if c == nil || c.Root == nil {
+		return 0, false
+	}
+	if err := materializeLayerTree(c.Root); err != nil {
 		return 0, false
 	}
 	if x < 0 || y < 0 || x >= c.Width || y >= c.Height {

@@ -64,6 +64,54 @@ func TestGPUCompositorComposeCreatesNativeTarget(t *testing.T) {
 	}
 }
 
+func TestGPUCompositorComposesDeferredImageOperation(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	plan := runtime.RenderPlan{
+		Width:  1,
+		Height: 1,
+		Nodes: []runtime.RenderNode{{
+			ID:            1,
+			Bounds:        runtime.Rect{Width: 1, Height: 1},
+			Type:          runtime.LayerAlpha,
+			Visible:       true,
+			Opacity:       255,
+			ImageWidth:    1,
+			ImageHeight:   1,
+			RGBA:          []byte{255, 255, 255, 0},
+			ImageHash:     2,
+			ImageBaseHash: 1,
+			ImageOpsHash:  2,
+			ImageOps: []runtime.RenderImageOp{{
+				Kind:         runtime.RenderImageOpCopy,
+				SourceKind:   runtime.RenderImageSourceLayer,
+				SourceID:     2,
+				SourceRGBA:   []byte{32, 64, 128, 255},
+				SourceWidth:  1,
+				SourceHeight: 1,
+				SourceHash:   1,
+				DX:           0,
+				DY:           0,
+				SX:           0,
+				SY:           0,
+				Width:        1,
+				Height:       1,
+				Face:         0,
+			}},
+		}},
+	}
+	_, err = compositor.Compose(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compositor.textures) < 2 {
+		t.Fatalf("deferred image operation textures = %d, want target and source", len(compositor.textures))
+	}
+}
+
 func TestMotionGroupBoundsCropsOffscreenTargets(t *testing.T) {
 	group := &runtime.RenderMotionGroup{
 		Items: []runtime.RenderMotionItem{{Draw: runtime.RenderMotionDraw{
