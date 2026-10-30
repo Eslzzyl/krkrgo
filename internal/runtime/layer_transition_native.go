@@ -37,20 +37,32 @@ func transitionPixelsHash(layer *Layer, phase uint64) uint64 {
 
 func (s *Services) prepareGPUTransitionImages(layer *Layer) error {
 	if layer == nil || !layer.inTransition || !layer.transitionChildren ||
-		(layer.transitionMethod != "crossfade" && layer.transitionMethod != "universal") ||
-		layer.transitionRenderDestImage != nil {
+		(layer.transitionMethod != "crossfade" && layer.transitionMethod != "universal") {
 		return nil
 	}
 	source := layer.transitionSource
+	if source == nil {
+		return nil
+	}
+	width, height := layer.Bounds.Width, layer.Bounds.Height
+	if width <= 0 || height <= 0 ||
+		source.Bounds.Width != width || source.Bounds.Height != height {
+		return nil
+	}
 	if err := materializeLayerTree(layer); err != nil {
 		return err
 	}
 	if err := materializeLayerTree(source); err != nil {
 		return err
 	}
-	width, height := layer.Bounds.Width, layer.Bounds.Height
-	if source == nil || width <= 0 || height <= 0 ||
-		source.Bounds.Width != width || source.Bounds.Height != height {
+	// Withchildren endpoints follow the live trees: scripts add layers while a
+	// transition runs, and motion players keep producing frames. LayerIntf.cpp
+	// calls Complete() on every paint for the source endpoint, so rebuild
+	// whenever either subtree's content changed. Animation ticks advance only
+	// subtreeRevision, which leaves these images intact.
+	if layer.transitionRenderDestImage != nil &&
+		layer.transitionRenderDestRevision == layer.subtreeContentRevision &&
+		layer.transitionRenderSourceRevision == source.subtreeContentRevision {
 		return nil
 	}
 	region := Rect{Width: width, Height: height}
@@ -68,6 +80,8 @@ func (s *Services) prepareGPUTransitionImages(layer *Layer) error {
 	layer.transitionRenderHeight = height
 	layer.transitionRenderDestHash = hashTransitionBytes(layer.transitionRenderDestImage)
 	layer.transitionRenderSourceHash = hashTransitionBytes(layer.transitionRenderSourceImage)
+	layer.transitionRenderDestRevision = layer.subtreeContentRevision
+	layer.transitionRenderSourceRevision = source.subtreeContentRevision
 	opaque, zeroDestinationOpaque, _, _ := classifyTransitionAlphaPlanes(
 		layer.transitionRenderDestImage, layer.transitionRenderSourceImage)
 	layer.transitionRenderOpaque = layer.transitionMethod == "crossfade" && opaque
@@ -363,6 +377,8 @@ func (s *Services) cancelLayerTransition(layer *Layer) {
 	layer.transitionRenderZeroOpaque = false
 	layer.transitionRenderDestHash = 0
 	layer.transitionRenderSourceHash = 0
+	layer.transitionRenderDestRevision = 0
+	layer.transitionRenderSourceRevision = 0
 	layer.transitionHashesValid = false
 	layer.transitionSourceAlpha = transitionAlphaUnknown
 	layer.transitionDestAlpha = transitionAlphaUnknown
@@ -448,7 +464,7 @@ func (s *Services) advanceLayerTransitionsDeferred(vm *tjs.VM, timeMS uint64, se
 				blendCrossfade(layer.transitionPixels, layer.transitionDestImage, layer.transitionSourceImage, phase, layer.transitionOpaque)
 			}
 		}
-		layer.markRenderDirty()
+		layer.markTransitionTickDirty()
 		if elapsed >= layer.transitionDuration {
 			if os.Getenv("KRKRGO_TRANSITION_TRACE") == "1" {
 				fmt.Fprintf(os.Stderr, "transition-trace final time=%d layer=%d source=%d method=%s tick=%d elapsed=%d duration=%d phase=%d dest=%08x src=%08x pixels=%08x\n",
@@ -782,18 +798,10 @@ func (s *Services) stopLayerTransition(vm *tjs.VM, layer *Layer, notify bool, bu
 		return nil
 	}
 	if layer.transitionExchange {
+		// LayerIntf.cpp InternalStopTransition exchanges the trees, positions
+		// and visibility only; each layer keeps its own image and children.
 		destX, destY, destVisible := layer.Bounds.X, layer.Bounds.Y, layer.Visible
 		srcX, srcY, srcVisible := source.Bounds.X, source.Bounds.Y, source.Visible
-		layer.ensureImageWritable()
-		source.ensureImageWritable()
-		layer.RGBA = append(layer.RGBA[:0], layer.transitionSourceImage...)
-		source.RGBA = append(source.RGBA[:0], layer.transitionDestImage...)
-		layer.ImageWidth, source.ImageWidth = source.ImageWidth, layer.ImageWidth
-		layer.ImageHeight, source.ImageHeight = source.ImageHeight, layer.ImageHeight
-		layer.ProvinceWidth, source.ProvinceWidth = source.ProvinceWidth, layer.ProvinceWidth
-		layer.ProvinceHeight, source.ProvinceHeight = source.ProvinceHeight, layer.ProvinceHeight
-		layer.ImageLeft, source.ImageLeft = source.ImageLeft, layer.ImageLeft
-		layer.ImageTop, source.ImageTop = source.ImageTop, layer.ImageTop
 		layer.Bounds.X, layer.Bounds.Y, layer.Visible = srcX, srcY, srcVisible
 		source.Bounds.X, source.Bounds.Y, source.Visible = destX, destY, destVisible
 		s.exchangeLayerTree(layer, source, !layer.transitionChildren)
@@ -829,6 +837,8 @@ func (s *Services) stopLayerTransition(vm *tjs.VM, layer *Layer, notify bool, bu
 	layer.transitionRenderZeroOpaque = false
 	layer.transitionRenderDestHash = 0
 	layer.transitionRenderSourceHash = 0
+	layer.transitionRenderDestRevision = 0
+	layer.transitionRenderSourceRevision = 0
 	layer.transitionOpaque = false
 	layer.transitionZeroOpaque = false
 	if err := s.syncLayerChildren(vm); err != nil {

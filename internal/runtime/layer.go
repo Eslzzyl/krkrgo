@@ -194,67 +194,80 @@ type Layer struct {
 	Parent   *Layer
 	children []*Layer
 
-	inTransition                bool
-	transitionSource            *Layer
-	transitionMethod            string
-	transitionType1             int32
-	transitionType2             int32
-	transitionAccel             int32
-	transitionChildren          bool
-	transitionExchange          bool // Provider-style transitions exchange layer trees at completion.
-	transitionCallback          tjs.Value
-	transitionDuration          uint64
-	transitionStart             uint64
-	transitionTick              uint64
-	transitionSelfUpdate        bool
-	transitionVague             int32
-	transitionRule              []byte
-	transitionDestImage         []byte
-	transitionSourceImage       []byte
-	transitionPixels            []byte
-	transitionOpaque            bool
-	transitionZeroOpaque        bool
-	transitionDestHash          uint64
-	transitionSourceHash        uint64
-	transitionRuleHash          uint64
-	transitionRenderDestImage   []byte
-	transitionRenderSourceImage []byte
-	transitionRenderWidth       int32
-	transitionRenderHeight      int32
-	transitionRenderOpaque      bool
-	transitionRenderZeroOpaque  bool
-	transitionRenderDestHash    uint64
-	transitionRenderSourceHash  uint64
-	transitionHashesValid       bool
-	transitionSourceAlpha       transitionAlphaClass
-	transitionDestAlpha         transitionAlphaClass
-	transitionHidden            bool
-	absoluteOrderIndex          int32
-	absoluteOrderMode           bool
-	clip                        Rect
-	clipSet                     bool
-	hitTestWork                 bool
-	callOnPaint                 bool
-	gpuStretch                  *gpuStretchCopy
-	gpuMotion                   *RenderMotion
-	imageModified               bool
-	imageRevision               uint64
-	baseImageRevision           uint64
-	subtreeRevision             uint64
-	completionRGBA              []byte
-	completionRevision          uint64
-	completionWidth             int32
-	completionHeight            int32
-	dirtyRect                   Rect
-	dirtyRectValid              bool
-	fillScratch                 []byte
-	motionScratch               *RenderMotion
-	gpuImageOps                 []layerImageOp
-	deferredImageSourceRefs     int
-	windowID                    uint64
+	inTransition                   bool
+	transitionSource               *Layer
+	transitionMethod               string
+	transitionType1                int32
+	transitionType2                int32
+	transitionAccel                int32
+	transitionChildren             bool
+	transitionExchange             bool // Provider-style transitions exchange layer trees at completion.
+	transitionCallback             tjs.Value
+	transitionDuration             uint64
+	transitionStart                uint64
+	transitionTick                 uint64
+	transitionSelfUpdate           bool
+	transitionVague                int32
+	transitionRule                 []byte
+	transitionDestImage            []byte
+	transitionSourceImage          []byte
+	transitionPixels               []byte
+	transitionOpaque               bool
+	transitionZeroOpaque           bool
+	transitionDestHash             uint64
+	transitionSourceHash           uint64
+	transitionRuleHash             uint64
+	transitionRenderDestImage      []byte
+	transitionRenderSourceImage    []byte
+	transitionRenderWidth          int32
+	transitionRenderHeight         int32
+	transitionRenderOpaque         bool
+	transitionRenderZeroOpaque     bool
+	transitionRenderDestHash       uint64
+	transitionRenderSourceHash     uint64
+	transitionRenderDestRevision   uint64
+	transitionRenderSourceRevision uint64
+	transitionHashesValid          bool
+	transitionSourceAlpha          transitionAlphaClass
+	transitionDestAlpha            transitionAlphaClass
+	transitionHidden               bool
+	absoluteOrderIndex             int32
+	absoluteOrderMode              bool
+	clip                           Rect
+	clipSet                        bool
+	hitTestWork                    bool
+	callOnPaint                    bool
+	gpuStretch                     *gpuStretchCopy
+	gpuMotion                      *RenderMotion
+	imageModified                  bool
+	imageRevision                  uint64
+	baseImageRevision              uint64
+	subtreeRevision                uint64
+	subtreeContentRevision         uint64
+	completionRGBA                 []byte
+	completionRevision             uint64
+	completionWidth                int32
+	completionHeight               int32
+	dirtyRect                      Rect
+	dirtyRectValid                 bool
+	fillScratch                    []byte
+	motionScratch                  *RenderMotion
+	gpuImageOps                    []layerImageOp
+	deferredImageSourceRefs        int
+	windowID                       uint64
 }
 
 func (l *Layer) markRenderDirty() {
+	for current := l; current != nil; current = current.Parent {
+		current.subtreeRevision++
+		current.subtreeContentRevision++
+	}
+}
+
+// markTransitionTickDirty invalidates cached render plans for this tick without
+// claiming the subtree content changed. Transition endpoints are rebuilt from
+// subtreeContentRevision alone, so an animation tick does not force a rebuild.
+func (l *Layer) markTransitionTickDirty() {
 	for current := l; current != nil; current = current.Parent {
 		current.subtreeRevision++
 	}
@@ -416,7 +429,7 @@ type layerImageOp struct {
 func NewLayer(id LayerID) *Layer {
 	return &Layer{ID: id, Opacity: 255, Visible: true, Enabled: true,
 		Type: LayerAlpha, Hit: HitMask, HitThreshold: 1, Face: 128,
-		imageRevision: 1, baseImageRevision: 1, subtreeRevision: 1}
+		imageRevision: 1, baseImageRevision: 1, subtreeRevision: 1, subtreeContentRevision: 1}
 }
 
 func (l *Layer) deviceWidth() int32 {

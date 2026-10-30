@@ -105,6 +105,11 @@ Crossfade shaders receive destination/source textures and phase, including opaqu
 and zero-destination-opaque classifications. Mixed-alpha crossfade and universal
 rule-reveal paths unpremultiply endpoint colors for the runtime's straight-alpha
 interpolation, then premultiply the shader result before replace blending.
+Withchildren endpoints track the live subtrees: whenever either subtree's content
+changes, such as a script adding layers or a Motion player advancing a frame, the
+subtree images are rebuilt before capture, matching `tTJSNI_BaseLayer`'s per-paint
+`Complete()` calls. Transition ticks alone advance only the render-plan revision,
+so static endpoints keep their cached textures.
 Universal transition shaders receive destination/source/rule textures, phase,
 vague, and the planned rule dimensions. Transitions are therefore presented
 without a per-frame CPU readback. A transition that covers the complete target

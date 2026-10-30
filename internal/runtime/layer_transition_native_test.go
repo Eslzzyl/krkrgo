@@ -83,7 +83,7 @@ func TestLayerTransitionLifecycleAndCompletionCallback(t *testing.T) {
 	if destination.transitionOpaque {
 		t.Fatal("stopping transition did not clear cached opaque endpoint mode")
 	}
-	value, err = session.Evaluate(`transitionTicks == 5 && transitionDestination === destinationLayer && transitionSource === sourceLayer && destinationLayer.getMainPixel(0,0) == 0`)
+	value, err = session.Evaluate(`transitionTicks == 5 && transitionDestination === destinationLayer && transitionSource === sourceLayer && destinationLayer.getMainPixel(0,0) == 0xffffff && sourceLayer.getMainPixel(0,0) == 0 && rootLayer.children[0] === destinationLayer && rootLayer.children[1] === sourceLayer`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestLayerTransitionLifecycleAndCompletionCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !truth {
-		t.Fatalf("transition completion state = %v, want callback tick, exact objects, and exchanged pixels", value)
+		t.Fatalf("transition completion state = %v, want callback tick, exact objects, exchanged tree order, and images kept per layer", value)
 	}
 }
 
@@ -127,6 +127,59 @@ func TestGPUCaptureDefersCrossfadePixelBlend(t *testing.T) {
 	if got := layer.transitionPixels; string(got) == string(layer.transitionDestImage) {
 		t.Fatalf("CPU transition pixels remained unchanged: %v", got)
 	}
+}
+
+func TestGPUCaptureTransitionSourceEndpointFollowsLateContent(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	if _, err := session.executeSource("<transition-endpoint-refresh-setup>", `
+		rootLayer = new Layer();
+		rootLayer.setSize(4, 4);
+		destinationLayer = new Layer(null, rootLayer);
+		sourceLayer = new Layer(null, rootLayer);
+		destinationLayer.fillRect(0, 0, 4, 4, 0xffffffff);
+		sourceLayer.fillRect(0, 0, 4, 4, 0);
+		destinationLayer.visible = true;
+		sourceLayer.visible = true;
+		destinationLayer.beginTransition("crossfade", true, sourceLayer, %[time: 100]);
+	`, false); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := session.TickForGPUPresentation(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition := findPlanTransition(t, plan)
+	if got := transition.SourceRGBA[:4]; got[3] != 0 {
+		t.Fatalf("initial transition source endpoint = %v, want transparent", got)
+	}
+	if _, err := session.Evaluate(`
+		lateChild = new Layer(null, sourceLayer);
+		lateChild.setSize(4, 4);
+		lateChild.fillRect(0, 0, 4, 4, 0xffff0000);
+		lateChild.visible = true;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	plan, err = session.TickForGPUPresentation(16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition = findPlanTransition(t, plan)
+	if got := transition.SourceRGBA[:4]; string(got) != string([]byte{255, 0, 0, 255}) {
+		t.Fatalf("transition source endpoint after late child = %v, want opaque red", got)
+	}
+}
+
+func findPlanTransition(t *testing.T, plan RenderPlan) *RenderTransition {
+	t.Helper()
+	for i := range plan.Nodes {
+		if plan.Nodes[i].Transition != nil {
+			return plan.Nodes[i].Transition
+		}
+	}
+	t.Fatal("render plan has no transition node")
+	return nil
 }
 
 func TestLayerUniversalTransitionUsesGrayscaleRule(t *testing.T) {
@@ -192,13 +245,13 @@ func TestLayerUniversalTransitionUsesGrayscaleRule(t *testing.T) {
 	if err := session.AdvanceClock(10); err != nil {
 		t.Fatal(err)
 	}
-	value, err := session.Evaluate(`destinationLayer.getMainPixel(0, 0) == 0`)
+	value, err := session.Evaluate(`destinationLayer.getMainPixel(0, 0) == 0xffffff && sourceLayer.getMainPixel(0, 0) == 0`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ok, err := value.Truth()
 	if err != nil || !ok {
-		t.Fatalf("destination after universal transition=%v, err=%v; want source image", value, err)
+		t.Fatalf("images after universal transition=%v, err=%v; want each layer to keep its own image", value, err)
 	}
 }
 
@@ -229,7 +282,10 @@ func TestLayerTransitionAutomaticCompletionAndIdleStop(t *testing.T) {
 	value, err := session.Evaluate(`
 		completedDestination === destinationLayer &&
 		completedSource === sourceLayer &&
-		destinationLayer.getMainPixel(0,0) == 0
+		destinationLayer.getMainPixel(0,0) == 0xffffff &&
+		sourceLayer.getMainPixel(0,0) == 0 &&
+		rootLayer.children[0] === destinationLayer &&
+		rootLayer.children[1] === sourceLayer
 	`)
 	if err != nil {
 		t.Fatal(err)
@@ -240,7 +296,7 @@ func TestLayerTransitionAutomaticCompletionAndIdleStop(t *testing.T) {
 	}
 	if !truth {
 		details, _ := session.Evaluate(`[completedDestination === destinationLayer, completedSource === sourceLayer, destinationLayer.getMainPixel(0,0)].join("|")`)
-		t.Fatalf("automatic transition completion = %v (%v), want exact callback objects and exchanged images", value, details)
+		t.Fatalf("automatic transition completion = %v (%v), want exact callback objects, exchanged tree order, and images kept per layer", value, details)
 	}
 	if _, err := session.Evaluate(`destinationLayer.stopTransition()`); err != nil {
 		t.Fatalf("idle stopTransition: %v", err)
@@ -392,7 +448,7 @@ func TestLayerTransitionSelfUpdateAdvancesDuringFrames(t *testing.T) {
 	if _, err := session.Frame(); err != nil {
 		t.Fatal(err)
 	}
-	value, err = session.Evaluate(`updates == 2 && completions == 1 && destinationLayer.getMainPixel(0,0) == 0`)
+	value, err = session.Evaluate(`updates == 2 && completions == 1 && destinationLayer.getMainPixel(0,0) == 0xffffff && sourceLayer.getMainPixel(0,0) == 0`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -825,7 +881,13 @@ func TestLayerSpinTransitionUsesTypesAndCompletes(t *testing.T) {
 		destination.transitionType1 != 4 || destination.transitionType2 != 5 || destination.transitionAccel != -1 {
 		t.Fatalf("spin transition state = %#v", destination)
 	}
-	sourceImage := append([]byte(nil), destination.transitionSourceImage...)
+	sourceValue, err := session.Evaluate("sourceLayer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := session.Services.Layer(sourceValue.ObjectRef().Object)
+	sourceImage := append([]byte(nil), source.RGBA...)
+	destinationImage := append([]byte(nil), destination.RGBA...)
 	if err := session.AdvanceClock(5); err != nil {
 		t.Fatal(err)
 	}
@@ -836,8 +898,9 @@ func TestLayerSpinTransitionUsesTypesAndCompletes(t *testing.T) {
 	if err := session.AdvanceClock(10); err != nil {
 		t.Fatal(err)
 	}
-	if destination.inTransition || !bytes.Equal(destination.RGBA, sourceImage) {
-		t.Fatalf("spin completion state: active=%t rgba=%v", destination.inTransition, destination.RGBA)
+	if destination.inTransition || !bytes.Equal(destination.RGBA, destinationImage) ||
+		!bytes.Equal(source.RGBA, sourceImage) {
+		t.Fatalf("spin completion state: active=%t rgba=%v source=%v", destination.inTransition, destination.RGBA, source.RGBA)
 	}
 }
 
