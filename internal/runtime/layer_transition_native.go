@@ -22,11 +22,57 @@ func hashTransitionBytes(pixels []byte) uint64 {
 }
 
 func transitionPixelsHash(layer *Layer, phase uint64) uint64 {
-	hash := layer.transitionDestHash
-	hash ^= layer.transitionSourceHash + 0x9e3779b97f4a7c15 + (hash << 6) + (hash >> 2)
+	destHash := layer.transitionDestHash
+	sourceHash := layer.transitionSourceHash
+	if layer.transitionRenderDestImage != nil {
+		destHash = layer.transitionRenderDestHash
+		sourceHash = layer.transitionRenderSourceHash
+	}
+	hash := destHash
+	hash ^= sourceHash + 0x9e3779b97f4a7c15 + (hash << 6) + (hash >> 2)
 	hash ^= layer.transitionRuleHash + uint64(phase)*0x517cc1b727220a95
 	hash ^= uint64(layer.transitionVague) * 0x94d049bb133111eb
 	return hash
+}
+
+func (s *Services) prepareGPUTransitionImages(layer *Layer) error {
+	if layer == nil || !layer.inTransition || !layer.transitionChildren ||
+		(layer.transitionMethod != "crossfade" && layer.transitionMethod != "universal") ||
+		layer.transitionRenderDestImage != nil {
+		return nil
+	}
+	source := layer.transitionSource
+	if err := materializeLayerTree(layer); err != nil {
+		return err
+	}
+	if err := materializeLayerTree(source); err != nil {
+		return err
+	}
+	width, height := layer.Bounds.Width, layer.Bounds.Height
+	if source == nil || width <= 0 || height <= 0 ||
+		source.Bounds.Width != width || source.Bounds.Height != height {
+		return nil
+	}
+	region := Rect{Width: width, Height: height}
+	destination, err := layerCompleteRegion(layer, region, 0, 0, nil)
+	if err != nil {
+		return err
+	}
+	sourcePixels, err := layerCompleteRegion(source, region, 0, 0, nil)
+	if err != nil {
+		return err
+	}
+	layer.transitionRenderDestImage = append(layer.transitionRenderDestImage[:0], destination...)
+	layer.transitionRenderSourceImage = append(layer.transitionRenderSourceImage[:0], sourcePixels...)
+	layer.transitionRenderWidth = width
+	layer.transitionRenderHeight = height
+	layer.transitionRenderDestHash = hashTransitionBytes(layer.transitionRenderDestImage)
+	layer.transitionRenderSourceHash = hashTransitionBytes(layer.transitionRenderSourceImage)
+	opaque, zeroDestinationOpaque, _, _ := classifyTransitionAlphaPlanes(
+		layer.transitionRenderDestImage, layer.transitionRenderSourceImage)
+	layer.transitionRenderOpaque = layer.transitionMethod == "crossfade" && opaque
+	layer.transitionRenderZeroOpaque = layer.transitionMethod == "crossfade" && zeroDestinationOpaque
+	return nil
 }
 
 type transitionAlphaClass uint8
@@ -309,6 +355,14 @@ func (s *Services) cancelLayerTransition(layer *Layer) {
 	layer.transitionDestHash = 0
 	layer.transitionSourceHash = 0
 	layer.transitionRuleHash = 0
+	layer.transitionRenderDestImage = nil
+	layer.transitionRenderSourceImage = nil
+	layer.transitionRenderWidth = 0
+	layer.transitionRenderHeight = 0
+	layer.transitionRenderOpaque = false
+	layer.transitionRenderZeroOpaque = false
+	layer.transitionRenderDestHash = 0
+	layer.transitionRenderSourceHash = 0
 	layer.transitionHashesValid = false
 	layer.transitionSourceAlpha = transitionAlphaUnknown
 	layer.transitionDestAlpha = transitionAlphaUnknown
@@ -767,6 +821,14 @@ func (s *Services) stopLayerTransition(vm *tjs.VM, layer *Layer, notify bool, bu
 	layer.transitionDestImage = nil
 	layer.transitionSourceImage = nil
 	layer.transitionPixels = nil
+	layer.transitionRenderDestImage = nil
+	layer.transitionRenderSourceImage = nil
+	layer.transitionRenderWidth = 0
+	layer.transitionRenderHeight = 0
+	layer.transitionRenderOpaque = false
+	layer.transitionRenderZeroOpaque = false
+	layer.transitionRenderDestHash = 0
+	layer.transitionRenderSourceHash = 0
 	layer.transitionOpaque = false
 	layer.transitionZeroOpaque = false
 	if err := s.syncLayerChildren(vm); err != nil {

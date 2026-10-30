@@ -535,6 +535,12 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 				n.RGBA = l.RGBA
 			}
 		}
+		if s.gpuCapture && l.inTransition &&
+			(l.transitionMethod == "crossfade" || l.transitionMethod == "universal") {
+			if err := s.prepareGPUTransitionImages(l); err != nil {
+				return -1, err
+			}
+		}
 		transitionHashCached := l.transitionHashesValid && l.inTransition &&
 			(l.transitionMethod == "crossfade" || l.transitionMethod == "universal")
 		if len(l.transitionPixels) == 0 {
@@ -578,25 +584,35 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 				hashes.transition = transitionPixelsHash(l, phase)
 				n.ImageHash = hashes.transition
 			}
-			destinationHash, sourceHash, ruleHash := l.transitionDestHash, l.transitionSourceHash, l.transitionRuleHash
+			destinationRGBA, sourceRGBA := l.transitionDestImage, l.transitionSourceImage
+			destinationWidth, destinationHeight := l.deviceWidth(), l.deviceHeight()
+			destinationHash, sourceHash := l.transitionDestHash, l.transitionSourceHash
+			opaque, zeroDestinationOpaque := l.transitionOpaque, l.transitionZeroOpaque
+			if l.transitionRenderDestImage != nil {
+				destinationRGBA, sourceRGBA = l.transitionRenderDestImage, l.transitionRenderSourceImage
+				destinationWidth, destinationHeight = l.transitionRenderWidth, l.transitionRenderHeight
+				destinationHash, sourceHash = l.transitionRenderDestHash, l.transitionRenderSourceHash
+				opaque, zeroDestinationOpaque = l.transitionRenderOpaque, l.transitionRenderZeroOpaque
+			}
+			ruleHash := l.transitionRuleHash
 			if !transitionHashCached {
-				destinationHash = hashBytes(l.transitionDestImage)
-				sourceHash = hashBytes(l.transitionSourceImage)
+				destinationHash = hashBytes(destinationRGBA)
+				sourceHash = hashBytes(sourceRGBA)
 				ruleHash = hashBytes(l.transitionRule)
 			}
 			n.Transition = &RenderTransition{
 				Method:                method,
-				DestinationRGBA:       l.transitionDestImage,
-				SourceRGBA:            l.transitionSourceImage,
+				DestinationRGBA:       destinationRGBA,
+				SourceRGBA:            sourceRGBA,
 				Rule:                  l.transitionRule,
-				ImageWidth:            l.deviceWidth(),
-				ImageHeight:           l.deviceHeight(),
+				ImageWidth:            destinationWidth,
+				ImageHeight:           destinationHeight,
 				RuleWidth:             l.deviceWidth(),
 				RuleHeight:            l.deviceHeight(),
 				Phase:                 uint32(phase),
 				Vague:                 uint32(l.transitionVague),
-				Opaque:                l.transitionOpaque,
-				ZeroDestinationOpaque: l.transitionZeroOpaque,
+				Opaque:                opaque,
+				ZeroDestinationOpaque: zeroDestinationOpaque,
 				WithChildren:          l.transitionChildren,
 				DestinationHash:       destinationHash,
 				SourceHash:            sourceHash,

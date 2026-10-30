@@ -1870,7 +1870,14 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 	if drawH == 0 {
 		drawH = n.ImageHeight
 	}
-	if n.Type != runtime.LayerBinder && n.ImageWidth > 0 && n.ImageHeight > 0 && drawW > 0 && drawH > 0 {
+	renderImageWidth, renderImageHeight := n.ImageWidth, n.ImageHeight
+	renderImageLeft, renderImageTop := n.ImageLeft, n.ImageTop
+	if n.Transition != nil && n.Transition.WithChildren {
+		renderImageWidth = n.Transition.ImageWidth
+		renderImageHeight = n.Transition.ImageHeight
+		renderImageLeft, renderImageTop = 0, 0
+	}
+	if n.Type != runtime.LayerBinder && renderImageWidth > 0 && renderImageHeight > 0 && drawW > 0 && drawH > 0 {
 		localClip := runtime.Rect{Width: drawW, Height: drawH}
 		if n.ClipSet {
 			localClip = localClip.Intersect(n.Clip)
@@ -1891,21 +1898,21 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 		if int64(c.height)-int64(ay) < y1 {
 			y1 = int64(c.height) - int64(ay)
 		}
-		x0 -= int64(n.ImageLeft)
-		x1 -= int64(n.ImageLeft)
-		y0 -= int64(n.ImageTop)
-		y1 -= int64(n.ImageTop)
+		x0 -= int64(renderImageLeft)
+		x1 -= int64(renderImageLeft)
+		y0 -= int64(renderImageTop)
+		y1 -= int64(renderImageTop)
 		if x0 < 0 {
 			x0 = 0
 		}
 		if y0 < 0 {
 			y0 = 0
 		}
-		if x1 > int64(n.ImageWidth) {
-			x1 = int64(n.ImageWidth)
+		if x1 > int64(renderImageWidth) {
+			x1 = int64(renderImageWidth)
 		}
-		if y1 > int64(n.ImageHeight) {
-			y1 = int64(n.ImageHeight)
+		if y1 > int64(renderImageHeight) {
+			y1 = int64(renderImageHeight)
 		}
 		if x0 < x1 && y0 < y1 {
 			var source *ebiten.Image
@@ -1936,19 +1943,19 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 					shader = c.universal
 					uniforms["Phase"] = float32(tr.Phase) / 255
 					uniforms["Vague"] = float32(tr.Vague) / 255
-					c.ruleOrigin[0], c.ruleOrigin[1] = float32(ax+n.ImageLeft), float32(ay+n.ImageTop)
+					c.ruleOrigin[0], c.ruleOrigin[1] = float32(ax+renderImageLeft), float32(ay+renderImageTop)
 					uniforms["RuleOrigin"] = c.ruleOrigin[:]
 					images := [4]*ebiten.Image{c.front, dest, src, rule}
-					if !c.transitionCoversTarget(ax, ay, n.ImageLeft, n.ImageTop, int32(x0), int32(y0), int32(x1), int32(y1)) {
+					if !c.transitionCoversTarget(ax, ay, renderImageLeft, renderImageTop, int32(x0), int32(y0), int32(x1), int32(y1)) {
 						c.copyFrontToBack()
 					}
-					c.drawQuad(c.back, shader, images, float32(ax+n.ImageLeft+int32(x0)), float32(ay+n.ImageTop+int32(y0)), float32(ax+n.ImageLeft+int32(x1)), float32(ay+n.ImageTop+int32(y1)), float32(ax+n.ImageLeft), float32(ay+n.ImageTop), uniforms)
+					c.drawQuad(c.back, shader, images, float32(ax+renderImageLeft+int32(x0)), float32(ay+renderImageTop+int32(y0)), float32(ax+renderImageLeft+int32(x1)), float32(ay+renderImageTop+int32(y1)), float32(ax+renderImageLeft), float32(ay+renderImageTop), uniforms)
 				} else {
 					images := [4]*ebiten.Image{c.front, dest, src, nil}
-					if !c.transitionCoversTarget(ax, ay, n.ImageLeft, n.ImageTop, int32(x0), int32(y0), int32(x1), int32(y1)) {
+					if !c.transitionCoversTarget(ax, ay, renderImageLeft, renderImageTop, int32(x0), int32(y0), int32(x1), int32(y1)) {
 						c.copyFrontToBack()
 					}
-					c.drawQuad(c.back, shader, images, float32(ax+n.ImageLeft+int32(x0)), float32(ay+n.ImageTop+int32(y0)), float32(ax+n.ImageLeft+int32(x1)), float32(ay+n.ImageTop+int32(y1)), float32(ax+n.ImageLeft), float32(ay+n.ImageTop), uniforms)
+					c.drawQuad(c.back, shader, images, float32(ax+renderImageLeft+int32(x0)), float32(ay+renderImageTop+int32(y0)), float32(ax+renderImageLeft+int32(x1)), float32(ay+renderImageTop+int32(y1)), float32(ax+renderImageLeft), float32(ay+renderImageTop), uniforms)
 				}
 				c.front, c.back = c.back, c.front
 			} else {
@@ -2031,6 +2038,9 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 	}
 	if n.ChildCount > 0 && n.Type != runtime.LayerBinder && c.motionBatching {
 		c.flushMotionBatch()
+	}
+	if n.Transition != nil && n.Transition.WithChildren {
+		return nil
 	}
 	childTarget := n.Type
 	if n.Type == runtime.LayerBinder {

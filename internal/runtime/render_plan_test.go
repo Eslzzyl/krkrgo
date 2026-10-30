@@ -387,6 +387,72 @@ func TestCaptureRenderPlanTransitionMetadata(t *testing.T) {
 	}
 }
 
+func TestCaptureRenderPlanTransitionWithChildrenUsesSubtreeImages(t *testing.T) {
+	root := NewRootLayer(1, 2, 2)
+	destination := NewLayer(2)
+	source := NewLayer(3)
+	if err := destination.SetRGBA(2, 2, make([]byte, 2*2*4)); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.SetRGBA(2, 2, make([]byte, 2*2*4)); err != nil {
+		t.Fatal(err)
+	}
+	destinationChild := NewLayer(4)
+	if err := destinationChild.SetRGBA(1, 1, []byte{255, 0, 0, 255}); err != nil {
+		t.Fatal(err)
+	}
+	sourceChild := NewLayer(5)
+	if err := sourceChild.SetRGBA(1, 1, []byte{0, 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if !sourceChild.deferGPUCopyRect(nativeLayerImage{
+		width: 1, height: 1, pixels: []byte{0, 0, 255, 255},
+	}, 0, 0, 0, 0, 1, 1) {
+		t.Fatal("source subtree GPU image operation was not deferred")
+	}
+	if err := destination.AddChild(destinationChild); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.AddChild(sourceChild); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.AddChild(destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.AddChild(source); err != nil {
+		t.Fatal(err)
+	}
+	destination.inTransition = true
+	destination.transitionMethod = "crossfade"
+	destination.transitionChildren = true
+	destination.transitionSource = source
+	destination.transitionStart = 0
+	destination.transitionTick = 0
+	destination.transitionDuration = 100
+	source.transitionHidden = true
+
+	services := DefaultServices()
+	services.Root = root
+	services.gpuCapture = true
+	plan, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition := plan.Nodes[1].Transition
+	if transition == nil || !transition.WithChildren {
+		t.Fatalf("transition = %+v", transition)
+	}
+	if transition.ImageWidth != 2 || transition.ImageHeight != 2 {
+		t.Fatalf("transition dimensions = %dx%d", transition.ImageWidth, transition.ImageHeight)
+	}
+	if !bytes.Equal(transition.DestinationRGBA[:4], []byte{255, 0, 0, 255}) {
+		t.Fatalf("destination subtree pixel = %v", transition.DestinationRGBA[:4])
+	}
+	if !bytes.Equal(transition.SourceRGBA[:4], []byte{0, 0, 255, 255}) {
+		t.Fatalf("source subtree pixel = %v", transition.SourceRGBA[:4])
+	}
+}
+
 func TestCaptureRenderPlanRejectsEffectAndFilter(t *testing.T) {
 	for _, typ := range []LayerType{LayerEffect, LayerFilter} {
 		root := NewRootLayer(1, 1, 1)
