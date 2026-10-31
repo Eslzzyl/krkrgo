@@ -62,7 +62,17 @@ type AudioOutput struct {
 	mu      sync.Mutex
 	closed  bool
 	started bool
+	// feederStop terminates the realtime mixer goroutine attached by
+	// Game.AttachAudioOutput. It blocks until the goroutine has exited.
+	feederStop func()
 }
+
+const (
+	// realtimeAudioTargetFrames keeps roughly 60 ms of mixed audio queued so
+	// a script or loader stall on the game thread cannot empty the device.
+	realtimeAudioTargetFrames = runtime.OutputRate * 6 / 100
+	realtimeAudioPollInterval = 5 * time.Millisecond
+)
 
 // NewAudioOutput creates a stopped output adapter for an explicitly created
 // Ebitengine audio context. The context sample rate must be runtime.OutputRate;
@@ -220,6 +230,7 @@ func (o *AudioOutput) Close() error {
 	o.closed = true
 	o.mu.Unlock()
 
+	o.stopFeeder()
 	o.queue.close()
 	if o.player != nil {
 		o.player.PauseAndStopReading()
@@ -254,14 +265,114 @@ func (g *Game) AttachAudioOutput(output *AudioOutput) error {
 		return err
 	}
 	g.audioOutput = output
+	g.startAudioFeeder(output)
 	return nil
 }
 
 // DetachAudioOutput removes the output from subsequent updates. It does not
 // close the output, because its context and player are caller-owned.
 func (g *Game) DetachAudioOutput() {
-	if g != nil {
-		g.audioOutput = nil
+	if g == nil {
+		return
+	}
+	if g.audioOutput != nil {
+		g.audioOutput.stopFeeder()
+	}
+	g.audioOutput = nil
+}
+
+// startAudioFeeder moves audio production off the Ebitengine update thread.
+// The feeder keeps the output queue near realtimeAudioTargetFrames regardless
+// of how long a tick blocks, so script stalls no longer starve the device.
+func (g *Game) startAudioFeeder(output *AudioOutput) {
+	session := g.session
+	if session == nil || output == nil {
+		return
+	}
+	if output.hasFeeder() {
+		session.EnableRealtimeAudio()
+		return
+	}
+	session.EnableRealtimeAudio()
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	var once sync.Once
+	output.setFeederStop(func() {
+		once.Do(func() {
+			close(stop)
+			<-done
+			session.DisableRealtimeAudio()
+		})
+	})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(realtimeAudioPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
+			if output.isClosed() || !session.RealtimeAudioEnabled() {
+				continue
+			}
+			session.SetAudioPlayedFrames(output.playedFrames())
+			pending := output.PendingFrames()
+			if pending >= realtimeAudioTargetFrames {
+				continue
+			}
+			samples, err := session.MixRealtimeAudio(realtimeAudioTargetFrames - pending)
+			if err != nil || len(samples) == 0 {
+				continue
+			}
+			_ = output.Write(samples)
+		}
+	}()
+}
+
+// playedFrames converts the player's device position into output frames.
+func (o *AudioOutput) playedFrames() uint64 {
+	if o == nil || o.player == nil {
+		return 0
+	}
+	position := o.player.Position()
+	if position <= 0 {
+		return 0
+	}
+	seconds := uint64(position / time.Second)
+	remainder := uint64(position % time.Second)
+	return seconds*runtime.OutputRate + remainder*runtime.OutputRate/uint64(time.Second)
+}
+
+func (o *AudioOutput) hasFeeder() bool {
+	if o == nil {
+		return false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.feederStop != nil
+}
+
+func (o *AudioOutput) setFeederStop(stop func()) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	o.feederStop = stop
+	o.mu.Unlock()
+}
+
+func (o *AudioOutput) stopFeeder() {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	stop := o.feederStop
+	o.feederStop = nil
+	o.mu.Unlock()
+	if stop != nil {
+		stop()
 	}
 }
 
@@ -284,6 +395,9 @@ func (g *Game) limitAudioDeltaMilliseconds(milliseconds uint64) uint64 {
 
 func (g *Game) deliverAudio() error {
 	if g == nil || g.audioOutput == nil || g.session == nil {
+		return nil
+	}
+	if g.session.RealtimeAudioEnabled() {
 		return nil
 	}
 	if err := g.audioOutput.Write(g.session.AudioOutput); err != nil {

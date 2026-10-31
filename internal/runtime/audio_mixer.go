@@ -152,6 +152,13 @@ type AudioMixer struct {
 	videoStates  map[*VideoOverlay]videoMixerState
 	output       []float32
 	mixScratch   []float32
+	// producedFrames counts output frames rendered by Mix. audibleFrames is
+	// advanced by the device host and trails producedFrames by the queued
+	// audio. Events and position queries use the difference to describe what
+	// the listener can already hear.
+	producedFrames uint64
+	audibleFrames  uint64
+	trackAudible   bool
 }
 
 // NewAudioMixer creates a mixer with full global volume.
@@ -290,13 +297,20 @@ func (m *AudioMixer) Mix(frames int) ([]float32, error) {
 		if neededEvents > maxSoundEvents-len(events) {
 			return nil, fmt.Errorf("sound event queue limit exceeded")
 		}
+		audibleAt := m.producedFrames + uint64(frames)
 		for _, label := range labels {
-			events = append(events, SoundEvent{Generation: source.generation, Type: SoundEventLabel, Label: label.Name})
+			events = append(events, SoundEvent{Generation: source.generation, Type: SoundEventLabel, Label: label.Name, AudibleAt: audibleAt})
 		}
 		status := source.status
 		if ended {
-			status = SoundStop
-			events = append(events, SoundEvent{Generation: source.generation, Type: SoundEventStatus, Status: string(SoundStop)})
+			if m.trackAudible {
+				// The source is exhausted, but the listener still has queued
+				// frames. Keep the play status until the device reaches them.
+				source.pendingStopAt = audibleAt
+			} else {
+				status = SoundStop
+			}
+			events = append(events, SoundEvent{Generation: source.generation, Type: SoundEventStatus, Status: string(SoundStop), AudibleAt: audibleAt})
 			loaded.ended = true
 		}
 		staged = append(staged, stagedSource{source: source, loaded: loaded, status: status, events: events})
@@ -353,6 +367,10 @@ func (m *AudioMixer) Mix(frames int) ([]float32, error) {
 		state.video.audioQueue = append(state.video.audioQueue[:0], state.video.audioQueue[state.takeBlocks:]...)
 		state.video.mu.Unlock()
 	}
+	m.producedFrames += uint64(frames)
+	if !m.trackAudible {
+		m.audibleFrames = m.producedFrames
+	}
 	m.output, m.mixScratch = output, previousOutput
 	return m.output, nil
 }
@@ -398,6 +416,56 @@ func (m *AudioMixer) MixMilliseconds(milliseconds uint64) ([]float32, error) {
 		return nil, fmt.Errorf("audio tick exceeds frame limit")
 	}
 	return m.Mix(int(milliseconds * 48))
+}
+
+// ProducedFrames returns the number of output frames rendered so far.
+func (m *AudioMixer) ProducedFrames() uint64 {
+	if m == nil {
+		return 0
+	}
+	return m.producedFrames
+}
+
+// AudibleFrames returns the last device position reported by the host.
+func (m *AudioMixer) AudibleFrames() uint64 {
+	if m == nil {
+		return 0
+	}
+	return m.audibleFrames
+}
+
+// SetAudibleFrames records the played output frames reported by the device.
+// The value is clamped to the produced range and never moves backwards.
+func (m *AudioMixer) SetAudibleFrames(frames uint64) {
+	if m == nil {
+		return
+	}
+	if frames > m.producedFrames {
+		frames = m.producedFrames
+	}
+	if frames > m.audibleFrames {
+		m.audibleFrames = frames
+	}
+}
+
+// SetAudibleTracking enables deferring events and positions to the device
+// position. Disabling it treats every produced frame as audible.
+func (m *AudioMixer) SetAudibleTracking(enabled bool) {
+	if m == nil {
+		return
+	}
+	m.trackAudible = enabled
+	if !enabled {
+		m.audibleFrames = m.producedFrames
+	}
+}
+
+// LeadFrames returns the queued output frames the listener has not heard yet.
+func (m *AudioMixer) LeadFrames() uint64 {
+	if m == nil || m.producedFrames <= m.audibleFrames {
+		return 0
+	}
+	return m.producedFrames - m.audibleFrames
 }
 
 // MixSource mixes one stream directly into target. It is public for hosts that

@@ -192,10 +192,15 @@ type Services struct {
 	preprocessor                 *tjs.Preprocessor
 	sessionPreprocessors         map[*tjs.VM]*tjs.Preprocessor
 	// appLocks stays scoped to this Services instance, not package-global state.
-	appLocks        map[string]struct{}
-	inputStates     map[uint64]*keyInputState
-	mu              sync.RWMutex
-	initMu          sync.Mutex
+	appLocks    map[string]struct{}
+	inputStates map[uint64]*keyInputState
+	mu          sync.RWMutex
+	initMu      sync.Mutex
+	// audioMu serializes every access to AudioMixer and to the sound fields
+	// the mixer reads and writes. The host mixes from a feeder goroutine while
+	// the script thread keeps running, so both sides take this lock.
+	audioMu         sync.Mutex
+	audioRealtime   bool
 	kagHookMu       sync.Mutex
 	kagHookNatives  map[*tjs.VM]tjs.Value
 	pendingKAGHooks map[*tjs.VM][]kagHookRegistration
@@ -625,6 +630,7 @@ func (s *Services) ensureInit() {
 		s.AudioMixer = NewAudioMixer()
 	}
 	if s.audioMixerOwner != s.AudioMixer {
+		s.audioMu.Lock()
 		for _, sound := range s.Sounds {
 			s.AudioMixer.Add(sound)
 		}
@@ -632,6 +638,7 @@ func (s *Services) ensureInit() {
 			s.AudioMixer.AddVideo(video)
 		}
 		s.audioMixerOwner = s.AudioMixer
+		s.audioMu.Unlock()
 	}
 }
 func (s *Services) SetClock(clock Clock) {
@@ -1594,6 +1601,13 @@ func (s *Services) RegisterSound(id tjs.ObjectID, sound *WaveSoundBuffer) error 
 		return fmt.Errorf("invalid sound registration")
 	}
 	s.ensureInit()
+	s.audioMu.Lock()
+	defer s.audioMu.Unlock()
+	return s.registerSoundLocked(id, sound)
+}
+
+// registerSoundLocked attaches a sound while the caller holds audioMu.
+func (s *Services) registerSoundLocked(id tjs.ObjectID, sound *WaveSoundBuffer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if previous := s.Sounds[id]; previous != sound {
@@ -1629,24 +1643,40 @@ func (s *Services) DrainSoundEvents(id tjs.ObjectID) []SoundEvent {
 	return out
 }
 func (s *Services) queueSoundEvents(id tjs.ObjectID, sound *WaveSoundBuffer) error {
+	audible := s.AudioMixer.AudibleFrames()
+	sound.applyPendingStop(audible)
 	events := sound.Events()
 	if len(events) == 0 {
 		return nil
 	}
+	ready := make([]SoundEvent, 0, len(events))
+	deferred := make([]SoundEvent, 0, len(events))
+	for _, event := range events {
+		if event.AudibleAt != 0 && event.AudibleAt > audible {
+			deferred = append(deferred, event)
+			continue
+		}
+		ready = append(ready, event)
+	}
+	if len(ready) == 0 {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.SoundEvents[id])+len(events) > maxSoundEvents {
+	if len(s.SoundEvents[id])+len(ready) > maxSoundEvents {
 		return fmt.Errorf("sound event queue limit exceeded")
 	}
-	if err := s.Events.PostSoundBatch(uint64(id), EventTrigger, PriorityNormal, len(events)); err != nil {
+	if err := s.Events.PostSoundBatch(uint64(id), EventTrigger, PriorityNormal, len(ready)); err != nil {
 		return err
 	}
-	s.SoundEvents[id] = append(s.SoundEvents[id], events...)
-	sound.DrainEvents()
+	s.SoundEvents[id] = append(s.SoundEvents[id], ready...)
+	sound.SetEvents(deferred)
 	return nil
 }
 
-func (s *Services) stopAllSounds() error {
+// stopAllSoundsLocked stops every registered sound while the caller holds
+// audioMu.
+func (s *Services) stopAllSoundsLocked() error {
 	s.mu.RLock()
 	ids := make([]tjs.ObjectID, 0, len(s.Sounds))
 	for id := range s.Sounds {
@@ -1669,10 +1699,93 @@ func (s *Services) stopAllSounds() error {
 	return nil
 }
 
+// playbackSamplePosition returns the source frame the listener is hearing.
+// In realtime mode the mixer renders ahead of the device, so the queued lead
+// is removed from the raw mixer position.
+func (s *Services) playbackSamplePosition(sound *WaveSoundBuffer) uint64 {
+	position := sound.SamplePosition()
+	lead := s.AudioMixer.LeadFrames()
+	if lead == 0 || sound.frequency <= 0 {
+		return position
+	}
+	leadSource := lead * uint64(sound.frequency) / uint64(OutputRate)
+	if leadSource <= position {
+		return position - leadSource
+	}
+	if sound.loaded != nil && sound.Looping() {
+		total := uint64(sound.loaded.audio.Frames())
+		if total > 0 {
+			return (position + total - leadSource%total) % total
+		}
+	}
+	return 0
+}
+
+// playbackPosition returns the audible position in milliseconds.
+func (s *Services) playbackPosition(sound *WaveSoundBuffer) uint64 {
+	if sound.frequency <= 0 {
+		return 0
+	}
+	return s.playbackSamplePosition(sound) * 1000 / uint64(sound.frequency)
+}
+
+// readSoundSource resolves a WaveSoundBuffer open argument and reads its
+// bytes and loop metadata. It performs storage I/O only, so decode errors stay
+// separate from a missing source.
+func (s *Services) readSoundSource(x tjs.Value, operation string) ([]byte, assets.LoopInfo, error) {
+	var data []byte
+	var storage string
+	if x.Kind() == tjs.KindOctet {
+		data = x.Octets()
+	} else if operation == "openBytes" {
+		return nil, assets.LoopInfo{}, fmt.Errorf("WaveSoundBuffer.openBytes requires octets")
+	} else {
+		storage = strings.SplitN(x.Text(), "?", 2)[0]
+		var err error
+		data, err = s.readStorage(storage)
+		if err != nil {
+			return nil, assets.LoopInfo{}, err
+		}
+	}
+	info := assets.LoopInfo{}
+	if storage != "" {
+		parsed, err := parseWaveSoundLoopInfo(s, storage)
+		if err != nil {
+			return nil, assets.LoopInfo{}, err
+		}
+		info = parsed
+	}
+	if assets.IsTCWF(data) {
+		info = assets.LoopInfo{}
+	}
+	return data, info, nil
+}
+
+// decodeSoundOpen resolves a WaveSoundBuffer open argument and decodes the
+// container without holding the audio lock.
+func (s *Services) decodeSoundOpen(x tjs.Value, operation string) (assets.Audio, assets.LoopInfo, error) {
+	data, info, err := s.readSoundSource(x, operation)
+	if err != nil {
+		return assets.Audio{}, assets.LoopInfo{}, err
+	}
+	audio, err := decodeSoundBytes(data)
+	return audio, info, err
+}
+
+// commitAsyncSoundOpen installs a worker decode while the caller holds audioMu.
+func (s *Services) commitAsyncSoundOpen(sound *WaveSoundBuffer, generation uint64, audio assets.Audio, info assets.LoopInfo, decodeErr error) {
+	if decodeErr != nil {
+		log.Printf("krkrgo: WaveSoundBuffer decode failed: %v", decodeErr)
+	}
+	sound.finishAsyncOpen(generation, audio, info)
+}
+
 // SoundNative invokes the script-facing WaveSoundBuffer operation set.
 func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value, budget *uint64) (tjs.Value, error) {
 
 	s.ensureInit()
+	s.audioMu.Lock()
+	defer s.audioMu.Unlock()
 	if operation == "setDefaultCounts" || operation == "setDefaultAheads" {
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("WaveSoundBuffer.%s: missing argument 0", operation)
@@ -1692,7 +1805,7 @@ func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, 
 		return tjs.VoidValue, nil
 	}
 	if operation == "stopAll" {
-		return tjs.VoidValue, s.stopAllSounds()
+		return tjs.VoidValue, s.stopAllSoundsLocked()
 	}
 	if operation == "get:globalVolume" || operation == "getGlobalVolume" {
 		return tjs.IntegerValue(int64(s.AudioMixer.GetGlobalVolume())), nil
@@ -1733,7 +1846,7 @@ func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, 
 		sound := s.Sounds[id]
 		s.mu.RUnlock()
 		if sound == nil {
-			if err := s.RegisterSound(id, NewWaveSoundBuffer()); err != nil {
+			if err := s.registerSoundLocked(id, NewWaveSoundBuffer()); err != nil {
 				return tjs.VoidValue, err
 			}
 		} else {
@@ -1763,7 +1876,7 @@ func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, 
 	s.mu.RUnlock()
 	if sound == nil {
 		sound = NewWaveSoundBuffer()
-		if err := s.RegisterSound(id, sound); err != nil {
+		if err := s.registerSoundLocked(id, sound); err != nil {
 			return tjs.VoidValue, err
 		}
 	} else {
@@ -1799,28 +1912,40 @@ func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, 
 		if e != nil {
 			return tjs.VoidValue, e
 		}
-		var data []byte
-		var storage string
-		if x.Kind() == tjs.KindOctet {
-			data = x.Octets()
-		} else if operation == "openBytes" {
-			return tjs.VoidValue, fmt.Errorf("WaveSoundBuffer.openBytes requires octets")
-		} else {
-			storage = strings.SplitN(x.Text(), "?", 2)[0]
-			data, e = s.readStorage(storage)
-			if e != nil {
-				return tjs.VoidValue, e
+		if s.audioRealtime {
+			// Realtime playback mirrors the reference decode thread: read the
+			// source now so missing-storage errors still reach the script,
+			// decode on a worker, and commit when the data is ready. A play
+			// request issued before the commit starts playback on commit.
+			s.audioMu.Unlock()
+			data, info, readErr := s.readSoundSource(x, operation)
+			s.audioMu.Lock()
+			if readErr != nil {
+				return tjs.VoidValue, readErr
 			}
+			generation := sound.beginAsyncOpen()
+			go func() {
+				audio, decodeErr := decodeSoundBytes(data)
+				s.audioMu.Lock()
+				s.commitAsyncSoundOpen(sound, generation, audio, info, decodeErr)
+				s.audioMu.Unlock()
+			}()
+			return tjs.VoidValue, nil
 		}
-		info := assets.LoopInfo{}
-		if storage != "" {
-			info, e = parseWaveSoundLoopInfo(s, storage)
-			if e != nil {
-				return tjs.VoidValue, e
-			}
+		// Codec work runs without the audio lock so a long track decode
+		// cannot starve the realtime feeder. The buffer keeps its previous
+		// source until the decoded data is committed below.
+		s.audioMu.Unlock()
+		audio, info, decodeErr := s.decodeSoundOpen(x, operation)
+		s.audioMu.Lock()
+		if decodeErr != nil {
+			return tjs.VoidValue, decodeErr
+		}
+		if audio.Channels == 0 {
+			return tjs.VoidValue, nil
 		}
 		previousStream := sound.Stream()
-		if e = sound.OpenBytes(data, info); e != nil {
+		if e = sound.OpenAudio(audio, info); e != nil {
 			return tjs.VoidValue, e
 		}
 		if sound.Stream() != previousStream {
@@ -1900,9 +2025,9 @@ func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, 
 	case "get:status":
 		return tjs.StringValue(sound.Status()), nil
 	case "get:position":
-		return tjs.IntegerValue(int64(sound.Position())), nil
+		return tjs.IntegerValue(int64(s.playbackPosition(sound))), nil
 	case "get:samplePosition":
-		return tjs.IntegerValue(int64(sound.SamplePosition())), nil
+		return tjs.IntegerValue(int64(s.playbackSamplePosition(sound))), nil
 	case "get:totalTime":
 		return tjs.IntegerValue(int64(sound.TotalTime())), nil
 	case "get:frequency":

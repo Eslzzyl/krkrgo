@@ -17,7 +17,9 @@ func (s *Services) clearLayerMovie(id tjs.ObjectID) {
 	}
 	delete(s.LayerMovies, id)
 	if s.AudioMixer != nil {
+		s.audioMu.Lock()
 		s.AudioMixer.RemoveVideo(movie)
+		s.audioMu.Unlock()
 	}
 	movie.Close()
 }
@@ -69,7 +71,9 @@ func (s *Services) layerExMovieNative(vm *tjs.VM, id tjs.ObjectID, layer *Layer,
 		movie.SetClock(s.TimeMS)
 		s.LayerMovies[id] = movie
 		if s.AudioMixer != nil {
+			s.audioMu.Lock()
 			s.AudioMixer.AddVideo(movie)
+			s.audioMu.Unlock()
 		}
 		return tjs.VoidValue, nil
 	case "startMovie":

@@ -26,12 +26,19 @@ type SoundEvent struct {
 	Type       string
 	Status     string
 	Label      string
+	// AudibleAt is the output frame at which the mixer produced this event.
+	// Zero means the event is not tied to mixed output and fires immediately.
+	AudibleAt uint64
 }
 
 // WaveSoundBuffer is the headless transport/state portion of Kirikiri's
 // WaveSoundBuffer. It owns decoded source state but no device or goroutine.
 type WaveSoundBuffer struct {
 	loaded                  *loadedSound
+	openGeneration          uint64
+	loading                 bool
+	pendingPlay             bool
+	pendingStopAt           uint64
 	status                  string
 	generation              uint64
 	events                  []SoundEvent
@@ -231,6 +238,7 @@ func (s *WaveSoundBuffer) OpenAudio(audio assets.Audio, info assets.LoopInfo) er
 		return err
 	}
 	s.loaded = &loadedSound{audio: audio, stream: stream}
+	s.pendingStopAt = 0
 	s.paused = false
 	s.frequency = int32(audio.SampleRate)
 	s.status = SoundStop
@@ -251,27 +259,76 @@ func (s *WaveSoundBuffer) Open(audio assets.Audio, info assets.LoopInfo) error {
 // the open degrades to a no-op.
 func (s *WaveSoundBuffer) OpenBytes(data []byte, info assets.LoopInfo) error {
 	if assets.IsTCWF(data) {
+		info = assets.LoopInfo{}
+	}
+	audio, err := decodeSoundBytes(data)
+	if err != nil {
+		return err
+	}
+	if audio.Channels == 0 {
+		return nil
+	}
+	return s.OpenAudio(audio, info)
+}
+
+// decodeSoundBytes decodes a sound container without touching buffer state, so
+// callers can keep the audio lock released during the expensive codec work.
+// A missing sidecar returns an empty Audio and no error.
+func decodeSoundBytes(data []byte) (assets.Audio, error) {
+	if assets.IsTCWF(data) {
 		audio, _, err := assets.DecodeTCWF(data)
-		if err != nil {
-			return err
-		}
-		return s.OpenAudio(audio, assets.LoopInfo{})
+		return audio, err
 	}
 	pcm, err := ffmpeg.DecodeAudioBytes("<memory>", data, 32_000_000)
 	if sidecarUnavailable(err) {
 		reportSidecarUnavailable(err)
-		return nil
+		return assets.Audio{}, nil
 	}
 	if err != nil {
-		return err
+		return assets.Audio{}, err
 	}
-	return s.OpenAudio(assets.Audio{Channels: pcm.Channels, SampleRate: pcm.SampleRate, Samples: pcm.Samples}, info)
+	return assets.Audio{Channels: pcm.Channels, SampleRate: pcm.SampleRate, Samples: pcm.Samples}, nil
 }
 
-// Play starts a loaded source and clears stale source events.
+// beginAsyncOpen invalidates any in-flight decode and marks the buffer as
+// loading. The returned generation is passed to finishAsyncOpen.
+func (s *WaveSoundBuffer) beginAsyncOpen() uint64 {
+	s.openGeneration++
+	s.loading = true
+	s.pendingPlay = false
+	return s.openGeneration
+}
+
+// finishAsyncOpen commits a completed worker decode when it still belongs to
+// the latest open request, then starts playback if Play was called meanwhile.
+func (s *WaveSoundBuffer) finishAsyncOpen(generation uint64, audio assets.Audio, info assets.LoopInfo) {
+	if s == nil || s.openGeneration != generation {
+		return
+	}
+	s.loading = false
+	play := s.pendingPlay
+	s.pendingPlay = false
+	if audio.Channels == 0 {
+		return
+	}
+	if err := s.OpenAudio(audio, info); err != nil {
+		return
+	}
+	if play {
+		_ = s.Play()
+	}
+}
+
+// Play starts a loaded source and clears stale source events. While an
+// asynchronous open is pending, Play records the request and starts playback
+// when the decode commits.
 func (s *WaveSoundBuffer) Play() error {
 	if s == nil {
 		return fmt.Errorf("nil sound buffer")
+	}
+	if s.loading {
+		s.pendingPlay = true
+		return nil
 	}
 	if s.status != SoundPlay && s.loaded != nil {
 		position := s.loaded.stream.Position()
@@ -298,6 +355,8 @@ func (s *WaveSoundBuffer) Stop() error {
 		return fmt.Errorf("nil sound buffer")
 	}
 	s.generation++
+	s.pendingPlay = false
+	s.pendingStopAt = 0
 	s.events = s.events[:0]
 	if s.status != SoundUnload {
 		s.status = SoundStop
@@ -526,6 +585,27 @@ func (s *WaveSoundBuffer) DrainEvents() []SoundEvent {
 	s.events = nil
 	return out
 }
+
+// SetEvents replaces the pending event queue.
+// applyPendingStop moves an exhausted source to the stopped status once the
+// device has consumed the frames mixed before the source ran out.
+func (s *WaveSoundBuffer) applyPendingStop(audibleFrames uint64) {
+	if s == nil || s.pendingStopAt == 0 || s.pendingStopAt > audibleFrames {
+		return
+	}
+	s.pendingStopAt = 0
+	if s.status == SoundPlay {
+		s.status = SoundStop
+	}
+}
+
+func (s *WaveSoundBuffer) SetEvents(events []SoundEvent) {
+	if s == nil {
+		return
+	}
+	s.events = events
+}
+
 func (s *WaveSoundBuffer) Events() []SoundEvent {
 	if s == nil {
 		return nil

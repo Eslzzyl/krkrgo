@@ -279,31 +279,21 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 	} else {
 		decodeStarted := time.Now()
 		var decodeErr error
-		var decodeDone chan struct {
+		type layerDecodeResult struct {
 			image assets.Image
 			err   error
 		}
+		decodeDone := make(chan layerDecodeResult, 1)
+		go func() {
+			image, err := s.Storage.DecodeImage(data)
+			decodeDone <- layerDecodeResult{image: image, err: err}
+		}()
 		var maskData, provinceData []byte
 		var maskErr, provinceErr error
-		if len(data) >= 256<<10 {
-			decodeDone = make(chan struct {
-				image assets.Image
-				err   error
-			}, 1)
-			go func() {
-				image, err := s.Storage.DecodeImage(data)
-				decodeDone <- struct {
-					image assets.Image
-					err   error
-				}{image: image, err: err}
-			}()
-			_, maskData, maskErr = s.readLayerImageSidecar(resolvedName, "_m")
-			_, provinceData, provinceErr = s.readLayerImageSidecar(resolvedName, "_p")
-			result := <-decodeDone
-			decoded, decodeErr = result.image, result.err
-		} else {
-			decoded, decodeErr = s.Storage.DecodeImage(data)
-		}
+		_, maskData, maskErr = s.readLayerImageSidecar(resolvedName, "_m")
+		_, provinceData, provinceErr = s.readLayerImageSidecar(resolvedName, "_p")
+		result := <-decodeDone
+		decoded, decodeErr = result.image, result.err
 		decodeTime = time.Since(decodeStarted)
 		if decodeErr != nil {
 			return tjs.VoidValue, fmt.Errorf("Layer.loadImages %q: %w", name, decodeErr)
@@ -328,9 +318,6 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 		var maskStarted time.Time
 		if stallTrace {
 			maskStarted = time.Now()
-		}
-		if decodeDone == nil {
-			_, maskData, maskErr = s.readLayerImageSidecar(resolvedName, "_m")
 		}
 		if maskErr == nil {
 			mask, err := s.Storage.DecodeImage(maskData)
@@ -358,9 +345,6 @@ func (s *Services) layerLoadImages(vm *tjs.VM, layer *Layer, id tjs.ObjectID, ar
 		var provinceStarted time.Time
 		if stallTrace {
 			provinceStarted = time.Now()
-		}
-		if decodeDone == nil {
-			_, provinceData, provinceErr = s.readLayerImageSidecar(resolvedName, "_p")
 		}
 		if provinceErr == nil {
 			indexed, err := assets.DecodeIndexedImage(provinceData)

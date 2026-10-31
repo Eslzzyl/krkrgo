@@ -756,6 +756,7 @@ func (g *Game) Deallocate() {
 	if g == nil {
 		return
 	}
+	g.DetachAudioOutput()
 	if g.postProcessor != nil {
 		g.postProcessor.Deallocate()
 		g.postProcessor = nil

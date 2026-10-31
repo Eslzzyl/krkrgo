@@ -258,10 +258,10 @@ device-side queue starvation during a long runtime or presentation stage.
 - `internal/runtime/layer_image.go` uses a row-copy path when `stretchCopy`
   keeps source and destination dimensions identical, skipping interpolation
   setup for identity-size transfers.
-- `internal/runtime/layer_load_images_native.go` overlaps large main-image
-  decode with mask and province sidecar lookup. Small images retain the
-  synchronous path, keeping goroutine overhead out of the common small-image
-  case.
+- `internal/runtime/layer_load_images_native.go` starts main-image decode on a
+  worker goroutine for every uncached image and reads the mask and province
+  sidecars on the session thread before joining, so sidecar storage lookup
+  overlaps decode at every image size.
 - `internal/runtime/bitmap_native.go` now decodes `Bitmap.loadAsync` through
   the per-Storage decoded-image cache. A completed background preload supplies
   the cached decode to a later `Layer.loadImages` call instead of repeating

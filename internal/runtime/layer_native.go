@@ -840,7 +840,9 @@ func (s *Services) invalidateLayer(vm *tjs.VM, id tjs.ObjectID) error {
 	if movie := s.LayerMovies[id]; movie != nil {
 		delete(s.LayerMovies, id)
 		if s.AudioMixer != nil {
+			s.audioMu.Lock()
 			s.AudioMixer.RemoveVideo(movie)
+			s.audioMu.Unlock()
 		}
 		movie.Close()
 	}
