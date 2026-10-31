@@ -596,3 +596,29 @@ func TestStoragesFstatReadOnlyAndEscapes(t *testing.T) {
 		t.Errorf("isExistentStorageNoSearchNoNormalize escape = %d, want 0", got)
 	}
 }
+
+func TestStoragesFstatMoveFileInsideProjectSaveDir(t *testing.T) {
+	project := t.TempDir()
+	saveDir := filepath.Join(project, "savedata")
+	if err := os.MkdirAll(saveDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	session := fstatTestSession(t, project, saveDir)
+
+	from := filepath.Join(saveDir, "data_quick_01.bmp")
+	if err := os.WriteFile(from, []byte("thumb"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	to := filepath.Join(saveDir, "data_quick_02.bmp")
+	expression := `Storages.moveFile(` + strconv.Quote(localStorageURI(from)) + `, ` + strconv.Quote(localStorageURI(to)) + `)`
+	if got := fstatEvalInt(t, session, expression); got != 1 {
+		t.Fatalf("moveFile inside save dir = %d, want 1", got)
+	}
+	if _, err := os.Stat(from); !os.IsNotExist(err) {
+		t.Fatalf("source still exists: %v", err)
+	}
+	data, err := os.ReadFile(to)
+	if err != nil || string(data) != "thumb" {
+		t.Fatalf("destination = %q, %v", data, err)
+	}
+}

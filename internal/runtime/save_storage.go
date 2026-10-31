@@ -135,7 +135,31 @@ func saveStorageName(project, root, name string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrInvalidSaveName, err)
 	}
+	// A save root inside the project is addressed by its project-relative
+	// path from script names such as "savedata/data_quick_01.bmp". Drop that
+	// prefix before joining the root so the file is not nested one level
+	// deeper than the absolute URI the game also uses.
+	if prefix := saveRootProjectPrefix(project, root); prefix != "" {
+		if n == prefix {
+			n = ""
+		} else if strings.HasPrefix(n, prefix+"/") {
+			n = strings.TrimPrefix(n, prefix+"/")
+		}
+	}
 	return n, nil
+}
+
+// saveRootProjectPrefix returns the slash-normalized project-relative path of
+// a save root that lives inside the project, or an empty string otherwise.
+func saveRootProjectPrefix(project, root string) string {
+	if project == "" || root == "" {
+		return ""
+	}
+	relative, matched, err := core.LocalStorageRelativePath(root, project)
+	if err != nil || !matched || relative == "" || relative == "." {
+		return ""
+	}
+	return relative
 }
 
 func saveStoragePath(project, root, name string) (string, string, error) {
