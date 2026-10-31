@@ -54,14 +54,14 @@ func blendChannel(base, source float, mode float) float {
 	if mode == 4 || mode == 15 { return maxf(0, base-source) }
 	if mode == 5 || mode == 16 { return base*source }
 	if mode == 11 || mode == 17 { return 1-(1-base)*(1-source) }
-	if mode == 8 || mode == 18 || mode == 19 { return dodge(base, source) }
-	if mode == 9 || mode == 27 { return minf(base, source) }
-	if mode == 10 || mode == 26 { return maxf(base, source) }
-	if mode == 20 { return overlay(base, source) }
-	if mode == 21 { return overlay(source, base) }
-	if mode == 22 { return base*(1-source)+overlay(base, source)*source }
+	if mode == 8 || mode == 21 || mode == 22 { return dodge(base, source) }
+	if mode == 9 || mode == 25 { return minf(base, source) }
+	if mode == 10 || mode == 24 { return maxf(base, source) }
+	if mode == 18 { return overlay(base, source) }
+	if mode == 19 { return overlay(source, base) }
+	if mode == 20 { return base*(1-source)+overlay(base, source)*source }
 	if mode == 23 { return burn(base, source) }
-	if mode == 24 || mode == 25 { return absf(base-source) }
+	if mode == 26 || mode == 27 { return absf(base-source) }
 	if mode == 28 { return base+source-2*base*source }
 	return source
 }
@@ -317,14 +317,14 @@ func blendChannel(base, source, mode float) float {
 	if mode == 4 || mode == 15 { return maxf(0, base-source) }
 	if mode == 5 || mode == 16 { return base*source }
 	if mode == 11 || mode == 17 { return 1-(1-base)*(1-source) }
-	if mode == 8 || mode == 18 || mode == 19 { return dodge(base, source) }
-	if mode == 9 || mode == 27 { return minf(base, source) }
-	if mode == 10 || mode == 26 { return maxf(base, source) }
-	if mode == 20 { return overlay(base, source) }
-	if mode == 21 { return overlay(source, base) }
-	if mode == 22 { return base*(1-source)+overlay(base, source)*source }
+	if mode == 8 || mode == 21 || mode == 22 { return dodge(base, source) }
+	if mode == 9 || mode == 25 { return minf(base, source) }
+	if mode == 10 || mode == 24 { return maxf(base, source) }
+	if mode == 18 { return overlay(base, source) }
+	if mode == 19 { return overlay(source, base) }
+	if mode == 20 { return base*(1-source)+overlay(base, source)*source }
 	if mode == 23 { return burn(base, source) }
-	if mode == 24 || mode == 25 { return absf(base-source) }
+	if mode == 26 || mode == 27 { return absf(base-source) }
 	if mode == 28 { return base+source-2*base*source }
 	return source
 }
