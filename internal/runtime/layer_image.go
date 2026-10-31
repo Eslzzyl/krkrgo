@@ -175,14 +175,14 @@ func (l *Layer) materializeGPUImageOps() error {
 		var err error
 		switch op.kind {
 		case layerImageOpCopy:
-			err = l.copyRectPixels(source, op.sourceWidth, op.sourceHeight, nil, 0, 0,
-				op.dx, op.dy, op.sx, op.sy, op.width, op.height)
+			err = l.copyRectPixelsFace(source, op.sourceWidth, op.sourceHeight, nil, 0, 0,
+				op.dx, op.dy, op.sx, op.sy, op.width, op.height, op.face, op.holdAlpha)
 		case layerImageOpOperate:
-			err = l.operateRectPixels(source, op.sourceWidth, op.sourceHeight,
-				op.dx, op.dy, op.sx, op.sy, op.width, op.height, op.mode, op.opacity)
+			err = l.operateRectPixelsFace(source, op.sourceWidth, op.sourceHeight,
+				op.dx, op.dy, op.sx, op.sy, op.width, op.height, op.mode, op.opacity, op.face, op.holdAlpha)
 		case layerImageOpAffine:
-			err = l.affineCopyPixels(source, op.sourceWidth, op.sourceHeight,
-				op.sx, op.sy, op.width, op.height, op.matrix, op.filter, op.clear)
+			err = l.affineCopyPixelsFace(source, op.sourceWidth, op.sourceHeight,
+				op.sx, op.sy, op.width, op.height, op.matrix, op.filter, op.clear, op.face, op.holdAlpha)
 			if err == nil {
 				l.markImageDirty()
 			}
@@ -654,6 +654,15 @@ func (l *Layer) CopyRect(source *Layer, dx, dy, sx, sy, width, height int32) err
 
 func (l *Layer) copyRectPixels(source []byte, sourceWidth, sourceHeight int32, sourceProvince []byte,
 	sourceProvinceWidth, sourceProvinceHeight, dx, dy, sx, sy, width, height int32) error {
+	return l.copyRectPixelsFace(source, sourceWidth, sourceHeight, sourceProvince,
+		sourceProvinceWidth, sourceProvinceHeight, dx, dy, sx, sy, width, height, l.drawFace(), l.HoldAlpha)
+}
+
+// copyRectPixelsFace applies the face and hold-alpha recorded when a deferred
+// GPU operation was issued. The layer's live face may have changed since then,
+// while a delayed materialization must reproduce the deferred result.
+func (l *Layer) copyRectPixelsFace(source []byte, sourceWidth, sourceHeight int32, sourceProvince []byte,
+	sourceProvinceWidth, sourceProvinceHeight, dx, dy, sx, sy, width, height int32, face int32, holdAlpha bool) error {
 	if width <= 0 || height <= 0 {
 		return nil
 	}
@@ -662,7 +671,6 @@ func (l *Layer) copyRectPixels(source []byte, sourceWidth, sourceHeight int32, s
 	}
 	l.ensureImageWritable()
 
-	face := l.drawFace()
 	sourceLogicalWidth, sourceLogicalHeight := sourceWidth, sourceHeight
 	if face == layerFaceProvince {
 		sourceLogicalWidth, sourceLogicalHeight = sourceProvinceWidth, sourceProvinceHeight
@@ -737,7 +745,7 @@ func (l *Layer) copyRectPixels(source []byte, sourceWidth, sourceHeight int32, s
 	samePixels := len(source) != 0 && &source[0] == &l.RGBA[0]
 	sourceDeviceWidth := sourceWidth
 	destinationDeviceWidth := l.deviceWidth()
-	copyAll := face == layerFaceAlpha || face == layerFaceAddAlpha || (face == layerFaceOpaque && !l.HoldAlpha)
+	copyAll := face == layerFaceAlpha || face == layerFaceAddAlpha || (face == layerFaceOpaque && !holdAlpha)
 	rows := copyHeight
 	columns := copyWidth
 	copyRows := func(rowStart, rowEnd int64) {
@@ -781,6 +789,12 @@ func (l *Layer) copyRectPixels(source []byte, sourceWidth, sourceHeight int32, s
 }
 
 func (l *Layer) operateRectPixels(source []byte, sourceWidth, sourceHeight, dx, dy, sx, sy, width, height, mode, opacity int32) error {
+	return l.operateRectPixelsFace(source, sourceWidth, sourceHeight, dx, dy, sx, sy, width, height, mode, opacity, l.drawFace(), l.HoldAlpha)
+}
+
+// operateRectPixelsFace applies the face and hold-alpha recorded when a
+// deferred GPU operation was issued.
+func (l *Layer) operateRectPixelsFace(source []byte, sourceWidth, sourceHeight, dx, dy, sx, sy, width, height, mode, opacity int32, face int32, holdAlpha bool) error {
 	if err := validLayerPixels(l); err != nil {
 		return err
 	}
@@ -804,7 +818,6 @@ func (l *Layer) operateRectPixels(source []byte, sourceWidth, sourceHeight, dx, 
 	if blitRight <= blitLeft || blitBottom <= blitTop {
 		return nil
 	}
-	face := l.drawFace()
 	if _, ok := layerFaceTarget(face); !ok {
 		return fmt.Errorf("%w: invalid operateRect draw face %d", ErrInvalidLayer, face)
 	}
@@ -840,7 +853,7 @@ func (l *Layer) operateRectPixels(source []byte, sourceWidth, sourceHeight, dx, 
 			} else {
 				si = ((int64(sy)+blitTop+y)*int64(sourceWidth) + int64(sx) + blitLeft + x) * 4
 			}
-			if err := layerOperationPixel(l.RGBA[di:di+4], source[si:si+4], face, mode, opacity, l.HoldAlpha); err != nil {
+			if err := layerOperationPixel(l.RGBA[di:di+4], source[si:si+4], face, mode, opacity, holdAlpha); err != nil {
 				return err
 			}
 		}
@@ -1114,6 +1127,12 @@ func bilinearRGBA(source []byte, topLeft, topRight, bottomLeft, bottomRight int6
 // maps source-rectangle center coordinates to destination coordinates, which is
 // the form the caller derives from either the matrix or the points arguments.
 func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft, stop, swidth, sheight int32, matrix [6]float64, filter int32, clear bool) error {
+	return l.affineCopyPixelsFace(source, sourceWidth, sourceHeight, sleft, stop, swidth, sheight, matrix, filter, clear, l.drawFace(), l.HoldAlpha)
+}
+
+// affineCopyPixelsFace applies the face and hold-alpha recorded when a
+// deferred GPU operation was issued.
+func (l *Layer) affineCopyPixelsFace(source []byte, sourceWidth, sourceHeight, sleft, stop, swidth, sheight int32, matrix [6]float64, filter int32, clear bool, face int32, holdAlpha bool) error {
 	if err := validLayerPixels(l); err != nil {
 		return err
 	}
@@ -1130,7 +1149,6 @@ func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft
 	if filter != 0 && filter != 1 && filter != 2 {
 		return fmt.Errorf("%w: Layer.affineCopy filter %d", ErrUnsupportedNative, filter)
 	}
-	face := l.drawFace()
 	if !layerCopyFaceSupported(face) {
 		return fmt.Errorf("%w: affineCopy draw face %d", ErrUnsupportedNative, face)
 	}
@@ -1166,7 +1184,7 @@ func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft
 		math.Abs(a-1) <= identityTolerance && math.Abs(b) <= identityTolerance &&
 		math.Abs(c) <= identityTolerance && math.Abs(d-1) <= identityTolerance &&
 		math.Abs(tx) <= identityTolerance && math.Abs(ty) <= identityTolerance {
-		rgbOnly := face == layerFaceOpaque && l.HoldAlpha
+		rgbOnly := face == layerFaceOpaque && holdAlpha
 		copyBottom := min64(int64(bottom), int64(sheight))
 		for y := int64(top); y < copyBottom; y++ {
 			sourceOffset := y * int64(sourceWidth) * 4
@@ -1179,7 +1197,7 @@ func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft
 			for x := int64(left); x < int64(right); x++ {
 				copyPixelForFace(
 					l.RGBA[destinationOffset+(x-int64(left))*4:destinationOffset+(x-int64(left)+1)*4],
-					source[sourceOffset+x*4:sourceOffset+(x+1)*4], face, l.HoldAlpha)
+					source[sourceOffset+x*4:sourceOffset+(x+1)*4], face, holdAlpha)
 			}
 		}
 		return nil
@@ -1250,7 +1268,7 @@ func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft
 
 	sourceStride := int64(sourceWidth)
 	nearest := filter == 0
-	premultipliedBilinear := !(face == layerFaceOpaque && l.HoldAlpha)
+	premultipliedBilinear := !(face == layerFaceOpaque && holdAlpha)
 	lastColumn, lastRow := int64(sleft+swidth-1), int64(stop+sheight-1)
 	for y := outTop; y < outBottom; y++ {
 		dy := float64(y) - ty
@@ -1277,7 +1295,7 @@ func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft
 					row = int64(sheight) - 1
 				}
 				si := ((int64(stop)+row)*sourceStride + int64(sleft) + column) * 4
-				copyPixelForFace(l.RGBA[di:di+4], source[si:si+4], face, l.HoldAlpha)
+				copyPixelForFace(l.RGBA[di:di+4], source[si:si+4], face, holdAlpha)
 				continue
 			}
 			sx := float64(sleft) + u
@@ -1325,7 +1343,7 @@ func (l *Layer) affineCopyPixels(source []byte, sourceWidth, sourceHeight, sleft
 			bottomLeft := (nextRow*sourceStride + minColumn) * 4
 			bottomRight := (nextRow*sourceStride + nextColumn) * 4
 			pixel := bilinearRGBA(source, topLeft, topRight, bottomLeft, bottomRight, fx, fy, premultipliedBilinear)
-			copyPixelForFace(l.RGBA[di:di+4], pixel[:], face, l.HoldAlpha)
+			copyPixelForFace(l.RGBA[di:di+4], pixel[:], face, holdAlpha)
 		}
 	}
 	return nil

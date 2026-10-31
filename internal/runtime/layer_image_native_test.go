@@ -501,6 +501,54 @@ affine.affineCopy(src, 0, 0, 2, 1, false, 0, 0, 2, 0, 0, 1);
 	}
 }
 
+func TestMaterializeDeferredImageOpUsesRecordedFaceAndHoldAlpha(t *testing.T) {
+	source := []byte{
+		29, 171, 223, 255, 29, 171, 223, 255,
+		29, 171, 223, 255, 29, 171, 223, 255,
+	}
+	native := nativeLayerImage{width: 2, height: 2, pixels: source, mode: int32(LayerAlpha)}
+
+	// operateRect recorded with holdAlpha keeps the transparent destination
+	// alpha even after the issuing script restored holdAlpha.
+	operated := NewLayer(1)
+	if err := operated.SetRGBA(2, 2, make([]byte, 2*2*4)); err != nil {
+		t.Fatal(err)
+	}
+	operated.HoldAlpha = true
+	if !operated.deferGPUOperateRect(native, 0, 0, 0, 0, 2, 2, int32(LayerPSOverlay), 255) {
+		t.Fatal("operateRect was not deferred")
+	}
+	operated.HoldAlpha = false
+	if err := operated.materializeGPUImageOps(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 3; i < len(operated.RGBA); i += 4 {
+		if operated.RGBA[i] != 0 {
+			t.Fatalf("operated alpha[%d] = %d, want 0 from recorded holdAlpha", i/4, operated.RGBA[i])
+		}
+	}
+
+	// copyRect recorded with an opaque face and holdAlpha copies RGB only.
+	copied := NewLayer(2)
+	if err := copied.SetRGBA(2, 2, make([]byte, 2*2*4)); err != nil {
+		t.Fatal(err)
+	}
+	copied.Face = layerFaceOpaque
+	copied.HoldAlpha = true
+	if !copied.deferGPUCopyRect(native, 0, 0, 0, 0, 2, 2) {
+		t.Fatal("copyRect was not deferred")
+	}
+	copied.HoldAlpha = false
+	if err := copied.materializeGPUImageOps(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < len(copied.RGBA); i += 4 {
+		if copied.RGBA[i] != 29 || copied.RGBA[i+1] != 171 || copied.RGBA[i+2] != 223 || copied.RGBA[i+3] != 0 {
+			t.Fatalf("copied pixel[%d] = %v, want source RGB with recorded holdAlpha", i/4, copied.RGBA[i:i+4])
+		}
+	}
+}
+
 func TestNativeLayerLightAdjustsRGBAndPreservesAlpha(t *testing.T) {
 	session := NewSession(DefaultServices(), 100_000)
 	if _, err := session.executeSource("<layer-light-test>", `
