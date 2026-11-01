@@ -301,6 +301,42 @@ func TestServicesCaptureFrameReuseTracksLayerStateAndOwnsSnapshots(t *testing.T)
 	}
 }
 
+func TestServicesRuntimePresentationCacheUsesLayerRevisions(t *testing.T) {
+	services := DefaultServices()
+	root := NewRootLayer(1, 1, 1)
+	if err := root.SetRGBA(1, 1, []byte{255, 0, 0, 255}); err != nil {
+		t.Fatal(err)
+	}
+	services.SetRoot(root)
+
+	first, err := services.CaptureFrameForRuntimePresentation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := services.frameCacheHash
+	hit, err := services.CaptureFrameForRuntimePresentation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if services.frameCacheHash != fingerprint || &first.RGBA[0] != &hit.RGBA[0] {
+		t.Fatal("stable runtime layer revisions did not reuse the cached frame")
+	}
+
+	if err := root.SetRGBA(1, 1, []byte{0, 0, 255, 255}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := services.CaptureFrameForRuntimePresentation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if services.frameCacheHash == fingerprint {
+		t.Fatal("layer image revision did not invalidate the runtime presentation cache")
+	}
+	if updated.RGBA[0] != 0 || updated.RGBA[2] != 255 || updated.RGBA[3] != 255 {
+		t.Fatalf("runtime presentation cache retained stale pixels: %v", updated.RGBA)
+	}
+}
+
 func TestServicesCaptureFrameCacheTracksLayerMetadata(t *testing.T) {
 	services := DefaultServices()
 	root := NewRootLayer(1, 1, 1)

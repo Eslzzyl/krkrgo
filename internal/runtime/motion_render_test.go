@@ -102,6 +102,37 @@ func TestMotionClearSourceCachesInvalidatesRenderState(t *testing.T) {
 	}
 }
 
+func TestMotionResourceLayerSnapshotCachesDocument(t *testing.T) {
+	firstLayer := map[string]assets.Value{"label": "first"}
+	firstDoc := &assets.Document{
+		Objects: []assets.PSBObject{{Path: []string{"layer"}, Value: firstLayer}},
+	}
+	resource := &motionResource{doc: firstDoc}
+
+	first := motionResourceLayerSnapshot(resource)
+	second := motionResourceLayerSnapshot(resource)
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("cached layer snapshot lengths = %d and %d, want 1", len(first), len(second))
+	}
+	if &first[0] != &second[0] {
+		t.Fatal("repeated layer snapshot rebuilt its backing slice")
+	}
+
+	secondLayer := map[string]assets.Value{"label": "second"}
+	secondDoc := &assets.Document{
+		Objects: []assets.PSBObject{{Path: []string{"layer"}, Value: secondLayer}},
+	}
+	resource.doc = secondDoc
+	updated := motionResourceLayerSnapshot(resource)
+	if len(updated) != 1 {
+		t.Fatalf("updated layer snapshot length = %d, want 1", len(updated))
+	}
+	updatedLayer, ok := updated[0].(map[string]assets.Value)
+	if !ok || updatedLayer["label"] != "second" {
+		t.Fatalf("updated layer snapshot = %#v, want second document layer", updated)
+	}
+}
+
 func TestBlendMotionImageIdentityTranslationBlendsTranslucentPixels(t *testing.T) {
 	src := &assets.Image{
 		Width:  1,

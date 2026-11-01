@@ -545,6 +545,8 @@ func (g *Game) Update() error {
 			g.gpu = nil
 			g.upscalerRequested = UpscalerOff
 			g.setOutputScale(1)
+		} else {
+			log.Printf("krkrgo: GPU renderer active")
 		}
 	}
 	if g.rendererMode == rendererGPU && g.upscalerRequested != UpscalerOff && !g.upscalerInitAttempted {
@@ -1025,6 +1027,11 @@ func (g *Game) updatePresentation(frame runtime.FrameSnapshot) error {
 		}
 		if !surfaceStarted.IsZero() {
 			g.renderStats.firstSurface = g.renderStats.firstNewImage + g.renderStats.firstResize
+		}
+		if g.renderStats.enabled {
+			layoutWidth, layoutHeight := g.Layout(0, 0)
+			windowWidth, windowHeight := g.logicalWindowSize(width, height)
+			log.Printf("krkrgo-presentation-dimensions renderer=cpu frame=%dx%d layout=%dx%d resize_target=%dx%d", width, height, layoutWidth, layoutHeight, windowWidth, windowHeight)
 		}
 	}
 	if frame.Opaque {

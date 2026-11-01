@@ -1031,7 +1031,7 @@ func (s *Services) SetFrameSize(width, height int32) error {
 }
 func (s *Services) CaptureFrame() (FrameSnapshot, error) {
 	statsEnabled := os.Getenv("KRKRGO_RENDER_STATS") != ""
-	frame, err := s.captureFrameWithPresentation(false)
+	frame, err := s.captureFrameWithPresentation(false, false)
 	if err != nil {
 		return FrameSnapshot{}, err
 	}
@@ -1048,16 +1048,23 @@ func (s *Services) CaptureFrame() (FrameSnapshot, error) {
 // presentation. Its slices remain valid only until the next capture call on
 // this Services; callers must not retain or mutate them.
 func (s *Services) CaptureFrameForPresentation() (FrameSnapshot, error) {
-	return s.captureFrameWithPresentation(true)
+	return s.captureFrameWithPresentation(true, false)
+}
+
+// CaptureFrameForRuntimePresentation is the host-facing presentation capture.
+// Runtime-owned layer revisions cover every supported mutation, so this path
+// uses revision metadata instead of rescanning large RGBA slices.
+func (s *Services) CaptureFrameForRuntimePresentation() (FrameSnapshot, error) {
+	return s.captureFrameWithPresentation(true, true)
 }
 
 // CaptureFrameBorrowed returns a CPU frame without cloning its pixel buffers.
 // The slices remain valid until the next capture call on this Services.
 func (s *Services) CaptureFrameBorrowed() (FrameSnapshot, error) {
-	return s.captureFrameWithPresentation(false)
+	return s.captureFrameWithPresentation(false, false)
 }
 func (s *Services) captureFrame() (FrameSnapshot, error) {
-	return s.captureFrameWithPresentation(false)
+	return s.captureFrameWithPresentation(false, false)
 }
 func (s *Services) validateRootTree(root *Layer) error {
 	if s == nil || root == nil {
@@ -1086,6 +1093,9 @@ func materializeLayerTree(layer *Layer) error {
 	if err := layer.materializeGPUImageOps(); err != nil {
 		return err
 	}
+	if layer.imageClear {
+		layer.ensureImageWritable()
+	}
 	for _, child := range layer.children {
 		if err := materializeLayerTree(child); err != nil {
 			return err
@@ -1094,7 +1104,7 @@ func materializeLayerTree(layer *Layer) error {
 	return nil
 }
 
-func (s *Services) captureFrameWithPresentation(presentation bool) (FrameSnapshot, error) {
+func (s *Services) captureFrameWithPresentation(presentation, revisionsOnly bool) (FrameSnapshot, error) {
 	statsEnabled := os.Getenv("KRKRGO_RENDER_STATS") != ""
 	var timings frameCaptureTimings
 	if s.Compositor == nil && s.Root == nil {
@@ -1206,7 +1216,13 @@ func (s *Services) captureFrameWithPresentation(presentation bool) (FrameSnapsho
 	for _, component := range c.Background {
 		write(uint64(component))
 	}
-	if err := hashLayerRenderState(&state, c.Root, write); err != nil {
+	var hashErr error
+	if revisionsOnly {
+		hashErr = hashLayerRenderStateRevisions(&state, c.Root, write)
+	} else {
+		hashErr = hashLayerRenderState(&state, c.Root, write)
+	}
+	if err := hashErr; err != nil {
 		return FrameSnapshot{}, err
 	}
 	fingerprint := state.Sum64()
@@ -1299,15 +1315,22 @@ func firstTransitionAlphaMode(layer *Layer) string {
 // hashLayerRenderState fingerprints caller-visible render state, including
 // exported pixel slices whose contents can change without a setter call.
 func hashLayerRenderState(state *maphash.Hash, layer *Layer, write func(uint64)) error {
-	return hashVisibleLayerRenderState(state, layer, write, true)
+	return hashVisibleLayerRenderState(state, layer, write, true, true)
 }
 
-func hashVisibleLayerRenderState(state *maphash.Hash, layer *Layer, write func(uint64), ancestorsVisible bool) error {
+// hashLayerRenderStateRevisions fingerprints runtime-owned mutation counters.
+// The host presentation path uses this after the runtime has applied all
+// supported layer updates for the frame.
+func hashLayerRenderStateRevisions(state *maphash.Hash, layer *Layer, write func(uint64)) error {
+	return hashVisibleLayerRenderState(state, layer, write, true, false)
+}
+
+func hashVisibleLayerRenderState(state *maphash.Hash, layer *Layer, write func(uint64), ancestorsVisible, includePixels bool) error {
 	if layer == nil {
 		write(0)
 		return nil
 	}
-	var values [25]uint64
+	var values [27]uint64
 	values[0] = 1
 	values[1] = uint64(uint32(layer.Bounds.X))
 	values[2] = uint64(uint32(layer.Bounds.Y))
@@ -1333,6 +1356,8 @@ func hashVisibleLayerRenderState(state *maphash.Hash, layer *Layer, write func(u
 	values[22] = uint64(len(layer.RGBA))
 	values[23] = uint64(len(layer.Province))
 	values[24] = uint64(len(layer.transitionPixels))
+	values[25] = layer.renderImageRevision()
+	values[26] = layer.subtreeRevision
 	var encoded [len(values) * 8]byte
 	for i, value := range values {
 		binary.LittleEndian.PutUint64(encoded[i*8:], value)
@@ -1343,7 +1368,7 @@ func hashVisibleLayerRenderState(state *maphash.Hash, layer *Layer, write func(u
 	// participates in the fingerprint, so making one visible invalidates the
 	// cache, but scanning caller-mutable image bytes cannot affect output.
 	visible := ancestorsVisible && !layer.transitionHidden && layer.Visible && layer.Opacity != 0
-	if visible {
+	if visible && includePixels {
 		// Hash every caller-visible source slice, not just the pixels selected
 		// for this frame: callers can mutate these slices without a setter.
 		_, _ = state.Write(layer.RGBA)
@@ -1351,7 +1376,7 @@ func hashVisibleLayerRenderState(state *maphash.Hash, layer *Layer, write func(u
 		_, _ = state.Write(layer.transitionPixels)
 	}
 	for _, child := range layer.children {
-		if err := hashVisibleLayerRenderState(state, child, write, visible); err != nil {
+		if err := hashVisibleLayerRenderState(state, child, write, visible, includePixels); err != nil {
 			return err
 		}
 	}

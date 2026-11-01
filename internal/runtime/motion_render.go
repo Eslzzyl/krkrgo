@@ -54,6 +54,8 @@ type motionResource struct {
 	canvasPreview                 bool
 	canvasEmoteMode               bool
 	canvasValid                   bool
+	layerSnapshotDoc              *assets.Document
+	layerSnapshot                 []assets.Value
 	meshIndices                   map[motionMeshIndexKey][]uint16
 	contextArena                  motionContextArena
 }
@@ -112,6 +114,7 @@ func (l *Layer) materializeGPUMotion() error {
 		}
 	}
 	l.gpuMotion = nil
+	l.imageClear = false
 	l.imageModified = true
 	l.markImageDirty()
 	return nil
@@ -3854,7 +3857,27 @@ func motionLayerList(resource *motionResource, chara, motion string) []assets.Va
 	if resource == nil || resource.doc == nil {
 		return nil
 	}
-	return motionLayerListFromDocument(resource.doc, chara, motion)
+	root, ok := resource.doc.Root.(map[string]assets.Value)
+	if !ok {
+		return nil
+	}
+	objects, _ := root["object"].(map[string]assets.Value)
+	character, _ := objects[chara].(map[string]assets.Value)
+	motions, _ := character["motion"].(map[string]assets.Value)
+	motionValue, _ := motions[motion].(map[string]assets.Value)
+	return motionMotionLayerList(resource, motionValue)
+}
+
+func motionResourceLayerSnapshot(resource *motionResource) []assets.Value {
+	if resource == nil || resource.doc == nil {
+		return nil
+	}
+	if resource.layerSnapshotDoc == resource.doc {
+		return resource.layerSnapshot
+	}
+	resource.layerSnapshotDoc = resource.doc
+	resource.layerSnapshot = motionSnapshotLayerList(resource.doc)
+	return resource.layerSnapshot
 }
 
 func motionLayerListFromDocument(doc *assets.Document, chara, motion string) []assets.Value {
@@ -3876,14 +3899,17 @@ func motionMotionLayerList(resource *motionResource, motionValue map[string]asse
 	if resource == nil || resource.doc == nil || motionValue == nil {
 		return nil
 	}
-	return motionMotionLayerListFromDocument(resource.doc, motionValue)
+	return motionMotionLayerListFromDocumentWithSnapshot(resource.doc, motionValue, motionResourceLayerSnapshot(resource))
 }
 
 func motionMotionLayerListFromDocument(doc *assets.Document, motionValue map[string]assets.Value) []assets.Value {
+	return motionMotionLayerListFromDocumentWithSnapshot(doc, motionValue, motionSnapshotLayerList(doc))
+}
+
+func motionMotionLayerListFromDocumentWithSnapshot(doc *assets.Document, motionValue map[string]assets.Value, rootLayers []assets.Value) []assets.Value {
 	if doc == nil || motionValue == nil {
 		return nil
 	}
-	rootLayers := motionSnapshotLayerList(doc)
 	layers, _ := motionValue["layer"].([]assets.Value)
 	allLabeled := true
 	for _, item := range layers {

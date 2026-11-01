@@ -74,6 +74,16 @@ and `removeAllTextures` advance that generation, clear decoded and derived image
 state, and invalidate the retained canvas before the next render plan is built.
 GPU motion draws also carry the runtime viewport into target clipping; this keeps
 the GPU path aligned with the CPU compositor's centered viewport coordinates.
+SeparateLayerAdaptor uses source-backed GPU draw descriptors for ordinary motion
+items, while grouped stencil content retains the baked path required for its
+mask ordering.
+Each loaded Motion resource retains its resolved PSB layer snapshot, so animated
+frames reuse the layer index instead of rebuilding it during every descriptor
+build.
+During GPU capture, `Motion.Player.clear(target)` records an image-clear marker in
+the render plan. The host clears the cached GPU texture directly, so a per-frame
+Motion canvas clear does not write the full CPU RGBA canvas before the deferred
+motion draw.
 
 MotionPlayer item preparation follows KrKr2's mode-specific visibility masks:
 regular Motion.Player content accepts node types 0, 11, and 12 (6145), while
@@ -131,20 +141,38 @@ software reference used for parity tests. The GPU path avoids full-frame CPU cop
 and readbacks during interactive presentation, while retaining CPU-side preparation
 for text, bitmaps, video, and image APIs. Window layout follows the runtime frame
 size, so presentation does not introduce an additional resampling step.
+Interactive CPU presentation fingerprints runtime-owned layer revisions, while the
+public exact capture API retains its full visible-pixel fingerprint for callers that
+may mutate exported buffers directly.
 GPU render-plan capture reuses its node and child-index storage between ticks and
 computes each source buffer hash once per capture. Mutable RGBA, province, and
 transition buffers remain part of the render fingerprint.
+GPU `withchildren` crossfade and universal transitions carry two local subtree
+plans into the host compositor. The host renders each endpoint into retained
+off-screen textures and applies the transition shader over those textures, so
+subtree completion never materializes a full CPU RGBA endpoint during GPU
+presentation.
 
 GPU output is compared with the CPU reference using per-channel tolerances. Exact
 bytes can differ across graphics drivers, shader precision, and premultiplied
 intermediate rounding; such differences are expected and must not alter layer order,
 visibility, alpha semantics, transition phase, or hit testing.
 
-Generic `Layer.copyRect`, `Layer.operateRect`, `Layer.affineCopy`, and supported
-filtered `Layer.stretchCopy` calls can stay in the GPU plan. Their CPU equivalents
+Generic `Layer.copyRect`, `Layer.operateRect`, `Layer.affineCopy`, transparent
+refresh fills, and supported filtered `Layer.stretchCopy` calls can stay in the GPU plan. Their CPU equivalents
 remain the materialization path for replay, CPU presentation, hit testing, and
 state-changing layer APIs. Source revisions and reusable ping-pong textures keep
 successive operations ordered without a full CPU image copy per call.
+`affineCopy(clear=true)` clears the target clip on the GPU before applying its
+affine sample, matching the reference motion-layer refresh path.
+Identity redraws through `Layer.assignImages` carry the source base pixels and
+ordered deferred operations into the destination during GPU capture, preserving
+the GPU plan across the reference layer-animation redraw loop. Alpha hit tests
+sample the queued operations at the queried point, so a full layer materialization
+is reserved for province hits or deferred forms that cannot be evaluated locally.
+Static sources use the same copy-on-write base snapshot, so an identity redraw
+does not allocate a second full RGBA surface. A full-layer clear supersedes older
+queued image operations before the host submits the plan.
 
 ## Ten-item optimization status
 

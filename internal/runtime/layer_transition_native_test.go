@@ -150,7 +150,10 @@ func TestGPUCaptureTransitionSourceEndpointFollowsLateContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	transition := findPlanTransition(t, plan)
-	if got := transition.SourceRGBA[:4]; got[3] != 0 {
+	if transition.SourcePlan == nil || len(transition.SourcePlan.Nodes) != 1 {
+		t.Fatalf("initial transition source plan = %+v", transition.SourcePlan)
+	}
+	if got := transition.SourcePlan.Nodes[0].RGBA[:4]; got[3] != 0 {
 		t.Fatalf("initial transition source endpoint = %v, want transparent", got)
 	}
 	if _, err := session.Evaluate(`
@@ -166,7 +169,10 @@ func TestGPUCaptureTransitionSourceEndpointFollowsLateContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	transition = findPlanTransition(t, plan)
-	if got := transition.SourceRGBA[:4]; string(got) != string([]byte{255, 0, 0, 255}) {
+	if transition.SourcePlan == nil || len(transition.SourcePlan.Nodes) != 2 {
+		t.Fatalf("late transition source plan = %+v", transition.SourcePlan)
+	}
+	if got := transition.SourcePlan.Nodes[1].RGBA[:4]; string(got) != string([]byte{255, 0, 0, 255}) {
 		t.Fatalf("transition source endpoint after late child = %v, want opaque red", got)
 	}
 }

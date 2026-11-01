@@ -64,6 +64,83 @@ func TestGPUCompositorComposeCreatesNativeTarget(t *testing.T) {
 	}
 }
 
+func TestGPUCompositorComposesGPUTransitionSubtrees(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	endpoint := func(red, blue byte) *runtime.RenderPlan {
+		plan := &runtime.RenderPlan{
+			Width:  1,
+			Height: 1,
+			Nodes: []runtime.RenderNode{{
+				ID: 1, Bounds: runtime.Rect{Width: 1, Height: 1}, Type: runtime.LayerAlpha,
+				Visible: true, Opacity: 255, ImageWidth: 1, ImageHeight: 1,
+				RGBA: []byte{red, 0, blue, 255}, ImageHash: uint64(red)<<8 | uint64(blue),
+			}},
+		}
+		plan.StateHash = uint64(red)<<16 | uint64(blue)
+		plan.StateHashValid = true
+		return plan
+	}
+	plan := runtime.RenderPlan{
+		Width:  1,
+		Height: 1,
+		Nodes: []runtime.RenderNode{{
+			ID: 1, Bounds: runtime.Rect{Width: 1, Height: 1}, Type: runtime.LayerAlpha,
+			Visible: true, Opacity: 255, ImageWidth: 1, ImageHeight: 1,
+			Transition: &runtime.RenderTransition{
+				Method: runtime.RenderTransitionCrossfade, ImageWidth: 1, ImageHeight: 1,
+				Phase: 128, Opaque: true, WithChildren: true,
+				DestinationPlan: endpoint(255, 0), SourcePlan: endpoint(0, 255),
+			},
+		}},
+	}
+	if _, err := compositor.Compose(plan); err != nil {
+		t.Fatal(err)
+	}
+	targets := compositor.transitionTargets[1]
+	if targets == nil || !targets.destination.valid || !targets.source.valid {
+		t.Fatalf("transition endpoint cache = %+v", targets)
+	}
+	if got := compositor.Stats().TargetBytes; got < 6*4 {
+		t.Fatalf("transition target storage = %d, want endpoint targets", got)
+	}
+}
+
+func TestGPUCompositorClearsLayerWithoutPixelUpload(t *testing.T) {
+	compositor, err := NewGPUCompositor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compositor.Deallocate()
+	plan := runtime.RenderPlan{
+		Width:  2,
+		Height: 2,
+		Nodes: []runtime.RenderNode{{
+			ID:          1,
+			Bounds:      runtime.Rect{Width: 2, Height: 2},
+			Type:        runtime.LayerAlpha,
+			Visible:     true,
+			Opacity:     255,
+			ImageWidth:  2,
+			ImageHeight: 2,
+			ImageClear:  true,
+		}},
+	}
+	if _, err := compositor.Compose(plan); err != nil {
+		t.Fatal(err)
+	}
+	texture := compositor.textures[gpuTextureKey{id: 1, role: gpuTextureLayer}]
+	if texture == nil || !texture.cleared {
+		t.Fatalf("clear texture = %#v, want a cleared GPU texture", texture)
+	}
+	if got := compositor.Stats().UploadScratchBytes; got != 0 {
+		t.Fatalf("clear texture upload scratch = %d, want 0", got)
+	}
+}
+
 func TestGPUCompositorComposesDeferredImageOperation(t *testing.T) {
 	compositor, err := NewGPUCompositor()
 	if err != nil {
@@ -100,6 +177,11 @@ func TestGPUCompositorComposesDeferredImageOperation(t *testing.T) {
 				Width:        1,
 				Height:       1,
 				Face:         0,
+				Clear:        true,
+				Clip:         runtime.Rect{Width: 1, Height: 1},
+			}, {
+				Kind: runtime.RenderImageOpClear,
+				Clip: runtime.Rect{Width: 1, Height: 1},
 			}},
 		}},
 	}

@@ -468,16 +468,23 @@ func TestNativeGPUCaptureDefersGenericImageOperations(t *testing.T) {
 	defer session.Close()
 	session.Services.gpuCapture = true
 	if _, err := session.executeSource("<gpu-image-op-native-test>", `
-src = new Layer(); copied = new Layer(); blended = new Layer(); affine = new Layer();
-src.setImageSize(2, 1); copied.setImageSize(2, 1); blended.setImageSize(2, 1); affine.setImageSize(2, 1);
+	src = new Layer(); copied = new Layer(); blended = new Layer(); affine = new Layer(); affineClear = new Layer(); affineThenClear = new Layer(); assigned = new Layer(); staticSource = new Layer(); staticAssigned = new Layer();
+	src.setImageSize(2, 1); copied.setImageSize(2, 1); blended.setImageSize(2, 1); affine.setImageSize(2, 1); affineClear.setImageSize(2, 1); affineThenClear.setImageSize(2, 1); assigned.setImageSize(2, 1); staticSource.setImageSize(2, 1); staticAssigned.setImageSize(2, 1);
 src.fillRect(0, 0, 2, 1, 0xff204060);
+staticSource.fillRect(0, 0, 2, 1, 0xffff0000);
 copied.copyRect(0, 0, src, 0, 0, 2, 1);
 blended.operateRect(0, 0, src, 0, 0, 2, 1);
 affine.affineCopy(src, 0, 0, 2, 1, false, 0, 0, 2, 0, 0, 1);
+affineClear.affineCopy(src, 0, 0, 2, 1, false, 0, 0, 2, 0, 0, 1, stNearest, true);
+affineThenClear.affineCopy(src, 0, 0, 2, 1, false, 0, 0, 2, 0, 0, 1, stNearest, true);
+affineThenClear.fillRect(0, 0, 2, 1, 0);
+assigned.assignImages(affineThenClear);
+staticAssigned.assignImages(staticSource);
+staticAssigned.fillRect(0, 0, 2, 1, 0);
 `, false); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"copied", "blended", "affine"} {
+	for _, name := range []string{"copied", "blended", "affine", "affineClear"} {
 		value, err := session.Evaluate(name)
 		if err != nil {
 			t.Fatal(err)
@@ -486,9 +493,36 @@ affine.affineCopy(src, 0, 0, 2, 1, false, 0, 0, 2, 0, 0, 1);
 		if layer == nil || len(layer.gpuImageOps) != 1 {
 			t.Fatalf("%s deferred operations = %d", name, len(layer.gpuImageOps))
 		}
+		if name == "affineClear" && !layer.gpuImageOps[0].clear {
+			t.Fatal("clear affine operation lost its clear flag")
+		}
+	}
+	value, err := session.Evaluate("affineThenClear")
+	if err != nil {
+		t.Fatal(err)
+	}
+	affineThenClear := session.Services.Layers[value.ObjectRef().Object]
+	if affineThenClear == nil || len(affineThenClear.gpuImageOps) != 1 || affineThenClear.gpuImageOps[0].kind != layerImageOpClear {
+		t.Fatalf("full-layer transparent fill did not replace obsolete affine operation = %#v", affineThenClear)
+	}
+	value, err = session.Evaluate("assigned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assigned := session.Services.Layers[value.ObjectRef().Object]
+	if assigned == nil || len(assigned.gpuImageOps) != 1 || assigned.gpuImageOps[0].kind != layerImageOpClear {
+		t.Fatalf("assignImages deferred operations = %#v", assigned)
+	}
+	value, err = session.Evaluate("staticAssigned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staticAssigned := session.Services.Layers[value.ObjectRef().Object]
+	if staticAssigned == nil || len(staticAssigned.gpuImageOps) != 1 || staticAssigned.gpuImageOps[0].kind != layerImageOpClear {
+		t.Fatalf("static assignImages clear was materialized on CPU = %#v", staticAssigned)
 	}
 	session.Services.gpuCapture = false
-	value, err := session.Evaluate("copied.getMainPixel(0,0)")
+	value, err = session.Evaluate("copied.getMainPixel(0,0)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,6 +532,101 @@ affine.affineCopy(src, 0, 0, 2, 1, false, 0, 0, 2, 0, 0, 1);
 	}
 	if got != 0x204060 {
 		t.Fatalf("materialized deferred copy pixel = %#x, want %#x", got, 0x204060)
+	}
+	value, err = session.Evaluate("affineThenClear.getMainPixel(0,0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = value.Int()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0 {
+		t.Fatalf("materialized transparent clear pixel = %#x, want 0", got)
+	}
+	value, err = session.Evaluate("assigned.getMainPixel(0,0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = value.Int()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0 {
+		t.Fatalf("materialized assigned transparent clear pixel = %#x, want 0", got)
+	}
+	value, err = session.Evaluate("staticAssigned.getMainPixel(0,0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = value.Int()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0 {
+		t.Fatalf("materialized static assigned transparent clear pixel = %#x, want 0", got)
+	}
+}
+
+func TestGPUAssignImagesUsesCopyOnWriteBase(t *testing.T) {
+	base := NewLayer(1)
+	if err := base.SetRGBA(2, 1, []byte{255, 0, 0, 255, 0, 255, 0, 255}); err != nil {
+		t.Fatal(err)
+	}
+	source := NewLayer(2)
+	if err := source.SetRGBA(2, 1, make([]byte, 2*4)); err != nil {
+		t.Fatal(err)
+	}
+	if !source.deferGPUCopyRect(nativeLayerImage{
+		layer: base, width: 2, height: 1, pixels: base.RGBA, mode: int32(LayerAlpha),
+	}, 0, 0, 0, 0, 2, 1) {
+		t.Fatal("source copy was not deferred")
+	}
+	destination := NewLayer(3)
+	if err := destination.SetRGBA(2, 1, make([]byte, 2*4)); err != nil {
+		t.Fatal(err)
+	}
+	if !destination.deferGPUAssignImages(source) {
+		t.Fatal("GPU assignImages was not deferred")
+	}
+	if len(destination.RGBA) == 0 || &destination.RGBA[0] != &source.RGBA[0] {
+		t.Fatal("GPU assignImages copied the base pixels")
+	}
+	oldSource := append([]byte(nil), source.RGBA...)
+	source.ensureImageWritable()
+	source.RGBA[0] = 17
+	if destination.RGBA[0] != oldSource[0] {
+		t.Fatalf("copy-on-write changed assigned base: got %d want %d", destination.RGBA[0], oldSource[0])
+	}
+	if err := destination.materializeGPUImageOps(); err != nil {
+		t.Fatal(err)
+	}
+	if destination.RGBA[0] != 255 || destination.RGBA[1] != 0 || destination.RGBA[3] != 255 {
+		t.Fatalf("materialized assigned pixels = %v, want red", destination.RGBA[:4])
+	}
+}
+
+func TestGPUAssignImagesSharesStaticBase(t *testing.T) {
+	source := NewLayer(1)
+	if err := source.SetRGBA(2, 1, []byte{11, 22, 33, 255, 44, 55, 66, 255}); err != nil {
+		t.Fatal(err)
+	}
+	destination := NewLayer(2)
+	if !destination.deferGPUAssignImages(source) {
+		t.Fatal("GPU assignImages did not accept a static source")
+	}
+	if len(destination.RGBA) == 0 || &destination.RGBA[0] != &source.RGBA[0] {
+		t.Fatal("static GPU assignImages copied the base pixels")
+	}
+	source.ensureImageWritable()
+	source.RGBA[0] = 99
+	if destination.RGBA[0] != 11 {
+		t.Fatalf("copy-on-write changed static assigned base: got %d want 11", destination.RGBA[0])
+	}
+	destination.ensureImageWritable()
+	destination.RGBA[1] = 88
+	if source.RGBA[1] != 22 {
+		t.Fatalf("destination mutation changed static source: got %d want 22", source.RGBA[1])
 	}
 }
 

@@ -403,6 +403,11 @@ var SourceOffset vec2
 var SourceLinear float
 var SourceMin vec2
 var SourceMax vec2
+var Affine float
+var AffineInverse vec4
+var AffineTranslation vec2
+var SourceRectOrigin vec2
+var SourceRectSize vec2
 var Face float
 var HoldAlpha float
 
@@ -419,7 +424,17 @@ func sourceSample(pos vec2) vec4 {
 }
 func Fragment(dstPos vec4, src0Pos vec2, color vec4) vec4 {
 	d := imageSrc0At(src0Pos)
-	s := sourceSample(SourceOffset+(src0Pos-SourceOrigin)*SourceScale)
+	pos := SourceOffset+(src0Pos-SourceOrigin)*SourceScale
+	if Affine > 0 {
+		delta := src0Pos-AffineTranslation
+		u := AffineInverse.x*delta.x + AffineInverse.y*delta.y
+		v := AffineInverse.z*delta.x + AffineInverse.w*delta.y
+		if u < -0.5 || u >= SourceRectSize.x-0.5 || v < -0.5 || v >= SourceRectSize.y-0.5 {
+			return d
+		}
+		pos = SourceRectOrigin + vec2(u, v)
+	}
+	s := sourceSample(pos)
 	if Face == 1 && HoldAlpha > 0 {
 		rgb := vec3(0)
 		if s.a > 0 { rgb = s.rgb/s.a }

@@ -1915,6 +1915,10 @@ func (s *Session) DispatchEvents() error {
 		return err
 	}
 	profile := os.Getenv("KRKRGO_RENDER_STATS") != ""
+	callbackTraceThreshold := time.Millisecond
+	if StallTraceEnabled() {
+		callbackTraceThreshold = StallTraceThreshold()
+	}
 	dispatchStarted := time.Time{}
 	var popTime, callbackTime time.Duration
 	var popped, callbacks int
@@ -2012,7 +2016,7 @@ func (s *Session) DispatchEvents() error {
 					elapsed := time.Since(callbackStarted)
 					callbackTime += elapsed
 					callbacks++
-					if elapsed >= time.Millisecond {
+					if elapsed >= callbackTraceThreshold {
 						log.Printf("krkrgo event callback: kind=sound/%s priority=%d target=%d elapsed=%s", soundEvent.Type, priority, targetID, elapsed)
 					}
 				}
@@ -2041,7 +2045,7 @@ func (s *Session) DispatchEvents() error {
 				elapsed := time.Since(callbackStarted)
 				callbackTime += elapsed
 				callbacks++
-				if elapsed >= time.Millisecond {
+				if elapsed >= callbackTraceThreshold {
 					log.Printf("krkrgo event callback: kind=%d handler=%s priority=%d target=%d elapsed=%s", event.Kind, name, priority, targetID, elapsed)
 				}
 			}
@@ -2187,7 +2191,7 @@ func (s *Session) captureFrameFor(forPresentation, borrowed bool) (FrameSnapshot
 		return FrameSnapshot{}, nil
 	}
 	if forPresentation {
-		return s.Services.CaptureFrameForPresentation()
+		return s.Services.CaptureFrameForRuntimePresentation()
 	}
 	if borrowed {
 		return s.Services.CaptureFrameBorrowed()

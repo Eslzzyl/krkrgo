@@ -194,67 +194,60 @@ type Layer struct {
 	Parent   *Layer
 	children []*Layer
 
-	inTransition                   bool
-	transitionSource               *Layer
-	transitionMethod               string
-	transitionType1                int32
-	transitionType2                int32
-	transitionAccel                int32
-	transitionChildren             bool
-	transitionExchange             bool // Provider-style transitions exchange layer trees at completion.
-	transitionCallback             tjs.Value
-	transitionDuration             uint64
-	transitionStart                uint64
-	transitionTick                 uint64
-	transitionSelfUpdate           bool
-	transitionVague                int32
-	transitionRule                 []byte
-	transitionDestImage            []byte
-	transitionSourceImage          []byte
-	transitionPixels               []byte
-	transitionOpaque               bool
-	transitionZeroOpaque           bool
-	transitionDestHash             uint64
-	transitionSourceHash           uint64
-	transitionRuleHash             uint64
-	transitionRenderDestImage      []byte
-	transitionRenderSourceImage    []byte
-	transitionRenderWidth          int32
-	transitionRenderHeight         int32
-	transitionRenderOpaque         bool
-	transitionRenderZeroOpaque     bool
-	transitionRenderDestHash       uint64
-	transitionRenderSourceHash     uint64
-	transitionRenderDestRevision   uint64
-	transitionRenderSourceRevision uint64
-	transitionHashesValid          bool
-	transitionSourceAlpha          transitionAlphaClass
-	transitionDestAlpha            transitionAlphaClass
-	transitionHidden               bool
-	absoluteOrderIndex             int32
-	absoluteOrderMode              bool
-	clip                           Rect
-	clipSet                        bool
-	hitTestWork                    bool
-	callOnPaint                    bool
-	gpuStretch                     *gpuStretchCopy
-	gpuMotion                      *RenderMotion
-	imageModified                  bool
-	imageRevision                  uint64
-	baseImageRevision              uint64
-	subtreeRevision                uint64
-	subtreeContentRevision         uint64
-	completionRGBA                 []byte
-	completionRevision             uint64
-	completionWidth                int32
-	completionHeight               int32
-	dirtyRect                      Rect
-	dirtyRectValid                 bool
-	fillScratch                    []byte
-	motionScratch                  *RenderMotion
-	gpuImageOps                    []layerImageOp
-	deferredImageSourceRefs        int
-	windowID                       uint64
+	inTransition            bool
+	transitionSource        *Layer
+	transitionMethod        string
+	transitionType1         int32
+	transitionType2         int32
+	transitionAccel         int32
+	transitionChildren      bool
+	transitionExchange      bool // Provider-style transitions exchange layer trees at completion.
+	transitionCallback      tjs.Value
+	transitionDuration      uint64
+	transitionStart         uint64
+	transitionTick          uint64
+	transitionSelfUpdate    bool
+	transitionVague         int32
+	transitionRule          []byte
+	transitionDestImage     []byte
+	transitionSourceImage   []byte
+	transitionPixels        []byte
+	transitionOpaque        bool
+	transitionZeroOpaque    bool
+	transitionDestHash      uint64
+	transitionSourceHash    uint64
+	transitionRuleHash      uint64
+	transitionHashesValid   bool
+	transitionSourceAlpha   transitionAlphaClass
+	transitionDestAlpha     transitionAlphaClass
+	transitionHidden        bool
+	absoluteOrderIndex      int32
+	absoluteOrderMode       bool
+	clip                    Rect
+	clipSet                 bool
+	hitTestWork             bool
+	callOnPaint             bool
+	gpuStretch              *gpuStretchCopy
+	gpuMotion               *RenderMotion
+	imageModified           bool
+	imageClear              bool
+	imageRevision           uint64
+	baseImageRevision       uint64
+	subtreeRevision         uint64
+	subtreeContentRevision  uint64
+	completionRGBA          []byte
+	completionRevision      uint64
+	completionWidth         int32
+	completionHeight        int32
+	dirtyRect               Rect
+	dirtyRectValid          bool
+	fillScratch             []byte
+	motionScratch           *RenderMotion
+	gpuImageOps             []layerImageOp
+	deferredImageSourceRefs int
+	gpuImageBaseSource      *Layer
+	gpuImageBasePixels      []byte
+	windowID                uint64
 }
 
 func (l *Layer) markRenderDirty() {
@@ -401,6 +394,7 @@ const (
 	layerImageOpCopy layerImageOpKind = iota
 	layerImageOpOperate
 	layerImageOpAffine
+	layerImageOpClear
 )
 
 type layerImageOp struct {
@@ -738,11 +732,13 @@ func (l *Layer) setRGBA(width, height int32, rgba []byte, owned bool) error {
 	l.discardGPUStretch()
 	l.gpuMotion = nil
 	l.discardGPUImageOps()
+	l.discardGPUImageBase()
 	if owned {
 		l.RGBA = rgba
 	} else {
 		l.RGBA = append([]byte(nil), rgba...)
 	}
+	l.imageClear = false
 	l.deferredImageSourceRefs = 0
 	l.ImageWidth, l.ImageHeight = width, height
 	if l.Bounds.Width == 0 {
@@ -768,7 +764,9 @@ func (l *Layer) setDeferredMotion(width, height int32, motion *RenderMotion) err
 	}
 	l.discardGPUStretch()
 	l.gpuMotion = motion
+	l.imageClear = false
 	l.discardGPUImageOps()
+	l.discardGPUImageBase()
 	l.RGBA = nil
 	l.deferredImageSourceRefs = 0
 	l.ImageWidth, l.ImageHeight = width, height
@@ -802,7 +800,7 @@ func (l *Layer) SetSize(width, height int32) error {
 	if l.Bounds.Width == width && l.Bounds.Height == height {
 		return nil
 	}
-	if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+	if l.imageClear || l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
 		if err := validLayerPixels(l); err != nil {
 			return err
 		}
@@ -960,6 +958,7 @@ func resizeLayerImage(l *Layer, width, height int32) error {
 			copy(province[dst:dst+int(copyWidth)], l.Province[src:src+int(copyWidth)])
 		}
 	}
+	l.discardGPUImageBase()
 	l.RGBA, l.ImageWidth, l.ImageHeight = rgba, width, height
 	l.deferredImageSourceRefs = 0
 	if len(l.Province) != 0 {
@@ -1047,7 +1046,9 @@ func (l *Layer) ClearImage() {
 	l.discardGPUStretch()
 	l.gpuMotion = nil
 	l.discardGPUImageOps()
+	l.discardGPUImageBase()
 	l.RGBA = nil
+	l.imageClear = false
 	l.deferredImageSourceRefs = 0
 	l.ImageWidth, l.ImageHeight = 0, 0
 	l.markImageDirty()
@@ -1145,7 +1146,7 @@ func (l *Layer) ConvertType(from int32) error {
 	if l == nil {
 		return ErrInvalidLayer
 	}
-	if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+	if l.imageClear || l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
 		if err := validLayerPixels(l); err != nil {
 			return err
 		}

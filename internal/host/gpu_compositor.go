@@ -37,6 +37,7 @@ type gpuTexture struct {
 	opsHash       uint64
 	opaque        bool
 	uploaded      bool
+	cleared       bool
 }
 
 type gpuTextureSize struct {
@@ -75,6 +76,18 @@ type gpuMotionStream struct {
 	width, height int32
 }
 
+type gpuTransitionEndpoint struct {
+	image, scratch *ebiten.Image
+	width, height  int32
+	hash           uint64
+	valid          bool
+}
+
+type gpuTransitionTargets struct {
+	destination gpuTransitionEndpoint
+	source      gpuTransitionEndpoint
+}
+
 // GPUCompositor consumes the borrowed runtime RenderPlan synchronously. The
 // plan's pixel slices are never retained; one shared scratch buffer carries
 // premultiplied pixels into Ebitengine and is reused across uploads.
@@ -89,6 +102,7 @@ type GPUCompositor struct {
 	motionAtlases       map[runtime.LayerID]*gpuMotionAtlas
 	sharedMotionAtlases map[string]*gpuMotionAtlas
 	motionStreams       map[runtime.LayerID]*gpuMotionStream
+	transitionTargets   map[runtime.LayerID]*gpuTransitionTargets
 	shaders             map[gpuMethodKey]*ebiten.Shader
 	imageOp             *ebiten.Shader
 	copyOp              *ebiten.Shader
@@ -166,6 +180,7 @@ func NewGPUCompositor() (*GPUCompositor, error) {
 		motionAtlases:       make(map[runtime.LayerID]*gpuMotionAtlas),
 		sharedMotionAtlases: make(map[string]*gpuMotionAtlas),
 		motionStreams:       make(map[runtime.LayerID]*gpuMotionStream),
+		transitionTargets:   make(map[runtime.LayerID]*gpuTransitionTargets),
 		shaders:             methods,
 		imageOp:             imageOp,
 		copyOp:              copyOp,
@@ -224,6 +239,14 @@ func (c *GPUCompositor) Stats() GPUStats {
 	}
 	if c.front != nil && c.back != nil {
 		stats.TargetBytes = 2 * int64(c.width) * int64(c.height) * 4
+	}
+	for _, targets := range c.transitionTargets {
+		if targets == nil {
+			continue
+		}
+		for _, endpoint := range []gpuTransitionEndpoint{targets.destination, targets.source} {
+			stats.TargetBytes += 2 * int64(endpoint.width) * int64(endpoint.height) * 4
+		}
 	}
 	return stats
 }
@@ -301,6 +324,19 @@ func (c *GPUCompositor) Deallocate() {
 			stream.image.Deallocate()
 		}
 		delete(c.motionStreams, id)
+	}
+	for id, targets := range c.transitionTargets {
+		if targets != nil {
+			for _, endpoint := range []*gpuTransitionEndpoint{&targets.destination, &targets.source} {
+				if endpoint.image != nil {
+					endpoint.image.Deallocate()
+				}
+				if endpoint.scratch != nil {
+					endpoint.scratch.Deallocate()
+				}
+			}
+		}
+		delete(c.transitionTargets, id)
 	}
 	c.shaders = nil
 	c.crossfade, c.universal, c.imageOp, c.copyOp = nil, nil, nil, nil
@@ -477,7 +513,7 @@ func (c *GPUCompositor) texture(key gpuTextureKey, width, height int32, src []by
 	} else if t.base != nil || t.operationTemp != nil {
 		c.releaseGPUTextureAux(t)
 	}
-	if t.hash != hash || t.opaque != opaque {
+	if t.cleared || t.hash != hash || t.opaque != opaque {
 		partial := dirtyValid && t.uploaded && t.opaque == opaque && dirty.X >= 0 && dirty.Y >= 0 &&
 			dirty.Right() <= width && dirty.Bottom() <= height && !dirty.Empty() &&
 			int64(dirty.Width)*int64(dirty.Height) < int64(width)*int64(height)
@@ -492,8 +528,36 @@ func (c *GPUCompositor) texture(key gpuTextureKey, width, height int32, src []by
 		t.hash = hash
 		t.opsHash = ^uint64(0)
 		t.uploaded = true
+		t.cleared = false
 	}
 	t.opaque = opaque
+	return t.image, nil
+}
+
+func (c *GPUCompositor) clearTexture(key gpuTextureKey, width, height int32) (*ebiten.Image, error) {
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("invalid GPU clear texture %d: %dx%d", key.id, width, height)
+	}
+	c.usedTextures[key] = struct{}{}
+	t := c.textures[key]
+	if t == nil || t.width != width || t.height != height || t.image == nil {
+		if t != nil {
+			c.releaseGPUTexture(t)
+		}
+		t = &gpuTexture{image: c.acquireTexture(width, height), width: width, height: height}
+		c.textures[key] = t
+	}
+	if t.base != nil || t.operationTemp != nil {
+		c.releaseGPUTextureAux(t)
+	}
+	if !t.uploaded || !t.cleared {
+		t.image.Clear()
+		t.hash = 0
+		t.opsHash = ^uint64(0)
+		t.uploaded = true
+		t.cleared = true
+	}
+	t.opaque = false
 	return t.image, nil
 }
 
@@ -520,6 +584,7 @@ func (c *GPUCompositor) textureWithImageOps(key gpuTextureKey, width, height int
 		t.hash = baseHash
 		t.opaque = opaque
 		t.uploaded = true
+		t.cleared = false
 		t.opsHash = ^uint64(0)
 	}
 	if t.opsHash == opsHash {
@@ -534,6 +599,13 @@ func (c *GPUCompositor) textureWithImageOps(key gpuTextureKey, width, height int
 	t.image.DrawImage(t.base, &ebiten.DrawImageOptions{Blend: gpuReplaceBlend})
 	current, next := t.image, t.operationTemp
 	for _, op := range ops {
+		if op.Kind == runtime.RenderImageOpClear {
+			if err := c.applyClearImageOp(next, current, op); err != nil {
+				return nil, err
+			}
+			current, next = next, current
+			continue
+		}
 		sourceKey := gpuTextureKey{
 			id:         runtime.LayerID(op.SourceID),
 			role:       gpuTextureOperationSource,
@@ -552,6 +624,25 @@ func (c *GPUCompositor) textureWithImageOps(key gpuTextureKey, width, height int
 	t.image, t.operationTemp = current, next
 	t.opsHash = opsHash
 	return t.image, nil
+}
+
+func (c *GPUCompositor) applyClearImageOp(target, current *ebiten.Image, op runtime.RenderImageOp) error {
+	if target == nil || current == nil {
+		return fmt.Errorf("GPU clear image operation has a missing texture")
+	}
+	target.DrawImage(current, &ebiten.DrawImageOptions{Blend: gpuReplaceBlend})
+	left, top := int32(0), int32(0)
+	right, bottom := int32(target.Bounds().Dx()), int32(target.Bounds().Dy())
+	if !op.Clip.Empty() {
+		left = maxInt32(left, op.Clip.X)
+		top = maxInt32(top, op.Clip.Y)
+		right = minInt32(right, op.Clip.Right())
+		bottom = minInt32(bottom, op.Clip.Bottom())
+	}
+	if right > left && bottom > top {
+		target.SubImage(image.Rect(int(left), int(top), int(right), int(bottom))).(*ebiten.Image).Clear()
+	}
+	return nil
 }
 
 func imageOpTargetType(face int32) runtime.LayerType {
@@ -648,6 +739,19 @@ func (c *GPUCompositor) applyImageOp(target, current, source *ebiten.Image, op r
 		right = minInt32(right, op.Clip.Right())
 		bottom = minInt32(bottom, op.Clip.Bottom())
 	}
+	if op.Clear {
+		clearLeft, clearTop := int32(0), int32(0)
+		clearRight, clearBottom := int32(target.Bounds().Dx()), int32(target.Bounds().Dy())
+		if !op.Clip.Empty() {
+			clearLeft = maxInt32(clearLeft, op.Clip.X)
+			clearTop = maxInt32(clearTop, op.Clip.Y)
+			clearRight = minInt32(clearRight, op.Clip.Right())
+			clearBottom = minInt32(clearBottom, op.Clip.Bottom())
+		}
+		if clearRight > clearLeft && clearBottom > clearTop {
+			target.SubImage(image.Rect(int(clearLeft), int(clearTop), int(clearRight), int(clearBottom))).(*ebiten.Image).Clear()
+		}
+	}
 	if !ok {
 		return nil
 	}
@@ -660,6 +764,9 @@ func (c *GPUCompositor) applyImageOp(target, current, source *ebiten.Image, op r
 		uniforms["TargetType"] = float32(imageOpTargetType(op.Face))
 		uniforms["Opacity"] = float32(op.Opacity) / 255
 		uniforms["HoldAlpha"] = boolToFloat(op.HoldAlpha)
+	} else {
+		uniforms["Face"] = float32(op.Face)
+		uniforms["HoldAlpha"] = boolToFloat(op.HoldAlpha)
 	}
 	c.vertices = c.vertices[:0]
 	c.vertices = append(c.vertices,
@@ -668,10 +775,6 @@ func (c *GPUCompositor) applyImageOp(target, current, source *ebiten.Image, op r
 		ebiten.Vertex{DstX: float32(left), DstY: float32(bottom), SrcX: float32(left), SrcY: float32(bottom)},
 		ebiten.Vertex{DstX: float32(right), DstY: float32(bottom), SrcX: float32(right), SrcY: float32(bottom)},
 	)
-	if op.Kind == runtime.RenderImageOpCopy {
-		uniforms["Face"] = float32(op.Face)
-		uniforms["HoldAlpha"] = boolToFloat(op.HoldAlpha)
-	}
 	target.DrawTrianglesShader(c.vertices, c.indices, shader, &ebiten.DrawTrianglesShaderOptions{
 		Blend: gpuReplaceBlend, Uniforms: uniforms, Images: [4]*ebiten.Image{current, source, nil, nil},
 	})
@@ -1848,6 +1951,70 @@ func (c *GPUCompositor) transitionCoversTarget(ax, ay, imageLeft, imageTop, x0, 
 		ax+imageLeft+x1 == int32(c.width) && ay+imageTop+y1 == int32(c.height)
 }
 
+func (c *GPUCompositor) composeTransitionEndpoint(id runtime.LayerID, plan *runtime.RenderPlan, endpoint *gpuTransitionEndpoint) (*ebiten.Image, error) {
+	if plan == nil || endpoint == nil || len(plan.Nodes) == 0 || plan.Width <= 0 || plan.Height <= 0 {
+		return nil, fmt.Errorf("invalid GPU transition endpoint for layer %d", id)
+	}
+	if endpoint.image == nil || endpoint.scratch == nil || endpoint.width != plan.Width || endpoint.height != plan.Height {
+		if endpoint.image != nil {
+			endpoint.image.Deallocate()
+		}
+		if endpoint.scratch != nil {
+			endpoint.scratch.Deallocate()
+		}
+		endpoint.image = newGPUImage(int(plan.Width), int(plan.Height))
+		endpoint.scratch = newGPUImage(int(plan.Width), int(plan.Height))
+		endpoint.width, endpoint.height = plan.Width, plan.Height
+		endpoint.hash = 0
+		endpoint.valid = false
+	}
+	if endpoint.valid && plan.StateHashValid && endpoint.hash == plan.StateHash {
+		return endpoint.image, nil
+	}
+
+	c.flushMotionBatch()
+	savedFront, savedBack := c.front, c.back
+	savedWidth, savedHeight := c.width, c.height
+	savedBatching := c.motionBatching
+	c.front, c.back = endpoint.image, endpoint.scratch
+	c.width, c.height = int(plan.Width), int(plan.Height)
+	c.motionBatching = false
+	c.front.Clear()
+	err := c.drawNode(*plan, 0, plan.Nodes[0].Type)
+	c.flushMotionBatch()
+	endpoint.image, endpoint.scratch = c.front, c.back
+	c.front, c.back = savedFront, savedBack
+	c.width, c.height = savedWidth, savedHeight
+	c.motionBatching = savedBatching
+	if err != nil {
+		endpoint.valid = false
+		return nil, err
+	}
+	endpoint.hash = plan.StateHash
+	endpoint.valid = plan.StateHashValid
+	return endpoint.image, nil
+}
+
+func (c *GPUCompositor) transitionEndpointImages(node runtime.RenderNode, transition *runtime.RenderTransition) (*ebiten.Image, *ebiten.Image, error) {
+	if transition == nil || transition.DestinationPlan == nil || transition.SourcePlan == nil {
+		return nil, nil, fmt.Errorf("GPU transition layer %d has no endpoint plans", node.ID)
+	}
+	targets := c.transitionTargets[node.ID]
+	if targets == nil {
+		targets = &gpuTransitionTargets{}
+		c.transitionTargets[node.ID] = targets
+	}
+	destination, err := c.composeTransitionEndpoint(node.ID, transition.DestinationPlan, &targets.destination)
+	if err != nil {
+		return nil, nil, err
+	}
+	source, err := c.composeTransitionEndpoint(node.ID, transition.SourcePlan, &targets.source)
+	if err != nil {
+		return nil, nil, err
+	}
+	return destination, source, nil
+}
+
 func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType runtime.LayerType) error {
 	if index < 0 || index >= len(plan.Nodes) {
 		return fmt.Errorf("invalid render-plan node index %d", index)
@@ -1922,11 +2089,15 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 			if n.Transition != nil {
 				uniforms := c.shaderUniforms()
 				tr := n.Transition
-				dest, err := c.texture(gpuTextureKey{id: n.ID, role: gpuTextureDestination}, tr.ImageWidth, tr.ImageHeight, tr.DestinationRGBA, tr.DestinationHash, tr.Opaque, runtime.Rect{}, false)
-				if err != nil {
-					return err
+				var dest, src *ebiten.Image
+				if tr.WithChildren && tr.DestinationPlan != nil && tr.SourcePlan != nil {
+					dest, src, err = c.transitionEndpointImages(n, tr)
+				} else {
+					dest, err = c.texture(gpuTextureKey{id: n.ID, role: gpuTextureDestination}, tr.ImageWidth, tr.ImageHeight, tr.DestinationRGBA, tr.DestinationHash, tr.Opaque, runtime.Rect{}, false)
+					if err == nil {
+						src, err = c.texture(gpuTextureKey{id: n.ID, role: gpuTextureSource}, tr.ImageWidth, tr.ImageHeight, tr.SourceRGBA, tr.SourceHash, tr.Opaque, runtime.Rect{}, false)
+					}
 				}
-				src, err := c.texture(gpuTextureKey{id: n.ID, role: gpuTextureSource}, tr.ImageWidth, tr.ImageHeight, tr.SourceRGBA, tr.SourceHash, tr.Opaque, runtime.Rect{}, false)
 				if err != nil {
 					return err
 				}
@@ -1970,6 +2141,11 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 					if !directMotion && err == nil {
 						source, err = c.composeMotion(n)
 					}
+				} else if n.ImageClear {
+					source, err = c.clearTexture(
+						gpuTextureKey{id: n.ID, role: gpuTextureLayer},
+						n.ImageWidth, n.ImageHeight,
+					)
 				} else if len(n.ImageOps) != 0 {
 					source, err = c.textureWithImageOps(
 						gpuTextureKey{id: n.ID, role: gpuTextureLayer},

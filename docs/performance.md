@@ -77,7 +77,9 @@ Interactive runtime time follows elapsed wall-clock time, capped per host
 update to keep a long stall from requesting an unbounded audio block.
 Headless replay keeps its explicit deterministic step. `ActualFPS` and
 `ActualTPS` come from Ebitengine and remain the closest available real-window
-timing signals.
+timing signals. GPU presentation sets Ebitengine TPS to `SyncWithFPS`, so a
+high-refresh display can drive the retained GPU plan at its refresh rate. CPU
+presentation keeps the default 60 TPS contract.
 
 `KRKRGO_STARTUP_TIMING=1` emits opt-in startup phase records. The records
 include project storage opening, each XP3 archive index parse, session creation,

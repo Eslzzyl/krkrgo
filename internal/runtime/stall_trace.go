@@ -38,7 +38,7 @@ func TraceStallFrame(serial, logicalMS uint64, frameInterval, update, tick, audi
 		return
 	}
 	threshold := StallTraceThreshold()
-	if frameInterval < threshold && update < threshold && tick < threshold && audio < threshold && presentation < threshold {
+	if frameInterval < 2*threshold && update < threshold && tick < threshold && audio < threshold && presentation < threshold {
 		return
 	}
 	log.Printf("krkrgo-stall type=frame serial=%d logical_ms=%d frame_interval_us=%d update_us=%d tick_us=%d audio_us=%d presentation_us=%d threshold_us=%d",
@@ -53,7 +53,7 @@ func TraceStallDraw(serial uint64, drawInterval, draw time.Duration) {
 		return
 	}
 	threshold := StallTraceThreshold()
-	if drawInterval < threshold && draw < threshold {
+	if drawInterval < 2*threshold && draw < threshold {
 		return
 	}
 	log.Printf("krkrgo-stall type=draw serial=%d draw_interval_us=%d draw_us=%d threshold_us=%d",

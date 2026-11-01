@@ -187,7 +187,10 @@ func (s *Services) timerAction(vm *tjs.VM, id tjs.ObjectID, budget *uint64) erro
 	}
 	_, err := vm.CallFunction(function, owner, nil, s, budget)
 	if profile {
-		log.Printf("krkrgo timer action: timer=%d owner=%d action=%q elapsed=%s", id, action.owner.Object, action.name, time.Since(callStarted))
+		elapsed := time.Since(callStarted)
+		if !StallTraceEnabled() || elapsed >= StallTraceThreshold() {
+			log.Printf("krkrgo timer action: timer=%d owner=%d action=%q elapsed=%s", id, action.owner.Object, action.name, elapsed)
+		}
 	}
 	return err
 }

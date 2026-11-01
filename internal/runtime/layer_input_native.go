@@ -90,13 +90,18 @@ func deferredStretchCoversImage(layer *Layer) bool {
 			layer.clip.Right() >= layer.ImageWidth && layer.clip.Bottom() >= layer.ImageHeight))
 }
 
-func (s *Services) materializeLayerHitPixels(layer *Layer) error {
+func (s *Services) materializeLayerHitPixels(layer *Layer, sx, sy int32) error {
 	if layer == nil || (layer.Hit != HitProvince && layer.HitThreshold == 0) ||
 		(layer.Hit != HitProvince && deferredStretchCoversImage(layer)) {
 		return nil
 	}
 	if layer.gpuMotion == nil && layer.gpuStretch == nil && len(layer.gpuImageOps) == 0 {
 		return nil
+	}
+	if layer.Hit != HitProvince && layer.gpuMotion == nil && layer.gpuStretch == nil && len(layer.gpuImageOps) != 0 {
+		if _, ok := deferredImageHitAlpha(layer, sx, sy); ok {
+			return nil
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -121,7 +126,9 @@ func (s *Services) hitLayerForInput(vm *tjs.VM, l *Layer, x, y, parentX, parentY
 			return hit, err
 		}
 	}
-	if err := s.materializeLayerHitPixels(l); err != nil {
+	localX, localY := x-(parentX+l.Bounds.X), y-(parentY+l.Bounds.Y)
+	sx, sy := localX-l.ImageLeft, localY-l.ImageTop
+	if err := s.materializeLayerHitPixels(l, sx, sy); err != nil {
 		return nil, err
 	}
 	if !layerHitAt(l, x, y, absoluteX, absoluteY) {

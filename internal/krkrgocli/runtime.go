@@ -353,6 +353,12 @@ func RunGame(args []string) {
 	if startupTiming {
 		log.Printf("krkrgo-startup phase=event-loop-enter elapsed=%s", time.Since(startupStarted))
 	}
+	if opts.Renderer == rendererGPU {
+		// GPU presentation owns a retained render plan and can submit the same
+		// texture at the display refresh rate. This also lets time-driven image
+		// updates advance at 120Hz on high-refresh displays.
+		ebiten.SetTPS(ebiten.SyncWithFPS)
+	}
 	log.Printf("krkrgo: entering Ebitengine event loop")
 	if err := ebiten.RunGame(game); err != nil {
 		_ = audioOutput.Close()

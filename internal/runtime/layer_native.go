@@ -594,7 +594,7 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 			return tjs.VoidValue, err
 		}
 		s.mu.Lock()
-		if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+		if l.imageClear || l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
 			if err := validLayerPixels(l); err != nil {
 				s.mu.Unlock()
 				return tjs.VoidValue, err
@@ -627,7 +627,7 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 			return tjs.VoidValue, err
 		}
 		s.mu.Lock()
-		if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+		if l.imageClear || l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
 			if err := validLayerPixels(l); err != nil {
 				s.mu.Unlock()
 				return tjs.VoidValue, err
@@ -835,6 +835,7 @@ func (s *Services) invalidateLayer(vm *tjs.VM, id tjs.ObjectID) error {
 	}
 	l.discardGPUStretch()
 	l.discardGPUImageOps()
+	l.discardGPUImageBase()
 	l.windowID = 0
 	s.releaseLayerDefaultFontLocked(id)
 	if movie := s.LayerMovies[id]; movie != nil {
@@ -865,7 +866,7 @@ func (s *Services) invalidateLayer(vm *tjs.VM, id tjs.ObjectID) error {
 func (s *Services) layerGet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, budget *uint64) (tjs.Value, error) {
 	if key == "imageLeft" || key == "imageTop" || key == "imageWidth" || key == "imageHeight" {
 		s.mu.RLock()
-		hasImage := len(l.RGBA) != 0 || l.gpuMotion != nil
+		hasImage := len(l.RGBA) != 0 || l.gpuMotion != nil || l.imageClear
 		s.mu.RUnlock()
 		if !hasImage {
 			return tjs.VoidValue, fmt.Errorf("%w: layer has no image", ErrInvalidLayer)
@@ -1013,7 +1014,7 @@ func (s *Services) layerGet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, b
 	case "name":
 		return tjs.StringValue(l.Name), nil
 	case "hasImage":
-		return tjs.IntegerValue(boolInt(len(l.RGBA) != 0 || l.gpuMotion != nil)), nil
+		return tjs.IntegerValue(boolInt(len(l.RGBA) != 0 || l.gpuMotion != nil || l.imageClear)), nil
 	case "clipLeft", "clipTop", "clipWidth", "clipHeight":
 		clip, _ := l.Clip()
 		switch key {
@@ -1379,7 +1380,7 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 		if l.Type == LayerBinder || l.Type == LayerEffect || l.Type == LayerFilter {
 			return tjs.VoidValue, fmt.Errorf("%w: layer type cannot have an image", ErrInvalidLayer)
 		}
-		if l.gpuMotion != nil {
+		if l.imageClear || l.gpuMotion != nil {
 			if e = validLayerPixels(l); e != nil {
 				return tjs.VoidValue, e
 			}
@@ -1527,13 +1528,28 @@ func (s *Services) layerFillRect(l *Layer, operation string, args []tjs.Value, i
 	if e != nil {
 		return e
 	}
-	if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+	face := l.drawFace()
+	if s.gpuCapture && operation == "fillRect" && c.r == 0 && c.g == 0 && c.b == 0 && c.a == 0 &&
+		(face == layerFaceAlpha || face == layerFaceAddAlpha) &&
+		l.validImage() {
+		r, err := layerRect(l, x, y, w, h)
+		if err != nil {
+			return err
+		}
+		if r.Empty() {
+			return nil
+		}
+		if l.deferGPUImageOp(layerImageOp{kind: layerImageOpClear, clip: r}) {
+			l.imageModified = true
+			return nil
+		}
+	}
+	if l.imageClear || l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
 		if err := validLayerPixels(l); err != nil {
 			return err
 		}
 	}
 	l.ensureImageWritable()
-	face := l.drawFace()
 	opacity := int32(255)
 	if operation == "colorRect" && len(args) > 5 && args[5].Kind() != tjs.KindVoid {
 		opacity, e = intArg(5)
@@ -1754,7 +1770,7 @@ func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) err
 		return e
 	}
 	s.mu.Lock()
-	if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+	if l.imageClear || l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
 		if err := validLayerPixels(l); err != nil {
 			s.mu.Unlock()
 			return err
@@ -1848,7 +1864,7 @@ func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) err
 	}
 	fg := color.NRGBAModel.Convert(foreground).(color.NRGBA)
 	s.mu.Lock()
-	if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+	if l.imageClear || l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
 		if err := validLayerPixels(l); err != nil {
 			s.mu.Unlock()
 			return err

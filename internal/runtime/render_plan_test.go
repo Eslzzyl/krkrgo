@@ -357,6 +357,42 @@ func TestGPUMotionRenderPlanDefersAndCPUCaptureMaterializes(t *testing.T) {
 	}
 }
 
+func TestGPUClearRenderPlanUsesClearMarker(t *testing.T) {
+	root := NewRootLayer(1, 1, 1)
+	if err := root.SetRGBA(1, 1, []byte{32, 64, 128, 255}); err != nil {
+		t.Fatal(err)
+	}
+	services := DefaultServices()
+	services.Root = root
+	services.gpuCapture = true
+	root.imageClear = true
+	plan, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Nodes[0].ImageClear || len(plan.Nodes[0].RGBA) == 0 {
+		t.Fatalf("GPU clear render node = %+v, want clear marker and borrowed base", plan.Nodes[0])
+	}
+	root.imageClear = false
+	root.markImageDirty()
+	second, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Nodes[0].ImageClear {
+		t.Fatalf("GPU clear marker remained after source state changed: %+v", second.Nodes[0])
+	}
+	root.imageClear = true
+	services.gpuCapture = false
+	frame, err := services.CaptureFrameBorrowed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(frame.RGBA, []byte{0, 0, 0, 0}) {
+		t.Fatalf("CPU capture after GPU clear = %v, want transparent pixel", frame.RGBA)
+	}
+}
+
 func TestCaptureRenderPlanTransitionMetadata(t *testing.T) {
 	root := NewRootLayer(1, 2, 2)
 	d := NewLayer(2)
@@ -445,11 +481,18 @@ func TestCaptureRenderPlanTransitionWithChildrenUsesSubtreeImages(t *testing.T) 
 	if transition.ImageWidth != 2 || transition.ImageHeight != 2 {
 		t.Fatalf("transition dimensions = %dx%d", transition.ImageWidth, transition.ImageHeight)
 	}
-	if !bytes.Equal(transition.DestinationRGBA[:4], []byte{255, 0, 0, 255}) {
-		t.Fatalf("destination subtree pixel = %v", transition.DestinationRGBA[:4])
+	if transition.DestinationPlan == nil || len(transition.DestinationPlan.Nodes) != 2 {
+		t.Fatalf("destination subtree plan = %+v", transition.DestinationPlan)
 	}
-	if !bytes.Equal(transition.SourceRGBA[:4], []byte{0, 0, 255, 255}) {
-		t.Fatalf("source subtree pixel = %v", transition.SourceRGBA[:4])
+	if !bytes.Equal(transition.DestinationPlan.Nodes[1].RGBA[:4], []byte{255, 0, 0, 255}) {
+		t.Fatalf("destination subtree pixel = %v", transition.DestinationPlan.Nodes[1].RGBA[:4])
+	}
+	if transition.SourcePlan == nil || len(transition.SourcePlan.Nodes) != 2 {
+		t.Fatalf("source subtree plan = %+v", transition.SourcePlan)
+	}
+	sourceChildNode := transition.SourcePlan.Nodes[1]
+	if len(sourceChildNode.ImageOps) != 1 || !bytes.Equal(sourceChildNode.ImageOps[0].SourceRGBA[:4], []byte{0, 0, 255, 255}) {
+		t.Fatalf("source subtree image operations = %+v", sourceChildNode.ImageOps)
 	}
 }
 

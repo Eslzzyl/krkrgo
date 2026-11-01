@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/eslzzyl/krkrgo/internal/simd"
 )
@@ -570,6 +571,144 @@ func deferredStretchHitAlpha(l *Layer, x, y int32) (uint8, bool) {
 	return pending.sourcePixels[offset+3], true
 }
 
+func deferredImageSourcePixel(op layerImageOp, x, y int32) ([4]byte, bool) {
+	if len(op.sourcePixels) == 0 || op.sourceWidth <= 0 || op.sourceHeight <= 0 ||
+		x < 0 || y < 0 || x >= op.sourceWidth || y >= op.sourceHeight ||
+		uint64(op.sourceWidth)*uint64(op.sourceHeight)*4 != uint64(len(op.sourcePixels)) {
+		return [4]byte{}, false
+	}
+	offset := (int64(y)*int64(op.sourceWidth) + int64(x)) * 4
+	return [4]byte{op.sourcePixels[offset], op.sourcePixels[offset+1], op.sourcePixels[offset+2], op.sourcePixels[offset+3]}, true
+}
+
+func deferredAffineHitPixel(op layerImageOp, x, y int32) ([4]byte, bool) {
+	if op.width <= 0 || op.height <= 0 || op.sx < 0 || op.sy < 0 ||
+		op.sx+op.width > op.sourceWidth || op.sy+op.height > op.sourceHeight {
+		return [4]byte{}, false
+	}
+	a, b, c, d, tx, ty := op.matrix[0], op.matrix[1], op.matrix[2], op.matrix[3], op.matrix[4], op.matrix[5]
+	determinant := a*d - b*c
+	if math.IsNaN(determinant) || math.IsInf(determinant, 0) || determinant == 0 {
+		return [4]byte{}, false
+	}
+	dx, dy := float64(x)-tx, float64(y)-ty
+	u := (dx*d - dy*c) / determinant
+	v := (dy*a - dx*b) / determinant
+	if !(u >= -0.5 && u < float64(op.width)-0.5 && v >= -0.5 && v < float64(op.height)-0.5) {
+		return [4]byte{}, false
+	}
+	if op.filter == 0 {
+		column := int64(math.Floor(u + 0.5))
+		row := int64(math.Floor(v + 0.5))
+		if column < 0 {
+			column = 0
+		} else if column >= int64(op.width) {
+			column = int64(op.width) - 1
+		}
+		if row < 0 {
+			row = 0
+		} else if row >= int64(op.height) {
+			row = int64(op.height) - 1
+		}
+		return deferredImageSourcePixel(op, op.sx+int32(column), op.sy+int32(row))
+	}
+	sourceX := float64(op.sx) + u
+	sourceY := float64(op.sy) + v
+	minColumn := int64(math.Floor(sourceX))
+	minRow := int64(math.Floor(sourceY))
+	fx, fy := sourceX-float64(minColumn), sourceY-float64(minRow)
+	firstColumn, firstRow := int64(op.sx), int64(op.sy)
+	lastColumn, lastRow := int64(op.sx+op.width-1), int64(op.sy+op.height-1)
+	if minColumn < firstColumn {
+		minColumn = firstColumn
+	} else if minColumn > lastColumn {
+		minColumn = lastColumn
+	}
+	if minRow < firstRow {
+		minRow = firstRow
+	} else if minRow > lastRow {
+		minRow = lastRow
+	}
+	if minColumn+1 > lastColumn {
+		fx = 0
+	}
+	if minRow+1 > lastRow {
+		fy = 0
+	}
+	if fx < 0 {
+		fx = 0
+	} else if fx > 1 {
+		fx = 1
+	}
+	if fy < 0 {
+		fy = 0
+	} else if fy > 1 {
+		fy = 1
+	}
+	nextColumn, nextRow := minColumn+1, minRow+1
+	if nextColumn >= int64(op.sourceWidth) {
+		nextColumn = int64(op.sourceWidth) - 1
+	}
+	if nextRow >= int64(op.sourceHeight) {
+		nextRow = int64(op.sourceHeight) - 1
+	}
+	stride := int64(op.sourceWidth)
+	topLeft := (minRow*stride + minColumn) * 4
+	topRight := (minRow*stride + nextColumn) * 4
+	bottomLeft := (nextRow*stride + minColumn) * 4
+	bottomRight := (nextRow*stride + nextColumn) * 4
+	pixel := bilinearRGBA(op.sourcePixels, topLeft, topRight, bottomLeft, bottomRight, fx, fy,
+		!(op.face == layerFaceOpaque && op.holdAlpha))
+	return pixel, true
+}
+
+func deferredImageHitAlpha(l *Layer, x, y int32) (uint8, bool) {
+	if l == nil || len(l.gpuImageOps) == 0 || !l.validImage() || x < 0 || y < 0 || x >= l.deviceWidth() || y >= l.deviceHeight() {
+		return 0, false
+	}
+	index := (int64(y)*int64(l.deviceWidth()) + int64(x)) * 4
+	pixel := [4]byte{l.RGBA[index], l.RGBA[index+1], l.RGBA[index+2], l.RGBA[index+3]}
+	for _, op := range l.gpuImageOps {
+		switch op.kind {
+		case layerImageOpClear:
+			if op.clip.Contains(x, y) {
+				pixel = [4]byte{}
+			}
+		case layerImageOpCopy:
+			if !op.clip.Contains(x, y) || x < op.dx || y < op.dy || x >= op.dx+op.width || y >= op.dy+op.height {
+				continue
+			}
+			source, ok := deferredImageSourcePixel(op, op.sx+x-op.dx, op.sy+y-op.dy)
+			if !ok {
+				return 0, false
+			}
+			copyPixelForFace(pixel[:], source[:], op.face, op.holdAlpha)
+		case layerImageOpOperate:
+			if !op.clip.Contains(x, y) || x < op.dx || y < op.dy || x >= op.dx+op.width || y >= op.dy+op.height {
+				continue
+			}
+			source, ok := deferredImageSourcePixel(op, op.sx+x-op.dx, op.sy+y-op.dy)
+			if !ok || layerOperationPixel(pixel[:], source[:], op.face, op.mode, op.opacity, op.holdAlpha) != nil {
+				return 0, false
+			}
+		case layerImageOpAffine:
+			if !op.clip.Contains(x, y) {
+				continue
+			}
+			if op.clear {
+				pixel = layerNeutralColor(l.Type)
+			}
+			source, ok := deferredAffineHitPixel(op, x, y)
+			if ok {
+				copyPixelForFace(pixel[:], source[:], op.face, op.holdAlpha)
+			}
+		default:
+			return 0, false
+		}
+	}
+	return pixel[3], true
+}
+
 func layerHitAt(l *Layer, x, y, absoluteX, absoluteY int32) bool {
 	if l.EventTransparent {
 		return false
@@ -588,6 +727,9 @@ func layerHitAt(l *Layer, x, y, absoluteX, absoluteY int32) bool {
 	}
 	if l.Hit != HitProvince {
 		if alpha, ok := deferredStretchHitAlpha(l, sx, sy); ok {
+			return int(alpha)*int(l.Opacity)/255 >= l.HitThreshold
+		}
+		if alpha, ok := deferredImageHitAlpha(l, sx, sy); ok {
 			return int(alpha)*int(l.Opacity)/255 >= l.HitThreshold
 		}
 	}

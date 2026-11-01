@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/binary"
+	"hash/fnv"
 	"hash/maphash"
 	"math"
 )
@@ -27,6 +28,7 @@ type RenderNode struct {
 	HoldAlpha                                               bool
 	ImageWidth, ImageHeight, ImageLeft, ImageTop            int32
 	RGBA                                                    []byte
+	ImageClear                                              bool
 	Motion                                                  *RenderMotion
 	ImageHash                                               uint64
 	ImageBaseHash                                           uint64
@@ -55,6 +57,7 @@ const (
 	RenderImageOpCopy RenderImageOpKind = iota
 	RenderImageOpOperate
 	RenderImageOpAffine
+	RenderImageOpClear
 )
 
 type RenderImageSourceKind uint8
@@ -176,6 +179,8 @@ type RenderTransition struct {
 	Phase, Vague                          uint32
 	Opaque, ZeroDestinationOpaque         bool
 	WithChildren                          bool
+	SourceID                              LayerID
+	DestinationPlan, SourcePlan           *RenderPlan
 	DestinationHash, SourceHash, RuleHash uint64
 }
 type RenderTransitionMethod uint8
@@ -211,6 +216,150 @@ func renderPlanImageRevision(layer *Layer) uint64 {
 		return mixGPUStretchImageRevision(pending.sourceID, sourceRevision, pending.sourceWidth, pending.sourceHeight)
 	}
 	return layer.renderImageRevision()
+}
+
+// cloneRenderSubtreePlan creates a GPU-only endpoint plan. Its coordinates are
+// local to the transition layer, and the endpoint root is rendered as ordinary
+// content so the transition shader remains the only owner of the phase blend.
+func cloneRenderSubtreePlan(source RenderPlan, rootIndex int, role uint64) *RenderPlan {
+	if rootIndex < 0 || rootIndex >= len(source.Nodes) {
+		return nil
+	}
+	root := source.Nodes[rootIndex]
+	width, height := root.Bounds.Width, root.Bounds.Height
+	if width <= 0 {
+		width = root.ImageWidth
+	}
+	if height <= 0 {
+		height = root.ImageHeight
+	}
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	plan := &RenderPlan{Width: width, Height: height}
+	rootX, rootY := root.Bounds.X, root.Bounds.Y
+	oldToNew := make(map[int]int)
+	var visit func(int) int
+	visit = func(oldIndex int) int {
+		if mapped, ok := oldToNew[oldIndex]; ok {
+			return mapped
+		}
+		mapped := len(plan.Nodes)
+		oldToNew[oldIndex] = mapped
+		node := source.Nodes[oldIndex]
+		node.Bounds.X -= rootX
+		node.Bounds.Y -= rootY
+		node.TransitionHidden = false
+		if oldIndex == rootIndex {
+			node.Bounds.X = 0
+			node.Bounds.Y = 0
+			node.Bounds.Width = width
+			node.Bounds.Height = height
+			node.Visible = true
+			node.Opacity = 255
+			node.Transition = nil
+			switch {
+			case len(node.ImageOps) != 0:
+				node.ImageHash = node.ImageOpsHash
+			case node.Motion == nil:
+				node.ImageHash = node.ImageBaseHash
+			}
+		}
+		plan.Nodes = append(plan.Nodes, node)
+		children := plan.Nodes[mapped].ChildCount
+		oldChildrenStart := plan.Nodes[mapped].ChildStart
+		plan.Nodes[mapped].ChildStart = len(plan.ChildIndices)
+		plan.Nodes[mapped].ChildCount = 0
+		for childOffset := 0; childOffset < children; childOffset++ {
+			position := oldChildrenStart + childOffset
+			if position < 0 || position >= len(source.ChildIndices) {
+				continue
+			}
+			oldChild := source.ChildIndices[position]
+			if oldChild < 0 || oldChild >= len(source.Nodes) {
+				continue
+			}
+			plan.ChildIndices = append(plan.ChildIndices, visit(oldChild))
+			plan.Nodes[mapped].ChildCount++
+		}
+		return mapped
+	}
+	visit(rootIndex)
+	plan.StateHash = renderSubtreeStateHash(*plan, role)
+	plan.StateHashValid = true
+	return plan
+}
+
+func renderSubtreeStateHash(plan RenderPlan, role uint64) uint64 {
+	hash := fnv.New64a()
+	var word [8]byte
+	write := func(value uint64) {
+		for index := range word {
+			word[index] = byte(value >> (8 * index))
+		}
+		_, _ = hash.Write(word[:])
+	}
+	write(role)
+	write(uint64(uint32(plan.Width)))
+	write(uint64(uint32(plan.Height)))
+	for index := range plan.Nodes {
+		node := plan.Nodes[index]
+		write(uint64(node.ID))
+		write(uint64(uint32(node.Bounds.X)))
+		write(uint64(uint32(node.Bounds.Y)))
+		write(uint64(uint32(node.Bounds.Width)))
+		write(uint64(uint32(node.Bounds.Height)))
+		write(uint64(node.Opacity))
+		write(boolUint64(node.Visible))
+		write(uint64(node.Type))
+		write(uint64(uint32(node.ImageWidth)))
+		write(uint64(uint32(node.ImageHeight)))
+		write(uint64(uint32(node.ImageLeft)))
+		write(uint64(uint32(node.ImageTop)))
+		write(node.ImageHash)
+		write(node.ImageBaseHash)
+		write(node.ImageOpsHash)
+		write(boolUint64(node.ImageClear))
+		write(uint64(node.ChildCount))
+		if node.Transition != nil {
+			write(uint64(node.Transition.Method))
+			write(uint64(node.Transition.Phase))
+			write(uint64(node.Transition.Vague))
+			write(node.Transition.DestinationHash)
+			write(node.Transition.SourceHash)
+			write(node.Transition.RuleHash)
+		}
+	}
+	return hash.Sum64()
+}
+
+func attachGPUTransitionSubtrees(plan *RenderPlan) {
+	if plan == nil || len(plan.Nodes) == 0 {
+		return
+	}
+	indices := make(map[LayerID]int, len(plan.Nodes))
+	for index, node := range plan.Nodes {
+		indices[node.ID] = index
+	}
+	for index := range plan.Nodes {
+		transition := plan.Nodes[index].Transition
+		if transition == nil || !transition.WithChildren {
+			continue
+		}
+		sourceIndex, ok := indices[transition.SourceID]
+		if !ok {
+			continue
+		}
+		destinationPlan := cloneRenderSubtreePlan(*plan, index, 1)
+		sourcePlan := cloneRenderSubtreePlan(*plan, sourceIndex, 2)
+		if destinationPlan == nil || sourcePlan == nil {
+			continue
+		}
+		transition.DestinationPlan = destinationPlan
+		transition.SourcePlan = sourcePlan
+		transition.ImageWidth = destinationPlan.Width
+		transition.ImageHeight = destinationPlan.Height
+	}
 }
 
 func mixGPUStretchImageRevision(sourceID, revision uint64, width, height int32) uint64 {
@@ -371,7 +520,7 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		rgba, province, transition uint64
 	}
 	writeLayerState := func(layer *Layer, visible bool, hashes renderHashes) {
-		var values [42]uint64
+		var values [43]uint64
 		values[0] = 1
 		values[1] = uint64(uint32(layer.Bounds.X))
 		values[2] = uint64(uint32(layer.Bounds.Y))
@@ -416,6 +565,7 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		values[39] = boolUint64(layer.HoldAlpha)
 		values[40] = layer.renderBaseImageRevision()
 		values[41] = uint64(len(layer.gpuImageOps))
+		values[42] = boolUint64(layer.imageClear)
 		var encoded [len(values) * 8]byte
 		for i, value := range values {
 			binary.LittleEndian.PutUint64(encoded[i*8:], value)
@@ -475,6 +625,7 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		n.ImageTop = l.ImageTop
 		n.ImageBaseHash = l.renderBaseImageRevision()
 		n.RGBA = l.RGBA
+		n.ImageClear = l.imageClear
 		if (!s.gpuCapture || len(l.transitionPixels) != 0) && len(l.gpuImageOps) != 0 {
 			if err := l.materializeGPUImageOps(); err != nil {
 				return -1, err
@@ -535,12 +686,6 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 				n.RGBA = l.RGBA
 			}
 		}
-		if s.gpuCapture && l.inTransition &&
-			(l.transitionMethod == "crossfade" || l.transitionMethod == "universal") {
-			if err := s.prepareGPUTransitionImages(l); err != nil {
-				return -1, err
-			}
-		}
 		transitionHashCached := l.transitionHashesValid && l.inTransition &&
 			(l.transitionMethod == "crossfade" || l.transitionMethod == "universal")
 		if len(l.transitionPixels) == 0 {
@@ -588,12 +733,6 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 			destinationWidth, destinationHeight := l.deviceWidth(), l.deviceHeight()
 			destinationHash, sourceHash := l.transitionDestHash, l.transitionSourceHash
 			opaque, zeroDestinationOpaque := l.transitionOpaque, l.transitionZeroOpaque
-			if l.transitionRenderDestImage != nil {
-				destinationRGBA, sourceRGBA = l.transitionRenderDestImage, l.transitionRenderSourceImage
-				destinationWidth, destinationHeight = l.transitionRenderWidth, l.transitionRenderHeight
-				destinationHash, sourceHash = l.transitionRenderDestHash, l.transitionRenderSourceHash
-				opaque, zeroDestinationOpaque = l.transitionRenderOpaque, l.transitionRenderZeroOpaque
-			}
 			ruleHash := l.transitionRuleHash
 			if !transitionHashCached {
 				destinationHash = hashBytes(destinationRGBA)
@@ -614,9 +753,15 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 				Opaque:                opaque,
 				ZeroDestinationOpaque: zeroDestinationOpaque,
 				WithChildren:          l.transitionChildren,
-				DestinationHash:       destinationHash,
-				SourceHash:            sourceHash,
-				RuleHash:              ruleHash,
+				SourceID: func() LayerID {
+					if l.transitionSource != nil {
+						return l.transitionSource.ID
+					}
+					return 0
+				}(),
+				DestinationHash: destinationHash,
+				SourceHash:      sourceHash,
+				RuleHash:        ruleHash,
 			}
 		}
 		visible := ancestorsVisible && !l.transitionHidden && l.Visible && l.Opacity != 0
@@ -667,6 +812,9 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 	}
 	p.StateHash = state.Sum64()
 	p.StateHashValid = true
+	if s.gpuCapture {
+		attachGPUTransitionSubtrees(&p)
+	}
 	p.StateHashStable = previousHashValid && previousHash == p.StateHash
 	if dst != nil {
 		*dst = p

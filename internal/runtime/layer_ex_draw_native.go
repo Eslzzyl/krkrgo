@@ -1257,7 +1257,7 @@ func (s *Services) layerExClip(l *Layer) Rect {
 }
 
 func (s *Services) layerExTargetsLocked(state *layerExDrawState, l *Layer) ([][]byte, error) {
-	if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+	if l.imageClear || l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
 		if err := validLayerPixels(l); err != nil {
 			return nil, err
 		}
@@ -1301,7 +1301,7 @@ func (s *Services) layerExRedrawRecordLocked(state *layerExDrawState, l *Layer) 
 	if state == nil || !state.record || len(state.recordPixels) == 0 {
 		return layerExRect{}
 	}
-	if l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
+	if l.imageClear || l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
 		if err := validLayerPixels(l); err != nil {
 			return layerExRect{}
 		}

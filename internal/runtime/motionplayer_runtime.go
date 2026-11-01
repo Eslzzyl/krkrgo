@@ -2867,6 +2867,13 @@ func (s *Services) clearMotionTarget(vm *tjs.VM, value tjs.Value) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	layer.gpuMotion = nil
+	if s.gpuCapture {
+		layer.imageClear = true
+		layer.imageModified = true
+		layer.markImageDirty()
+		return nil
+	}
+	layer.imageClear = false
 	if len(layer.RGBA) == 0 {
 		return nil
 	}
@@ -3146,6 +3153,7 @@ func (s *Services) drawMotionTargetLayer(vm *tjs.VM, state *motionPlayerState, l
 		s.mu.Lock()
 		changed := layer.gpuMotion != motion
 		layer.gpuMotion = motion
+		layer.imageClear = false
 		if changed || rebuilt {
 			layer.imageModified = true
 			layer.markImageDirty()
@@ -3176,6 +3184,7 @@ func (s *Services) drawMotionTargetLayer(vm *tjs.VM, state *motionPlayerState, l
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	layer.gpuMotion = nil
+	layer.imageClear = false
 	// A motion layer draws into the canvas its owner layer already owns, so the
 	// layer keeps the size its KAG definition assigned. Only a layer without a
 	// bitmap adopts the motion canvas size.
