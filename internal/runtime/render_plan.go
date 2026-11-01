@@ -268,8 +268,11 @@ func cloneRenderSubtreePlan(source RenderPlan, rootIndex int, role uint64) *Rend
 		plan.Nodes = append(plan.Nodes, node)
 		children := plan.Nodes[mapped].ChildCount
 		oldChildrenStart := plan.Nodes[mapped].ChildStart
-		plan.Nodes[mapped].ChildStart = len(plan.ChildIndices)
-		plan.Nodes[mapped].ChildCount = 0
+		var childIndexStorage [8]int
+		childIndices := childIndexStorage[:0]
+		if children > len(childIndexStorage) {
+			childIndices = make([]int, 0, children)
+		}
 		for childOffset := 0; childOffset < children; childOffset++ {
 			position := oldChildrenStart + childOffset
 			if position < 0 || position >= len(source.ChildIndices) {
@@ -279,9 +282,11 @@ func cloneRenderSubtreePlan(source RenderPlan, rootIndex int, role uint64) *Rend
 			if oldChild < 0 || oldChild >= len(source.Nodes) {
 				continue
 			}
-			plan.ChildIndices = append(plan.ChildIndices, visit(oldChild))
-			plan.Nodes[mapped].ChildCount++
+			childIndices = append(childIndices, visit(oldChild))
 		}
+		plan.Nodes[mapped].ChildStart = len(plan.ChildIndices)
+		plan.ChildIndices = append(plan.ChildIndices, childIndices...)
+		plan.Nodes[mapped].ChildCount = len(childIndices)
 		return mapped
 	}
 	visit(rootIndex)

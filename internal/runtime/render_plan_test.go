@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -510,6 +511,37 @@ func TestCaptureRenderPlanRejectsEffectAndFilter(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "unsupported") {
 			t.Fatalf("type %v error=%v", typ, err)
 		}
+	}
+}
+
+func TestCloneRenderSubtreePlanPreservesNestedChildSlots(t *testing.T) {
+	source := RenderPlan{
+		Width:  4,
+		Height: 4,
+		Nodes: []RenderNode{
+			{ID: 1, Bounds: Rect{Width: 4, Height: 4}, Visible: true, Opacity: 255, ChildStart: 2, ChildCount: 2},
+			{ID: 2, Bounds: Rect{Width: 2, Height: 2}, Visible: true, Opacity: 255, ChildStart: 0, ChildCount: 2},
+			{ID: 3, Bounds: Rect{Width: 1, Height: 1}, Visible: true, Opacity: 255},
+			{ID: 4, Bounds: Rect{X: 2, Width: 2, Height: 2}, Visible: true, Opacity: 255},
+			{ID: 5, Bounds: Rect{X: 1, Y: 1, Width: 1, Height: 1}, Visible: true, Opacity: 255},
+		},
+		ChildIndices: []int{2, 3, 1, 4},
+	}
+	clone := cloneRenderSubtreePlan(source, 0, 1)
+	if clone == nil {
+		t.Fatal("cloneRenderSubtreePlan returned nil")
+	}
+	if got, want := clone.ChildIndices, []int{2, 3, 1, 4}; !slices.Equal(got, want) {
+		t.Fatalf("clone child indices = %v, want %v", got, want)
+	}
+	if got := clone.Nodes[0].ChildStart; got != 2 {
+		t.Fatalf("clone root child start = %d, want 2", got)
+	}
+	if got := clone.Nodes[1].ChildStart; got != 0 {
+		t.Fatalf("clone first child start = %d, want 0", got)
+	}
+	if clone.ChildIndices[clone.Nodes[0].ChildStart] != 1 || clone.ChildIndices[clone.Nodes[0].ChildStart+1] != 4 {
+		t.Fatalf("clone root children = %v, want [1 4]", clone.ChildIndices[2:4])
 	}
 }
 

@@ -105,24 +105,13 @@ func (s *Services) drawMotionSeparateLayerAdaptor(vm *tjs.VM, player *motionPlay
 	drawMatrix.ty += drawMatrix.c*player.x + drawMatrix.d*player.y
 	drawMatrix.tx += player.cameraOffsetX
 	drawMatrix.ty += player.cameraOffsetY
-	forceBaked := !s.gpuCapture
 	motion, err := buildGPUMotionVariablesZFactorInherit(
 		resource, player.chara, player.motion, player.clampedEvalTime, 0, drawMatrix,
 		1, params, freezeBody, maskMode, player.completionType,
 		motionPlayerZFactor(player), attached, player.independentLayerInherit,
-		motionRenderOptions{rootCoordinateMode: player.rootCoordinateMode, emoteMode: motionResourceEmoteMode(resource), parentFrameLoopTime: player.frameLoopTime, hasParentFrameLoopTime: true, frameLastTime: player.frameLastTime, anyTimelinePlaying: len(player.playingTimelineLabels) > 0, rootState: player.rootState, hasRootState: player.hasRootState, anchorOutputs: motionAnchorOutputs(player.anchorStates), preview: player.preview, forceBaked: forceBaked})
+		motionRenderOptions{rootCoordinateMode: player.rootCoordinateMode, emoteMode: motionResourceEmoteMode(resource), parentFrameLoopTime: player.frameLoopTime, hasParentFrameLoopTime: true, frameLastTime: player.frameLastTime, anyTimelinePlaying: len(player.playingTimelineLabels) > 0, rootState: player.rootState, hasRootState: player.hasRootState, anchorOutputs: motionAnchorOutputs(player.anchorStates), preview: player.preview, forceBaked: true})
 	if err != nil {
 		return err
-	}
-	if s.gpuCapture && motionItemsRequireBaked(motion.Items) {
-		motion, err = buildGPUMotionVariablesZFactorInherit(
-			resource, player.chara, player.motion, player.clampedEvalTime, 0, drawMatrix,
-			1, params, freezeBody, maskMode, player.completionType,
-			motionPlayerZFactor(player), attached, player.independentLayerInherit,
-			motionRenderOptions{rootCoordinateMode: player.rootCoordinateMode, emoteMode: motionResourceEmoteMode(resource), parentFrameLoopTime: player.frameLoopTime, hasParentFrameLoopTime: true, frameLastTime: player.frameLastTime, anyTimelinePlaying: len(player.playingTimelineLabels) > 0, rootState: player.rootState, hasRootState: player.hasRootState, anchorOutputs: motionAnchorOutputs(player.anchorStates), preview: player.preview, forceBaked: true})
-		if err != nil {
-			return err
-		}
 	}
 	for index := range motion.Draws {
 		motion.Draws[index].LayerTreeKey = fmt.Sprintf("player:%d/tree:%d/%s", player.playerID, player.motionTreeGeneration, motion.Draws[index].LayerTreeKey)
@@ -249,15 +238,6 @@ func (s *Services) drawMotionSeparateLayerAdaptor(vm *tjs.VM, player *motionPlay
 	}
 	s.mu.Unlock()
 	return s.syncLayerChildren(vm)
-}
-
-func motionItemsRequireBaked(items []RenderMotionItem) bool {
-	for _, item := range items {
-		if item.Group != nil {
-			return true
-		}
-	}
-	return false
 }
 
 func motionSeparateLayerKey(tree string, layerID, occurrence int) string {
