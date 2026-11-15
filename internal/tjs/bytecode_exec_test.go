@@ -1146,7 +1146,6 @@ func TestExecuteLegacyCALLDGlobalProxyFallbackPreservesBoundContext(t *testing.T
 	}
 }
 
-
 func TestExecuteLegacyGlobalEvalUsesOptionalContextArgument(t *testing.T) {
 	for _, test := range []struct {
 		name    string
