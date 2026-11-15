@@ -1862,6 +1862,54 @@ func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) err
 	if e != nil {
 		return e
 	}
+	antialias := true
+	if len(args) > 5 && args[5].Kind() != tjs.KindVoid {
+		antialias, e = args[5].Truth()
+		if e != nil {
+			return fmt.Errorf("Layer.drawText: invalid antialias flag: %w", e)
+		}
+	}
+	shadowLevel, shadowWidth, shadowOffsetX, shadowOffsetY := int64(0), int64(0), int64(0), int64(0)
+	shadowColor := color.NRGBA{A: 255}
+	for _, option := range []struct {
+		index int
+		name  string
+		dst   *int64
+	}{{6, "shadow level", &shadowLevel}, {8, "shadow width", &shadowWidth}, {9, "shadow x offset", &shadowOffsetX}, {10, "shadow y offset", &shadowOffsetY}} {
+		if len(args) <= option.index || args[option.index].Kind() == tjs.KindVoid {
+			continue
+		}
+		*option.dst, e = args[option.index].Int()
+		if e != nil {
+			return fmt.Errorf("Layer.drawText: invalid %s: %w", option.name, e)
+		}
+	}
+	for _, offset := range []struct {
+		name  string
+		value int64
+	}{{"shadow x offset", shadowOffsetX}, {"shadow y offset", shadowOffsetY}} {
+		if offset.value < math.MinInt32 || offset.value > math.MaxInt32 {
+			return fmt.Errorf("Layer.drawText: %s exceeds int32", offset.name)
+		}
+	}
+	for _, integerArg := range []struct {
+		name  string
+		value int64
+	}{{"shadow level", shadowLevel}, {"shadow width", shadowWidth}} {
+		if integerArg.value < math.MinInt32 || integerArg.value > math.MaxInt32 {
+			return fmt.Errorf("Layer.drawText: %s exceeds int32", integerArg.name)
+		}
+	}
+	if shadowLevel < 0 {
+		shadowLevel = 0
+	}
+	if len(args) > 7 && args[7].Kind() != tjs.KindVoid {
+		c, colorErr := layerColorValue(args[7])
+		if colorErr != nil {
+			return fmt.Errorf("Layer.drawText: invalid shadow color: %w", colorErr)
+		}
+		shadowColor = color.NRGBA{R: c.r, G: c.g, B: c.b, A: 255}
+	}
 	fg := color.NRGBAModel.Convert(foreground).(color.NRGBA)
 	s.mu.Lock()
 	if l.imageClear || l.gpuMotion != nil || l.gpuStretch != nil || len(l.gpuImageOps) != 0 {
@@ -1882,17 +1930,122 @@ func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) err
 		drawRect = drawRect.Intersect(clip)
 	}
 	minX, minY, maxX, maxY := deviceWidth, deviceHeight, int32(-1), int32(-1)
+	drawCoverage := func(px, py int32, coverage uint8, color color.NRGBA, threshold bool) {
+		if threshold && !antialias {
+			if coverage < 128 {
+				return
+			}
+			coverage = 255
+		}
+		if coverage == 0 || px < drawRect.X || py < drawRect.Y || px >= drawRect.Right() || py >= drawRect.Bottom() {
+			return
+		}
+		di := (int(py)*int(deviceWidth) + int(px)) * 4
+		layerDrawTextCoveragePixel(l.RGBA[di:di+4], color, coverage, face, holdAlpha)
+		if px < minX {
+			minX = px
+		}
+		if py < minY {
+			minY = py
+		}
+		if px > maxX {
+			maxX = px
+		}
+		if py > maxY {
+			maxY = py
+		}
+	}
 	for lineIndex, line := range layout.Lines {
 		baselineY := int(y) + lineIndex*layout.LineHeight + metrics.Ascent
 		dot := fixed.P(int(x), baselineY)
+		if shadowLevel > 0 {
+			type textGlyph struct {
+				rect  image.Rectangle
+				mask  image.Image
+				maskp image.Point
+			}
+			glyphs := make([]textGlyph, 0, len(line.Text))
+			bounds := image.Rectangle{}
+			for _, r := range line.Text {
+				dr, mask, maskp, advance, ok := fontFace.Glyph(dot, r)
+				if ok && mask != nil && !dr.Empty() {
+					glyphs = append(glyphs, textGlyph{rect: dr, mask: mask, maskp: maskp})
+					bounds = bounds.Union(dr)
+				}
+				dot.X += advance
+			}
+			if !bounds.Empty() {
+				maxBlurWidth := int64(max(bounds.Dx(), bounds.Dy()))
+				blurWidth := shadowWidth
+				if blurWidth > maxBlurWidth {
+					blurWidth = maxBlurWidth
+				} else if blurWidth < -maxBlurWidth {
+					blurWidth = -maxBlurWidth
+				}
+				radius := int(blurWidth)
+				if radius < 0 {
+					radius = -radius
+				}
+				maskWidth, maskHeight := bounds.Dx(), bounds.Dy()
+				mask := make([]byte, maskWidth*maskHeight)
+				for _, glyph := range glyphs {
+					for gy := glyph.rect.Min.Y; gy < glyph.rect.Max.Y; gy++ {
+						for gx := glyph.rect.Min.X; gx < glyph.rect.Max.X; gx++ {
+							coverage := glyphMaskCoverage(glyph.mask, image.Point{
+								X: glyph.maskp.X + gx - glyph.rect.Min.X,
+								Y: glyph.maskp.Y + gy - glyph.rect.Min.Y,
+							})
+							if !antialias {
+								if coverage < 128 {
+									coverage = 0
+								} else {
+									coverage = 255
+								}
+							}
+							index := (gy-bounds.Min.Y)*maskWidth + gx - bounds.Min.X
+							if coverage > mask[index] {
+								mask[index] = coverage
+							}
+						}
+					}
+				}
+				shadow, shadowWidthPixels, shadowHeightPixels := layerTextShadowMask(mask, maskWidth, maskHeight, radius, shadowLevel)
+				shadowColor.A = fg.A
+				shadowX := int64(bounds.Min.X) - blurWidth + shadowOffsetX
+				shadowY := int64(bounds.Min.Y) - blurWidth + shadowOffsetY
+				for sy := 0; sy < shadowHeightPixels; sy++ {
+					py := shadowY + int64(sy)
+					if py < math.MinInt32 || py > math.MaxInt32 {
+						continue
+					}
+					for sx := 0; sx < shadowWidthPixels; sx++ {
+						px := shadowX + int64(sx)
+						if px < math.MinInt32 || px > math.MaxInt32 {
+							continue
+						}
+						drawCoverage(int32(px), int32(py), shadow[sy*shadowWidthPixels+sx], shadowColor, false)
+					}
+				}
+			}
+			for _, glyph := range glyphs {
+				for gy := glyph.rect.Min.Y; gy < glyph.rect.Max.Y; gy++ {
+					for gx := glyph.rect.Min.X; gx < glyph.rect.Max.X; gx++ {
+						coverage := glyphMaskCoverage(glyph.mask, image.Point{
+							X: glyph.maskp.X + gx - glyph.rect.Min.X,
+							Y: glyph.maskp.Y + gy - glyph.rect.Min.Y,
+						})
+						drawCoverage(int32(gx), int32(gy), coverage, fg, true)
+					}
+				}
+			}
+			continue
+		}
 		for _, r := range line.Text {
 			dr, mask, maskp, advance, ok := fontFace.Glyph(dot, r)
 			if ok && mask != nil && !dr.Empty() && !drawRect.Empty() {
 				glyphRect := Rect{
-					X:      int32(dr.Min.X),
-					Y:      int32(dr.Min.Y),
-					Width:  int32(dr.Dx()),
-					Height: int32(dr.Dy()),
+					X: int32(dr.Min.X), Y: int32(dr.Min.Y),
+					Width: int32(dr.Dx()), Height: int32(dr.Dy()),
 				}
 				visible := glyphRect.Intersect(drawRect)
 				for py := visible.Y; py < visible.Bottom(); py++ {
@@ -1901,23 +2054,7 @@ func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) err
 							X: maskp.X + int(px) - dr.Min.X,
 							Y: maskp.Y + int(py) - dr.Min.Y,
 						})
-						if coverage == 0 {
-							continue
-						}
-						di := (int(py)*int(deviceWidth) + int(px)) * 4
-						layerDrawTextCoveragePixel(l.RGBA[di:di+4], fg, coverage, face, holdAlpha)
-						if px < minX {
-							minX = px
-						}
-						if py < minY {
-							minY = py
-						}
-						if px > maxX {
-							maxX = px
-						}
-						if py > maxY {
-							maxY = py
-						}
+						drawCoverage(px, py, coverage, fg, true)
 					}
 				}
 			}
@@ -1929,6 +2066,70 @@ func (s *Services) layerDrawText(l *Layer, args []tjs.Value, budget *uint64) err
 		l.markImageDirtyRect(Rect{X: minX, Y: minY, Width: maxX - minX + 1, Height: maxY - minY + 1})
 	}
 	return nil
+}
+
+func layerTextShadowDistance(x, y int) int {
+	if x < 0 {
+		x = -x
+	}
+	if y < 0 {
+		y = -y
+	}
+	len1, len2 := x, y
+	if len1 < len2 {
+		len1, len2 = len2, len1
+	}
+	t := len2 + (len2 >> 1)
+	return len1 - (len1 >> 5) - (len1 >> 7) + (t >> 2) + (t >> 6)
+}
+
+// layerTextShadowMask mirrors Kirikiri's normalized radial blur kernel.
+func layerTextShadowMask(mask []byte, width, height, radius int, level int64) ([]byte, int, int) {
+	if width <= 0 || height <= 0 || level <= 0 {
+		return nil, 0, 0
+	}
+	if radius == 0 && level == 255 {
+		return mask, width, height
+	}
+	outputWidth, outputHeight := width+2*radius, height+2*radius
+	output := make([]byte, outputWidth*outputHeight)
+	var weightSum int64
+	for dy := -radius; dy <= radius; dy++ {
+		for dx := -radius; dx <= radius; dx++ {
+			distance := layerTextShadowDistance(dx, dy)
+			if distance <= radius {
+				weightSum += int64(radius - distance + 1)
+			}
+		}
+	}
+	if weightSum == 0 {
+		return output, outputWidth, outputHeight
+	}
+	normalization := int64(1<<18) / weightSum
+	for dy := -radius; dy <= radius; dy++ {
+		for dx := -radius; dx <= radius; dx++ {
+			distance := layerTextShadowDistance(dx, dy)
+			if distance > radius {
+				continue
+			}
+			weight := int64(radius - distance + 1)
+			factor := weight * normalization * level >> 8
+			for sy := 0; sy < height; sy++ {
+				sourceOffset := sy * width
+				destinationOffset := (sy+dy+radius)*outputWidth + radius + dx
+				for sx := 0; sx < width; sx++ {
+					add := int64(mask[sourceOffset+sx]) * factor >> 18
+					index := destinationOffset + sx
+					value := int64(output[index]) + add
+					if value > 255 {
+						value = 255
+					}
+					output[index] = byte(value)
+				}
+			}
+		}
+	}
+	return output, outputWidth, outputHeight
 }
 
 func glyphMaskCoverage(mask image.Image, p image.Point) uint8 {

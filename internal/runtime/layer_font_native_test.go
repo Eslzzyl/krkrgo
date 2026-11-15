@@ -603,6 +603,54 @@ func TestNativeFontMeasurementAndDrawText(t *testing.T) {
 	}
 }
 
+func TestNativeLayerDrawTextRendersConfiguredEdgeShadow(t *testing.T) {
+	services := DefaultServices()
+	if err := services.RegisterFontFace("EdgeShadowFace", basicfont.Face7x13); err != nil {
+		t.Fatal(err)
+	}
+	session := NewSession(services, 10_000)
+	if _, err := session.executeSource("<layer-draw-text-edge-shadow-test>", `
+		l = new Layer();
+		l.setImageSize(64, 32);
+		l.font.face = "EdgeShadowFace";
+		l.drawText(8, 6, "A", 0xffffff, 255, true, 4096, 0x1b1b1b, 4, 0, 0);
+	`, false); err != nil {
+		t.Fatalf("drawText with edge-shadow arguments: %v", err)
+	}
+	value, err := session.Evaluate("l")
+	if err != nil {
+		t.Fatal(err)
+	}
+	layer := services.Layer(value.ObjectRef().Object)
+	if layer == nil {
+		t.Fatal("drawText layer was not registered")
+	}
+	var foregroundPixels, darkCompositePixels int
+	for i := 0; i < len(layer.RGBA); i += 4 {
+		if layer.RGBA[i+3] == 0 {
+			continue
+		}
+		switch {
+		case layer.RGBA[i] == 255 && layer.RGBA[i+1] == 255 && layer.RGBA[i+2] == 255:
+			foregroundPixels++
+		default:
+			alpha := int(layer.RGBA[i+3])
+			redOnWhite := (int(layer.RGBA[i])*alpha + 255*(255-alpha) + 127) / 255
+			greenOnWhite := (int(layer.RGBA[i+1])*alpha + 255*(255-alpha) + 127) / 255
+			blueOnWhite := (int(layer.RGBA[i+2])*alpha + 255*(255-alpha) + 127) / 255
+			if redOnWhite < 128 && greenOnWhite < 128 && blueOnWhite < 128 {
+				darkCompositePixels++
+			}
+		}
+	}
+	if foregroundPixels == 0 {
+		t.Fatal("drawText did not render the foreground glyph")
+	}
+	if darkCompositePixels == 0 {
+		t.Fatal("drawText edge is too faint after compositing over white")
+	}
+}
+
 func TestNativeLayerDrawTextRGBColorIsOpaque(t *testing.T) {
 	services := DefaultServices()
 	if err := services.RegisterFontFace("RGBColor", basicfont.Face7x13); err != nil {
