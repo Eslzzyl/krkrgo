@@ -333,6 +333,80 @@ func TestNativeWindowCloseAndShowModalHeadlessState(t *testing.T) {
 	}
 }
 
+func TestNativeWindowCloseQueryAllowCancelAndModal(t *testing.T) {
+	services := DefaultServices()
+	session := NewSession(services, 10_000)
+	defer session.Close()
+	if _, err := session.Evaluate(`
+		class QueryWindow extends Window {
+			function QueryWindow() { super.Window(); }
+			function onCloseQuery(allow) {
+				queryCalls++;
+				if (deferClose) super.onCloseQuery(false);
+				else super.onCloseQuery(allow);
+			}
+		}
+		queryCalls = 0;
+		deferClose = true;
+		mainWindow = new Window();
+		cancelWindow = new QueryWindow();
+		cancelWindow.visible = true;
+		cancelWindow.close();
+	`); err != nil {
+		t.Fatal(err)
+	}
+	cancelValue, err := session.Evaluate("cancelWindow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelWindow := services.Window(cancelValue.ObjectRef().Object)
+	if value, err := session.Evaluate("Window.mainWindow === cancelWindow"); err != nil || value.Text() != "0" {
+		t.Fatalf("cancel window is main window = %v, %v; want false", value, err)
+	}
+	if cancelWindow.Closed || !cancelWindow.Visible {
+		t.Fatalf("cancelled close state = %#v", cancelWindow)
+	}
+	if value, err := session.Evaluate("queryCalls"); err != nil || value.Text() != "1" {
+		t.Fatalf("close query calls = %v, %v; want 1", value, err)
+	}
+	if _, err := session.Evaluate(`deferClose = false; cancelWindow.onCloseQuery(true)`); err != nil {
+		t.Fatal(err)
+	}
+	if !cancelWindow.Closed {
+		t.Fatal("accepted asynchronous close query did not close the window")
+	}
+
+	if _, err := session.Evaluate(`
+		deferClose = false;
+		allowWindow = new QueryWindow();
+		allowWindow.close();
+		modalWindow = new QueryWindow();
+		modalWindow.showModal();
+		modalWindow.close();
+	`); err != nil {
+		t.Fatal(err)
+	}
+	allowValue, err := session.Evaluate("allowWindow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowWindow := services.Window(allowValue.ObjectRef().Object)
+	if !allowWindow.Closed {
+		t.Fatal("accepted close query did not close the window")
+	}
+	modalValue, err := session.Evaluate("modalWindow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	modalWindow := services.Window(modalValue.ObjectRef().Object)
+	if !modalWindow.Closed || modalWindow.Modal {
+		t.Fatalf("modal close state = %#v", modalWindow)
+	}
+	if value, err := session.Evaluate("queryCalls"); err != nil || value.Text() != "3" {
+		t.Fatalf("close query calls after allow/modal = %v, %v; want 3", value, err)
+	}
+}
+
 func TestNativeWindowInvalidationInvalidatesRegisteredObjects(t *testing.T) {
 	services := DefaultServices()
 	session := NewSession(services, 10_000)

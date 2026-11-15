@@ -66,6 +66,41 @@ func TestWaveSoundBufferNativeConstructionAndProperties(t *testing.T) {
 	}
 }
 
+func TestWaveSoundBufferAsyncOpenPreservesPauseSetWhileLoading(t *testing.T) {
+	sound := NewWaveSoundBuffer()
+	generation := sound.beginAsyncOpen()
+	sound.SetPaused(true)
+	if err := sound.Play(); err != nil {
+		t.Fatalf("queue play while opening: %v", err)
+	}
+
+	audio := assets.Audio{Channels: 1, SampleRate: 48_000, Samples: []int16{12_000, -12_000}}
+	sound.finishAsyncOpen(generation, audio, assets.LoopInfo{})
+	if sound.Status() != SoundPlay {
+		t.Fatalf("status after async open = %q, want %q", sound.Status(), SoundPlay)
+	}
+	if !sound.Paused() {
+		t.Fatal("async open discarded pause set while decoding")
+	}
+	block, err := sound.RenderSource(2)
+	if err != nil {
+		t.Fatalf("render paused source: %v", err)
+	}
+	if len(block.Samples) != 0 {
+		t.Fatalf("paused source rendered samples %v, want no source block", block.Samples)
+	}
+}
+
+func TestWaveSoundBufferAsyncOpenClearsPauseNotChangedWhileLoading(t *testing.T) {
+	sound := NewWaveSoundBuffer()
+	sound.SetPaused(true)
+	generation := sound.beginAsyncOpen()
+	sound.finishAsyncOpen(generation, assets.Audio{Channels: 1, SampleRate: 48_000, Samples: []int16{1}}, assets.LoopInfo{})
+	if sound.Paused() {
+		t.Fatal("async open retained prior source's pause without a pause request during decoding")
+	}
+}
+
 func TestWaveSoundBufferFiltersRemainMutableAcrossReads(t *testing.T) {
 	s := NewSession(DefaultServices(), 10_000)
 	defer s.Close()

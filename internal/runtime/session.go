@@ -323,7 +323,7 @@ func (s *Session) registerNatives() error {
 			return err
 		}
 	}
-	for _, m := range []string{"@initialize", "@invalidate", "Window", "finalize", "add", "remove", "close", "showModal", "setPos", "setLayerPos", "setSize", "setInnerSize", "resize", "setZoom", "show", "hide", "minimize", "maximize", "restore", "showRestore", "getWindowRect", "getClientRect", "getNormalRect", "registerExEvent", "setMessageHook", "hideMouseCursor", "disableResize", "disableMove", "enableNCMouseEvent", "onResize", "onMouseMove", "onMouseDown", "onMouseUp", "onClick", "onDoubleClick", "onMouseLeave", "onMouseWheel", "onKeyDown", "onKeyUp", "onKeyPress", "onActivate", "onDeactivate"} {
+	for _, m := range []string{"@initialize", "@invalidate", "Window", "finalize", "add", "remove", "close", "showModal", "setPos", "setLayerPos", "setSize", "setInnerSize", "resize", "setZoom", "show", "hide", "minimize", "maximize", "restore", "showRestore", "getWindowRect", "getClientRect", "getNormalRect", "registerExEvent", "setMessageHook", "hideMouseCursor", "disableResize", "disableMove", "enableNCMouseEvent", "onCloseQuery", "onResize", "onMouseMove", "onMouseDown", "onMouseUp", "onClick", "onDoubleClick", "onMouseLeave", "onMouseWheel", "onKeyDown", "onKeyUp", "onKeyPress", "onActivate", "onDeactivate"} {
 		if err := s.VM.RegisterNativeMethod(window, m, "Window."+m); err != nil {
 			return err
 		}

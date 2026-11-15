@@ -207,6 +207,33 @@ func monitorValue(vm *tjs.VM, monitor Monitor, intersect *[4]int32) (tjs.Value, 
 	return value, nil
 }
 
+func (s *Services) closeWindow(vm *tjs.VM, context tjs.Value, window *WindowState, budget *uint64) error {
+	if vm == nil || window.Modal {
+		window.Close()
+		return nil
+	}
+	if window.closeQueryActive {
+		return nil
+	}
+	window.closeQueryActive = true
+	window.closeQueryAllowed = true
+	defer func() { window.closeQueryActive = false }()
+
+	handler, err := vm.GetMember(context, "onCloseQuery", s, budget)
+	if err != nil {
+		return err
+	}
+	if handler.Kind() != tjs.KindVoid {
+		if _, err := vm.CallFunction(handler, context, []tjs.Value{tjs.IntegerValue(1)}, s, budget); err != nil {
+			return err
+		}
+	}
+	if window.closeQueryAllowed {
+		window.Close()
+	}
+	return nil
+}
+
 func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value, budget *uint64) (tjs.Value, error) {
 	s.ensureInit()
 	switch operation {
@@ -618,6 +645,20 @@ func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string,
 		}
 		window.EnableWinMsgHook = on
 		return tjs.IntegerValue(windowBoolInt(window.EnableWinMsgHook)), nil
+	case "onCloseQuery":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Window.onCloseQuery: missing argument 0")
+		}
+		allowed, e := args[0].Truth()
+		if e != nil {
+			return tjs.VoidValue, e
+		}
+		if window.closeQueryActive {
+			window.closeQueryAllowed = allowed
+		} else if allowed {
+			window.Close()
+		}
+		return tjs.VoidValue, nil
 	case "onResize", "onMouseMove", "onMouseDown", "onMouseUp", "onClick", "onDoubleClick", "onMouseLeave", "onMouseWheel", "onKeyDown", "onKeyUp", "onKeyPress", "onActivate", "onDeactivate":
 		return tjs.VoidValue, nil
 	case "registerExEvent":
@@ -701,7 +742,9 @@ func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string,
 			return tjs.VoidValue, err
 		}
 	case "close":
-		window.Close()
+		if err := s.closeWindow(vm, context, window, budget); err != nil {
+			return tjs.VoidValue, err
+		}
 	case "showModal":
 		window.ShowModal()
 	case "hideMouseCursor":

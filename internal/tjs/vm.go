@@ -521,7 +521,13 @@ func (v *VM) setMember(id ObjectID, key Value, val Value) error {
 	if e := o.ChangeFlagsUnits(memberKeyUnits(key), 0, HiddenMember|StaticMember); e != nil {
 		return e
 	}
-	return o.SetUnits(memberKeyUnits(key), val)
+	if e := o.SetUnits(memberKeyUnits(key), val); e != nil {
+		return e
+	}
+	if id == 0 {
+		v.Globals[key.Text()] = val
+	}
+	return nil
 }
 
 func (v *VM) setMemberString(id ObjectID, name string, val Value) error {
@@ -532,7 +538,13 @@ func (v *VM) setMemberString(id ObjectID, name string, val Value) error {
 	if e := o.ChangeFlags(name, 0, HiddenMember|StaticMember); e != nil {
 		return e
 	}
-	return o.SetString(name, val)
+	if e := o.SetString(name, val); e != nil {
+		return e
+	}
+	if id == 0 {
+		v.Globals[name] = val
+	}
+	return nil
 }
 
 func (v *VM) lookupClassMemberWithRuntime(classID ObjectID, name string, depth int, skipStatic bool, host Host, budget *uint64) (Value, bool, error) {
@@ -914,7 +926,16 @@ func (v *VM) deleteMember(id ObjectID, key Value) (bool, error) {
 			return true, nil
 		}
 	}
-	return o.DeleteUnits(units), nil
+	deleted := o.DeleteUnits(units)
+	if id == 0 {
+		if deleted {
+			delete(v.Globals, key.Text())
+		} else if _, ok := v.Globals[key.Text()]; ok {
+			delete(v.Globals, key.Text())
+			deleted = true
+		}
+	}
+	return deleted, nil
 }
 
 // GetMember reads a script-visible member from a value, evaluating native or

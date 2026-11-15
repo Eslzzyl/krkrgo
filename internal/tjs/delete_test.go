@@ -28,6 +28,40 @@ func TestVMDeleteNamesAndMembers(t *testing.T) {
 	}
 }
 
+func TestVMDirectGlobalMapUpdatesStayVisibleToScript(t *testing.T) {
+	vm := NewVM()
+	vm.Globals["value"] = IntegerValue(2)
+
+	program, err := compile("global-map-update.tjs", "return value;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := uint64(1000)
+	got, err := vm.Execute(&program, vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, err := got.Int(); err != nil || value != 2 {
+		t.Fatalf("script global after direct map update = %v, %v", value, err)
+	}
+
+	program, err = compile("global-map-delete.tjs", "return delete value;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget = 1000
+	got, err = vm.Execute(&program, vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truth, err := got.Truth(); err != nil || !truth {
+		t.Fatalf("delete direct global = %v, %v", got, err)
+	}
+	if _, ok := vm.Globals["value"]; ok {
+		t.Fatal("deleted global remains in VM.Globals")
+	}
+}
+
 func TestVMDeleteEvaluatesMemberReceiverAndKeyOnce(t *testing.T) {
 	got := executeDeleteSource(t, `var receiver=0; var keyCalls=0; function makeObject(){ receiver=receiver+1; return %[x:1]; } function key(){ keyCalls=keyCalls+1; return "x"; } var removed=delete makeObject()[key()]; return removed && receiver==1 && keyCalls==1;`)
 	truth, err := got.Truth()

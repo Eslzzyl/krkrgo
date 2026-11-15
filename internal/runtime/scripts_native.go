@@ -99,6 +99,19 @@ func evaluateLegacySource(vm *tjs.VM, source string, context tjs.Value, host tjs
 	return value, nil
 }
 
+func installLegacyGlobalValues(vm *tjs.VM) error {
+	globalObject, ok := vm.Objects.Lookup(0)
+	if !ok {
+		return fmt.Errorf("%w: TJS global object is unavailable", ErrUnsupportedNative)
+	}
+	for name, value := range vm.Globals {
+		if err := globalObject.Set(name, value); err != nil {
+			return fmt.Errorf("install TJS global %q for legacy intercode: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Host, budget *uint64, sourceName string) (tjs.Value, error) {
 	if context.Kind() != tjs.KindObject || context.IsNull() {
 		context = tjs.ObjectValue(tjs.NewObjectRef(0, 0))
@@ -107,17 +120,8 @@ func executeTJS2Bytecode(vm *tjs.VM, data []byte, context tjs.Value, host tjs.Ho
 	if err != nil {
 		return tjs.VoidValue, fmt.Errorf("%w: %v", ErrUnsupportedNative, err)
 	}
-	// Legacy intercode resolves global names through the shared object table,
-	// while the source VM keeps registered globals in VM.Globals. Mirror the
-	// registered values onto the global object before executing the bytecode.
-	globalObject, ok := vm.Objects.Lookup(0)
-	if !ok {
-		return tjs.VoidValue, fmt.Errorf("%w: TJS global object is unavailable", ErrUnsupportedNative)
-	}
-	for name, value := range vm.Globals {
-		if err := globalObject.Set(name, value); err != nil {
-			return tjs.VoidValue, fmt.Errorf("install TJS global %q for legacy intercode: %w", name, err)
-		}
+	if err := installLegacyGlobalValues(vm); err != nil {
+		return tjs.VoidValue, err
 	}
 	top := int(decoded.Info.TopLevel)
 	if top < 0 || top >= len(decoded.Objects) {

@@ -45,6 +45,46 @@ func newScriptsTestSession(t *testing.T, resources map[string][]byte) *Session {
 	return session
 }
 
+func TestLegacyGlobalInstallationPreservesScriptOverride(t *testing.T) {
+	session := newScriptsTestSession(t, nil)
+	const name = "shadowedLegacyGlobal"
+	if err := session.VM.RegisterNative(name); err != nil {
+		t.Fatalf("register native global: %v", err)
+	}
+	if _, err := session.Evaluate(`global.shadowedLegacyGlobal = function() { return "script"; };`); err != nil {
+		t.Fatalf("install script override: %v", err)
+	}
+	if err := installLegacyGlobalValues(session.VM); err != nil {
+		t.Fatalf("install legacy globals: %v", err)
+	}
+	if err := installLegacyGlobalValues(session.VM); err != nil {
+		t.Fatalf("reinstall legacy globals: %v", err)
+	}
+	got, err := session.Evaluate(`shadowedLegacyGlobal()`)
+	if err != nil {
+		t.Fatalf("call shadowed global: %v", err)
+	}
+	if got.Text() != "script" {
+		t.Fatalf("shadowed global result = %q, want script implementation", got.Text())
+	}
+	global, ok := session.VM.Objects.Lookup(0)
+	if !ok {
+		t.Fatal("TJS global object is unavailable")
+	}
+	scriptOverride, exists := global.Get(name)
+	if !exists || !session.VM.Globals[name].StrictEqual(scriptOverride) {
+		t.Fatal("script override was not synchronized to VM.Globals")
+	}
+	session.VM.Globals["updatedByHost"] = tjs.StringValue("updated")
+	if err := installLegacyGlobalValues(session.VM); err != nil {
+		t.Fatalf("install later global update: %v", err)
+	}
+	updated, err := session.Evaluate(`global.updatedByHost`)
+	if err != nil || updated.Text() != "updated" {
+		t.Fatalf("later global update = %q, err=%v; want updated", updated.Text(), err)
+	}
+}
+
 func TestLegacyMemberAccessUsesVMArrayElements(t *testing.T) {
 	session := newScriptsTestSession(t, nil)
 	array, err := session.Evaluate(`new Array()`)
@@ -131,7 +171,6 @@ func TestLegacySuperclassGetterUsesNullThisContext(t *testing.T) {
 		t.Fatalf("constructed value = %v; want object instance", instance)
 	}
 }
-
 
 func scriptsTestUTF16LE(source string) []byte {
 	units := utf16.Encode([]rune(source))

@@ -34,27 +34,28 @@ type SoundEvent struct {
 // WaveSoundBuffer is the headless transport/state portion of Kirikiri's
 // WaveSoundBuffer. It owns decoded source state but no device or goroutine.
 type WaveSoundBuffer struct {
-	loaded                  *loadedSound
-	openGeneration          uint64
-	loading                 bool
-	pendingPlay             bool
-	pendingStopAt           uint64
-	status                  string
-	generation              uint64
-	events                  []SoundEvent
-	frequency               int32
-	volume                  int32
-	volume2                 int32
-	pan                     int32
-	paused                  bool
-	looping                 bool
-	useVisBuffer            bool
-	sampleCount             int
-	sampleAhead             int
-	sampleConfigInitialized bool
-	positionClock           uint64
-	fade                    *soundFade
-	fadePending             bool
+	loaded                   *loadedSound
+	openGeneration           uint64
+	loading                  bool
+	pendingPlay              bool
+	pauseChangedWhileLoading bool
+	pendingStopAt            uint64
+	status                   string
+	generation               uint64
+	events                   []SoundEvent
+	frequency                int32
+	volume                   int32
+	volume2                  int32
+	pan                      int32
+	paused                   bool
+	looping                  bool
+	useVisBuffer             bool
+	sampleCount              int
+	sampleAhead              int
+	sampleConfigInitialized  bool
+	positionClock            uint64
+	fade                     *soundFade
+	fadePending              bool
 }
 
 type loadedSound struct {
@@ -133,6 +134,9 @@ func (s *WaveSoundBuffer) Paused() bool { return s != nil && s.paused }
 func (s *WaveSoundBuffer) SetPaused(v bool) {
 	if s != nil {
 		s.paused = v
+		if s.loading {
+			s.pauseChangedWhileLoading = true
+		}
 	}
 }
 func (s *WaveSoundBuffer) Looping() bool { return s != nil && s.looping }
@@ -296,6 +300,7 @@ func (s *WaveSoundBuffer) beginAsyncOpen() uint64 {
 	s.openGeneration++
 	s.loading = true
 	s.pendingPlay = false
+	s.pauseChangedWhileLoading = false
 	return s.openGeneration
 }
 
@@ -308,11 +313,17 @@ func (s *WaveSoundBuffer) finishAsyncOpen(generation uint64, audio assets.Audio,
 	s.loading = false
 	play := s.pendingPlay
 	s.pendingPlay = false
+	paused := s.paused
+	preservePause := s.pauseChangedWhileLoading
+	s.pauseChangedWhileLoading = false
 	if audio.Channels == 0 {
 		return
 	}
 	if err := s.OpenAudio(audio, info); err != nil {
 		return
+	}
+	if preservePause {
+		s.paused = paused
 	}
 	if play {
 		_ = s.Play()

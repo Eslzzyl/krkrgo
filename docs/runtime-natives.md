@@ -4,6 +4,8 @@
 
 [`runtime.Session`](../internal/runtime/session.go) owns a TJS VM, runtime `Services`, and a shared execution budget. [`Services`](../internal/runtime/services.go) owns host-independent state and implements the TJS host-call boundary. [`NativeRegistry`](../internal/runtime/native.go) installs operation names and routes calls to services. This permits deterministic/headless use and interactive hosting; it does not create OS UI services by itself.
 
+The compiled TJS2 bridge mirrors VM globals onto the shared global object before each legacy execution. Script-visible writes to that object also update `VM.Globals`, so script-assigned replacements of registered native globals remain authoritative across later compiled-script loads, while subsequent VM-global updates are mirrored back.
+
 Native methods are bounded surfaces aligned with selected C++ behavior. Registration is in `session.go`/`native.go`; current behavior is summarized by domain below.
 
 ## Date
@@ -37,6 +39,8 @@ Headless sessions advance a virtual clock as replay time moves forward; script w
 `Window.focusedLayer` returns the original `Layer` object when a layer has focus, or `null` when none does. Assigning a `Layer` requests focus through the same layer focus transition used by `Layer.focus()`; assigning `null` (or `void`) clears focus. Invalid non-Layer objects are rejected. Focus changes continue to update the `Layer.focused` state and deliver the layer focus/blur callbacks.
 `Window.primaryLayer` returns the native `Layer` object registered as that window's primary layer and reports an error when the window has no primary layer.
 `Window.getWindowRect()`, `getClientRect()`, and `getNormalRect()` return dictionaries with `x`, `y`, `w`, and `h`. `Window.drawDevice` retains the script-facing object value; headless sessions default it to `null`. The `drawdeviceD3D` plugin classes are available on request as CPU-backed image/layer composition (see below), but linking the plugin does not replace the window's draw device or enable KAG's Direct3D mode.
+
+`Window.close()` dispatches the owning script object's `onCloseQuery(true)` before closing a non-modal window. The native `Window.onCloseQuery(allow)` callback controls that close: `false` cancels the in-progress close, while a later asynchronous `true` callback completes it. Windows without a script handler retain direct-close behavior. Modal-window close bypasses the non-modal query and cancels/closes the modal state, matching the reference close semantics.
 
 ## Timer and event natives
 

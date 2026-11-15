@@ -63,6 +63,8 @@ type WindowState struct {
 	ExEvents                [4]bool   // onResizing, onMoving, onMove, onNcMouseMove
 	ExEventRegistered       bool
 	EnableWinMsgHook        bool
+	closeQueryActive        bool
+	closeQueryAllowed       bool
 
 	normalBounds      *[4]int32
 	restoreMaximized  bool
