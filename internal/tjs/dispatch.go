@@ -1396,13 +1396,6 @@ func dictionaryMethod(d *Dispatcher, o *Object, name string) (Value, bool) {
 			}
 			return boolValue(o.IsMemberValid(a[0].Text())), nil
 		}
-	case "clear":
-		fn = func(_ ObjectRef, _ []Value) (Value, error) {
-			for _, e := range o.Entries() {
-				_ = o.Delete(e.Name)
-			}
-			return VoidValue, nil
-		}
 	default:
 		return VoidValue, false
 	}

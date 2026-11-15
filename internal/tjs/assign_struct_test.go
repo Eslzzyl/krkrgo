@@ -184,6 +184,39 @@ return [instanceClear,instanceAssign,instanceAssignStruct,typeof d.two,d.one===v
 	}
 }
 
+func TestSaveStructKeepsDictionaryStaticMembersOffInstances(t *testing.T) {
+	vm := NewVM()
+	if err := vm.RegisterSaveStruct(); err != nil {
+		t.Fatal(err)
+	}
+	program, err := compile("save-struct-members.tjs", `
+var d = %[free:true];
+var branch = d.clear ? "clear" : d.free ? "free" : "other";
+return [branch, [1, 2].toStructString()].join("|");`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := uint64(10000)
+	got, err := vm.Execute(&program, vmTestHost{}, &budget)
+	if err != nil || got.Text() != "free|[int 1,int 2]" {
+		t.Fatalf("saveStruct dispatch = %v, %v; want free branch and array serialization", got, err)
+	}
+	dictionary, err := vm.NewDictionary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"clear", "assign", "assignStruct", "saveStruct2", "toStructString"} {
+		value, found, err := vm.GetMemberIfPresent(dictionary, name, vmTestHost{}, &budget)
+		if err != nil || found || !value.IsVoid() {
+			t.Errorf("dictionary.%s = %v, present %t, error %v", name, value, found, err)
+		}
+		value, _, err = vm.GetMemberByKey(dictionary, StringValue(name), 0, vmTestHost{}, &budget)
+		if err != nil || !value.IsVoid() {
+			t.Errorf("dictionary[%q] = %v, error %v", name, value, err)
+		}
+	}
+}
+
 func TestVMAssignStructBudgetAndDepthLimits(t *testing.T) {
 	vm := NewVM()
 	source, err := vm.NewDictionary()

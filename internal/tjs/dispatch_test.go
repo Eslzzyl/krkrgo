@@ -31,6 +31,25 @@ func TestDispatchMembersAndReadOnlyData(t *testing.T) {
 	}
 }
 
+func TestDispatchDictionaryClearIsDataMemberOnly(t *testing.T) {
+	table := NewObjectTable()
+	dictionary := table.New(CategoryDictionary)
+	target := ObjectValue(dictionary.Ref())
+	dispatcher := NewDispatcher(table)
+
+	value, err := dispatcher.Get(target, "clear")
+	if err != nil || !value.IsVoid() || dispatcher.Has(target, "clear") {
+		t.Fatalf("missing clear = %v, %v; want void and absent", value, err)
+	}
+	if err := dictionary.Set("clear", StringValue("present")); err != nil {
+		t.Fatal(err)
+	}
+	value, err = dispatcher.Get(target, "clear")
+	if err != nil || value.Text() != "present" || !dispatcher.Has(target, "clear") {
+		t.Fatalf("explicit clear = %v, %v; want present", value, err)
+	}
+}
+
 func TestDispatchPrimitiveMethodsAndBoundContext(t *testing.T) {
 	d := NewDispatcher(NewObjectTable())
 	upper, err := d.Get(StringValue("hello"), "toUpperCase")

@@ -926,14 +926,11 @@ func (v *VM) GetMember(receiver Value, name string, host Host, budget *uint64) (
 
 func (v *VM) collectionClassMember(id ObjectID, key Value, host Host, budget *uint64) (Value, bool, error) {
 	meta := v.meta[id]
-	if meta == nil || (meta.category != CategoryArray && meta.category != CategoryDictionary) {
+	if meta == nil || meta.category != CategoryArray {
 		return VoidValue, false, nil
 	}
-	className := "Dictionary"
-	if meta.category == CategoryArray {
-		className = "Array"
-	}
-	if !v.nativeSavePlugin && !(className == "Array" && key.Text() == "add") {
+	className := "Array"
+	if !v.nativeSavePlugin && key.Text() != "add" {
 		return VoidValue, false, nil
 	}
 	classValue, exists := v.Globals[className]
@@ -975,11 +972,9 @@ func (v *VM) GetMemberIfPresent(receiver Value, name string, host Host, budget *
 			switch meta.category {
 			case CategoryArray:
 				className = "Array"
-			case CategoryDictionary:
-				className = "Dictionary"
 			}
 		}
-		if className != "" && (className == "Dictionary" || name == "add" || v.nativeSavePlugin) {
+		if className != "" && (name == "add" || v.nativeSavePlugin) {
 			if arrayClass, exists := v.Globals[className]; exists {
 				classMember, found, memberErr := v.getMemberWithRuntime(arrayClass.ObjectRef().Object, key, host, budget)
 				if memberErr != nil {
@@ -1170,12 +1165,9 @@ func (v *VM) GetMemberByKey(receiver, key Value, flags uint32, host Host, budget
 			return VoidValue, false, err
 		}
 	}
-	if !found && meta != nil && (meta.category == CategoryArray || meta.category == CategoryDictionary) {
-		className := "Dictionary"
-		if meta.category == CategoryArray {
-			className = "Array"
-		}
-		if v.nativeSavePlugin || (className == "Array" && name == "add") {
+	if !found && meta != nil && meta.category == CategoryArray {
+		className := "Array"
+		if v.nativeSavePlugin || name == "add" {
 			if classValue, exists := v.Globals[className]; exists {
 				member, found, err = v.getMemberWithRuntime(classValue.ObjectRef().Object, key, host, budget)
 				if err != nil {
