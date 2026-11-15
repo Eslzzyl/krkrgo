@@ -1799,6 +1799,9 @@ func (s *Services) decodeSoundOpen(x tjs.Value, operation string) (assets.Audio,
 
 // commitAsyncSoundOpen installs a worker decode while the caller holds audioMu.
 func (s *Services) commitAsyncSoundOpen(sound *WaveSoundBuffer, generation uint64, audio assets.Audio, info assets.LoopInfo, decodeErr error) {
+	if sound.openGeneration == generation {
+		sound.asyncOpenErr = decodeErr
+	}
 	if decodeErr != nil {
 		log.Printf("krkrgo: WaveSoundBuffer decode failed: %v", decodeErr)
 	}
@@ -1928,6 +1931,24 @@ func (s *Services) SoundNative(vm *tjs.VM, context tjs.Value, operation string, 
 		return x.Truth()
 	}
 	queue := func() (tjs.Value, error) { return tjs.VoidValue, s.queueSoundEvents(id, sound) }
+	waitForOpen := func() error {
+		for sound.loading {
+			done := sound.openDone
+			if done == nil {
+				return fmt.Errorf("sound open has no completion signal")
+			}
+			s.audioMu.Unlock()
+			<-done
+			s.audioMu.Lock()
+		}
+		return sound.asyncOpenErr
+	}
+	switch operation {
+	case "get:position", "get:samplePosition", "get:totalTime", "get:frequency", "get:bits", "get:channels", "get:sampleValue", "get:labels", "set:frequency", "set:position", "set:samplePosition", "setPos", "setSamplePosition":
+		if err := waitForOpen(); err != nil {
+			return tjs.VoidValue, err
+		}
+	}
 	if operation == "get:sampleValue" || operation == "get:sampleCount" || operation == "set:sampleCount" || operation == "get:sampleAhead" || operation == "set:sampleAhead" {
 		sound.configureSampleProperties(s.sampleDefaultCounts, s.sampleDefaultAheads)
 	}

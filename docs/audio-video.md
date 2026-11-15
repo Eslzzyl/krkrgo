@@ -6,7 +6,7 @@
 
 The script-native `WaveSoundBuffer` in [`sound_native.go`](../internal/runtime/sound_native.go) includes storage/`openBytes`, transport, seek, fade, properties, and deterministic event delivery. This is headless state and sample generation; it does not itself open an OS audio device.
 
-Realtime sound opens decode asynchronously. Pause changes made while a source is loading survive its commit, so a script can preload a paused track and start it later without the decode worker accidentally unpausing it.
+Realtime sound opens decode asynchronously. Reading source-format properties or seeking during a pending open waits for the worker commit; it releases the audio lock while waiting, so metadata is available with reference-compatible ordering without depending on a later host tick. Decode failures are returned by the waiting operation. Pause changes made while a source is loading survive its commit, so a script can preload a paused track and start it later without the decode worker accidentally unpausing it.
 
 TCWF0 sources are detected by the `TCWF0\x1a` signature and decoded in-process by `internal/assets/wutcwf.go` before the FFmpeg path. The decoder covers mono/stereo MS+IMA ADPCM blocks and peak corrections; TCWF carries no loop metadata.
 

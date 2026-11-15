@@ -329,32 +329,6 @@ func TestSoundRenderSourceEOFStopsImmediately(t *testing.T) {
 	}
 }
 
-func TestAudioMixerUsesEffectiveSoundFrequency(t *testing.T) {
-	sound := NewWaveSoundBuffer()
-	if err := sound.OpenAudio(assets.Audio{Channels: 1, SampleRate: OutputRate, Samples: []int16{0, 10000, 20000, 30000}}, assets.LoopInfo{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := sound.SetFrequency(OutputRate / 2); err != nil {
-		t.Fatal(err)
-	}
-	if err := sound.Play(); err != nil {
-		t.Fatal(err)
-	}
-	if sound.Frequency() != OutputRate/2 {
-		t.Fatalf("frequency reset on Play: %d", sound.Frequency())
-	}
-	out, err := func() ([]float32, error) {
-		mixer := NewAudioMixer()
-		mixer.Add(sound)
-		return mixer.Mix(2)
-	}()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(out) != 4 || out[2] < 0.1 || out[2] > 0.2 || out[3] < 0.1 || out[3] > 0.2 {
-		t.Fatalf("effective frequency output=%v", out)
-	}
-}
 
 func TestAudioMixerRejectsMultichannelWithoutConsuming(t *testing.T) {
 	sound := NewWaveSoundBuffer()

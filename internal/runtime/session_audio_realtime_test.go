@@ -105,6 +105,97 @@ func TestRealtimeAudioMixesWhileSoundOpens(t *testing.T) {
 	}
 }
 
+func TestRealtimeSoundOpenMakesFormatAvailableToImmediateFrequencyRead(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	if _, err := session.Evaluate("sound = new WaveSoundBuffer()"); err != nil {
+		t.Fatal(err)
+	}
+	session.EnableRealtimeAudio()
+
+	if _, err := session.Evaluate("sound.openBytes(" + tjsOctetLiteral(testTCWFMonoFixture()) + ")"); err != nil {
+		t.Fatalf("open sound: %v", err)
+	}
+	if got, err := session.Evaluate("sound.frequency"); err != nil {
+		t.Fatalf("read frequency immediately after open: %v", err)
+	} else if value, err := got.Int(); err != nil || value != 8_000 {
+		t.Fatalf("frequency = %v (%v), want 8000", got, err)
+	}
+
+	if _, err := session.Evaluate("sound.frequency = 6_000"); err != nil {
+		t.Fatalf("set playback frequency: %v", err)
+	}
+	if got, err := session.Evaluate("sound.frequency"); err != nil {
+		t.Fatalf("read playback frequency: %v", err)
+	} else if value, err := got.Int(); err != nil || value != 6_000 {
+		t.Fatalf("frequency after setting = %v (%v), want 6000", got, err)
+	}
+}
+
+func TestRealtimeSoundOpenFailureUnblocksFormatRead(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	if _, err := session.Evaluate("sound = new WaveSoundBuffer()"); err != nil {
+		t.Fatal(err)
+	}
+	session.EnableRealtimeAudio()
+
+	if _, err := session.Evaluate("sound.openBytes(" + tjsOctetLiteral([]byte("TCWF0\x1a")) + ")"); err != nil {
+		t.Fatalf("queue malformed sound open: %v", err)
+	}
+	if _, err := session.Evaluate("sound.frequency"); err == nil {
+		t.Fatal("format read succeeded after asynchronous decode failure")
+	}
+}
+
+func TestRealtimeSoundOpenWaitTracksLatestGeneration(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	value, err := session.Evaluate("sound = new WaveSoundBuffer()")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sound := session.Services.Sound(value.ObjectRef().Object)
+	session.Services.audioMu.Lock()
+	first := sound.beginAsyncOpen()
+	second := sound.beginAsyncOpen()
+	session.Services.audioMu.Unlock()
+
+	type result struct {
+		value tjs.Value
+		err   error
+	}
+	read := make(chan result, 1)
+	go func() {
+		value, err := session.Evaluate("sound.frequency")
+		read <- result{value: value, err: err}
+	}()
+
+	session.Services.audioMu.Lock()
+	session.Services.commitAsyncSoundOpen(sound, first, assets.Audio{Channels: 1, SampleRate: 8_000, Samples: []int16{1}}, assets.LoopInfo{}, nil)
+	session.Services.audioMu.Unlock()
+	select {
+	case got := <-read:
+		t.Fatalf("stale open completed format read: %v (%v)", got.value, got.err)
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	session.Services.audioMu.Lock()
+	session.Services.commitAsyncSoundOpen(sound, second, assets.Audio{Channels: 1, SampleRate: 16_000, Samples: []int16{1}}, assets.LoopInfo{}, nil)
+	session.Services.audioMu.Unlock()
+	select {
+	case got := <-read:
+		if got.err != nil {
+			t.Fatalf("read after latest open commit: %v", got.err)
+		}
+		if frequency, err := got.value.Int(); err != nil || frequency != 16_000 {
+			t.Fatalf("frequency after latest open = %v (%v), want 16000", got.value, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("format read remained blocked after latest open committed")
+	}
+}
+
 func TestRealtimeAudioPositionExcludesQueuedLead(t *testing.T) {
 	session := NewSession(DefaultServices(), 100_000)
 	defer session.Close()

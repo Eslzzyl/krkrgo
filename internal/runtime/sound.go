@@ -37,6 +37,8 @@ type WaveSoundBuffer struct {
 	loaded                   *loadedSound
 	openGeneration           uint64
 	loading                  bool
+	openDone                 chan struct{}
+	asyncOpenErr             error
 	pendingPlay              bool
 	pauseChangedWhileLoading bool
 	pendingStopAt            uint64
@@ -297,8 +299,13 @@ func decodeSoundBytes(data []byte) (assets.Audio, error) {
 // beginAsyncOpen invalidates any in-flight decode and marks the buffer as
 // loading. The returned generation is passed to finishAsyncOpen.
 func (s *WaveSoundBuffer) beginAsyncOpen() uint64 {
+	if s.loading && s.openDone != nil {
+		close(s.openDone)
+	}
 	s.openGeneration++
 	s.loading = true
+	s.openDone = make(chan struct{})
+	s.asyncOpenErr = nil
 	s.pendingPlay = false
 	s.pauseChangedWhileLoading = false
 	return s.openGeneration
@@ -310,6 +317,13 @@ func (s *WaveSoundBuffer) finishAsyncOpen(generation uint64, audio assets.Audio,
 	if s == nil || s.openGeneration != generation {
 		return
 	}
+	done := s.openDone
+	defer func() {
+		s.openDone = nil
+		if done != nil {
+			close(done)
+		}
+	}()
 	s.loading = false
 	play := s.pendingPlay
 	s.pendingPlay = false
