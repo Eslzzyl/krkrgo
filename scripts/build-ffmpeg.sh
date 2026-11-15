@@ -291,6 +291,7 @@ configure_args=(
     "--enable-demuxer=mpeg"
     "--enable-demuxer=mpegts"
     "--enable-parser=vc1"
+    "--enable-parser=h264"
     "--enable-parser=mpegvideo"
     "--enable-parser=aac"
     "--enable-decoder=vorbis"
@@ -303,6 +304,7 @@ configure_args=(
     "--enable-decoder=pcm_s32le"
     "--enable-decoder=pcm_f32le"
     "--enable-decoder=mpeg1video"
+    "--enable-decoder=h264"
     "--enable-decoder=mpeg2video"
 )
 

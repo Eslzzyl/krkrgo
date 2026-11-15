@@ -122,12 +122,15 @@ func (s *Services) csvParserNative(vm *tjs.VM, context tjs.Value, operation stri
 				load(text)
 			}
 		}
-		if state.target.Kind() != tjs.KindObject || !tjs.NewDispatcher(vm.Objects).Has(state.target, "doLine") {
+		if state.target.Kind() != tjs.KindObject || state.target.IsNull() {
 			return tjs.VoidValue, nil
 		}
-		method, err := vm.GetMember(state.target, "doLine", s, budget)
+		method, found, err := vm.GetMemberIfPresent(state.target, "doLine", s, budget)
 		if err != nil {
 			return tjs.VoidValue, fmt.Errorf("CSVParser.%s target.doLine: %w", operation, err)
+		}
+		if !found {
+			return tjs.VoidValue, nil
 		}
 		for {
 			row, ok, e := state.next(vm)

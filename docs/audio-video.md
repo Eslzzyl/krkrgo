@@ -12,7 +12,7 @@ Linking `getSample.dll` installs the source-backed `WaveSoundBuffer.sampleValue`
 
 ## Video path
 
-`VideoOverlay` in [`video.go`](../internal/runtime/video.go) provides bounded source metadata, playback/event state, frame queues, and native-rate audio queues. Supported paths include AMV frame handling, FFmpeg-backed ASF/WMV/WMA, MPEG-1/2, and other enabled formats. FFmpeg video frames are converted to RGBA and queued with bounded ownership; decoded movie audio is mixed through the shared 48 kHz stereo mixer.
+`VideoOverlay` in [`video.go`](../internal/runtime/video.go) provides bounded source metadata, playback/event state, frame queues, and native-rate audio queues. Supported paths include AMV frame handling, FFmpeg-backed ASF/WMV/WMA, MPEG-1/2, H.264, and other enabled formats. FFmpeg video frames are converted to RGBA and queued with bounded ownership; decoded movie audio is mixed through the shared 48 kHz stereo mixer.
 
 Non-AJPM sources are opened through the FFmpeg shared-library sidecar. `VideoOverlay.Open` selects the first decodable video and audio streams, reports stream metadata, converts video frames to RGBA, and queues bounded audio blocks. Decoder errors are returned with the source name and operation context. When the sidecar is missing or ABI-incompatible, the first failure is logged once and the open, transport, and seek calls become no-ops so the runtime keeps running. AlphaMovie (`AJPM`) sources remain on the repository decoder in [`assets/amv.go`](../internal/assets/amv.go).
 

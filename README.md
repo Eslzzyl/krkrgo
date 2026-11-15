@@ -91,7 +91,7 @@ ignored by Git.
 
 ### Build the FFmpeg sidecar
 
-The workflow builds and uploads FFmpeg 9.0.2 shared libraries for six desktop targets plus Android `arm64-v8a` and `x86_64`. It enables Ogg/Vorbis, ASF, VC-1, WMV3, and WMA2 support. Hardware acceleration and FFmpeg command-line programs are disabled; runtime decoding uses the purego loader.
+The workflow builds and uploads FFmpeg 9.0.2 shared libraries for six desktop targets plus Android `arm64-v8a` and `x86_64`. It enables Ogg/Vorbis, ASF, VC-1, WMV3, WMA2, and H.264 support. Hardware acceleration and FFmpeg command-line programs are disabled; runtime decoding uses the purego loader.
 
 For a local build from the verified FFmpeg 9.0.2 source archive:
 
@@ -102,6 +102,8 @@ OS=macos ARCH=arm64 \
 PREFIX="$PWD/stage/krkrgo-macos-arm64" \
 scripts/build-ffmpeg.sh
 ```
+
+Existing sidecars built without the H.264 decoder must be rebuilt to play H.264 video. Set `KRKRGO_FFMPEG_DIR` to the rebuilt sidecar's `lib/ffmpeg` directory to use it during development.
 
 The workflow is [`.github/workflows/build-ffmpeg.yml`](.github/workflows/build-ffmpeg.yml). It builds and uploads the FFmpeg shared libraries, required Windows MinGW runtime DLLs, LGPL license, source version, configure manifest, and ABI probe output.
 

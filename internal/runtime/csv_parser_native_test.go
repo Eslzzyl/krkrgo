@@ -49,3 +49,29 @@ p.parse("x,y\n\"z\nq\",w");
 		t.Fatalf("CSV callback rows = %q, want %q", got.Text(), want)
 	}
 }
+
+func TestCSVParserParseCallsLegacyInheritedTargetCallback(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+	_, err := session.executeSource("<csv-parser-legacy-inherited-callback-test>", `
+Plugins.link("csvParser.dll");
+global.rows = [];
+class BaseTarget {
+	function doLine(fields, line) { global.rows.push([line, fields.join(":")]); }
+}
+class Target extends BaseTarget {}
+target = new Target();
+p = new CSVParser(target, 44, "\n");
+p.parse("inherited,callback");
+`, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := session.Evaluate(`[rows.length,rows[0][0],rows[0][1],p.currentLineNumber].join("|")`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "1|1|inherited:callback|1"; got.Text() != want {
+		t.Fatalf("inherited CSV callback = %q, want %q", got.Text(), want)
+	}
+}

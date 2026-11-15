@@ -19,7 +19,7 @@ const (
 	maxPendingFrames = 8
 )
 
-// Metadata describes the selected ASF/WMV media streams.
+// Metadata describes the selected media streams.
 type Metadata struct {
 	Name          string
 	Format        string
