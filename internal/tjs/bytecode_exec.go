@@ -308,7 +308,9 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			if os.Getenv("KRKRGO_LEGACY_PROPERTY_TRACE") == "1" && errors.Is(err, ErrMemberNotFound) {
 				fmt.Printf("[legacy-property-read-miss] object=%d receiver=%v property=%q\n", object, thisContext, name)
 			}
-			if errors.Is(err, ErrMemberNotFound) || (err == nil && value.IsVoid()) {
+			// The reference proxy falls back only for a missing member. An
+			// explicitly present void value shadows the global property.
+			if errors.Is(err, ErrMemberNotFound) {
 				value, err = read(global, name, flags)
 			}
 		} else {

@@ -344,6 +344,9 @@ func TestExecuteLegacyContextProxyLookupAndCallReceiver(t *testing.T) {
 	if err := global.Set("globalOnly", IntegerValue(73)); err != nil {
 		t.Fatal(err)
 	}
+	if err := global.Set("fallbackOnly", IntegerValue(91)); err != nil {
+		t.Fatal(err)
+	}
 	if err := context.Set("globalOnly", VoidValue); err != nil {
 		t.Fatal(err)
 	}
@@ -364,6 +367,8 @@ func TestExecuteLegacyContextProxyLookupAndCallReceiver(t *testing.T) {
 			103, 2, -2, 0, // GPD r2, this-proxy, globalOnly
 			124, 1, // GLOBAL r1
 			104, 1, 1, 2, // SPD global, result, r2
+			103, 2, -2, 3, // GPD r2, this-proxy, fallbackOnly
+			104, 1, 4, 2, // SPD global, fallbackResult, r2
 			103, 1, -2, 2, // GPD r1, this-proxy, method
 			99, 0, 1, 0, // CALL (discarded result), r1, 0 args
 			119,
@@ -372,6 +377,8 @@ func TestExecuteLegacyContextProxyLookupAndCallReceiver(t *testing.T) {
 			{Value: StringValue("globalOnly")},
 			{Value: StringValue("result")},
 			{Value: StringValue("method")},
+			{Value: StringValue("fallbackOnly")},
+			{Value: StringValue("fallbackResult")},
 		},
 	}}}
 	invoke := func(function, receiver Value, _ []Value, _ bool) (Value, error) {
@@ -393,8 +400,11 @@ func TestExecuteLegacyContextProxyLookupAndCallReceiver(t *testing.T) {
 	if !called {
 		t.Fatal("context method was not invoked")
 	}
-	if got, ok := global.Get("result"); !ok || !got.StrictEqual(IntegerValue(73)) {
-		t.Fatalf("global fallback result = %v, present %t; want 73", got, ok)
+	if got, ok := global.Get("result"); !ok || !got.IsVoid() {
+		t.Fatalf("explicit void context property result = %v, present %t; want void", got, ok)
+	}
+	if got, ok := global.Get("fallbackResult"); !ok || !got.StrictEqual(IntegerValue(91)) {
+		t.Fatalf("missing context property fallback result = %v, present %t; want 91", got, ok)
 	}
 }
 

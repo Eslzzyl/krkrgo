@@ -24,6 +24,8 @@ Script class declarations compile to the existing `Class`, `Function`, and `Prop
 An `&object.member` property reference binds before `incontextof`, so `*(&object.member incontextof receiver)` dereferences the descriptor on `receiver`; assigning through the reference invokes its setter on that same object. Unbound references retain the execution context used by the dereference.
 
 Legacy `SETP` writes through VM-owned property descriptors using the bound receiver. `invalidate` runs a script instance's finalizer before clearing its valid state.
+Legacy reads through the `this` proxy search the context object, including inherited members, before falling back to the global object. Only a missing-member result triggers that fallback; a present member whose value is `void` still shadows a global of the same name, matching the C++ intercode executor.
+
 
 The Go scanner joins adjacent string literals that use the same quote delimiter, including across whitespace and newlines. Comments and differing delimiters keep literals separate; commas in arrays and call arguments and the ordinary `+` operator remain parser-level syntax.
 
