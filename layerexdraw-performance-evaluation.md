@@ -783,7 +783,7 @@ GPU capture 模式使用 `Layer.imageRevision` 识别图像变化，GPU 纹理�
 - `internal/runtime/layer_ex_draw_native.go` 的 `layerExPointNative` 将 `PointF` 的原生状态存入 `Services.LayerExObjects`。构造器读取前两个参数，额外参数被忽略；同一个实例再次调用 `PointF(x, y)` 会覆盖已有坐标；`finalize` 清理对象表项。原生类注册保留 `GdiPlus.PointF` 这个全局入口，同时通过 `tjs.VM.AddNativeClassAlias` 为 `instanceof "PointF"` 提供脚本类名匹配。
 - `layerExPointFromValue`、`layerExRectFromValue`、`layerExMatrixFromValueWithVM` 同时处理原生对象、数组和字典属性。字典属性读取会执行 TJS getter；当前转换顺序和重复读取次数与参考 fixture 的可观察调用序列一致，getter 对目标几何对象的修改会在后续比较或变换中生效。
 - `layerExRectNative` 的 `GdiPlus.RectF.Union` 是静态方法，实例没有 `Union` 成员。`InflatePoint` 会先完成参数转换，再读取当前 RectF 状态，因此参数 getter 对 `x`、`y` 的写入会进入最终计算。
-- `layerExMatrixNative` 使用 `layerExMatrixState` 保存 float32 量化后的六个仿射系数和最后状态码。`Multiply`、`Rotate`、`RotateAt`、`Scale`、`Shear`、`Translate` 要求显式 `MatrixOrder`；`0` 和 `1` 分别对应 prepend/append 计算顺序，其他值返回 `InvalidParameter` 状态。`GetLastStatus` 返回当前状态并清零，成功变换返回 `Ok`，奇异矩阵 `Invert` 返回 `InvalidParameter` 并保留原矩阵。
+- `layerExMatrixNative` 使用 `layerExMatrixState` 保存 float32 量化后的六个仿射系数和最后状态码。`Multiply`、`Rotate`、`RotateAt`、`Scale`、`Shear`、`Translate` 要求显式 `MatrixOrder`；`0` 和 `1` 分别对应 prepend/append 计算顺序，其他值返回 `InvalidParameter` 状态。`GetLastStatus` 返回当前状态并清零，成功变换返回 `Ok`，奇异矩阵 `Invert` 返回 `InvalidParameter` 并保留原矩阵。判定可逆性时行列式乘积先分别按 float32 舍入再相减，避免 FMA 让不同架构对近奇异矩阵得出不同状态。
 
 #### 画刷、画笔与图像
 

@@ -86,7 +86,11 @@ func (m layerExAffine) multiply(n layerExAffine) layerExAffine {
 func (m layerExAffine) invert() (layerExAffine, bool) {
 	a, b, c, d := float32(m.a), float32(m.b), float32(m.c), float32(m.d)
 	tx, ty := float32(m.tx), float32(m.ty)
-	det := a*d - b*c
+	// GDI+ matrix coefficients are float32; round the products separately
+	// before subtraction so FMA-capable architectures cannot change singularity.
+	ad := float32(float64(a) * float64(d))
+	bc := float32(float64(b) * float64(c))
+	det := ad - bc
 	if det == 0 || math.IsNaN(float64(det)) || math.IsInf(float64(det), 0) {
 		return layerExAffine{}, false
 	}
