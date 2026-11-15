@@ -473,6 +473,14 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 			s.mu.Unlock()
 		}
 		return tjs.VoidValue, err
+	case "clipAlphaRect":
+		err := s.layerClipAlphaRect(l, id, args, budget)
+		if err == nil {
+			s.mu.Lock()
+			l.imageModified = true
+			s.mu.Unlock()
+		}
+		return tjs.VoidValue, err
 	case "affineCopy":
 		err := s.layerAffineCopy(l, args)
 		if err == nil {

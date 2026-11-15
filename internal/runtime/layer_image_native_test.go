@@ -57,6 +57,105 @@ second = layer.matrix;
 	}
 }
 
+func TestNativeLayerClipAlphaRectThroughKAGLayerSuper(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	t.Cleanup(func() { _ = session.Close() })
+	if _, err := session.executeSource("<layer-clip-alpha-super-test>", `
+class KAGLayer extends Layer {
+	function KAGLayer() { super.Layer(); }
+}
+class AffineLayer extends KAGLayer {
+	function AffineLayer() { super.KAGLayer(); }
+	function onPaint(source) {
+		super.clipAlphaRect(0, 0, source, 0, 0, 3, 1, 0);
+	}
+}
+dst = new AffineLayer(); src = new Layer();
+dst.setImageSize(3, 1); src.setImageSize(3, 1);
+dst.face = dfMain; src.face = dfMain;
+dst.fillRect(0, 0, 3, 1, 0x80102030);
+src.fillRect(0, 0, 3, 1, 0x80112233);
+dst.setClip(1, 0, 1, 1);
+dst.onPaint(src);
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	for x, want := range []int64{128, 64, 128} {
+		value, err := session.Evaluate("dst.getMaskPixel(" + strconv.Itoa(x) + ", 0)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := value.Int()
+		if err != nil || got != want {
+			t.Fatalf("destination alpha at x=%d = %v, %v; want %d", x, value, err, want)
+		}
+	}
+}
+
+func TestNativeLayerClipAlphaRectSelfCopyReadsForward(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	t.Cleanup(func() { _ = session.Close() })
+	if _, err := session.executeSource("<layer-clip-alpha-self-test>", `
+dst = new Layer();
+dst.setImageSize(4, 1); dst.face = dfMain;
+dst.fillRect(0, 0, 1, 1, 0x40102030);
+dst.fillRect(1, 0, 1, 1, 0x80102030);
+dst.fillRect(2, 0, 1, 1, 0xc0102030);
+dst.fillRect(3, 0, 1, 1, 0xff102030);
+dst.clipAlphaRect(1, 0, dst, 0, 0, 3, 1, 0);
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	for x, want := range []int64{64, 32, 24, 24} {
+		value, err := session.Evaluate("dst.getMaskPixel(" + strconv.Itoa(x) + ", 0)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := value.Int()
+		if err != nil || got != want {
+			t.Fatalf("self-clipped alpha at x=%d = %v, %v; want %d", x, value, err, want)
+		}
+	}
+}
+
+func TestNativeLayerClipAlphaRectSelfCopyAfterGPUBaseCOW(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	t.Cleanup(func() { _ = session.Close() })
+	session.Services.gpuCapture = true
+	if _, err := session.executeSource("<layer-clip-alpha-cow-test>", `
+source = new Layer(); target = new Layer();
+source.setImageSize(4, 1); source.face = dfMain;
+source.fillRect(0, 0, 1, 1, 0x40102030);
+source.fillRect(1, 0, 1, 1, 0x80102030);
+source.fillRect(2, 0, 1, 1, 0xc0102030);
+source.fillRect(3, 0, 1, 1, 0xff102030);
+target.setImageSize(4, 1);
+target.assignImages(source);
+target.clipAlphaRect(1, 0, target, 0, 0, 3, 1, 0);
+`, false); err != nil {
+		t.Fatal(err)
+	}
+	session.Services.gpuCapture = false
+	for _, test := range []struct {
+		layer string
+		alpha []int64
+	}{
+		{layer: "target", alpha: []int64{64, 32, 24, 24}},
+		{layer: "source", alpha: []int64{64, 128, 192, 255}},
+	} {
+		for x, want := range test.alpha {
+			value, err := session.Evaluate(test.layer + ".getMaskPixel(" + strconv.Itoa(x) + ", 0)")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := value.Int()
+			if err != nil || got != want {
+				t.Fatalf("%s alpha at x=%d = %v, %v; want %d", test.layer, x, value, err, want)
+			}
+		}
+	}
+}
+
 func TestNativeLayerOperateRectAndStretchCopyPixels(t *testing.T) {
 	session := NewSession(DefaultServices(), 100_000)
 	if _, err := session.executeSource("<layer-image-test>", `

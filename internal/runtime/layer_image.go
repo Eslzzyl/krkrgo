@@ -2128,3 +2128,90 @@ func (s *Services) layerImageNative(l *Layer, operation string, args []tjs.Value
 		return fmt.Errorf("%w: Layer.%s", ErrUnsupportedNative, operation)
 	}
 }
+func (s *Services) layerClipAlphaRect(l *Layer, id tjs.ObjectID, args []tjs.Value, budget *uint64) error {
+	const operation = "clipAlphaRect"
+	if len(args) < 7 {
+		return fmt.Errorf("Layer.clipAlphaRect requires at least 7 arguments")
+	}
+	dx, err := layerImageInt(args, 0, operation)
+	if err != nil {
+		return err
+	}
+	dy, err := layerImageInt(args, 1, operation)
+	if err != nil {
+		return err
+	}
+	source, err := s.nativeLayerImageSource(args[2], operation)
+	if err != nil {
+		return err
+	}
+	if source.layer == nil {
+		return fmt.Errorf("Layer.clipAlphaRect source is not a Layer")
+	}
+	sx, err := layerImageInt(args, 3, operation)
+	if err != nil {
+		return err
+	}
+	sy, err := layerImageInt(args, 4, operation)
+	if err != nil {
+		return err
+	}
+	width, err := layerImageInt(args, 5, operation)
+	if err != nil {
+		return err
+	}
+	height, err := layerImageInt(args, 6, operation)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Layers[id] != l || !s.nativeLayerImageStillValid(source) {
+		return fmt.Errorf("Layer.clipAlphaRect source or destination was invalidated")
+	}
+	if err := validLayerPixels(l); err != nil {
+		return err
+	}
+	clip, clipSet := l.Clip()
+	left := maxInt64(maxInt64(0, -int64(sx)), -int64(dx))
+	top := maxInt64(maxInt64(0, -int64(sy)), -int64(dy))
+	right := minInt64(minInt64(int64(width), int64(source.width)-int64(sx)), int64(l.deviceWidth())-int64(dx))
+	bottom := minInt64(minInt64(int64(height), int64(source.height)-int64(sy)), int64(l.deviceHeight())-int64(dy))
+	if clipSet {
+		left = maxInt64(left, int64(clip.X)-int64(dx))
+		top = maxInt64(top, int64(clip.Y)-int64(dy))
+		right = minInt64(right, int64(clip.X)+int64(clip.Width)-int64(dx))
+		bottom = minInt64(bottom, int64(clip.Y)+int64(clip.Height)-int64(dy))
+	}
+	if right <= left || bottom <= top {
+		return nil
+	}
+	count := uint64(right-left) * uint64(bottom-top)
+	if budget != nil {
+		if count > *budget {
+			return fmt.Errorf("Layer.clipAlphaRect execution budget exceeded")
+		}
+		*budget -= count
+	}
+	l.ensureImageWritable()
+	if source.layer == l {
+		source.pixels = l.RGBA
+	}
+	for y := top; y < bottom; y++ {
+		for x := left; x < right; x++ {
+			sourceOffset := ((int64(sy)+y)*int64(source.width) + int64(sx) + x) * 4
+			destOffset := ((int64(dy)+y)*int64(l.deviceWidth()) + int64(dx) + x) * 4
+			sourceAlpha := source.pixels[sourceOffset+3]
+			product := uint16(l.RGBA[destOffset+3]) * uint16(sourceAlpha)
+			l.RGBA[destOffset+3] = byte((product + (product >> 7)) >> 8)
+		}
+	}
+	l.markImageDirtyRect(Rect{
+		X:      int32(int64(dx) + left),
+		Y:      int32(int64(dy) + top),
+		Width:  int32(right - left),
+		Height: int32(bottom - top),
+	})
+	return nil
+}
