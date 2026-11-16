@@ -29,6 +29,7 @@ type KAGParser struct {
 	macroRanges         map[int]int
 	paramMacroDefs      map[string][]kag.Attribute
 	macroFrames         []kagMacroFrame
+	macroCalls          [][]kagMacroFrame
 	macroIndexErr       error
 	crossCalls          []kagScenarioCallFrame
 	legacyText          []KAGEvent
@@ -189,6 +190,8 @@ func (p *KAGParser) Call(label string) error {
 	p.crossCalls = append(p.crossCalls, frame)
 	p.conditions = nil
 	p.conditionCalls = nil
+	p.macroFrames = nil
+	p.macroCalls = nil
 	return nil
 }
 func (p *KAGParser) CallLabel(label string) error { return p.Call(label) }
@@ -208,6 +211,7 @@ func (p *KAGParser) clear() error {
 	p.ended = false
 	p.macroRanges = nil
 	p.macroFrames = nil
+	p.macroCalls = nil
 	p.macroIndexErr = nil
 	p.crossCalls = nil
 	p.legacyText = nil
@@ -246,11 +250,29 @@ func chargeKAGDictionaryCopies(budget *uint64, parser *KAGParser) error {
 			}
 		}
 	}
+	for _, calls := range parser.macroCalls {
+		for _, frame := range calls {
+			for range frame.arguments {
+				if err := chargeKAG(budget); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	for _, call := range parser.crossCalls {
 		for _, frame := range call.state.MacroFrames {
 			for range frame.Arguments {
 				if err := chargeKAG(budget); err != nil {
 					return err
+				}
+			}
+		}
+		for _, calls := range call.state.MacroCalls {
+			for _, frame := range calls {
+				for range frame.Arguments {
+					if err := chargeKAG(budget); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -274,6 +296,26 @@ func cloneKAGMacroFrames(frames []kagMacroFrame) []kagMacroFrame {
 	}
 	return cloned
 }
+func cloneKAGMacroCallFrames(calls [][]kagMacroFrame) [][]kagMacroFrame {
+	if calls == nil {
+		return nil
+	}
+	cloned := make([][]kagMacroFrame, len(calls))
+	for i, frames := range calls {
+		cloned[i] = cloneKAGMacroFrames(frames)
+	}
+	return cloned
+}
+func (p *KAGParser) resumeLocalMacroFrames() {
+	last := len(p.macroCalls) - 1
+	if last < 0 {
+		return
+	}
+	p.macroFrames = p.macroCalls[last]
+	p.macroCalls[last] = nil
+	p.macroCalls = p.macroCalls[:last]
+}
+
 
 func cloneKAGConditionCalls(calls [][]kagCondition) [][]kagCondition {
 	if calls == nil {
@@ -355,6 +397,7 @@ func (p *KAGParser) assignFrom(source *KAGParser, budget *uint64) error {
 	copied.conditions = append([]kagCondition(nil), source.conditions...)
 	copied.conditionCalls = cloneKAGConditionCalls(source.conditionCalls)
 	copied.macroFrames = cloneKAGMacroFrames(source.macroFrames)
+	copied.macroCalls = cloneKAGMacroCallFrames(source.macroCalls)
 	crossCalls, err := cloneKAGScenarioCallFrames(source.crossCalls)
 	if err != nil {
 		return err
@@ -389,6 +432,7 @@ func (p *KAGParser) ClearCallStack() error {
 	}
 	p.conditionCalls = nil
 	p.macroFrames = nil
+	p.macroCalls = nil
 	p.crossCalls = nil
 	return nil
 }
@@ -415,6 +459,7 @@ func (p *KAGParser) ReturnFromCall() error {
 		} else {
 			p.conditions = nil
 		}
+		p.resumeLocalMacroFrames()
 		return p.notifyAfterReturn()
 	}
 	if n := len(p.crossCalls); n != 0 {

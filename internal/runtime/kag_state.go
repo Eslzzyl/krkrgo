@@ -38,6 +38,7 @@ type KAGState struct {
 	Ended                 bool                       `json:"ended,omitempty"`
 	IgnoreCR              bool                       `json:"ignore_cr,omitempty"`
 	MacroFrames           []KAGMacroFrameState       `json:"macro_frames,omitempty"`
+	MacroCalls            [][]KAGMacroFrameState     `json:"macro_calls,omitempty"`
 	MacroDefinitions      map[string][]kag.Token     `json:"macro_definitions,omitempty"`
 	ParamMacroDefinitions map[string][]kag.Attribute `json:"param_macro_definitions,omitempty"`
 	CrossScenarioCalls    []KAGScenarioCallState     `json:"cross_scenario_calls,omitempty"`
@@ -100,6 +101,65 @@ func cloneKAGTokens(tokens []kag.Token) []kag.Token {
 	}
 	return cloned
 }
+func cloneKAGMacroFrameStates(frames []KAGMacroFrameState) []KAGMacroFrameState {
+	if frames == nil {
+		return nil
+	}
+	cloned := make([]KAGMacroFrameState, len(frames))
+	for i, frame := range frames {
+		arguments := make(map[string]string, len(frame.Arguments))
+		for name, value := range frame.Arguments {
+			arguments[name] = value
+		}
+		cloned[i] = KAGMacroFrameState{Name: frame.Name, Position: frame.Position, Tokens: cloneKAGTokens(frame.Tokens), Arguments: arguments}
+	}
+	return cloned
+}
+
+func cloneKAGMacroCallStates(calls [][]KAGMacroFrameState) [][]KAGMacroFrameState {
+	if calls == nil {
+		return nil
+	}
+	cloned := make([][]KAGMacroFrameState, len(calls))
+	for i, frames := range calls {
+		cloned[i] = cloneKAGMacroFrameStates(frames)
+	}
+	return cloned
+}
+
+func storeKAGMacroFrames(frames []kagMacroFrame) []KAGMacroFrameState {
+	if frames == nil {
+		return nil
+	}
+	states := make([]KAGMacroFrameState, len(frames))
+	for i, frame := range frames {
+		arguments := make(map[string]string, len(frame.arguments))
+		for name, value := range frame.arguments {
+			arguments[name] = value
+		}
+		states[i] = KAGMacroFrameState{Name: frame.name, Position: frame.position, Tokens: cloneKAGTokens(frame.tokens), Arguments: arguments}
+	}
+	return states
+}
+
+func restoreKAGMacroFrames(frames []KAGMacroFrameState) ([]kagMacroFrame, error) {
+	if len(frames) > 128 {
+		return nil, fmt.Errorf("invalid KAG macro frame depth")
+	}
+	restored := make([]kagMacroFrame, len(frames))
+	for i, frame := range frames {
+		if frame.Position < 0 || frame.Position > len(frame.Tokens) || len(frame.Tokens) > 1_000_000 {
+			return nil, fmt.Errorf("invalid KAG macro frame")
+		}
+		arguments := make(map[string]string, len(frame.Arguments))
+		for name, value := range frame.Arguments {
+			arguments[name] = value
+		}
+		restored[i] = kagMacroFrame{name: frame.Name, position: frame.Position, tokens: cloneKAGTokens(frame.Tokens), arguments: arguments}
+	}
+	return restored, nil
+}
+
 
 func cloneKAGScenario(scenario kag.Scenario) kag.Scenario {
 	scenario.Tokens = cloneKAGTokens(scenario.Tokens)
@@ -123,14 +183,8 @@ func cloneKAGCallState(state KAGState) KAGState {
 	for i := range state.ConditionCalls {
 		cloned.ConditionCalls[i] = append([]KAGConditionState(nil), state.ConditionCalls[i]...)
 	}
-	cloned.MacroFrames = make([]KAGMacroFrameState, len(state.MacroFrames))
-	for i, frame := range state.MacroFrames {
-		arguments := make(map[string]string, len(frame.Arguments))
-		for name, value := range frame.Arguments {
-			arguments[name] = value
-		}
-		cloned.MacroFrames[i] = KAGMacroFrameState{Name: frame.Name, Position: frame.Position, Tokens: cloneKAGTokens(frame.Tokens), Arguments: arguments}
-	}
+	cloned.MacroFrames = cloneKAGMacroFrameStates(state.MacroFrames)
+	cloned.MacroCalls = cloneKAGMacroCallStates(state.MacroCalls)
 	cloned.MacroDefinitions = nil
 	cloned.ParamMacroDefinitions = nil
 	cloned.CrossScenarioCalls = nil
@@ -163,13 +217,10 @@ func (p *KAGParser) storeState(includeDefinitions, includeCrossCalls bool) KAGSt
 			state.ConditionCalls[i][j] = KAGConditionState{ParentActive: condition.parentActive, BranchTaken: condition.branchTaken, Active: condition.active}
 		}
 	}
-	state.MacroFrames = make([]KAGMacroFrameState, len(p.macroFrames))
-	for i, frame := range p.macroFrames {
-		arguments := make(map[string]string, len(frame.arguments))
-		for name, value := range frame.arguments {
-			arguments[name] = value
-		}
-		state.MacroFrames[i] = KAGMacroFrameState{Name: frame.name, Position: frame.position, Tokens: append([]kag.Token(nil), frame.tokens...), Arguments: arguments}
+	state.MacroFrames = storeKAGMacroFrames(p.macroFrames)
+	state.MacroCalls = make([][]KAGMacroFrameState, len(p.macroCalls))
+	for i, frames := range p.macroCalls {
+		state.MacroCalls[i] = storeKAGMacroFrames(frames)
 	}
 	state.MacroDefinitions = nil
 	state.ParamMacroDefinitions = nil
@@ -219,10 +270,10 @@ func (p *KAGParser) StoreObject() *tjs.Object {
 	_ = object.Set("ignore_cr", tjs.IntegerValue(boolInt(state.IgnoreCR)))
 	macroFrames, _ := json.Marshal(state.MacroFrames)
 	_ = object.Set("macro_frames", tjs.StringValue(string(macroFrames)))
+	macroCalls, _ := json.Marshal(state.MacroCalls)
+	_ = object.Set("macro_calls", tjs.StringValue(string(macroCalls)))
 	macroDefinitions, _ := json.Marshal(state.MacroDefinitions)
 	_ = object.Set("macro_definitions", tjs.StringValue(string(macroDefinitions)))
-	paramMacroDefinitions, _ := json.Marshal(state.ParamMacroDefinitions)
-	_ = object.Set("param_macro_definitions", tjs.StringValue(string(paramMacroDefinitions)))
 	crossScenarioCalls, _ := json.Marshal(state.CrossScenarioCalls)
 	legacyText, _ := json.Marshal(state.LegacyText)
 	_ = object.Set("legacy_text", tjs.StringValue(string(legacyText)))
@@ -300,6 +351,16 @@ func (p *KAGParser) RestoreObject(value any) error {
 			return fmt.Errorf("invalid KAG current line type")
 		}
 		state.CurrentLine = int(currentLineValue.IntegerValue())
+	}
+	if macroCallsValue, ok := object.Get("macro_calls"); ok {
+		if macroCallsValue.Kind() != tjs.KindString {
+			return fmt.Errorf("invalid KAG macro calls type")
+		}
+		if macroCallsValue.Text() != "" && macroCallsValue.Text() != "null" {
+			if err := json.Unmarshal([]byte(macroCallsValue.Text()), &state.MacroCalls); err != nil {
+				return fmt.Errorf("invalid KAG macro calls: %w", err)
+			}
+		}
 	}
 	if conditionsValue, ok := object.Get("conditions"); ok {
 		if conditionsValue.Kind() != tjs.KindString {
@@ -482,12 +543,18 @@ func (p *KAGParser) restoreLocalState(state KAGState) error {
 			return fmt.Errorf("invalid KAG conditional state")
 		}
 	}
-	if len(state.MacroFrames) > 128 {
-		return fmt.Errorf("invalid KAG macro frame depth")
+	macroFrames, err := restoreKAGMacroFrames(state.MacroFrames)
+	if err != nil {
+		return err
 	}
-	for _, frame := range state.MacroFrames {
-		if frame.Position < 0 || frame.Position > len(frame.Tokens) || len(frame.Tokens) > 1_000_000 {
-			return fmt.Errorf("invalid KAG macro frame")
+	if len(state.MacroCalls) > 128 {
+		return fmt.Errorf("invalid KAG macro call depth")
+	}
+	macroCalls := make([][]kagMacroFrame, len(state.MacroCalls))
+	for i, frames := range state.MacroCalls {
+		macroCalls[i], err = restoreKAGMacroFrames(frames)
+		if err != nil {
+			return fmt.Errorf("invalid KAG macro call frame: %w", err)
 		}
 	}
 	if len(state.MacroDefinitions) > 1_000_000 || len(state.ParamMacroDefinitions) > 1_000_000 {
@@ -518,13 +585,8 @@ func (p *KAGParser) restoreLocalState(state KAGState) error {
 			p.conditionCalls[i][j] = kagCondition{parentActive: condition.ParentActive, branchTaken: condition.BranchTaken, active: condition.Active}
 		}
 	}
-	p.macroFrames = make([]kagMacroFrame, len(state.MacroFrames))
-	for i, frame := range state.MacroFrames {
-		p.macroFrames[i] = kagMacroFrame{name: frame.Name, position: frame.Position, tokens: cloneKAGTokens(frame.Tokens), arguments: make(map[string]string, len(frame.Arguments))}
-		for name, value := range frame.Arguments {
-			p.macroFrames[i].arguments[name] = value
-		}
-	}
+	p.macroFrames = macroFrames
+	p.macroCalls = macroCalls
 	p.ignoreDepth = state.IgnoreDepth
 	p.ignoreCR = state.IgnoreCR
 	p.legacyText = append([]KAGEvent(nil), state.LegacyText...)

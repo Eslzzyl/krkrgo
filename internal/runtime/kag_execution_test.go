@@ -815,6 +815,166 @@ func TestKAGExecutionMacroExpansionAndArguments(t *testing.T) {
 	}
 }
 
+func TestKAGLocalCallsSuspendNestedMacroFrames(t *testing.T) {
+	source := `
+[macro name=outer]
+outer before
+[call target=*sub]
+outer after
+[endmacro]
+[macro name=inner]
+inner before
+[call target=*deep]
+inner after
+[endmacro]
+[outer]
+caller after
+[end]
+*sub
+sub before
+[inner]
+sub after
+[return]
+*deep
+deep body
+[return]
+`
+	parser, err := NewKAGParser("nested.ks", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text []string
+	parser.SetCallbacks(&KAGCallbacks{
+		OnText: func(_ *KAGParser, value string) error {
+			text = append(text, value)
+			return nil
+		},
+	})
+	budget := uint64(1_000)
+	if _, err := parser.Run(&budget); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"outer before", "sub before", "inner before", "deep body", "inner after", "sub after", "outer after", "caller after"}
+	if !reflect.DeepEqual(text, want) {
+		t.Fatalf("local call text order = %v, want %v", text, want)
+	}
+}
+
+func TestKAGMacroCallFramesSurviveRestoreAndAssign(t *testing.T) {
+	source := `
+[macro name=outer]
+outer before
+[call target=*sub]
+outer after
+[endmacro]
+[macro name=inner]
+inner before
+[call target=*deep]
+inner after
+[endmacro]
+[outer]
+caller after
+[end]
+*sub
+sub before
+[inner]
+sub after
+[return]
+*deep
+deep body
+[return]
+`
+	parser, err := NewKAGParser("nested-state.ks", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		event, err := parser.Step(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Kind == KAGEventText && event.Text == "deep body" {
+			break
+		}
+		if event.Kind == KAGEventEnd {
+			t.Fatal("scenario ended before nested call state")
+		}
+	}
+	state := parser.Store()
+	if len(state.MacroCalls) != 2 {
+		t.Fatalf("saved macro call depth = %d, want 2", len(state.MacroCalls))
+	}
+
+	restored, err := NewKAGParser("nested-state.ks", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.RestoreState(state); err != nil {
+		t.Fatalf("restore nested macro call state: %v", err)
+	}
+	assigned, err := NewKAGParser("nested-state.ks", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := assigned.assignFrom(parser, nil); err != nil {
+		t.Fatalf("assign nested macro call state: %v", err)
+	}
+	for name, continuation := range map[string]*KAGParser{"restored": restored, "assigned": assigned} {
+		var got []string
+		continuation.SetCallbacks(&KAGCallbacks{
+			OnText: func(_ *KAGParser, value string) error {
+				got = append(got, value)
+				return nil
+			},
+		})
+		budget := uint64(1_000)
+		if _, err := continuation.Run(&budget); err != nil {
+			t.Fatalf("%s continuation: %v", name, err)
+		}
+		want := []string{"inner after", "sub after", "outer after", "caller after"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s continuation text = %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestKAGCrossScenarioCallResumesMacroFrames(t *testing.T) {
+	parser, err := NewKAGParser("main.ks", `
+[macro name=outer]
+before
+[call target=*entry storage=callee.ks]
+after
+[endmacro]
+[outer]
+caller after
+[end]
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text []string
+	parser.SetCallbacks(&KAGCallbacks{
+		OnScenarioLoad: func(_ *KAGParser, storage, _ string) (string, error) {
+			if storage != "callee.ks" {
+				t.Fatalf("loaded storage = %q, want callee.ks", storage)
+			}
+			return "*entry\ncallee body\n[return]\n", nil
+		},
+		OnText: func(_ *KAGParser, value string) error {
+			text = append(text, value)
+			return nil
+		},
+	})
+	budget := uint64(1_000)
+	if _, err := parser.Run(&budget); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"before", "callee body", "after", "caller after"}
+	if !reflect.DeepEqual(text, want) {
+		t.Fatalf("cross-scenario call text = %v, want %v", text, want)
+	}
+}
+
 func TestKAGMacroDefinitionsSurviveScenarioLoad(t *testing.T) {
 	parser, err := NewKAGParser("first.ks", `
 [macro name=clear]

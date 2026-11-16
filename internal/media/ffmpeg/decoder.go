@@ -16,7 +16,8 @@ const (
 	MaxPacketBytes = 16 * 1024 * 1024
 	MaxAudioBlocks = 32
 
-	maxPendingFrames = 8
+	maxPendingFrames    = 8
+	maxAudioBlockFrames = 1_000_000
 )
 
 // Metadata describes the selected media streams.
@@ -432,41 +433,94 @@ func (d *Decoder) audioIndex() int32 {
 }
 
 func (d *Decoder) decodePacket(state *streamState) error {
-	if ret := d.api.avcodecSendPacket(state.context, d.packet); ret < 0 && ret != avErrorAgain {
-		return fmt.Errorf("%w: avcodec_send_packet returned %d", ErrMalformed, ret)
-	}
-	return d.receiveFrames(state)
-}
-
-func (d *Decoder) receiveFrames(state *streamState) error {
 	for {
-		ret := d.api.avcodecReceiveFrame(state.context, state.frame)
-		if ret == avErrorAgain || ret == avErrorEOF {
-			return nil
+		ret := d.api.avcodecSendPacket(state.context, d.packet)
+		if ret == avErrorAgain {
+			received, _, err := d.receiveFrames(state)
+			if err != nil {
+				return err
+			}
+			if received == 0 {
+				return fmt.Errorf("%w: avcodec_send_packet and avcodec_receive_frame both returned EAGAIN", ErrMalformed)
+			}
+			continue
 		}
 		if ret < 0 {
-			return fmt.Errorf("%w: avcodec_receive_frame returned %d", ErrMalformed, ret)
+			return fmt.Errorf("%w: avcodec_send_packet returned %d", ErrMalformed, ret)
+		}
+		_, _, err := d.receiveFrames(state)
+		return err
+	}
+}
+
+func (d *Decoder) receiveFrames(state *streamState) (int, bool, error) {
+	received := 0
+	for {
+		ret := d.api.avcodecReceiveFrame(state.context, state.frame)
+		if ret == avErrorAgain {
+			return received, false, nil
+		}
+		if ret == avErrorEOF {
+			return received, true, nil
+		}
+		if ret < 0 {
+			return received, false, fmt.Errorf("%w: avcodec_receive_frame returned %d", ErrMalformed, ret)
 		}
 		if state == d.video {
 			frame, err := d.convertVideo(state)
 			if err != nil {
-				return err
+				return received, false, err
 			}
 			d.queueVideoFrame(*frame)
 		} else {
 			block, err := d.convertAudio(state)
 			if err != nil {
-				return err
+				return received, false, err
 			}
 			if block != nil {
-				d.audioOut = append(d.audioOut, *block)
-				if !d.audioUnlimited && len(d.audioOut) > MaxAudioBlocks {
-					return fmt.Errorf("%w: decoded audio queue exceeds %d blocks", ErrMalformed, MaxAudioBlocks)
+				if err := d.queueAudioBlock(*block); err != nil {
+					return received, false, err
 				}
 			}
 		}
 		d.api.avFrameUnref(state.frame)
+		received++
 	}
+}
+
+func (d *Decoder) queueAudioBlock(block AudioBlock) error {
+	if len(d.audioOut) == MaxAudioBlocks {
+		d.coalesceAudioBlocks()
+	}
+	if len(d.audioOut) >= MaxAudioBlocks {
+		return fmt.Errorf("%w: decoded audio queue exceeds %d blocks", ErrMalformed, MaxAudioBlocks)
+	}
+	d.audioOut = append(d.audioOut, block)
+	return nil
+}
+
+func (d *Decoder) coalesceAudioBlocks() {
+	write := 0
+	for read := range d.audioOut {
+		block := d.audioOut[read]
+		if write > 0 {
+			previous := &d.audioOut[write-1]
+			if previous.SampleRate == block.SampleRate &&
+				previous.Channels == block.Channels &&
+				block.StartMS >= previous.StartMS {
+				previousFrames := len(previous.Samples) / int(previous.Channels)
+				blockFrames := len(block.Samples) / int(block.Channels)
+				if blockFrames <= maxAudioBlockFrames &&
+					previousFrames <= maxAudioBlockFrames-blockFrames {
+					previous.Samples = append(previous.Samples, block.Samples...)
+					continue
+				}
+			}
+		}
+		d.audioOut[write] = block
+		write++
+	}
+	d.audioOut = d.audioOut[:write]
 }
 
 // queueVideoFrame retains the earliest decoded frames so read-ahead cannot
@@ -481,18 +535,39 @@ func (d *Decoder) queueVideoFrame(frame Frame) {
 }
 
 func (d *Decoder) drain() error {
-	d.drained = true
 	for _, state := range []*streamState{d.video, d.audio} {
 		if state == nil || state.context == 0 {
 			continue
 		}
-		if ret := d.api.avcodecSendPacket(state.context, 0); ret < 0 && ret != avErrorEOF && ret != avErrorAgain {
-			return fmt.Errorf("%w: drain packet returned %d", ErrMalformed, ret)
-		}
-		if err := d.receiveFrames(state); err != nil {
-			return err
+		for {
+			ret := d.api.avcodecSendPacket(state.context, 0)
+			if ret == avErrorAgain {
+				received, _, err := d.receiveFrames(state)
+				if err != nil {
+					return err
+				}
+				if received == 0 {
+					return fmt.Errorf("%w: decoder did not make progress while draining", ErrMalformed)
+				}
+				continue
+			}
+			if ret == avErrorEOF {
+				break
+			}
+			if ret < 0 {
+				return fmt.Errorf("%w: drain packet returned %d", ErrMalformed, ret)
+			}
+			_, eof, err := d.receiveFrames(state)
+			if err != nil {
+				return err
+			}
+			if !eof {
+				return fmt.Errorf("%w: decoder stopped before drain EOF", ErrMalformed)
+			}
+			break
 		}
 	}
+	d.drained = true
 	return nil
 }
 

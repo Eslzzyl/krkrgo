@@ -440,7 +440,7 @@ func (s *Services) systemNative(vm *tjs.VM, operation string, args []tjs.Value, 
 			if loaded >= maxBytes {
 				break
 			}
-			data, e := s.readStorage(item.Text())
+			data, e := s.readLayerImage(item.Text())
 			if e != nil {
 				return tjs.VoidValue, e
 			}

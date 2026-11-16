@@ -528,6 +528,7 @@ func (p *KAGParser) consumeExplicitReturnFrame(parser *kag.Parser, localCalls in
 		if err := parser.Restore(cursor); err != nil {
 			return err
 		}
+		p.resumeLocalMacroFrames()
 		return p.notifyAfterReturn()
 	}
 	if n := len(p.crossCalls); n != 0 {
@@ -560,6 +561,7 @@ func (p *KAGParser) callScenario(storage, label string) error {
 		return err
 	}
 	p.macroFrames = nil
+	p.macroCalls = nil
 	if err := p.LoadScenario(storage, ""); err != nil {
 		return restore(err)
 	}
@@ -705,9 +707,13 @@ func (p *KAGParser) Step(budget *uint64) (KAGEvent, error) {
 					if p.kagCallDepth() >= 128 {
 						return KAGEvent{}, kagLocationError(token.Location, fmt.Errorf("KAG call depth exceeded"))
 					}
+					frames := p.macroFrames
+					p.macroFrames = nil
 					if err := p.parser.Call(label); err != nil {
+						p.macroFrames = frames
 						return KAGEvent{}, kagLocationError(token.Location, err)
 					}
+					p.macroCalls = append(p.macroCalls, frames)
 					p.conditionCalls = append(p.conditionCalls, append([]kagCondition(nil), p.conditions...))
 					p.conditions = nil
 				}

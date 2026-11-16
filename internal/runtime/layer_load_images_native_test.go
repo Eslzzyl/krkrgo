@@ -126,6 +126,21 @@ func TestNativeLayerLoadImagesUsesReferenceExtensionOrder(t *testing.T) {
 	}
 }
 
+func TestSystemTouchImagesResolvesExtensionlessImage(t *testing.T) {
+	project := t.TempDir()
+	writeLayerImagePNG(t, filepath.Join(project, "art", "sprite.png"))
+	storage, err := assets.OpenStorage(project, core.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	services := NewServices(storage, t.TempDir(), core.DefaultLimits())
+	session := NewSession(services, 20_000)
+	defer session.Close()
+	if _, err := session.Evaluate(`System.touchImages(['art/sprite'])`); err != nil {
+		t.Fatalf("touch extensionless image: %v", err)
+	}
+}
+
 func TestNativeLayerLoadImagesUsesSaveOverlayForExtensionlessImage(t *testing.T) {
 	project := t.TempDir()
 	saveDir := t.TempDir()

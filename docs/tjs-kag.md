@@ -21,7 +21,7 @@ Top-level named function and property declarations are available from the start 
 
 Script class declarations compile to the existing `Class`, `Function`, and `Property` descriptors. The VM supports empty classes, multiple evaluated base expressions, base-to-derived instance initialization, class-named constructors, inherited method/property lookup, `super` method/property dispatch, native-class initialization through the class dispatch path, rebinding cached native base-constructor calls to the instance under construction, and default parameter expressions in functions and class methods.
 
-An `&object.member` property reference binds before `incontextof`, so `*(&object.member incontextof receiver)` dereferences the descriptor on `receiver`; assigning through the reference invokes its setter on that same object. Unbound references retain the execution context used by the dereference.
+An `&object.member` property reference binds before `incontextof`, so `*(&object.member incontextof receiver)` dereferences the descriptor on `receiver`; assigning through the reference invokes its setter on that same object. Unbound references retain the execution context used by the dereference. The right operand of `incontextof` supplies its object as the new `this` receiver, even when that operand already carries a bound context.
 
 Legacy `SETP` writes through VM-owned property descriptors using the bound receiver. `invalidate` runs a script instance's finalizer before clearing its valid state.
 Legacy reads through the `this` proxy search the context object, including inherited members, before falling back to the global object. Only a missing-member result triggers that fallback; a present member whose value is `void` still shadows a global of the same name, matching the C++ intercode executor.
@@ -61,6 +61,7 @@ A lone `*` line is ignored rather than indexed as an empty first label; named la
 An empty label passed to `Jump`/`goToLabel` is a no-op, matching C++ KAG behavior. This permits storage-only transitions to load a scenario without attempting to resolve an empty label.
 
 `KAGParser.callLabel` keeps its return frame independently of the active scenario cursor, so callers may load another storage and jump to its target before returning to the original storage.
+Local label calls suspend active macro expansion frames until the called label returns, then resume the caller's macro at the next token. Nested local and cross-storage calls preserve those suspended frames through `store`, `restore`, and parser assignment.
 
 Macro definitions are indexed token-wise from the scenario and remain registered across `loadScenario`, `clear`, `store`, and `restore`. A `macro` tag encountered while a macro body is expanding registers a nested definition at that point and skips its body; a later occurrence of that name expands it, and a second expansion of the enclosing macro replaces the definition through the same member-ensure behavior as the reference macro dictionary. Nested definitions are lazy: they are not callable until the enclosing macro body reaches them, and definitions inside an inactive conditional branch are not registered. `@pmacro` definitions nested in a macro body register through the same path. Macro argument frames still stack in expansion order, so `%name|fallback` substitution sees the innermost frame.
 

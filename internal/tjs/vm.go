@@ -3164,9 +3164,6 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 						if er != nil {
 							e = er
 						} else {
-							if rightRef := right.ObjectRef(); rightRef.HasBoundContext() {
-								c = rightRef.Context
-							}
 							r[op.Out] = ObjectValue(NewObjectRef(a, c))
 						}
 					}

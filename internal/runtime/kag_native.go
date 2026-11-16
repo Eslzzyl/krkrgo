@@ -835,6 +835,8 @@ func kagStateValue(vm *tjs.VM, state KAGState) (tjs.Value, error) {
 	_ = object.Set("ignore_cr", tjs.IntegerValue(boolInt(state.IgnoreCR)))
 	macroFrames, _ := json.Marshal(state.MacroFrames)
 	_ = object.Set("macro_frames", tjs.StringValue(string(macroFrames)))
+	macroCalls, _ := json.Marshal(state.MacroCalls)
+	_ = object.Set("macro_calls", tjs.StringValue(string(macroCalls)))
 	macroDefinitions, _ := json.Marshal(state.MacroDefinitions)
 	_ = object.Set("macro_definitions", tjs.StringValue(string(macroDefinitions)))
 	paramMacroDefinitions, _ := json.Marshal(state.ParamMacroDefinitions)

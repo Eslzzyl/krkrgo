@@ -227,6 +227,17 @@ return [bound(), typeof unbound].join("|");
 		t.Fatalf("function incontextof null = %q, want %q", got.Text(), want)
 	}
 }
+func TestVMInContextOfUsesBoundOperandObject(t *testing.T) {
+	got := executeVMSource(t, `
+var target=%[keep:1], owner=%[keep:2];
+var bound=target incontextof owner;
+(Dictionary.clear incontextof bound)();
+return [typeof target.keep,owner.keep].join("|");
+`)
+	if want := "undefined|2"; got.Text() != want {
+		t.Fatalf("Dictionary.clear incontextof bound object = %q, want %q", got.Text(), want)
+	}
+}
 func TestVMArrayMethodsResolveFromFunctionContext(t *testing.T) {
 	got := executeVMSource(t, `
 var tmp=[];
