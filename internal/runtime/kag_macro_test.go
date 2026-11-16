@@ -23,8 +23,8 @@ After %value
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := parser.macroDefs["outer"]; !ok {
-		t.Fatal("outer macro was not indexed")
+	if _, ok := parser.macroDefs["outer"]; ok {
+		t.Fatal("outer macro was registered before its definition executed")
 	}
 	if _, ok := parser.macroDefs["inner"]; ok {
 		t.Fatal("nested macro was registered before its definition executed")
@@ -38,6 +38,9 @@ After %value
 	}})
 	if _, err := parser.Run(nil); err != nil {
 		t.Fatal(err)
+	}
+	if _, ok := parser.macroDefs["outer"]; !ok {
+		t.Fatal("outer macro was not registered when execution reached its definition")
 	}
 	want := []string{"After one", "After two", "Inner three"}
 	if strings.Join(text, "|") != strings.Join(want, "|") {
@@ -147,16 +150,17 @@ macrosStable = p.macros === p.macros;
 paramsStable = p.paramMacros === p.paramMacros;
 macroOne = p.macros.one;
 macroGoneBefore = p.macros.gone;
-styleX = p.paramMacros.style[0];
-styleY = p.paramMacros.style[3];
-linkStorage = p.paramMacros.link[1];
+styleX = p.paramMacros.style;
+styleY = p.paramMacros.style;
+linkStorage = p.paramMacros.link;
 while (p.getNextTag() !== void) {}
+macroOneAfter = p.macros.one;
 macroGoneAfter = p.macros.gone;
 paramGoneAfter = p.paramMacros.style;`
 	if _, err := session.executeSource("<kag-macro-projection>", source, false); err != nil {
 		t.Fatal(err)
 	}
-	value, err := session.Evaluate(`macrosStable && paramsStable && macroOne === "\nHello %who\n" && macroGoneBefore === "\nbye\n" && styleX === "x" && styleY === "2" && linkStorage === "&expr" && macroGoneAfter === void && paramGoneAfter === void`)
+	value, err := session.Evaluate(`macrosStable && paramsStable && macroOne === void && macroOneAfter === "\nHello %who\n" && macroGoneBefore === void && styleX === void && styleY === void && linkStorage === void && macroGoneAfter === void && paramGoneAfter === void`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,6 +183,9 @@ p.loadScenario("readonly.ks", "[macro name=one][endmacro]\n@end\n");`
 	if _, err := session.Evaluate(`p.macros = null`); err == nil || !strings.Contains(err.Error(), "read-only") {
 		t.Fatalf("KAGParser.macros assignment error = %v, want a read-only error", err)
 	}
+	if _, err := session.Evaluate(`while (p.getNextTag() !== void) {}`); err != nil {
+		t.Fatalf("execute macro definition: %v", err)
+	}
 	value, err := session.Evaluate(`p.macros.one !== void`)
 	if err != nil {
 		t.Fatal(err)
@@ -191,6 +198,9 @@ p.loadScenario("readonly.ks", "[macro name=one][endmacro]\n@end\n");`
 func TestKAGMacroBodyTextCanonicalForm(t *testing.T) {
 	parser, err := NewKAGParser("body.ks", "[macro name=body]\nplain [tag a=1 b=&x c=\"needs quote\"] [[literal]\n[endmacro]\n")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parser.Run(nil); err != nil {
 		t.Fatal(err)
 	}
 	body, ok := parser.macroDefs["body"]
@@ -223,5 +233,57 @@ after = p.macros.inner;`
 	if ok, _ := value.Truth(); !ok {
 		detail, _ := session.Evaluate(`[before,after].join("|")`)
 		t.Fatalf("nested macro projection = %v (%v)", value, detail)
+	}
+}
+
+func TestKAGTopLevelMacroDefinitionsRegisterInExecutionOrder(t *testing.T) {
+	source := `[use]
+[macro name=use]
+old
+[endmacro]
+[use]
+[macro name=use]
+new
+[endmacro]
+[use]
+[if exp="false"]
+[macro name=hidden]
+hidden
+[endmacro]
+[endif]
+[hidden]
+@end
+`
+	parser, err := NewKAGParser("macro-order.ks", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := parser.macroDefs["use"]; ok {
+		t.Fatal("macro was registered before its top-level definition executed")
+	}
+	var text, tags []string
+	parser.SetCallbacks(&KAGCallbacks{
+		OnText: func(_ *KAGParser, value string) error {
+			if value = strings.TrimSpace(value); value != "" {
+				text = append(text, value)
+			}
+			return nil
+		},
+		OnTag: func(_ *KAGParser, tag *kag.Tag) error {
+			tags = append(tags, tag.Name)
+			return nil
+		},
+	})
+	if _, err := parser.Run(nil); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(text, "|") != "old|new" {
+		t.Fatalf("macro execution text = %v, want old then new", text)
+	}
+	if strings.Join(tags, "|") != "use|hidden" {
+		t.Fatalf("tags before registration and from inactive definition = %v", tags)
+	}
+	if _, ok := parser.macroDefs["hidden"]; ok {
+		t.Fatal("macro in an inactive conditional branch was registered")
 	}
 }

@@ -529,7 +529,20 @@ func (v *VideoOverlay) CurrentFrame() (VideoFrame, bool) {
 	}
 	f := *v.current
 	f.RGBA = append([]byte(nil), f.RGBA...)
+
 	return f, true
+}
+func (v *VideoOverlay) renderOverlaySnapshot() (VideoFrame, Rect, bool) {
+	if v == nil {
+		return VideoFrame{}, Rect{}, false
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if !v.visible || (v.mode != 0 && v.mode != 2) || v.status != VideoPlaying ||
+		v.current == nil || v.bounds.Width <= 0 || v.bounds.Height <= 0 {
+		return VideoFrame{}, Rect{}, false
+	}
+	return *v.current, v.bounds, true
 }
 
 func (v *VideoOverlay) Close() {
@@ -829,6 +842,68 @@ func (v *VideoOverlay) AudioBlocks() []VideoAudioBlock {
 	}
 	return out
 }
+// compositeOverlay draws the native overlay/mixer presentation surface into a
+// captured frame. Layer mode is already rendered by its assigned target layers.
+func (v *VideoOverlay) compositeOverlay(dst []byte, dstWidth, dstHeight int32) {
+	if v == nil || dstWidth <= 0 || dstHeight <= 0 {
+		return
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if !v.visible || (v.mode != 0 && v.mode != 2) || v.current == nil ||
+		v.bounds.Width <= 0 || v.bounds.Height <= 0 {
+		return
+	}
+	if len(dst) < int(dstWidth)*int(dstHeight)*4 ||
+		v.current.Width <= 0 || v.current.Height <= 0 ||
+		len(v.current.RGBA) != int(v.current.Width)*int(v.current.Height)*4 {
+		return
+	}
+	left, top := int64(v.bounds.X), int64(v.bounds.Y)
+	right, bottom := left+int64(v.bounds.Width), top+int64(v.bounds.Height)
+	if left < 0 {
+		left = 0
+	}
+	if top < 0 {
+		top = 0
+	}
+	if right > int64(dstWidth) {
+		right = int64(dstWidth)
+	}
+	if bottom > int64(dstHeight) {
+		bottom = int64(dstHeight)
+	}
+	if left >= right || top >= bottom {
+		return
+	}
+	for y := top; y < bottom; y++ {
+		sourceY := int((y-int64(v.bounds.Y))*int64(v.current.Height) / int64(v.bounds.Height))
+		sourceRow := sourceY * int(v.current.Width) * 4
+		for x := left; x < right; x++ {
+			sourceX := int((x-int64(v.bounds.X))*int64(v.current.Width) / int64(v.bounds.Width))
+			source := sourceRow + sourceX*4
+			target := (int(y)*int(dstWidth) + int(x)) * 4
+			alpha := uint32(v.current.RGBA[source+3])
+			if alpha == 255 {
+				copy(dst[target:target+4], v.current.RGBA[source:source+4])
+				continue
+			}
+			dstAlpha := uint32(dst[target+3])
+			outAlpha := alpha + (dstAlpha*(255-alpha)+127)/255
+			if outAlpha == 0 {
+				continue
+			}
+			for channel := 0; channel < 3; channel++ {
+				sourceColor := uint32(v.current.RGBA[source+channel])
+				dstColor := uint32(dst[target+channel])
+				premultiplied := sourceColor*alpha + (dstColor*dstAlpha*(255-alpha)+127)/255
+				dst[target+channel] = byte((premultiplied + outAlpha/2) / outAlpha)
+			}
+			dst[target+3] = byte(outAlpha)
+		}
+	}
+}
+
 func alphaMoviePixels(frame *VideoFrame) (int32, int32, []byte, error) {
 	if frame == nil || frame.Width <= 0 || frame.Height <= 0 || frame.Width%2 != 0 {
 		return 0, 0, nil, fmt.Errorf("alpha movie frame requires a positive even width")

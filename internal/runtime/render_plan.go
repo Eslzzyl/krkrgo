@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"hash/maphash"
 	"math"
+	"sort"
 )
 
 type RenderPlan struct {
@@ -28,6 +29,7 @@ type RenderNode struct {
 	HoldAlpha                                               bool
 	ImageWidth, ImageHeight, ImageLeft, ImageTop            int32
 	RGBA                                                    []byte
+	VideoOverlay                                            bool
 	ImageClear                                              bool
 	Motion                                                  *RenderMotion
 	ImageHash                                               uint64
@@ -591,6 +593,7 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		write(uint64(node.Opacity))
 		write(uint64(node.ImageHash))
 		write(uint64(node.ImageOpsHash))
+		write(boolUint64(node.VideoOverlay))
 		write(uint64(node.ChildStart))
 		write(uint64(node.ChildCount))
 		if node.Transition != nil {
@@ -814,6 +817,47 @@ func (s *Services) captureRenderPlanInto(dst *RenderPlan) (RenderPlan, error) {
 		if _, err := walk(c.Root, 0, 0, c.Root.Type, true); err != nil {
 			return RenderPlan{}, err
 		}
+	}
+	if len(p.Nodes) != 0 {
+		s.videoRenderMu.Lock()
+		s.mu.RLock()
+		s.videoRenderIDs = s.videoRenderIDs[:0]
+		for id := range s.Videos {
+			s.videoRenderIDs = append(s.videoRenderIDs, id)
+		}
+		sort.Slice(s.videoRenderIDs, func(i, j int) bool { return s.videoRenderIDs[i] < s.videoRenderIDs[j] })
+		videoNodeCount := 0
+		for _, id := range s.videoRenderIDs {
+			video := s.Videos[id]
+			frame, bounds, ok := video.renderOverlaySnapshot()
+			if !ok || frame.Width <= 0 || frame.Height <= 0 ||
+				len(frame.RGBA) != int(frame.Width)*int(frame.Height)*4 {
+				continue
+			}
+			node := RenderNode{
+				ID:          LayerID(id),
+				Bounds:      bounds,
+				Opacity:     255,
+				Visible:     true,
+				Type:        LayerAlpha,
+				VideoOverlay: true,
+				ImageWidth:  frame.Width,
+				ImageHeight: frame.Height,
+				RGBA:        frame.RGBA,
+				ImageHash:   hashBytes(frame.RGBA),
+			}
+			node.ImageBaseHash = node.ImageHash
+			nodeIndex := len(p.Nodes)
+			p.Nodes = append(p.Nodes, node)
+			p.ChildIndices = append(p.ChildIndices, nodeIndex)
+			writeNodeState(&p.Nodes[nodeIndex])
+			videoNodeCount++
+		}
+		if videoNodeCount != 0 {
+			p.Nodes[0].ChildCount += videoNodeCount
+		}
+		s.mu.RUnlock()
+		s.videoRenderMu.Unlock()
 	}
 	p.StateHash = state.Sum64()
 	p.StateHashValid = true

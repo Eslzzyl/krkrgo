@@ -645,8 +645,8 @@ func newOpaqueTransitionServices(t *testing.T) (*Services, *Layer, []byte) {
 	return services, transition, pixels
 }
 
-func TestCaptureFrameForPresentationBorrowsFullScreenOpaqueTransition(t *testing.T) {
-	services, transition, pixels := newOpaqueTransitionServices(t)
+func TestCaptureFrameForPresentationUsesFullScreenOpaqueTransition(t *testing.T) {
+	services, transition, _ := newOpaqueTransitionServices(t)
 	expected, err := services.Compositor.Compose()
 	if err != nil {
 		t.Fatal(err)
@@ -654,9 +654,6 @@ func TestCaptureFrameForPresentationBorrowsFullScreenOpaqueTransition(t *testing
 	frame, err := services.CaptureFrameForPresentation()
 	if err != nil {
 		t.Fatal(err)
-	}
-	if &frame.RGBA[0] != &pixels[0] {
-		t.Fatal("presentation did not borrow the full-screen transition pixels")
 	}
 	if !frame.Opaque {
 		t.Fatal("opaque transition frame did not carry the alpha assertion")

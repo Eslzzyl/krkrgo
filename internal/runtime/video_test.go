@@ -32,6 +32,107 @@ func testVideo(t *testing.T) *VideoOverlay {
 	}
 	return v
 }
+func TestDefaultVideoOverlayComposesIntoCapturedFrame(t *testing.T) {
+	services := DefaultServices()
+	root := NewRootLayer(1, 3, 2)
+	background := bytes.Repeat([]byte{0, 0, 255, 255}, 6)
+	if err := root.SetRGBA(3, 2, background); err != nil {
+		t.Fatal(err)
+	}
+	services.SetRoot(root)
+
+	video := NewVideoOverlay()
+	if err := video.SetSourceMetadata(VideoSource{Name: "overlay", Width: 2, Height: 1, FPS: 1, Frames: 1, DurationMS: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := video.QueueFrame(VideoFrame{Index: 0, Width: 2, Height: 1, RGBA: []byte{
+		255, 0, 0, 255,
+		255, 255, 255, 0,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := video.SetFrame(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := video.SetBounds(Rect{X: 1, Y: 0, Width: 2, Height: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := video.Play(); err != nil {
+		t.Fatal(err)
+	}
+	services.Videos[1] = video
+
+	frame, err := services.CaptureFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := frame.RGBA, []byte{
+		0, 0, 255, 255, 255, 0, 0, 255, 0, 0, 255, 255,
+		0, 0, 255, 255, 255, 0, 0, 255, 0, 0, 255, 255,
+	}; !bytes.Equal(got, want) {
+		t.Fatalf("overlay-composed frame = %v, want %v", got, want)
+	}
+
+	video.SetVisible(false)
+	hidden, err := services.CaptureFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(hidden.RGBA, background) {
+		t.Fatalf("hidden overlay frame = %v, want background %v", hidden.RGBA, background)
+	}
+}
+
+func TestRenderPlanIncludesDynamicVideoOverlayAfterLayerTree(t *testing.T) {
+	services := DefaultServices()
+	root := NewRootLayer(1, 1, 1)
+	services.SetRoot(root)
+	video := NewVideoOverlay()
+	if err := video.SetSourceMetadata(VideoSource{Name: "plan-overlay", Width: 1, Height: 1, FPS: 1, Frames: 2, DurationMS: 2000}); err != nil {
+		t.Fatal(err)
+	}
+	for i, color := range [][]byte{{255, 0, 0, 255}, {0, 255, 0, 255}} {
+		if err := video.QueueFrame(VideoFrame{Index: uint64(i), Width: 1, Height: 1, RGBA: color}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := video.SetFrame(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := video.Play(); err != nil {
+		t.Fatal(err)
+	}
+	services.Videos[1] = video
+
+	first, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Nodes) != 2 || first.Nodes[1].VideoOverlay != true ||
+		first.Nodes[0].ChildCount != 1 || first.ChildIndices[first.Nodes[0].ChildStart] != 1 {
+		t.Fatalf("video overlay plan = %#v, want final root child", first)
+	}
+	firstHash := first.StateHash
+	if err := video.SetFrame(1); err != nil {
+		t.Fatal(err)
+	}
+	second, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.StateHash == firstHash || second.Nodes[1].RGBA[1] != 255 {
+		t.Fatalf("updated video plan hash/pixels = %x / %v, previous hash %x", second.StateHash, second.Nodes[1].RGBA, firstHash)
+	}
+	video.SetVisible(false)
+	hidden, err := services.CaptureRenderPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hidden.Nodes) != 1 || hidden.Nodes[0].ChildCount != 0 {
+		t.Fatalf("hidden video plan nodes = %d with root children %d", len(hidden.Nodes), hidden.Nodes[0].ChildCount)
+	}
+}
+
 
 func TestVideoSidecarUnavailableSkipsOpenAndTransport(t *testing.T) {
 	v := NewVideoOverlay()

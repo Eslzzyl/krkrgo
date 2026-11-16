@@ -212,6 +212,8 @@ type Services struct {
 	frameCacheValid bool
 	dynamicRGBA     []byte
 	dynamicProvince []byte
+	videoRenderIDs  []tjs.ObjectID
+	videoRenderMu   sync.Mutex
 	renderDiag      frameCaptureDiagnostics
 }
 
@@ -1181,7 +1183,7 @@ func (s *Services) captureFrameWithPresentation(presentation, revisionsOnly bool
 			} else {
 				transition, ok = c.fullScreenOpaqueTransition()
 			}
-			if ok {
+			if ok && videos == 0 {
 				composed := FrameSnapshot{Width: c.Width, Height: c.Height, RGBA: transition.transitionPixels, Opaque: true}
 				s.recordFrameCaptureTimed(composed, true, false, invalidated, 0, false, transitions, videos, timings, statsEnabled)
 				return composed, nil
@@ -1195,6 +1197,9 @@ func (s *Services) captureFrameWithPresentation(presentation, revisionsOnly bool
 			return FrameSnapshot{}, err
 		}
 		s.dynamicRGBA, s.dynamicProvince = composed.RGBA, composed.Province
+		if videos != 0 {
+			s.compositeVideoOverlays(&composed)
+		}
 		s.recordFrameCaptureTimed(composed, true, false, invalidated, 0, false, transitions, videos, timings, statsEnabled)
 		return composed, nil
 	}
@@ -1257,6 +1262,9 @@ func (s *Services) captureFrameWithPresentation(presentation, revisionsOnly bool
 	s.frameCache = frame
 	s.frameCacheHash = fingerprint
 	s.frameCacheValid = true
+	if videos != 0 {
+		s.compositeVideoOverlays(&frame)
+	}
 	s.recordFrameCaptureTimed(frame, true, false, invalidated, fingerprint, true, 0, 0, timings, statsEnabled)
 	return frame, nil
 }
@@ -1269,6 +1277,26 @@ func (s *Services) recordFrameCaptureTimed(frame FrameSnapshot, composed, cacheH
 	started := time.Now()
 	s.recordFrameCapture(frame, composed, cacheHit, invalidated, renderState, renderStateValid, transitions, videos, timings)
 	s.renderDiag.recordTime += time.Since(started)
+}
+
+func (s *Services) compositeVideoOverlays(frame *FrameSnapshot) {
+	if s == nil || frame == nil || frame.Empty() {
+		return
+	}
+	s.videoRenderMu.Lock()
+	defer s.videoRenderMu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	s.videoRenderIDs = s.videoRenderIDs[:0]
+	for id := range s.Videos {
+		s.videoRenderIDs = append(s.videoRenderIDs, id)
+	}
+	sort.Slice(s.videoRenderIDs, func(i, j int) bool { return s.videoRenderIDs[i] < s.videoRenderIDs[j] })
+	for _, id := range s.videoRenderIDs {
+		if video := s.Videos[id]; video != nil {
+			video.compositeOverlay(frame.RGBA, frame.Width, frame.Height)
+		}
+	}
 }
 
 func (s *Services) playingVideoCount() int {

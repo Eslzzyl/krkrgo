@@ -9,10 +9,8 @@ import (
 	"github.com/eslzzyl/krkrgo/internal/kag"
 )
 
-func indexKAGMacros(scenario kag.Scenario) (map[string][]kag.Token, map[int]int, map[string][]kag.Attribute, error) {
-	macros := make(map[string][]kag.Token)
+func indexKAGMacros(scenario kag.Scenario) (map[int]int, error) {
 	ranges := make(map[int]int)
-	pmacros := make(map[string][]kag.Attribute)
 	for i := 0; i < len(scenario.Tokens); i++ {
 		token := scenario.Tokens[i]
 		if token.Kind != kag.KindTag || token.Tag == nil {
@@ -22,11 +20,7 @@ func indexKAGMacros(scenario kag.Scenario) (map[string][]kag.Token, map[int]int,
 		case "macro":
 			name, ok := token.Tag.Get("name")
 			if !ok || strings.TrimSpace(name) == "" {
-				return nil, nil, nil, kagLocationError(token.Location, fmt.Errorf("KAG macro missing name"))
-			}
-			name = strings.ToLower(name)
-			if _, exists := macros[name]; exists {
-				return nil, nil, nil, kagLocationError(token.Location, fmt.Errorf("duplicate KAG macro: %s", name))
+				return nil, kagLocationError(token.Location, fmt.Errorf("KAG macro missing name"))
 			}
 			start := i + 1
 			depth := 1
@@ -34,7 +28,7 @@ func indexKAGMacros(scenario kag.Scenario) (map[string][]kag.Token, map[int]int,
 			for j := start; j < len(scenario.Tokens); j++ {
 				inner := scenario.Tokens[j]
 				if inner.InlineScript != nil {
-					return nil, nil, nil, kagLocationError(inner.Location, fmt.Errorf("inline script inside KAG macro"))
+					return nil, kagLocationError(inner.Location, fmt.Errorf("inline script inside KAG macro"))
 				}
 				if inner.Kind != kag.KindTag || inner.Tag == nil {
 					continue
@@ -53,33 +47,15 @@ func indexKAGMacros(scenario kag.Scenario) (map[string][]kag.Token, map[int]int,
 				}
 			}
 			if end < 0 {
-				return nil, nil, nil, kagLocationError(token.Location, fmt.Errorf("KAG macro %s missing endmacro", name))
+				return nil, kagLocationError(token.Location, fmt.Errorf("KAG macro %s missing endmacro", name))
 			}
-			body := append([]kag.Token(nil), scenario.Tokens[start:end]...)
-			macros[name] = body
 			ranges[i] = end + 1
 			i = end
 		case "endmacro":
-			return nil, nil, nil, kagLocationError(token.Location, fmt.Errorf("KAG endmacro without macro"))
-		case "pmacro":
-			name, ok := token.Tag.Get("name")
-			if !ok || strings.TrimSpace(name) == "" {
-				return nil, nil, nil, kagLocationError(token.Location, fmt.Errorf("KAG parameter macro missing name"))
-			}
-			name = strings.ToLower(name)
-			if _, exists := pmacros[name]; exists {
-				return nil, nil, nil, kagLocationError(token.Location, fmt.Errorf("duplicate KAG parameter macro: %s", name))
-			}
-			attrs := make([]kag.Attribute, 0, len(token.Tag.Attributes))
-			for _, attr := range token.Tag.Attributes {
-				if attr.Name != "name" {
-					attrs = append(attrs, attr)
-				}
-			}
-			pmacros[name] = attrs
+			return nil, kagLocationError(token.Location, fmt.Errorf("KAG endmacro without macro"))
 		}
 	}
-	return macros, ranges, pmacros, nil
+	return ranges, nil
 }
 
 func macroArgumentMap(tag *kag.Tag) map[string]string {

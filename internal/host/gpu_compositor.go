@@ -16,6 +16,7 @@ type gpuTextureRole uint8
 
 const (
 	gpuTextureLayer gpuTextureRole = iota
+	gpuTextureVideo
 	gpuTextureDestination
 	gpuTextureSource
 	gpuTextureRule
@@ -2156,7 +2157,11 @@ func (c *GPUCompositor) drawNode(plan runtime.RenderPlan, index int, targetType 
 					if n.GPUStretch {
 						sourceWidth, sourceHeight = n.GPUStretchSourceWidth, n.GPUStretchSourceHeight
 					}
-					source, err = c.texture(gpuTextureKey{id: n.ID, role: gpuTextureLayer}, sourceWidth, sourceHeight, n.RGBA, n.ImageHash, n.Type == runtime.LayerOpaque, n.ImageDirty, n.ImageDirtyValid && !n.GPUStretch && n.Motion == nil)
+					role := gpuTextureLayer
+					if n.VideoOverlay {
+						role = gpuTextureVideo
+					}
+					source, err = c.texture(gpuTextureKey{id: n.ID, role: role}, sourceWidth, sourceHeight, n.RGBA, n.ImageHash, n.Type == runtime.LayerOpaque, n.ImageDirty, n.ImageDirtyValid && !n.GPUStretch && n.Motion == nil)
 				}
 				if err != nil {
 					return err

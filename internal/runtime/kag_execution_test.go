@@ -1001,6 +1001,14 @@ func TestKAGMacroDefinitionsSurviveScenarioLoad(t *testing.T) {
 `); err != nil {
 		t.Fatalf("load scenario using earlier macro: %v", err)
 	}
+	for range 10 {
+		if _, ok := parser.macroDefs["local"]; ok {
+			break
+		}
+		if _, err := parser.Step(nil); err != nil {
+			t.Fatalf("execute local macro definition: %v", err)
+		}
+	}
 	if err := parser.pushKAGMacro(&kag.Tag{Name: "clear"}); err != nil {
 		t.Fatalf("expand clear macro: %v", err)
 	}
@@ -1312,7 +1320,11 @@ func TestKAGMacroMalformedDefinitionsReportLocation(t *testing.T) {
 	if _, err := NewKAGParser("bad-macro.ks", "@macro name=x\nbody\n"); err == nil || !strings.Contains(err.Error(), "bad-macro.ks:1:1") || !strings.Contains(err.Error(), "missing endmacro") {
 		t.Fatalf("missing macro terminator error = %v", err)
 	}
-	if _, err := NewKAGParser("bad-pmacro.ks", "@pmacro x=1\n"); err == nil || !strings.Contains(err.Error(), "parameter macro missing name") {
+	parser, err := NewKAGParser("bad-pmacro.ks", "@pmacro x=1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parser.Step(nil); err == nil || !strings.Contains(err.Error(), "bad-pmacro.ks:1:1") || !strings.Contains(err.Error(), "parameter macro missing name") {
 		t.Fatalf("missing parameter macro name error = %v", err)
 	}
 }

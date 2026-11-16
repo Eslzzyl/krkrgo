@@ -46,12 +46,10 @@ func NewKAGParser(storage, source string) (*KAGParser, error) {
 	if err != nil {
 		return nil, err
 	}
-	macros, ranges, pmacros, err := indexKAGMacros(scenario)
-	if err != nil {
-		return nil, err
-	}
 	p := NewKAGParserFromScenario(scenario)
-	p.macroDefs, p.macroRanges, p.paramMacroDefs, p.macroIndexErr = macros, ranges, pmacros, nil
+	if p.macroIndexErr != nil {
+		return nil, p.macroIndexErr
+	}
 	return p, nil
 }
 
@@ -72,15 +70,15 @@ func NewKAGParserWithCallbacks(storage, source string, callbacks *KAGCallbacks) 
 
 // NewKAGParserFromScenario constructs a parser without reparsing a scenario.
 func NewKAGParserFromScenario(scenario kag.Scenario) *KAGParser {
-	macros, ranges, pmacros, err := indexKAGMacros(scenario)
+	ranges, err := indexKAGMacros(scenario)
 	p := &KAGParser{
 		parser:             kag.NewParser(scenario),
 		alive:              true,
 		processSpecialTags: true,
 		debugLevel:         1,
-		macroDefs:          macros,
+		macroDefs:          make(map[string][]kag.Token),
 		macroRanges:        ranges,
-		paramMacroDefs:     pmacros,
+		paramMacroDefs:     make(map[string][]kag.Attribute),
 		macroIndexErr:      err,
 	}
 	p.state = newKAGState(scenario)

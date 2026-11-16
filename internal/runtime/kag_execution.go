@@ -813,6 +813,10 @@ func (p *KAGParser) Step(budget *uint64) (KAGEvent, error) {
 						return KAGEvent{}, err
 					}
 				}
+				scenario := p.parser.Scenario()
+				if err := p.defineKAGMacro(macroName, append([]kag.Token(nil), scenario.Tokens[start+1:end-1]...), token.Location); err != nil {
+					return KAGEvent{}, err
+				}
 				cursor := p.parser.State()
 				cursor.Position = end
 				if err := p.parser.Restore(cursor); err != nil {
@@ -821,10 +825,6 @@ func (p *KAGParser) Step(budget *uint64) (KAGEvent, error) {
 				continue
 			case "pmacro":
 				if !p.conditionActive() {
-					continue
-				}
-				if len(p.macroFrames) == 0 {
-					// Top-level definitions are indexed while loading.
 					continue
 				}
 				paramName, ok := token.Tag.Get("name")
@@ -981,26 +981,12 @@ func (p *KAGParser) LoadScenario(storage, source string) error {
 	if err != nil {
 		return err
 	}
-	macros, ranges, pmacros, err := indexKAGMacros(scenario)
+	ranges, err := indexKAGMacros(scenario)
 	if err != nil {
 		return err
 	}
-	// KAG macro definitions belong to the parser, not a single scenario.
-	// Loading another storage replaces only the ranges used to skip that
-	// storage's definitions; existing macro bodies remain callable until
-	// erasemacro/erasepmacro removes them.
-	if p.macroDefs == nil && len(macros) != 0 {
-		p.macroDefs = make(map[string][]kag.Token, len(macros))
-	}
-	for name, body := range macros {
-		p.macroDefs[name] = body
-	}
-	if p.paramMacroDefs == nil && len(pmacros) != 0 {
-		p.paramMacroDefs = make(map[string][]kag.Attribute, len(pmacros))
-	}
-	for name, attributes := range pmacros {
-		p.paramMacroDefs[name] = attributes
-	}
+	// Definitions persist across scenarios; this scenario contributes only
+	// the token ranges needed to skip definitions when execution reaches them.
 	p.parser = kag.NewParser(scenario)
 	p.state = newKAGState(scenario)
 	p.macroRanges = ranges

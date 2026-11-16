@@ -2077,6 +2077,14 @@ func (s *Session) gpuPlanReusable() bool {
 		s.gpuPlanCacheBackground != s.Services.Compositor.Background {
 		return false
 	}
+	if s.Services.playingVideoCount() != 0 {
+		return false
+	}
+	for _, node := range s.gpuPlan.Nodes {
+		if node.VideoOverlay {
+			return false
+		}
+	}
 	for _, dependency := range s.gpuPlanCacheBitmaps {
 		if dependency.bitmap == nil || dependency.bitmap.imageRevision() != dependency.revision {
 			return false
