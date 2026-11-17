@@ -2586,7 +2586,7 @@ func (v *VM) vmStringMethod(name string) (Value, bool, error) {
 	}
 	switch name {
 	case "sprintf", "charAt", "indexOf", "lastIndexOf", "substr", "substring",
-		"escape", "repeat", "toUpperCase", "toLowerCase", "trim", "split", "replace":
+		"escape", "repeat", "toUpperCase", "toLowerCase", "trim", "reverse", "split", "replace":
 	default:
 		return VoidValue, false, nil
 	}
@@ -4772,6 +4772,11 @@ func (v *VM) callStringMethod(value Value, name string, args []Value, h Host, b 
 		return StringValue(strings.ToLower(value.Text())), nil
 	case "trim":
 		return StringValue(strings.TrimFunc(value.Text(), unicode.IsSpace)), nil
+	case "reverse":
+		if len(args) != 0 {
+			return VoidValue, ErrBadParamCount
+		}
+		return reverseStringValue(value), nil
 	case "split":
 		if len(args) > 0 {
 			if r := regexpValue(args[0]); r != nil {

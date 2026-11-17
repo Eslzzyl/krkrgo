@@ -435,6 +435,14 @@ func stringUTF16LastIndex(haystack, needle []uint16) int {
 	}
 	return -1
 }
+func reverseStringValue(value Value) Value {
+	reversed := make(UTF16, len(value.string))
+	for i, unit := range value.string {
+		reversed[len(value.string)-1-i] = unit
+	}
+	return Value{kind: KindString, string: reversed}
+}
+
 func stringMethod(d *Dispatcher, value Value, name string) (Value, error) {
 	if index, ok := canonicalArrayIndex(name); ok {
 		if index >= int64(len(value.string)) {
@@ -562,6 +570,13 @@ func stringMethod(d *Dispatcher, value Value, name string) (Value, error) {
 	case "trim":
 		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
 			return StringValue(strings.TrimFunc(v.Text(), unicode.IsSpace)), nil
+		}), nil
+	case "reverse":
+		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {
+			if len(a) != 0 {
+				return VoidValue, ErrBadParamCount
+			}
+			return reverseStringValue(v), nil
 		}), nil
 	case "split":
 		return makeValueMethod(d, name, value, func(v Value, a []Value) (Value, error) {

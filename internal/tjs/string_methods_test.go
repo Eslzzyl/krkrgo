@@ -1,6 +1,9 @@
 package tjs
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestVMStringPrimitiveMethods(t *testing.T) {
 	got := executeVMSource(t, `
@@ -15,7 +18,8 @@ return s.length == 7 &&
     "hello".toUpperCase() == "HELLO" && "HELLO".toLowerCase() == "hello" &&
     " \t alpha \n".trim() == "alpha" && split.join("|") == "a||b|" &&
     "abc".replace("b", "x") == "axc" && replaced == "axxx" &&
-    " clipleft=0 cliptop=0 ".split(" ",,true).join(",") == "clipleft=0,cliptop=0";
+    " clipleft=0 cliptop=0 ".split(" ",,true).join(",") == "clipleft=0,cliptop=0" &&
+    "abc".reverse() == "cba";
 `)
 	truth, err := got.Truth()
 	if err != nil {
@@ -285,5 +289,18 @@ func TestDispatchStringSearchUsesUTF16Indices(t *testing.T) {
 		if got.IntegerValue() != test.want {
 			t.Errorf("%s(%q) = %v, want %d", test.name, test.needle, got, test.want)
 		}
+	}
+}
+
+func TestDispatchStringReverseUsesUTF16Units(t *testing.T) {
+	d := NewDispatcher(NewObjectTable())
+	input := StringUnits([]uint16{'a', '\n', 0xd800})
+	got, err := d.CallMember(input, "reverse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []uint16{0xd800, '\n', 'a'}
+	if !reflect.DeepEqual([]uint16(got.UTF16()), want) {
+		t.Fatalf("String.reverse UTF-16 units = %v, want %v", got.UTF16(), want)
 	}
 }
