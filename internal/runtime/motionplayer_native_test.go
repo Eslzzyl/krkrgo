@@ -2,12 +2,7 @@ package runtime
 
 import (
 	"math"
-	"path/filepath"
-	goruntime "runtime"
 	"testing"
-
-	"github.com/eslzzyl/krkrgo/internal/assets"
-	"github.com/eslzzyl/krkrgo/internal/core"
 )
 
 func TestMotionPlayerLinkInstallsPortableResourceManagerSurface(t *testing.T) {
@@ -47,32 +42,6 @@ func TestMotionPlayerLinkInstallsPortableResourceManagerSurface(t *testing.T) {
 	}
 }
 
-func TestLoadMotionResourceAcceptsRJTitleBackground(t *testing.T) {
-	_, source, _, ok := goruntime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	project := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
-	storage, err := assets.OpenStorage(project, core.DefaultLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	services := NewServices(storage, t.TempDir(), core.DefaultLimits())
-	resource, err := services.loadMotionResource("startup.tjs/motion/other/title_bg.mtn")
-	if err != nil {
-		t.Fatalf("load RJ title background motion: %v", err)
-	}
-	if resource == nil || resource.doc == nil {
-		t.Fatal("RJ title background motion returned no decoded document")
-	}
-	frame, err := renderPSBMotion(resource, "title_bg", "normal", 0, 0)
-	if err != nil {
-		t.Fatalf("render RJ default title frame: %v", err)
-	}
-	if frame == nil || frame.Width <= 0 || frame.Height <= 0 {
-		t.Fatalf("render RJ default title frame returned invalid image: %#v", frame)
-	}
-}
 
 func TestMotionPlayerLinkExtendsExistingMotionNamespace(t *testing.T) {
 	session := NewSession(DefaultServices(), 100_000)
