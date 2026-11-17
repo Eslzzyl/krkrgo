@@ -389,7 +389,7 @@ func (s *Services) textRenderRender(r *textRenderState, args []tjs.Value, budget
 			r.pending[ci].delay = 0
 		}
 	}
-	for _, name := range []string{"word_break", "width_time_scale"} {
+	for _, name := range []string{"word_break"} {
 		if value, ok := r.options[name]; ok {
 			enabled, e := value.Truth()
 			if e != nil {

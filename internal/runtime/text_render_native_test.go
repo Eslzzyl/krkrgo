@@ -109,6 +109,23 @@ func TestTextRenderBaseLayoutAndCharacterContract(t *testing.T) {
 	}
 }
 
+func TestTextRenderWidthTimeScaleOptionIsAccepted(t *testing.T) {
+	services, vm, context := newTextRenderTestContext(t)
+	options := vm.Objects.New(tjs.CategoryDictionary)
+	if err := options.Set("width_time_scale", tjs.IntegerValue(1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := services.textRenderNative(vm, context, "setOption", []tjs.Value{tjs.ObjectValue(options.Ref())}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := services.textRenderNative(vm, context, "setRenderSize", []tjs.Value{tjs.IntegerValue(100), tjs.IntegerValue(100)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := services.textRenderNative(vm, context, "render", []tjs.Value{tjs.StringValue("A"), tjs.IntegerValue(0), tjs.RealValue(1), tjs.RealValue(0), tjs.IntegerValue(0)}, nil); err != nil {
+		t.Fatalf("render with width_time_scale = %v", err)
+	}
+}
+
 func TestTextRenderBaseBudgetAndUnknownOperation(t *testing.T) {
 	services, vm, context := newTextRenderTestContext(t)
 	if _, err := services.textRenderNative(vm, context, "setRenderSize", []tjs.Value{tjs.IntegerValue(100), tjs.IntegerValue(100)}, nil); err != nil {
