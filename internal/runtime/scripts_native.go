@@ -271,6 +271,7 @@ func bindLegacyScriptFunctionsWithSource(vm *tjs.VM, decoded *tjs.DecodedBytecod
 	}
 	bindClassBody := func(index int, class tjs.Value) error {
 		classIndex := index
+		vm.Objects.RegisterLegacyClassBodySource(decoded, classIndex, class.ObjectRef().Object)
 		return vm.SetLegacyClassBody(class, func(receiver tjs.Value, args []tjs.Value, callHost tjs.Host, callBudget *uint64, _ bool) (tjs.Value, error) {
 			callEvaluate := func(source string, evalContext tjs.Value, resultNeeded bool) (tjs.Value, error) {
 				return evaluateLegacySource(vm, source, evalContext, callHost, callBudget, resultNeeded)

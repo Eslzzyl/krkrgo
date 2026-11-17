@@ -501,23 +501,31 @@ func (o *Object) Len() int {
 	return n
 }
 
+type legacyClassBodyKey struct {
+	bytecode *DecodedBytecode
+	object   int
+}
+
 // ObjectTable is an explicit identity table used by an engine/VM. It does not
 // infer identity from pointers and keeps invalidated objects addressable until
 // the owner deliberately removes them.
 type ObjectTable struct {
-	mu                  sync.RWMutex
-	objects             map[ObjectID]*Object
-	classInstanceNames  map[ObjectID][]string
-	registeredClassInfo map[ObjectID]bool
-	instanceClasses     map[ObjectID]ObjectID
+	mu                    sync.RWMutex
+	objects               map[ObjectID]*Object
+	classInstanceNames    map[ObjectID][]string
+	registeredClassInfo   map[ObjectID]bool
+	instanceClasses       map[ObjectID]ObjectID
+	legacyClassBodySource map[legacyClassBodyKey]ObjectID
 }
 
 func NewObjectTable() *ObjectTable {
+
 	return &ObjectTable{
-		objects:             make(map[ObjectID]*Object),
-		classInstanceNames:  make(map[ObjectID][]string),
-		registeredClassInfo: make(map[ObjectID]bool),
-		instanceClasses:     make(map[ObjectID]ObjectID),
+		objects:               make(map[ObjectID]*Object),
+		classInstanceNames:    make(map[ObjectID][]string),
+		registeredClassInfo:   make(map[ObjectID]bool),
+		instanceClasses:       make(map[ObjectID]ObjectID),
+		legacyClassBodySource: make(map[legacyClassBodyKey]ObjectID),
 	}
 }
 func (t *ObjectTable) RegisterClassInstance(instanceID, classID ObjectID) {
@@ -535,6 +543,30 @@ func (t *ObjectTable) ClassForInstance(instanceID ObjectID) (ObjectID, bool) {
 	}
 	t.mu.RLock()
 	classID, ok := t.instanceClasses[instanceID]
+	t.mu.RUnlock()
+	return classID, ok
+}
+
+// RegisterLegacyClassBodySource associates one decoded class-body object with
+// its class context so REGMEMBER uses that class's members on the active instance.
+
+func (t *ObjectTable) RegisterLegacyClassBodySource(bytecode *DecodedBytecode, object int, classID ObjectID) {
+	if t == nil || bytecode == nil || classID == 0 {
+		return
+	}
+	t.mu.Lock()
+	t.legacyClassBodySource[legacyClassBodyKey{bytecode: bytecode, object: object}] = classID
+	t.mu.Unlock()
+}
+
+// LegacyClassBodySource returns the registered class context for one body.
+
+func (t *ObjectTable) LegacyClassBodySource(bytecode *DecodedBytecode, object int) (ObjectID, bool) {
+	if t == nil || bytecode == nil {
+		return 0, false
+	}
+	t.mu.RLock()
+	classID, ok := t.legacyClassBodySource[legacyClassBodyKey{bytecode: bytecode, object: object}]
 	t.mu.RUnlock()
 	return classID, ok
 }
@@ -616,25 +648,55 @@ func (t *ObjectTable) BindObjectMemberClosures(objectID ObjectID) error {
 }
 
 func (t *ObjectTable) CopyClassInstanceMembers(classID, instanceID ObjectID) error {
+	return t.copyClassInstanceMembers(classID, instanceID, false)
+}
+
+// CopyClassInstanceMembersWithSyntheticName excludes the descriptor's
+// generated readonly `name` metadata while copying script class members.
+func (t *ObjectTable) CopyClassInstanceMembersWithSyntheticName(classID, instanceID ObjectID) error {
+	return t.copyClassInstanceMembers(classID, instanceID, true)
+}
+
+func (t *ObjectTable) copyClassInstanceMembers(classID, instanceID ObjectID, syntheticName bool) error {
 	if t == nil {
 		return errInvalidObject
 	}
 	t.mu.RLock()
 	classObject := t.objects[classID]
 	instance := t.objects[instanceID]
+	names, registered := t.classInstanceNames[classID]
+	if registered {
+		names = append([]string(nil), names...)
+	}
 	t.mu.RUnlock()
 	if classObject == nil || instance == nil || classID == instanceID {
 		return errInvalidObject
+	}
+	if registered {
+		for _, name := range names {
+			value, found := classObject.Get(name)
+			if !found {
+				continue
+			}
+			if err := instance.Set(name, bindClassInstanceMember(value, instanceID)); err != nil {
+				return err
+			}
+			if _, flags, direct := hasDirect(classObject, UTF16FromString(name)); direct {
+				if err := instance.SetFlags(name, flags&^(HiddenMember|StaticMember)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	}
 	for _, entry := range classObject.Entries() {
 		if !entry.Valid || entry.Flags&StaticMember != 0 {
 			continue
 		}
-		value := entry.Value
-		if value.Kind() == KindObject && !value.IsNull() {
-			value = ObjectValue(NewObjectRef(value.ObjectRef().Object, instanceID))
+		if syntheticName && entry.Name == "name" && entry.Flags&MemberReadOnly != 0 {
+			continue
 		}
-		if err := instance.Set(entry.Name, value); err != nil {
+		if err := instance.Set(entry.Name, bindClassInstanceMember(entry.Value, instanceID)); err != nil {
 			return err
 		}
 		if err := instance.SetFlags(entry.Name, entry.Flags); err != nil {
@@ -642,6 +704,13 @@ func (t *ObjectTable) CopyClassInstanceMembers(classID, instanceID ObjectID) err
 		}
 	}
 	return nil
+}
+
+func bindClassInstanceMember(value Value, instanceID ObjectID) Value {
+	if value.Kind() == KindObject && !value.IsNull() {
+		return ObjectValue(NewObjectRef(value.ObjectRef().Object, instanceID))
+	}
+	return value
 }
 
 func (t *ObjectTable) ClassInstanceMembers(classID ObjectID) ([]string, bool) {
@@ -668,6 +737,11 @@ func (t *ObjectTable) Remove(id ObjectID) bool {
 	delete(t.classInstanceNames, id)
 	delete(t.registeredClassInfo, id)
 	delete(t.instanceClasses, id)
+	for key, classID := range t.legacyClassBodySource {
+		if classID == id {
+			delete(t.legacyClassBodySource, key)
+		}
+	}
 	return true
 }
 func (t *ObjectTable) Ref(id ObjectID, context ...ObjectID) (ObjectRef, bool) {

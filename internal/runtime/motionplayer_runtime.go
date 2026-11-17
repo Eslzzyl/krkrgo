@@ -789,9 +789,11 @@ func (s *Services) lastMotionResource(manager tjs.ObjectID) *motionResource {
 func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value) (tjs.Value, error) {
 	s.ensureInit()
 	id := context.ObjectRef().Object
-	if operation == "@invalidate" || operation == "finalize" {
+	if operation == "@initialize" || operation == "@invalidate" || operation == "finalize" {
 		s.mu.Lock()
-		delete(s.MotionPlayers, id)
+		if operation == "@invalidate" || operation == "finalize" {
+			delete(s.MotionPlayers, id)
+		}
 		s.mu.Unlock()
 		return tjs.VoidValue, nil
 	}
@@ -917,6 +919,17 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 			return source, nil
 		}
 		return tjs.VoidValue, nil
+	case "setColor":
+		if len(args) == 0 {
+			return tjs.VoidValue, fmt.Errorf("Motion.Player.setColor requires a color")
+		}
+		color, err := args[0].Int()
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		state.colorWeight = motionSwapPackedRB(uint32(color))
+		state.gpuMotionValid = false
+		return tjs.VoidValue, nil
 	case "setHairScale", "setPartsScale", "setBustScale", "setRotate":
 		if len(args) == 0 {
 			return tjs.VoidValue, fmt.Errorf("Motion.Player.%s requires a value", operation)
@@ -969,6 +982,10 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		}
 		if adaptor := s.motionSeparateLayerAdaptorState(args[0]); adaptor != nil {
 			return tjs.VoidValue, s.clearMotionSeparateLayerAdaptor(vm, args[0].ObjectRef().Object, adaptor)
+		}
+		if adaptor := s.motionD3DAdaptorState(args[0]); adaptor != nil {
+			motionD3DAdaptorClear(adaptor)
+			return tjs.VoidValue, nil
 		}
 		return tjs.VoidValue, s.clearMotionTarget(vm, args[0])
 	case "setClearColor":
@@ -1410,7 +1427,12 @@ func (s *Services) motionPlayerNative(vm *tjs.VM, context tjs.Value, operation s
 		state.syncActive = false
 		state.playing = len(state.playingTimelineLabels) > 0
 		return tjs.VoidValue, nil
-	case "releaseSyncWait":
+	case "skip":
+		if state.resource != nil {
+			s.emoteSkipToSync(state, s.motionPlayerEmote(state))
+		}
+		return tjs.VoidValue, nil
+	case "pass", "releaseSyncWait":
 		state.syncWaiting = false
 		state.syncActive = false
 		return tjs.VoidValue, nil
@@ -3072,13 +3094,20 @@ func (s *Services) motionD3DAdaptorState(value tjs.Value) *motionValueObjectStat
 	if value.Kind() != tjs.KindObject || value.IsNull() {
 		return nil
 	}
-	s.mu.RLock()
-	state := s.MotionValueObjects[value.ObjectRef().Object]
-	if state == nil || state.class != "D3DAdaptor" {
-		state = nil
+	ref := value.ObjectRef()
+	ids := []tjs.ObjectID{ref.Object}
+	if ref.HasBoundContext() && ref.Context != ref.Object {
+		ids = append(ids, ref.Context)
 	}
-	s.mu.RUnlock()
-	return state
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, id := range ids {
+		state := s.MotionValueObjects[id]
+		if state != nil && state.class == "D3DAdaptor" {
+			return state
+		}
+	}
+	return nil
 }
 
 func (s *Services) drawMotionTargetLayer(vm *tjs.VM, state *motionPlayerState, layer *Layer, d3dTarget bool) error {

@@ -131,11 +131,9 @@ func (f *prerenderedFont) glyph(character rune) (*prerenderedFontGlyph, bool) {
 				out++
 			}
 		}
+		// Pre-rendered font bitmaps already use the runtime's top-down row order.
 		alpha := image.NewAlpha(image.Rect(0, 0, int(item.width), int(item.height)))
-		for y := 0; y < int(item.height); y++ {
-			sourceY := int(item.height) - 1 - y
-			copy(alpha.Pix[y*alpha.Stride:y*alpha.Stride+int(item.width)], decoded[sourceY*int(item.width):(sourceY+1)*int(item.width)])
-		}
+		copy(alpha.Pix, decoded)
 		glyph.alpha = alpha
 	}
 	f.cache[character] = glyph

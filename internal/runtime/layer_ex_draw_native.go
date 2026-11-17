@@ -1341,10 +1341,26 @@ func (s *Services) layerExLayerForContext(context tjs.Value, operation string) (
 }
 
 func (s *Services) layerExDrawNative(vm *tjs.VM, context tjs.Value, operation string, args []tjs.Value, budget *uint64) (tjs.Value, error) {
-	l, id, err := s.layerExLayerForContext(context, operation)
-	if err != nil {
-		return tjs.VoidValue, err
+	// Script-side Motion.D3DAdaptor shells can inherit LayerExDraw.clear
+	// after layerExDraw.dll is linked. Resolve the native adaptor before
+	// requiring a Layer so headless targets keep their CPU buffer semantics.
+	if operation == "clear" {
+		if adaptor := s.motionD3DAdaptorState(context); adaptor != nil {
+			if len(args) > 1 {
+				return tjs.VoidValue, fmt.Errorf("Motion.D3DAdaptor.clear accepts at most one color")
+			}
+			if len(args) == 1 {
+				color, err := args[0].Int()
+				if err != nil {
+					return tjs.VoidValue, err
+				}
+				adaptor.values["clearColor"] = tjs.IntegerValue(color)
+			}
+			motionD3DAdaptorClear(adaptor)
+			return tjs.VoidValue, nil
+		}
 	}
+	l, id, err := s.layerExLayerForContext(context, operation)
 	s.ensureInit()
 	if strings.HasPrefix(operation, "get:") {
 		key := strings.TrimPrefix(operation, "get:")

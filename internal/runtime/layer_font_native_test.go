@@ -602,7 +602,6 @@ func TestNativeFontMeasurementAndDrawText(t *testing.T) {
 		t.Fatal("drawText did not modify frame pixels")
 	}
 }
-
 func TestNativeLayerDrawTextRendersConfiguredEdgeShadow(t *testing.T) {
 	services := DefaultServices()
 	if err := services.RegisterFontFace("EdgeShadowFace", basicfont.Face7x13); err != nil {

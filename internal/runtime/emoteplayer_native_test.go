@@ -137,6 +137,48 @@ func emotePlayerTestResource(path string) *motionResource {
 		},
 	}
 }
+
+func TestEmotePlayerLinkRepairsExistingShell(t *testing.T) {
+	session := NewSession(DefaultServices(), 100_000)
+	defer session.Close()
+
+	if _, err := session.executeSource("<emoteplayer-shell-repair-setup>", `
+		Plugins.link("motionplayer.dll");
+	`, false); err != nil {
+		t.Fatalf("install MotionPlayer prerequisite: %v", err)
+	}
+	motion, ok := session.VM.Globals["Motion"]
+	if !ok {
+		t.Fatal("Motion namespace missing after prerequisite")
+	}
+	motionObject, ok := session.VM.Objects.Lookup(motion.ObjectRef().Object)
+	if !ok {
+		t.Fatal("Motion namespace object missing after prerequisite")
+	}
+	shell, err := session.VM.RegisterNativeClass("Motion.EmotePlayer")
+	if err != nil {
+		t.Fatalf("create existing EmotePlayer shell: %v", err)
+	}
+	if err := motionObject.Set("EmotePlayer", shell); err != nil {
+		t.Fatalf("install existing EmotePlayer shell: %v", err)
+	}
+	if _, err := session.executeSource("<emoteplayer-shell-repair-test>", `
+		Plugins.link("emoteplayer.dll");
+		player = new Motion.EmotePlayer(null);
+		player.pass();
+		player.draw(null);
+		hasSurface = 1;
+	`, false); err != nil {
+		t.Fatalf("repair existing EmotePlayer shell: %v", err)
+	}
+	value, err := session.Evaluate(`hasSurface`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Text() != "1" {
+		t.Fatalf("repaired EmotePlayer surface unavailable: %q", value.Text())
+	}
+}
 func emotePlayerTestResourceForLayer(path, label string) *motionResource {
 	resource := emotePlayerTestResource(path)
 	root := resource.doc.Root.(map[string]assets.Value)

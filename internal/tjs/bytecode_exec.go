@@ -3,9 +3,7 @@ package tjs
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
-	"strings"
 )
 
 const LegacyPropertySetFlag uint32 = 1 << 31
@@ -305,9 +303,6 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 					}
 				}
 			}
-			if os.Getenv("KRKRGO_LEGACY_PROPERTY_TRACE") == "1" && errors.Is(err, ErrMemberNotFound) {
-				fmt.Printf("[legacy-property-read-miss] object=%d receiver=%v property=%q\n", object, thisContext, name)
-			}
 			// The reference proxy falls back only for a missing member. An
 			// explicitly present void value shadows the global property.
 			if errors.Is(err, ErrMemberNotFound) {
@@ -319,9 +314,6 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 				return VoidValue, err
 			}
 			value, err = read(receiver, name, flags)
-			if os.Getenv("KRKRGO_LEGACY_PROPERTY_TRACE") == "1" && errors.Is(err, ErrMemberNotFound) {
-				fmt.Printf("[legacy-property-read-miss] object=%d receiver=%v property=%q\n", object, receiver, name)
-			}
 		}
 		if err != nil {
 			return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: get property %q: %w", object, pc, name, err)
@@ -354,9 +346,6 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			err = set(receiver, name, value, flags)
 		} else {
 			err = dispatcher.Set(receiver, name, value, flags)
-		}
-		if os.Getenv("KRKRGO_LEGACY_PROPERTY_TRACE") == "1" && flags&MemberEnsure != 0 {
-			fmt.Printf("[legacy-property-set] object=%d receiver=%v property=%q flags=%d value=%s err=%v\n", object, receiver, name, flags, value.TypeName(), err)
 		}
 		if err != nil {
 			return fmt.Errorf("legacy intercode object %d code offset %d: set property %q: %w", object, pc, name, err)
@@ -797,38 +786,9 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 		return true
 	}
 	// ENTRY/THROW/EXTRY mirror the reference VM's protected execution flow.
-	traceName := ""
-	if int(o.Name) >= 0 && int(o.Name) < len(d.Strings) {
-		traceName = d.Strings[o.Name]
-	}
-	traceFunction := false
-	for _, filter := range strings.Split(os.Getenv("KRKRGO_LEGACY_INSTRUCTION_TRACE"), ",") {
-		filter = strings.TrimSpace(filter)
-		if filter != "" && (filter == "1" || filter == traceName) {
-			traceFunction = true
-			break
-		}
-	}
 	for ip := startIP; ip < len(instructions); {
 		in := &instructions[ip]
 		nextIP := ip + 1
-		if traceFunction {
-			slots := []string{}
-			for _, address := range []int16{-3, -4, -5, -6, -7, -8, -9} {
-				index := registerBase + int(address)
-				if index >= 0 && index < len(regs) {
-					slots = append(slots, fmt.Sprintf("%d=%s:%s", address, regs[index].TypeName(), regs[index].Text()))
-				}
-			}
-			locals := []string{}
-			for _, address := range []int16{1, 2, 3, 4, 5, 6, 7} {
-				index := registerBase + int(address)
-				if index >= 0 && index < len(regs) {
-					locals = append(locals, fmt.Sprintf("%d=%s:%s", address, regs[index].TypeName(), regs[index].Text()))
-				}
-			}
-			fmt.Printf("[legacy-instruction] object=%d name=%q offset=%d opcode=%s flag=%t slots=%v locals=%v\n", object, traceName, in.Offset, in.Name, flag, slots, locals)
-		}
 		switch in.Opcode {
 		case 15, 16, 17: // Jump operands are relative offsets in 16-bit code units.
 			take := in.Opcode == 17 || (in.Opcode == 15 && flag) || (in.Opcode == 16 && !flag)
@@ -1506,24 +1466,34 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 					classID = mapped
 				}
 			}
+			if activeClass, active := table.LegacyClassBodySource(d, object); active {
+				classID = activeClass
+			}
 			if err := table.AddClassInstanceMember(classID, name); err != nil {
 				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: ADDCI: %w", object, in.Offset, err)
 			}
-		case 126: // REGMEMBER enables the registered class members for instances.
+		case 126: // REGMEMBER copies the executing class's non-static members onto this object.
 			target := regs[registerBase-1]
 			if e := propertyTarget(target, in.Offset); e != nil {
 				return VoidValue, e
 			}
-			classID := target.ObjectRef().Object
-			if targetObject, ok := table.Lookup(classID); ok && targetObject.Category == CategoryInstance {
-				if mapped, mappedOK := table.ClassForInstance(classID); mappedOK {
+			targetID := target.ObjectRef().Object
+			classID := targetID
+			if targetObject, ok := table.Lookup(targetID); ok && targetObject.Category == CategoryInstance {
+				if mapped, mappedOK := table.ClassForInstance(targetID); mappedOK {
 					classID = mapped
+				}
+				if activeClass, active := table.LegacyClassBodySource(d, object); active {
+					classID = activeClass
+				}
+				if err := table.CopyClassInstanceMembers(classID, targetID); err != nil {
+					return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: REGMEMBER: %w", object, in.Offset, err)
 				}
 			}
 			if err := table.RegisterClassInstanceMembers(classID); err != nil {
 				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: REGMEMBER: %w", object, in.Offset, err)
 			}
-			if err := table.BindObjectMemberClosures(target.ObjectRef().Object); err != nil {
+			if err := table.BindObjectMemberClosures(targetID); err != nil {
 				return VoidValue, fmt.Errorf("legacy intercode object %d code offset %d: REGMEMBER: %w", object, in.Offset, err)
 			}
 		case 127: // DEBUGGER -- the reference VM calls TJSNativeDebuggerBreak, which
@@ -1800,13 +1770,6 @@ func (d *DecodedBytecode) executeLegacyWithRuntime(object int, startOffset int, 
 			receiver := regs[callee]
 			if callee == registerBase-2 {
 				receiver = thisContext
-			}
-			if os.Getenv("KRKRGO_LEGACY_PROPERTY_TRACE") == "1" {
-				argSummary := make([]string, len(callArgs))
-				for index, argument := range callArgs {
-					argSummary[index] = argument.TypeName() + ":" + argument.Text()
-				}
-				fmt.Printf("[legacy-call] object=%d offset=%d name=%q receiver=%v args=%v\n", object, in.Offset, name, receiver, argSummary)
 			}
 			var value Value
 			// The global eval function is a VM hook rather than a real member,

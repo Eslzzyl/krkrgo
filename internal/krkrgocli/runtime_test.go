@@ -1,6 +1,10 @@
 package krkrgocli
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/eslzzyl/krkrgo/internal/runtime"
+)
 
 func TestParseLaunchArgsDefaultsToNativeWindowScale(t *testing.T) {
 	opts, err := ParseLaunchArgs(nil)
@@ -50,4 +54,36 @@ func TestParseLaunchArgsNormalizesInvalidWindowScale(t *testing.T) {
 			t.Fatalf("window scale for %s = %g, want 1", value, opts.WindowScale)
 		}
 	}
+}
+
+func TestFinishSessionDefaultsSceneAnimationArgument(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		gameArguments := map[string]string{"-debugwin": "no"}
+		session, err := finishSession(runtime.NewSession(runtime.DefaultServices(), unlimitedBudget), "", gameArguments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer session.Close()
+		if got := session.Services.Arguments["-scanim"]; got != "no" {
+			t.Fatalf("default -scanim = %q, want %q", got, "no")
+		}
+		if _, exists := gameArguments["-scanim"]; exists {
+			t.Fatal("finishSession mutated caller game arguments")
+		}
+	})
+
+	t.Run("explicit", func(t *testing.T) {
+		gameArguments := map[string]string{"-scanim": "yes"}
+		session, err := finishSession(runtime.NewSession(runtime.DefaultServices(), unlimitedBudget), "", gameArguments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer session.Close()
+		if got := session.Services.Arguments["-scanim"]; got != "yes" {
+			t.Fatalf("explicit -scanim = %q, want %q", got, "yes")
+		}
+		if gameArguments["-scanim"] != "yes" {
+			t.Fatal("finishSession changed caller -scanim")
+		}
+	})
 }

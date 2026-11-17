@@ -2361,22 +2361,19 @@ func (c *compiler) tryStatement(loc core.SourceLocation) error {
 }
 
 func (c *compiler) classStatement(loc core.SourceLocation) error {
+	start := len(c.program.Code)
 	name, err := c.p.name()
 	if err != nil {
 		return err
 	}
-	var bases []int
+	var baseExpressions []*cexpr
 	if c.p.eat("extends") {
 		for {
 			expression, parseErr := c.p.expr(0)
 			if parseErr != nil {
 				return parseErr
 			}
-			base, compileErr := c.compile(expression)
-			if compileErr != nil {
-				return compileErr
-			}
-			bases = append(bases, base)
+			baseExpressions = append(baseExpressions, expression)
 			if !c.p.eat(",") {
 				break
 			}
@@ -2439,9 +2436,22 @@ func (c *compiler) classStatement(loc core.SourceLocation) error {
 		}
 	}
 	definition.Initializer = initializer
+	for _, expression := range baseExpressions {
+		baseCompiler := &compiler{program: Program{Storage: outerProgram.Storage}, p: c.p}
+		base, compileErr := baseCompiler.compile(expression)
+		if compileErr != nil {
+			return compileErr
+		}
+		baseCompiler.emit(expression.loc, Op{Code: OpReturn, Input: base})
+		definition.Bases = append(definition.Bases, baseCompiler.program)
+	}
 	out := c.reg()
-	c.emit(loc, Op{Code: OpClass, Out: out, extra: &opExtra{class: definition, items: bases}})
+	c.emit(loc, Op{Code: OpClass, Out: out, extra: &opExtra{class: definition}})
 	c.emit(loc, Op{Code: OpDeclare, Name: name, Input: out})
+	if !c.functionBody && c.scopeDepth == 0 && c.withDepth == 0 {
+		c.hoisted = append(c.hoisted, c.program.Code[start:]...)
+		c.program.Code = c.program.Code[:start]
+	}
 	c.p.eat(";")
 	return nil
 }

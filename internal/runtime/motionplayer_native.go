@@ -40,12 +40,24 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 	if !ok {
 		return fmt.Errorf("Motion native namespace is not registered")
 	}
-	if resourceManager, exists := class.Get("ResourceManager"); exists && resourceManager.Kind() == tjs.KindObject && !resourceManager.IsNull() {
-		if object, ok := vm.Objects.Lookup(resourceManager.ObjectRef().Object); ok {
-			if _, hasNativeLoad := object.Get("load"); hasNativeLoad {
-				return nil
-			}
+	var resourceManager tjs.Value
+	resourceManagerReady := false
+	if candidate, exists := class.Get("ResourceManager"); exists && candidate.Kind() == tjs.KindObject && !candidate.IsNull() {
+		resourceManager = candidate
+		if object, ok := vm.Objects.Lookup(candidate.ObjectRef().Object); ok {
+			_, resourceManagerReady = object.Get("load")
 		}
+	}
+	playerReady := false
+	if candidate, exists := class.Get("Player"); exists && candidate.Kind() == tjs.KindObject && !candidate.IsNull() {
+		if object, ok := vm.Objects.Lookup(candidate.ObjectRef().Object); ok {
+			_, hasColor := object.Get("setColor")
+			_, hasPass := object.Get("pass")
+			playerReady = hasColor && hasPass
+		}
+	}
+	if resourceManagerReady && playerReady {
+		return nil
 	}
 	for name, value := range map[string]int64{
 		"LayerTypeObj": 0, "LayerTypeShape": 1, "LayerTypeLayout": 2,
@@ -63,12 +75,15 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 			return err
 		}
 	}
-	resourceManager, err := vm.RegisterNativeClass("Motion.ResourceManager")
-	if err != nil {
-		return err
-	}
-	if err := class.Set("ResourceManager", resourceManager); err != nil {
-		return err
+	var err error
+	if !resourceManagerReady {
+		resourceManager, err = vm.RegisterNativeClass("Motion.ResourceManager")
+		if err != nil {
+			return err
+		}
+		if err := class.Set("ResourceManager", resourceManager); err != nil {
+			return err
+		}
 	}
 	for _, method := range []string{"@initialize", "@invalidate", "ResourceManager", "finalize", "load", "loadSource", "unload", "clearCache", "findSource"} {
 		if err := vm.RegisterNativeMethod(resourceManager, method, "Motion.ResourceManager."+method); err != nil {
@@ -88,19 +103,23 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 	// The reference registers Player at module scope and aliases the same class
 	// object into the Motion namespace (main.cpp:505-527), so
 	// `Motion.Player === Player` holds.
-	player, err := vm.RegisterNativeClass("Player")
-	if err != nil {
-		return err
+	player, exists := class.Get("Player")
+	if !exists || player.Kind() != tjs.KindObject || player.IsNull() {
+		player, err = vm.RegisterNativeClass("Player")
+		if err != nil {
+			return err
+		}
+		if err := class.Set("Player", player); err != nil {
+			return err
+		}
 	}
-	if err := class.Set("Player", player); err != nil {
-		return err
-	}
+	vm.Globals["Player"] = player
 	// registerPlayerSurface binds the full Player surface to the class.
 	registerPlayerSurface := func(receiver tjs.Value) error {
 		for _, method := range []string{
 			"@initialize", "@invalidate", "Player", "finalize", "play", "stop",
 			"random", "initPhysics", "frameProgress",
-			"progress", "draw", "setVariable", "getVariable",
+			"progress", "draw", "setColor", "setVariable", "getVariable",
 			"countVariables", "getVariableLabelAt", "countVariableFrameAt",
 			"getVariableFrameLabelAt", "getVariableFrameValueAt", "getVariableRange",
 			"getVariableFrameList", "getTimelinePlaying", "countMainTimelines",
@@ -111,7 +130,7 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 			"stopTimeline", "setTimelineBlendRatio", "getTimelineBlendRatio",
 			"fadeInTimeline", "fadeOutTimeline", "getPlayingTimelineInfoList",
 			"getCameraOffset", "setCameraOffset", "setStereovisionCameraPosition",
-			"modifyRoot", "skipToSync", "setDrawAffineTranslateMatrix",
+			"modifyRoot", "skipToSync", "skip", "pass", "setDrawAffineTranslateMatrix",
 			"isSelectorTarget", "deactivateSelectorTarget",
 			"captureCanvas", "clearCache", "clear",
 			"findSource", "loadSource",
@@ -226,7 +245,7 @@ func installMotionPlayerNative(vm *tjs.VM) error {
 			}
 		}
 		if spec.name == "D3DAdaptor" {
-			for _, method := range []string{"setPos", "setSize", "setClearColor", "setResizable", "removeAllTextures", "removeAllBg", "removeAllCaption", "registerBg", "registerCaption", "unloadUnusedTextures", "captureCanvas"} {
+			for _, method := range []string{"clear", "setPos", "setSize", "setClearColor", "setResizable", "removeAllTextures", "removeAllBg", "removeAllCaption", "registerBg", "registerCaption", "unloadUnusedTextures", "captureCanvas"} {
 				if err := vm.RegisterNativeMethod(motionValueClass, method, "Motion.D3DAdaptor."+method); err != nil {
 					return err
 				}

@@ -47,6 +47,21 @@ func TestPSBScalarsAndLists(t *testing.T) {
 	}
 }
 
+func TestPSBListsAllowZeroWidthArrayEntries(t *testing.T) {
+	value := []byte{0x20, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0x0c}
+	doc, err := ParsePSB(minimalPSB(value))
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, ok := doc.Root.([]Value)
+	if !ok {
+		t.Fatalf("root = %#v, want PSB list", doc.Root)
+	}
+	if len(list) != 0 {
+		t.Fatalf("list length = %d, want zero", len(list))
+	}
+}
+
 func TestPSBVersion4UsesExtendedHeader(t *testing.T) {
 	doc, err := ParsePSB(minimalPSBVersion(4, []byte{5, 0xff}))
 	if err != nil {

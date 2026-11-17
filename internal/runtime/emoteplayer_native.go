@@ -285,15 +285,31 @@ func installEmotePlayerNative(vm *tjs.VM) error {
 	if !ok {
 		return fmt.Errorf("Motion native namespace is not registered")
 	}
-	if _, installed := class.Get("EmotePlayer"); installed {
+	emote, exists := class.Get("EmotePlayer")
+	emoteReady := false
+	if exists && emote.Kind() == tjs.KindObject && !emote.IsNull() {
+		if object, ok := vm.Objects.Lookup(emote.ObjectRef().Object); ok {
+			emoteReady = true
+			for _, required := range []string{"@initialize", "play", "progress", "draw", "pass"} {
+				if _, present := object.Get(required); !present {
+					emoteReady = false
+					break
+				}
+			}
+		}
+	}
+	if emoteReady {
 		return nil
 	}
-	emote, err := vm.RegisterNativeClass("Motion.EmotePlayer")
-	if err != nil {
-		return err
-	}
-	if err := class.Set("EmotePlayer", emote); err != nil {
-		return err
+	if !exists || emote.Kind() != tjs.KindObject || emote.IsNull() {
+		var err error
+		emote, err = vm.RegisterNativeClass("Motion.EmotePlayer")
+		if err != nil {
+			return err
+		}
+		if err := class.Set("EmotePlayer", emote); err != nil {
+			return err
+		}
 	}
 	for _, method := range []string{
 		"@initialize", "@invalidate", "EmotePlayer", "finalize",

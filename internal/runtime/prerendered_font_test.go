@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"encoding/binary"
 	"image"
 	"image/color"
@@ -71,6 +72,46 @@ func testPrerenderedFontData(character rune, coverage byte, advance int16) []byt
 	binary.LittleEndian.PutUint16(data[itemOffset+16:itemOffset+18], uint16(advance))
 	data[bitmapOffset] = coverage
 	return data
+}
+func testPrerenderedFontDataRows(character rune, width, height int, rows []byte) []byte {
+	const indexOffset = prerenderedFontHeaderSize
+	const itemOffset = indexOffset + 2
+	const bitmapOffset = itemOffset + prerenderedFontItemSize
+	data := make([]byte, bitmapOffset+len(rows))
+	copy(data, prerenderedFontMagic)
+	data[22] = 1
+	data[23] = 2
+	binary.LittleEndian.PutUint32(data[24:28], 1)
+	binary.LittleEndian.PutUint32(data[28:32], indexOffset)
+	binary.LittleEndian.PutUint32(data[32:36], itemOffset)
+	binary.LittleEndian.PutUint16(data[indexOffset:indexOffset+2], uint16(character))
+	binary.LittleEndian.PutUint32(data[itemOffset:itemOffset+4], bitmapOffset)
+	binary.LittleEndian.PutUint16(data[itemOffset+4:itemOffset+6], uint16(width))
+	binary.LittleEndian.PutUint16(data[itemOffset+6:itemOffset+8], uint16(height))
+	binary.LittleEndian.PutUint16(data[itemOffset+12:itemOffset+14], uint16(width))
+	binary.LittleEndian.PutUint16(data[itemOffset+16:itemOffset+18], uint16(width))
+	copy(data[bitmapOffset:], rows)
+	return data
+}
+
+func TestPrerenderedFontPreservesTopDownGlyphRows(t *testing.T) {
+	rows := []byte{1, 2, 3, 4}
+	parsed, err := parsePrerenderedFont(testPrerenderedFontDataRows('A', 2, 2, rows))
+	if err != nil {
+		t.Fatal(err)
+	}
+	face := &prerenderedFontFace{FontFace: basicfont.Face7x13, font: parsed}
+	_, mask, _, _, ok := face.Glyph(fixed.P(0, 2), 'A')
+	if !ok {
+		t.Fatal("mapped glyph was not returned")
+	}
+	alpha, ok := mask.(*image.Alpha)
+	if !ok {
+		t.Fatalf("mapped mask type = %T, want *image.Alpha", mask)
+	}
+	if !bytes.Equal(alpha.Pix, rows) {
+		t.Fatalf("mapped glyph rows = %v, want %v", alpha.Pix, rows)
+	}
 }
 
 func TestPrerenderedFontParsesAndRendersMappedGlyph(t *testing.T) {

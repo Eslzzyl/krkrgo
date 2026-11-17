@@ -29,7 +29,7 @@ func (s *Services) timerNative(vm *tjs.VM, context tjs.Value, operation string, 
 	if err != nil {
 		return tjs.VoidValue, err
 	}
-
+ 
 	if operation == "@initialize" {
 		if vm == nil || vm.Objects == nil {
 			return tjs.VoidValue, fmt.Errorf("Timer.%s requires a VM", operation)

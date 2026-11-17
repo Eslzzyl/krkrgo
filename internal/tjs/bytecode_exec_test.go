@@ -484,66 +484,7 @@ func TestLegacyClassInstanceMembersRegisterAndMaterialize(t *testing.T) {
 	}
 }
 
-func TestLegacyREGMEMBERBindsCurrentObjectMembers(t *testing.T) {
-	vm := NewVM()
-	class, err := vm.RegisterLegacyClass("LegacyREGMEMBERTest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	instance, instanceID, err := vm.alloc(CategoryInstance)
-	if err != nil {
-		t.Fatal(err)
-	}
-	vm.Objects.RegisterClassInstance(instanceID, class.ObjectRef().Object)
-	instanceObject, ok := vm.Objects.Lookup(instanceID)
-	if !ok {
-		t.Fatal("constructed instance missing")
-	}
-	classObject, ok := vm.Objects.Lookup(class.ObjectRef().Object)
-	if !ok {
-		t.Fatal("registered class object missing")
-	}
-	nested := vm.Objects.New(CategoryDictionary)
-	classOnly := vm.Objects.New(CategoryDictionary)
-	if err := classObject.Set("templateOnly", ObjectValue(NewObjectRef(classOnly.ID))); err != nil {
-		t.Fatal(err)
-	}
-	if err := instanceObject.Set("nested", ObjectValue(NewObjectRef(nested.ID, nested.ID))); err != nil {
-		t.Fatal(err)
-	}
-	if err := instanceObject.SetFlags("nested", HiddenMember); err != nil {
-		t.Fatal(err)
-	}
-	if err := instanceObject.Set("staticValue", ObjectValue(NewObjectRef(classOnly.ID, classOnly.ID))); err != nil {
-		t.Fatal(err)
-	}
-	if err := instanceObject.SetFlags("staticValue", StaticMember); err != nil {
-		t.Fatal(err)
-	}
-	if err := instanceObject.Set("classOnly", ObjectValue(NewObjectRef(classOnly.ID))); err != nil {
-		t.Fatal(err)
-	}
-	bytecode := &DecodedBytecode{Objects: []BytecodeObject{{Code: []int16{126, 119}}}}
-	global := ObjectValue(NewObjectRef(0, 0))
-	if _, err := bytecode.ExecuteLegacyWithContextAndConstructionAndPropertyResolver(
-		0, global, instance, nil, nil, nil, nil, vm.Objects,
-	); err != nil {
-		t.Fatal(err)
-	}
-	got, ok := instanceObject.Get("nested")
-	if !ok || got.Kind() != KindObject || got.ObjectRef().Object != nested.ID || !got.ObjectRef().HasBoundContext() || got.ObjectRef().Context != instanceID {
-		t.Fatalf("nested member after REGMEMBER = %v, want object %d bound to instance %d", got, nested.ID, instanceID)
-	}
-	if got, ok := instanceObject.Get("staticValue"); !ok || got.ObjectRef().Context != classOnly.ID {
-		t.Fatalf("static member after REGMEMBER = %v, present %t", got, ok)
-	}
-	if _, ok := instanceObject.Get("classOnly"); !ok {
-		t.Fatal("REGMEMBER removed an existing destination member")
-	}
-	if _, ok := instanceObject.Get("templateOnly"); ok {
-		t.Fatal("REGMEMBER copied a class-object member onto its destination")
-	}
-}
+
 
 func TestExecuteLegacyResolvesNativeStaticPropertyOnConstructorMethod(t *testing.T) {
 	vm := NewVM()

@@ -139,6 +139,35 @@ func TestVMStringNameMemberAccessMatchesUTF16(t *testing.T) {
 }
 
 func TestVMMemberAccessGlobalClassPropertyAndMutation(t *testing.T) {
+	t.Run("top-level-class-declaration-is-hoisted", func(t *testing.T) {
+		got := executeVMSource(t, `
+copied = VoiceSystemAction;
+CustomSystemAction.VoiceSystemAction = copied;
+class CustomSystemAction {}
+class VoiceSystemAction {}
+return copied === VoiceSystemAction && CustomSystemAction.VoiceSystemAction === VoiceSystemAction;
+`)
+		if !got.StrictEqual(boolValue(true)) {
+			t.Fatalf("forward class reference and copy = %v, want true", got)
+		}
+	})
+	t.Run("top-level-class-base-is-evaluated-lazily", func(t *testing.T) {
+		got := executeVMSource(t, `
+baseEvaluationCount = 0;
+function resolveBase() { baseEvaluationCount++; return Base; }
+class Derived extends resolveBase() {}
+if (baseEvaluationCount != 0) return false;
+class Base {
+	var initialized = 42;
+	function value() { return initialized; }
+}
+var instance = new Derived();
+return baseEvaluationCount == 1 && instance.value() == 42;
+`)
+		if !got.StrictEqual(boolValue(true)) {
+			t.Fatalf("deferred class base initialization = %v, want true", got)
+		}
+	})
 	t.Run("class-method-uses-instance-fields", func(t *testing.T) {
 		got := executeVMSource(t, `
 class Matrix {

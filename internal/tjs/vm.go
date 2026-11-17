@@ -69,10 +69,12 @@ type vmObject struct {
 	legacyProperty          *legacyProperty
 	class                   *Class
 	classObject             ObjectID
+	syntheticClassName      bool
 	instanceClassNames      []string
 	classBases              []ObjectID
 	nativeClass             bool
-	nativeConstructor       ObjectID
+	nativeClassesInitialized map[ObjectID]struct{}
+	nativeConstructor ObjectID
 	property                *Property
 	array                   []Value
 	arrayLength             int64
@@ -259,6 +261,11 @@ type vmFrameRoots struct {
 // VM owns the script heap and the global namespace. Objects are retained in an
 // explicit table; collection removes unreachable entries but IDs are allocated
 // from the process-wide monotonic counter and are never reused.
+type classInitializationState struct {
+	instance ObjectID
+	explicitLegacyBodies map[ObjectID]struct{}
+}
+
 type VM struct {
 	mu                                 sync.RWMutex
 	Objects                            *ObjectTable
@@ -280,9 +287,9 @@ type VM struct {
 	traceStack                         []vmTraceFrame
 	constructing                       []ObjectID
 	constructingArgs                   [][]Value
+	classInitializationStates          []classInitializationState
 	legacyClassBodyDepth               int
 	legacyConstructorDepth             int
-	legacyAutoConstructorClasses       []ObjectID
 	idOrder                            []ObjectID
 	registerScratch                    []Value
 	gcSeen                             map[ObjectID]struct{}
@@ -513,9 +520,6 @@ func memberKeyUnits(key Value) UTF16 {
 func (v *VM) setMember(id ObjectID, key Value, val Value) error {
 	o, e := v.obj(id)
 	if e != nil {
-		if strings.Contains(e.Error(), "invalid TJS object handle") {
-			fmt.Printf("[tjs-invalid-set] receiver=%d key=%q trace=%+v\n", id, key.Text(), v.traceStack)
-		}
 		return e
 	}
 	if e := o.ChangeFlagsUnits(memberKeyUnits(key), 0, HiddenMember|StaticMember); e != nil {
@@ -700,8 +704,25 @@ func (v *VM) resolveLegacyClassBases(classID ObjectID, host Host, budget *uint64
 		return nil
 	}
 	for i := range meta.superclassGetterOffsets {
-		if _, err := v.resolveLegacySuperclassBase(classID, i, host, budget); err != nil {
+		baseID, err := v.resolveLegacySuperclassBase(classID, i, host, budget)
+		if err != nil {
 			return err
+		}
+		if baseID == 0 {
+			continue
+		}
+		if !meta.syntheticClassName {
+			continue
+		}
+		found := false
+		for _, existing := range meta.classBases {
+			if existing == baseID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			meta.classBases = append(meta.classBases, baseID)
 		}
 	}
 	return nil
@@ -752,6 +773,22 @@ func (v *VM) linkClassBase(receiver Value, baseID ObjectID) {
 	meta.classBases = append(meta.classBases, baseID)
 }
 
+func (v *VM) markClassInitialized(instanceID, classID ObjectID) {
+	instance := v.meta[instanceID]
+	class := v.meta[classID]
+	if instance == nil || instance.category != CategoryInstance || class == nil {
+		return
+	}
+	if instance.nativeClassesInitialized == nil {
+		instance.nativeClassesInitialized = make(map[ObjectID]struct{})
+	}
+	instance.nativeClassesInitialized[classID] = struct{}{}
+}
+
+func (v *VM) markNativeClassInitialized(instanceID, classID ObjectID) {
+	v.markClassInitialized(instanceID, classID)
+}
+
 func (v *VM) getMember(id ObjectID, key Value) (Value, bool, error) {
 	return v.getMemberWithRuntime(id, key, nil, nil)
 }
@@ -759,9 +796,6 @@ func (v *VM) getMember(id ObjectID, key Value) (Value, bool, error) {
 func (v *VM) getMemberWithRuntime(id ObjectID, key Value, host Host, budget *uint64) (Value, bool, error) {
 	o, e := v.obj(id)
 	if e != nil {
-		if strings.Contains(e.Error(), "invalid TJS object handle") {
-			fmt.Printf("[tjs-invalid-get] receiver=%d key=%q trace=%+v\n", id, key.Text(), v.traceStack)
-		}
 		return VoidValue, false, e
 	}
 	if meta := v.meta[id]; meta != nil && meta.category == CategoryClass {
@@ -785,6 +819,30 @@ func (v *VM) getMemberWithRuntime(id ObjectID, key Value, host Host, budget *uin
 		if meta != nil && meta.category == CategoryClass && meta.legacyClassInitializing && meta.class != nil && meta.class.Name == key.Text() {
 			if memberID, memberErr := v.handle(x); memberErr == nil && v.meta[memberID] != nil && v.meta[memberID].category == CategoryFunction {
 				return ObjectValue(NewObjectRef(id)), true, nil
+			}
+		}
+		if meta != nil && meta.category == CategoryInstance && x.Kind() == KindObject && !x.IsNull() {
+			classMeta := v.meta[meta.classObject]
+			if classMeta != nil && classMeta.category == CategoryClass && classMeta.legacyClassInitializing {
+				memberID, memberErr := v.handle(x)
+				if memberErr == nil && v.meta[memberID] != nil && v.meta[memberID].category == CategoryFunction {
+					for index := range classMeta.superclassGetterOffsets {
+						baseID, resolveErr := v.resolveLegacySuperclassBase(meta.classObject, index, host, budget)
+						if resolveErr != nil {
+							return VoidValue, false, resolveErr
+						}
+						baseMeta := v.meta[baseID]
+						if baseMeta != nil && baseMeta.class != nil && baseMeta.class.Name == key.Text() && baseMeta.legacyConstructor == memberID {
+							return ObjectValue(NewObjectRef(baseID)), true, nil
+						}
+					}
+					for _, baseID := range classMeta.classBases {
+						baseMeta := v.meta[baseID]
+						if baseMeta != nil && baseMeta.class != nil && baseMeta.class.Name == key.Text() && baseMeta.legacyConstructor == memberID {
+							return ObjectValue(NewObjectRef(baseID)), true, nil
+						}
+					}
+				}
 			}
 		}
 		return x, true, nil
@@ -893,7 +951,20 @@ func (v *VM) getMemberFallbackWithRuntime(id ObjectID, name string, host Host, b
 			}
 		}
 	}
-	if meta.classObject != 0 {
+	classFallback := meta.classObject != 0
+	if meta.category == CategoryInstance && v.classHierarchyHasLegacyBody(meta.classObject, 0) {
+		// Legacy class bodies register script members on the instance as they
+		// run. Do not expose an inherited class-object method before its
+		// REGMEMBER has initialized that base on this instance.
+		value, ok, err := v.lookupInitializedNativeClassMember(
+			meta.classObject, name, 0, meta.nativeClassesInitialized, host, budget,
+		)
+		if err != nil || !ok {
+			return value, ok, err
+		}
+		return v.bindClassMember(value, id), true, nil
+	}
+	if classFallback {
 		value, ok, err := v.lookupClassMemberWithRuntime(meta.classObject, name, 0, meta.category == CategoryInstance, host, budget)
 		if err != nil || !ok {
 			return value, ok, err
@@ -908,6 +979,103 @@ func (v *VM) getMemberFallbackWithRuntime(id ObjectID, name string, host Host, b
 	}
 	return VoidValue, false, nil
 }
+func (v *VM) classHierarchyHasLegacyBody(classID ObjectID, depth int) bool {
+	if depth >= 128 {
+		return false
+	}
+	class := v.meta[classID]
+	if class == nil || class.category != CategoryClass {
+		return false
+	}
+	if class.legacyClassBody != nil {
+		return true
+	}
+	for _, baseID := range class.classBases {
+		if v.classHierarchyHasLegacyBody(baseID, depth+1) {
+			return true
+		}
+	}
+	for _, baseID := range class.superclassBases {
+		if v.classHierarchyHasLegacyBody(baseID, depth+1) {
+			return true
+		}
+	}
+	return false
+}
+
+
+func (v *VM) lookupInitializedNativeClassMember(classID ObjectID, name string, depth int, initialized map[ObjectID]struct{}, host Host, budget *uint64) (Value, bool, error) {
+	if depth >= 128 {
+		return VoidValue, false, errors.New("class inheritance depth exceeded")
+	}
+	classMeta := v.meta[classID]
+	if classMeta == nil || classMeta.category != CategoryClass {
+		return VoidValue, false, nil
+	}
+	if err := v.resolveLegacyClassBases(classID, host, budget); err != nil {
+		return VoidValue, false, err
+	}
+	ready := false
+	_, ready = initialized[classID]
+	if classMeta.class != nil && classMeta.class.Name == name {
+		ready = false
+	}
+	if ready && classMeta.legacyClassBody != nil {
+		classObject, err := v.obj(classID)
+		if err != nil {
+			return VoidValue, false, err
+		}
+		if value, found := classObject.Get(name); found {
+			return value, true, nil
+		}
+	}
+	if classMeta.nativeClass {
+		classObject, err := v.obj(classID)
+		if err != nil {
+			return VoidValue, false, err
+		}
+		if value, found := classObject.Get(name); found {
+			if classMeta.class == nil || classMeta.class.Name != name {
+				memberID, handleErr := v.handle(value)
+				if handleErr == nil && v.meta[memberID] != nil && v.meta[memberID].category == CategoryProperty {
+					return value, true, nil
+				}
+				if ready {
+					if _, flags, direct := hasDirect(classObject, UTF16FromString(name)); !direct || flags&StaticMember == 0 {
+						if handleErr != nil || v.meta[memberID] == nil || !v.meta[memberID].nativeStatic {
+							return value, true, nil
+						}
+					}
+				}
+			}
+		}
+		if !ready {
+			return VoidValue, false, nil
+		}
+	}
+	for i := len(classMeta.classBases) - 1; i >= 0; i-- {
+		value, found, err := v.lookupInitializedNativeClassMember(classMeta.classBases[i], name, depth+1, initialized, host, budget)
+		if err != nil || found {
+			return value, found, err
+		}
+	}
+	for i := len(classMeta.superclassGetterOffsets) - 1; i >= 0; i-- {
+		baseID, err := v.resolveLegacySuperclassBase(classID, i, host, budget)
+		if err != nil {
+			return VoidValue, false, err
+		}
+		if baseID == 0 {
+			continue
+		}
+		value, found, err := v.lookupInitializedNativeClassMember(baseID, name, depth+1, initialized, host, budget)
+		if err != nil || found {
+			return value, found, err
+		}
+	}
+	return VoidValue, false, nil
+}
+
+
 func (v *VM) deleteMember(id ObjectID, key Value) (bool, error) {
 	o, e := v.obj(id)
 	if e != nil {
@@ -3577,21 +3745,20 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			definition := op.class().Clone()
 			meta.class = &definition
 			meta.classObject = id
-			for _, baseRegister := range op.items() {
-				baseID, baseErr := v.handle(reg(baseRegister))
-				if baseErr != nil {
-					e = baseErr
-					break
+			if len(definition.Bases) > 0 {
+				meta.superclassGetterOffsets = make([]int, len(definition.Bases))
+				meta.superclassBases = make([]ObjectID, len(definition.Bases))
+				meta.superclassBasesResolved = make([]bool, len(definition.Bases))
+				meta.superclassBasesLoading = make([]bool, len(definition.Bases))
+				for index := range definition.Bases {
+					meta.superclassGetterOffsets[index] = index
 				}
-				baseMeta := v.meta[baseID]
-				if baseMeta == nil || baseMeta.category != CategoryClass {
-					e = errors.New("TJS class base must be a class")
-					break
+				meta.legacySuperclassGetter = func(index int, host Host, budget *uint64) (Value, error) {
+					if index < 0 || index >= len(definition.Bases) {
+						return VoidValue, fmt.Errorf("invalid class superclass expression index %d", index)
+					}
+					return v.ExecuteInContext(&definition.Bases[index], ObjectValue(NewObjectRef(id)), host, budget)
 				}
-				meta.classBases = append(meta.classBases, baseID)
-			}
-			if e != nil {
-				break
 			}
 			for i := range definition.Methods {
 				function := definition.Methods[i].Clone()
@@ -3628,6 +3795,9 @@ func (v *VM) run(p *Program, h Host, b *uint64, f vmFrame) (Value, error) {
 			}
 			if e == nil {
 				e = classObject.SetFlags("name", MemberReadOnly)
+			}
+			if e == nil {
+				v.meta[id].syntheticClassName = true
 			}
 			put(op.Out, x)
 		case OpProperty:
@@ -4155,27 +4325,9 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 			v.addInstanceClassName(context.ObjectRef().Object, id)
 		}
 		if m.legacyClassBody != nil {
-			value, err := v.invokeLegacyClassBody(m, context, args, h, b, needed)
+			value, err := v.invokeLegacyClassBody(id, m, context, args, h, b, needed, true)
 			if err != nil {
 				return VoidValue, err
-			}
-			if context.Kind() == KindObject && !context.IsNull() && v.legacyConstructorDepth > 0 &&
-				!v.legacyAutoConstructorActive(id) &&
-				v.legacyClassBodyDepth == 0 &&
-				len(v.constructing) != 0 &&
-				v.constructing[len(v.constructing)-1] == context.ObjectRef().Object {
-				if constructor, ok := v.legacyClassConstructor(id, h, b); ok {
-					if constructor.Kind() == KindObject && !constructor.IsNull() {
-						constructor = ObjectValue(NewObjectRef(constructor.ObjectRef().Object, context.ObjectRef().Object))
-					}
-					autoDepth := len(v.legacyAutoConstructorClasses)
-					v.legacyAutoConstructorClasses = append(v.legacyAutoConstructorClasses, id)
-					_, err := v.invoke(constructor, context, args, h, b, true)
-					v.legacyAutoConstructorClasses = v.legacyAutoConstructorClasses[:autoDepth]
-					if err != nil {
-						return VoidValue, err
-					}
-				}
 			}
 			return value, nil
 		}
@@ -4192,7 +4344,11 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 					return VoidValue, err
 				}
 				if found {
-					return v.invoke(initializer, context, args, h, b, needed)
+					value, invokeErr := v.invoke(initializer, context, args, h, b, needed)
+					if invokeErr == nil {
+						v.markNativeClassInitialized(contextID, id)
+					}
+					return value, invokeErr
 				}
 			}
 			if len(args) != 0 && m.class != nil && m.class.Name != "" {
@@ -4201,9 +4357,14 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 					return VoidValue, err
 				}
 				if constructor, found := classObject.Get(m.class.Name); found {
-					return v.invoke(constructor, context, args, h, b, needed)
+					value, invokeErr := v.invoke(constructor, context, args, h, b, needed)
+					if invokeErr == nil {
+						v.markNativeClassInitialized(contextID, id)
+					}
+					return value, invokeErr
 				}
 			}
+			v.markNativeClassInitialized(contextID, id)
 			return VoidValue, nil
 		}
 		if !m.nativeClass && m.class != nil && context.Kind() == KindObject && !context.IsNull() {
@@ -4228,9 +4389,23 @@ func (v *VM) invokeWithOwnership(callee, context Value, args []Value, h Host, b 
 	return VoidValue, errors.New("TJS object is not callable")
 }
 
-func (v *VM) invokeLegacyClassBody(m *vmObject, context Value, args []Value, h Host, b *uint64, needed bool) (Value, error) {
+func (v *VM) invokeLegacyClassBody(classID ObjectID, m *vmObject, context Value, args []Value, h Host, b *uint64, needed, explicit bool) (Value, error) {
 	if m == nil || m.legacyClassBody == nil {
 		return VoidValue, nil
+	}
+	if explicit && context.Kind() == KindObject && !context.IsNull() {
+		instanceID := context.ObjectRef().Object
+		for i := len(v.classInitializationStates) - 1; i >= 0; i-- {
+			state := &v.classInitializationStates[i]
+			if state.instance != instanceID {
+				continue
+			}
+			if state.explicitLegacyBodies == nil {
+				state.explicitLegacyBodies = make(map[ObjectID]struct{})
+			}
+			state.explicitLegacyBodies[classID] = struct{}{}
+			break
+		}
 	}
 	wasInitializing := m.legacyClassInitializing
 	m.legacyClassInitializing = true
@@ -4238,44 +4413,41 @@ func (v *VM) invokeLegacyClassBody(m *vmObject, context Value, args []Value, h H
 	value, err := m.legacyClassBody(context, args, h, b, needed)
 	v.legacyClassBodyDepth--
 	m.legacyClassInitializing = wasInitializing
+	if err == nil && context.Kind() == KindObject && !context.IsNull() {
+		if contextMeta := v.meta[context.ObjectRef().Object]; contextMeta != nil && contextMeta.category == CategoryInstance {
+			v.markClassInitialized(context.ObjectRef().Object, classID)
+		}
+	}
 	return value, err
 }
-
-func (v *VM) legacyClassConstructor(classID ObjectID, h Host, b *uint64) (Value, bool) {
-	meta := v.meta[classID]
-	if meta == nil || meta.class == nil || meta.class.Name == "" {
-		return VoidValue, false
-	}
-	if meta.legacyConstructor != 0 {
-		return ObjectValue(NewObjectRef(meta.legacyConstructor)), true
-	}
-	classObject, err := v.obj(classID)
-	if err != nil {
-		return VoidValue, false
-	}
-	if constructor, ok := classObject.Get(meta.class.Name); ok {
-		return constructor, true
-	}
-	constructor, ok, err := v.lookupClassMemberWithRuntime(classID, meta.class.Name, 0, false, h, b)
-	if err != nil || !ok {
-		return VoidValue, false
-	}
-	return constructor, true
-}
-
-func (v *VM) legacyAutoConstructorActive(classID ObjectID) bool {
-	for _, active := range v.legacyAutoConstructorClasses {
-		if active == classID {
-			return true
+func (v *VM) explicitLegacyBodyRan(instance, classID ObjectID) bool {
+	for i := len(v.classInitializationStates) - 1; i >= 0; i-- {
+		state := &v.classInitializationStates[i]
+		if state.instance == instance {
+			_, found := state.explicitLegacyBodies[classID]
+			return found
 		}
 	}
 	return false
 }
 
+
+
 func (v *VM) initializeCompiledClassBases(classID, instanceID ObjectID, h Host, b *uint64, initialized map[ObjectID]struct{}) error {
 	class := v.meta[classID]
 	if class == nil || class.category != CategoryClass || class.legacyClassBody != nil {
 		return nil
+	}
+	if class.syntheticClassName && len(class.superclassBases) != 0 && len(class.classBases) > len(class.superclassBases) {
+		for _, baseID := range class.superclassBases {
+			if err := v.initializeClassWithState(baseID, instanceID, nil, h, b, initialized); err != nil {
+				baseName := ""
+				if base := v.meta[baseID]; base != nil && base.class != nil {
+					baseName = base.class.Name
+				}
+				return fmt.Errorf("initialize base class %q (%d): %w", baseName, baseID, err)
+			}
+		}
 	}
 	for _, baseID := range class.classBases {
 		if err := v.initializeClassWithState(baseID, instanceID, nil, h, b, initialized); err != nil {
@@ -4290,6 +4462,12 @@ func (v *VM) initializeCompiledClassBases(classID, instanceID ObjectID, h Host, 
 }
 
 func (v *VM) initializeClass(classID, instance ObjectID, args []Value, h Host, b *uint64) error {
+	v.classInitializationStates = append(v.classInitializationStates, classInitializationState{instance: instance})
+	defer func() {
+		last := len(v.classInitializationStates) - 1
+		v.classInitializationStates[last] = classInitializationState{}
+		v.classInitializationStates = v.classInitializationStates[:last]
+	}()
 	return v.initializeClassWithState(classID, instance, args, h, b, make(map[ObjectID]struct{}))
 }
 
@@ -4315,26 +4493,21 @@ func (v *VM) initializeClassWithState(classID, instance ObjectID, args []Value, 
 	if err := v.initializeCompiledClassBases(classID, instance, h, b, initialized); err != nil {
 		return err
 	}
-	// Legacy bytecode invokes base bodies explicitly; compiled class
-	// descriptors keep evaluated bases separately and initialize them here.
-	if names, registered := v.Objects.ClassInstanceMembers(classID); registered && class.legacyClassBody == nil {
-		classObject, err := v.obj(classID)
-		if err != nil {
-			return err
-		}
-		for _, name := range names {
-			value, exists := classObject.Get(name)
-			if !exists {
-				continue
-			}
-			if err := v.setMember(instance, StringValue(name), v.bindClassMember(value, instance)); err != nil {
+	// Legacy bytecode registers class members from its own body. Source
+	// descriptors install non-static members after their bases, so derived
+	// declarations replace inherited members on the instance.
+	if !class.nativeClass {
+		if class.syntheticClassName {
+			if err := v.Objects.CopyClassInstanceMembersWithSyntheticName(classID, instance); err != nil {
 				return err
 			}
+		} else if err := v.Objects.CopyClassInstanceMembers(classID, instance); err != nil {
+			return err
 		}
 	}
 	context := ObjectValue(NewObjectRef(instance, instance))
-	if class.legacyClassBody != nil {
-		if _, err := v.invokeLegacyClassBody(class, context, nil, h, b, false); err != nil {
+	if class.legacyClassBody != nil && !v.explicitLegacyBodyRan(instance, classID) {
+		if _, err := v.invokeLegacyClassBody(classID, class, context, nil, h, b, false, false); err != nil {
 			return fmt.Errorf("initialize legacy class instance body %q (%d): %w", class.class.Name, classID, err)
 		}
 	}
@@ -4349,12 +4522,16 @@ func (v *VM) initializeClassWithState(classID, instance ObjectID, args []Value, 
 			return err
 		}
 	}
+	if class.nativeClass {
+		v.markNativeClassInitialized(instance, classID)
+	}
 	if class.class != nil && len(class.class.Initializer.Code) != 0 {
 		_, err := v.run(&class.class.Initializer, h, b, vmFrame{context: instance})
 		if err != nil {
 			return err
 		}
 	}
+	v.markClassInitialized(instance, classID)
 	return nil
 }
 
@@ -4435,6 +4612,10 @@ func (v *VM) constructWithMemberTarget(callee Value, args []Value, targetObject,
 			return VoidValue, objectErr
 		}
 		constructor, ok := classObject.Get(meta.class.Name)
+		if !ok && meta.legacyConstructor != 0 {
+			constructor = ObjectValue(NewObjectRef(meta.legacyConstructor))
+			ok = true
+		}
 		if !ok {
 			var lookupErr error
 			constructor, ok, lookupErr = v.lookupClassMemberWithRuntime(id, meta.class.Name, 0, false, h, b)

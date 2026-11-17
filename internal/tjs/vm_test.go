@@ -281,7 +281,86 @@ func TestLegacyClassConstructorRebindsClassClosureToInstance(t *testing.T) {
 	if constructorContext != instance.ObjectRef().Object {
 		t.Fatalf("constructor context = %d; want instance %d", constructorContext, instance.ObjectRef().Object)
 	}
+
 }
+
+func TestLegacyClassCallDoesNotImplicitlyInvokeConstructor(t *testing.T) {
+	vm := NewVM()
+	baseName := "LegacyClassCallBase"
+	base, err := vm.RegisterLegacyClass(baseName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseBodyCalls := 0
+	if err := vm.SetLegacyClassBody(base, func(receiver Value, args []Value, _ Host, _ *uint64, _ bool) (Value, error) {
+		baseBodyCalls++
+		if receiver.Kind() != KindObject || receiver.IsNull() {
+			t.Fatalf("base class body receiver = %v; want constructed instance", receiver)
+		}
+		if len(args) != 1 || args[0].Text() != "owner" {
+			t.Fatalf("base class body args = %v; want [owner]", args)
+		}
+		return VoidValue, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	baseConstructorCalls := 0
+	baseConstructor, err := vm.RegisterLegacyFunction(baseName, func(receiver Value, _ []Value, _ Host, _ *uint64, _ bool) (Value, error) {
+		baseConstructorCalls++
+		if receiver.Kind() != KindObject || receiver.IsNull() {
+			t.Fatalf("base constructor receiver = %v; want constructed instance", receiver)
+		}
+		return VoidValue, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseObject, err := vm.obj(base.ObjectRef().Object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := baseObject.Set(baseName, baseConstructor); err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetLegacyClassConstructor(base, baseConstructor); err != nil {
+		t.Fatal(err)
+	}
+
+	derivedName := "LegacyClassCallDerived"
+	derived, err := vm.RegisterLegacyClass(derivedName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	derivedConstructor, err := vm.RegisterLegacyFunction(derivedName, func(receiver Value, args []Value, host Host, budget *uint64, _ bool) (Value, error) {
+		_, callErr := vm.InvokeLegacy(base, receiver, args, host, budget, false)
+		return VoidValue, callErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	derivedObject, err := vm.obj(derived.ObjectRef().Object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := derivedObject.Set(derivedName, derivedConstructor); err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetLegacyClassConstructor(derived, derivedConstructor); err != nil {
+		t.Fatal(err)
+	}
+	budget := uint64(1000)
+	if _, err := vm.Construct(derived, []Value{StringValue("owner")}, vmTestHost{}, &budget); err != nil {
+		t.Fatalf("construct derived class: %v", err)
+	}
+	if baseBodyCalls != 1 {
+		t.Fatalf("base class body calls = %d; want 1", baseBodyCalls)
+	}
+	if baseConstructorCalls != 0 {
+		t.Fatalf("base constructor calls from unnamed class call = %d; want 0", baseConstructorCalls)
+	}
+}
+
+
 
 func TestLegacyClassMemberRebindsRegisteredClosureToInstance(t *testing.T) {
 	vm := NewVM()
@@ -390,6 +469,199 @@ func TestNativeClassCallInitializesInstanceContext(t *testing.T) {
 		t.Fatalf("native instance initializer = %q context %v; want instance context %v", host.name, host.context, instance)
 	}
 }
+func TestLegacyClassInstanceNameIsWritable(t *testing.T) {
+	vm := NewVM()
+	class, err := vm.RegisterLegacyClass("WritableInstanceNameTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm.meta[class.ObjectRef().Object].syntheticClassName = true
+	classObject, err := vm.obj(class.ObjectRef().Object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := classObject.Set("name", StringValue("WritableInstanceNameTest")); err != nil {
+		t.Fatal(err)
+	}
+	if err := classObject.SetFlags("name", MemberReadOnly); err != nil {
+		t.Fatal(err)
+	}
+ 
+	instance, err := vm.Construct(class, nil, vmTestHost{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetMemberWithRuntime(instance, "name", StringValue("layer-name"), 0, vmTestHost{}, nil); err != nil {
+		t.Fatalf("set instance name: %v", err)
+	}
+	got, err := vm.GetMember(instance, "name", vmTestHost{}, nil)
+	if err != nil || !got.StrictEqual(StringValue("layer-name")) {
+		t.Fatalf("instance name = %v, %v; want layer-name", got, err)
+	}
+	className, err := vm.GetMember(class, "name", vmTestHost{}, nil)
+	if err != nil || !className.StrictEqual(StringValue("WritableInstanceNameTest")) {
+		t.Fatalf("class name = %v, %v; want class metadata name", className, err)
+	}
+}
+func TestLegacyClassUserReadonlyNameIsCopied(t *testing.T) {
+	vm := NewVM()
+	class, err := vm.RegisterLegacyClass("ReadonlyInstanceNameTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	classObject, err := vm.obj(class.ObjectRef().Object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := classObject.Set("name", StringValue("user-member")); err != nil {
+		t.Fatal(err)
+	}
+	if err := classObject.SetFlags("name", MemberReadOnly); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := vm.Construct(class, nil, vmTestHost{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetMemberWithRuntime(instance, "name", StringValue("replacement"), 0, vmTestHost{}, nil); err != ErrReadOnly {
+		t.Fatalf("setting user readonly name = %v, want ErrReadOnly", err)
+	}
+}
+
+
+func TestLegacyClassNativeFallbackRequiresInitializedBase(t *testing.T) {
+	vm := NewVM()
+	base, err := vm.RegisterNativeClass("NativeFallbackGateBaseTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.RegisterNativeMethod(base, "probe", "NativeFallbackGateBaseTest.probe"); err != nil {
+		t.Fatal(err)
+	}
+	derived, err := vm.RegisterLegacyClass("NativeFallbackGateDerivedTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetLegacyClassBody(derived, func(Value, []Value, Host, *uint64, bool) (Value, error) {
+		return VoidValue, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	instance, instanceID, err := vm.alloc(CategoryInstance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceMeta := vm.meta[instanceID]
+	instanceMeta.classObject = derived.ObjectRef().Object
+	vm.meta[derived.ObjectRef().Object].classBases = []ObjectID{base.ObjectRef().Object}
+
+	if _, found, err := vm.GetMemberIfPresent(instance, "probe", vmTestHost{}, nil); err != nil || found {
+		t.Fatalf("native member before base initialization: found=%t err=%v; want absent", found, err)
+	}
+	if _, err := vm.InvokeLegacy(base, instance, nil, vmTestHost{}, nil, true); err != nil {
+		t.Fatalf("initialize native base: %v", err)
+	}
+	if _, found, err := vm.GetMemberIfPresent(instance, "probe", vmTestHost{}, nil); err != nil || !found {
+		t.Fatalf("native member after base initialization: found=%t err=%v; want present", found, err)
+	}
+}
+
+func TestMixedLegacyClassHierarchyDoesNotExposeUninitializedBaseMembers(t *testing.T) {
+	vm := NewVM()
+	base, err := vm.RegisterLegacyClass("MixedLegacyBaseTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetLegacyClassBody(base, func(Value, []Value, Host, *uint64, bool) (Value, error) {
+		return VoidValue, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	constructor, err := vm.RegisterLegacyFunction("MixedLegacyBaseTest.NameLayer", func(Value, []Value, Host, *uint64, bool) (Value, error) {
+		return VoidValue, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseObject, ok := vm.Objects.Lookup(base.ObjectRef().Object)
+	if !ok {
+		t.Fatal("base class is missing from object table")
+	}
+	if err := baseObject.Set("NameLayer", constructor); err != nil {
+		t.Fatal(err)
+	}
+
+	derived, err := vm.RegisterLegacyClass("MixedLegacyDerivedTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	derivedID := derived.ObjectRef().Object
+	vm.meta[derivedID].classBases = []ObjectID{base.ObjectRef().Object}
+	instance, instanceID, err := vm.alloc(CategoryInstance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm.meta[instanceID].classObject = derivedID
+
+	if _, found, err := vm.GetMemberIfPresent(instance, "NameLayer", vmTestHost{}, nil); err != nil || found {
+		t.Fatalf("uninitialized legacy base member: found=%t err=%v; want absent", found, err)
+	}
+	instanceObject, ok := vm.Objects.Lookup(instanceID)
+	if !ok {
+		t.Fatal("instance is missing from object table")
+	}
+	if err := instanceObject.Set("NameLayer", constructor); err != nil {
+		t.Fatal(err)
+	}
+	if value, found, err := vm.GetMemberIfPresent(instance, "NameLayer", vmTestHost{}, nil); err != nil || !found || value.ObjectRef().Object != constructor.ObjectRef().Object {
+		t.Fatalf("instance REGMEMBER value: value=%v found=%t err=%v; want copied function", value, found, err)
+	}
+}
+
+func TestExplicitLegacyClassCallsRepeatButSkipAutomaticDuplicate(t *testing.T) {
+	vm := NewVM()
+	base, err := vm.RegisterLegacyClass("ExplicitLegacyBaseTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, instanceID, err := vm.alloc(CategoryInstance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseID := base.ObjectRef().Object
+	vm.meta[instanceID].classObject = baseID
+	calls := 0
+	if err := vm.SetLegacyClassBody(base, func(Value, []Value, Host, *uint64, bool) (Value, error) {
+		calls++
+		return VoidValue, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	vm.classInitializationStates = append(vm.classInitializationStates, classInitializationState{instance: instanceID})
+	defer func() { vm.classInitializationStates = nil }()
+
+	for range 2 {
+		if _, err := vm.InvokeLegacy(base, instance, nil, vmTestHost{}, nil, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("explicit class-body calls = %d; want 2", calls)
+	}
+	if err := vm.initializeClassWithState(baseID, instanceID, nil, vmTestHost{}, nil, make(map[ObjectID]struct{})); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("automatic class-body calls = %d; want explicit calls only", calls)
+	}
+	if _, err := vm.InvokeLegacy(base, instance, nil, vmTestHost{}, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 {
+		t.Fatalf("later explicit class-body calls = %d; want 3", calls)
+	}
+}
+
 
 func TestVMTraceAndBudgetObserveEveryExecutedInstruction(t *testing.T) {
 	program, err := compile("trace-budget.tjs", "var x=1; return x;")
@@ -1088,6 +1360,156 @@ return instance.baseInitialized + instance.childInitialized;
 	}
 	if baseCalls != 1 {
 		t.Fatalf("legacy base body calls = %d, want 1", baseCalls)
+	}
+}
+
+func TestLegacyClassMethodsBindPerInstanceThroughInheritedInitialization(t *testing.T) {
+	vm := NewVM()
+	base, err := vm.RegisterLegacyClass("LegacyRegisteredBase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	method, err := vm.RegisterLegacyFunction("LegacyRegisteredBase.whoami", func(Value, []Value, Host, *uint64, bool) (Value, error) {
+		return StringValue("base"), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseReceiver, err := vm.RegisterLegacyFunction("LegacyRegisteredBase.baseReceiver", func(context Value, _ []Value, _ Host, _ *uint64, _ bool) (Value, error) {
+		return context, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.setMemberString(base.ObjectRef().Object, "baseReceiver", baseReceiver); err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.setMemberString(base.ObjectRef().Object, "whoami", method); err != nil {
+		t.Fatal(err)
+	}
+	holder := vm.Objects.New(CategoryDictionary)
+	captureContext, err := vm.RegisterLegacyFunction("LegacyRegisteredBase.captureContext", func(context Value, _ []Value, _ Host, _ *uint64, _ bool) (Value, error) {
+		return context, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedMethod := ObjectValue(NewObjectRef(captureContext.ObjectRef().Object, holder.ID))
+	vm.Globals["Holder"] = ObjectValue(holder.Ref())
+	
+	body := &DecodedBytecode{Objects: []BytecodeObject{{Code: []int16{126, 119}}}}
+	global := ObjectValue(NewObjectRef(0, 0))
+	vm.Objects.RegisterLegacyClassBodySource(body, 0, base.ObjectRef().Object)
+	if err := vm.SetLegacyClassBody(base, func(context Value, _ []Value, _ Host, _ *uint64, _ bool) (Value, error) {
+		_, err := body.ExecuteLegacyWithContextAndConstructionAndPropertyResolver(
+			0, global, context, nil, nil, nil, nil, vm.Objects,
+		)
+		if err == nil {
+			err = vm.setMemberString(context.ObjectRef().Object, "saved", savedMethod)
+		}
+		return VoidValue, err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	vm.Globals["LegacyRegisteredBase"] = base
+	program, err := compile("legacy-inherited-instance-method.tjs", `
+class Child extends LegacyRegisteredBase {
+	function whoami() { return "derived"; }
+}
+var first = new Child();
+var second = new Child();
+return (first.whoami() === "derived" ? 1 : 0) +
+	(second.whoami() === "derived" ? 2 : 0) +
+	(first.baseReceiver() === first ? 4 : 0) +
+	(second.baseReceiver() === second ? 8 : 0) +
+	(first.saved() === Holder ? 16 : 0);
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := uint64(10000)
+	got, err := vm.Execute(&program, vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, _ := got.Int(); result != 31 {
+		t.Fatalf("inherited instance member behavior = %d; want 31 (per-instance binding and saved external receiver preserved)", result)
+	}
+}
+func TestLegacyClassInstanceInheritsNativeAccessorProperty(t *testing.T) {
+	vm := NewVM()
+	base, err := vm.RegisterNativeClass("LegacyNativePropertyBase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotContext Value
+	getter, err := vm.RegisterLegacyFunction("LegacyNativePropertyBase.menu.get", func(context Value, _ []Value, _ Host, _ *uint64, _ bool) (Value, error) {
+		gotContext = context
+		return StringValue("native menu"), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	property, err := vm.RegisterLegacyProperty("menu", getter, VoidValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.RegisterNativeMethod(base, "LegacyNativePropertyBase", "LegacyNativePropertyBase"); err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.setMemberString(base.ObjectRef().Object, "menu", property); err != nil {
+		t.Fatal(err)
+	}
+	initializer, err := vm.RegisterLegacyFunction("LegacyNativePropertyBase.@initialize", func(Value, []Value, Host, *uint64, bool) (Value, error) {
+		return VoidValue, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.setMemberString(base.ObjectRef().Object, "@initialize", initializer); err != nil {
+		t.Fatal(err)
+	}
+
+	class, err := vm.RegisterLegacyClass("LegacyNativePropertyChild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	classID := class.ObjectRef().Object
+	baseID := base.ObjectRef().Object
+	vm.meta[classID].classBases = append(vm.meta[classID].classBases, baseID)
+	if err := vm.SetLegacyClassBody(class, func(Value, []Value, Host, *uint64, bool) (Value, error) {
+		return VoidValue, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	instance, instanceID, err := vm.alloc(CategoryInstance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm.meta[instanceID].classObject = classID
+	vm.Globals["legacyNativePropertyInstance"] = instance
+
+	program, err := compile("legacy-native-inherited-property.tjs", `return legacyNativePropertyInstance.menu;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := uint64(10000)
+	got, err := vm.Execute(&program, vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Text() != "native menu" {
+		t.Fatalf("inherited native accessor = %v, want native menu", got)
+	}
+	if !gotContext.StrictEqual(instance) {
+		t.Fatalf("native accessor context = %v, want instance %v", gotContext, instance)
+	}
+	_, found, err := vm.getMemberWithRuntime(instanceID, StringValue("LegacyNativePropertyBase"), vmTestHost{}, &budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Fatal("native class constructor leaked into legacy instance members")
 	}
 }
 

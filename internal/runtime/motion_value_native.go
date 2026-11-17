@@ -15,6 +15,7 @@ type motionValueObjectState struct {
 	layerScratch  map[string]tjs.Value
 	layerCounts   map[motionSeparateLayerBaseKey]int
 	layerRetired  map[tjs.ObjectID]tjs.Value
+	headless      bool
 }
 
 func newMotionValueObjectState(class string) *motionValueObjectState {
@@ -95,15 +96,37 @@ func (s *Services) motionValueObjectNative(vm *tjs.VM, context tjs.Value, class,
 			if len(args) < 5 {
 				return tjs.VoidValue, fmt.Errorf("Motion.D3DAdaptor requires a Window and four integer arguments")
 			}
-			if args[0].Kind() != tjs.KindObject || args[0].IsNull() {
-				return tjs.VoidValue, fmt.Errorf("Motion.D3DAdaptor requires a Window object")
-			}
-			if windowClass, found := vm.Globals["Window"]; found && windowClass.Kind() == tjs.KindObject && !windowClass.IsNull() {
-				if classObject, exists := vm.Objects.Lookup(windowClass.ObjectRef().Object); exists && !tjs.InstanceOf(args[0], classObject) {
+			// AffineSourceMotion uses the D3D adaptor as its render target even
+			// in headless sessions where Window.mainWindow is void/null. Keep
+			// that adaptor on the CPU buffer path; real objects still require a
+			// Window instance so GUI D3D behavior is unchanged.
+			if args[0].Kind() == tjs.KindVoid || args[0].IsNull() {
+				state.headless = true
+				state.values["canvasCaptureEnabled"] = tjs.IntegerValue(1)
+				state.values["visible"] = tjs.IntegerValue(1)
+				state.values["window"] = tjs.VoidValue
+			} else {
+				if args[0].Kind() != tjs.KindObject {
 					return tjs.VoidValue, fmt.Errorf("Motion.D3DAdaptor requires a Window object")
 				}
+				isWindow := false
+				if windowClass, found := vm.Globals["Window"]; found && windowClass.Kind() == tjs.KindObject && !windowClass.IsNull() {
+					if classObject, exists := vm.Objects.Lookup(windowClass.ObjectRef().Object); exists {
+						isWindow = tjs.InstanceOf(args[0], classObject)
+					}
+				}
+				if !isWindow {
+					// Some headless MainWindow wrappers are ordinary objects
+					// rather than native Window instances. They still select
+					// the CPU adaptor path; only a real Window selects GUI D3D.
+					state.values["canvasCaptureEnabled"] = tjs.IntegerValue(1)
+					state.values["visible"] = tjs.IntegerValue(1)
+					state.headless = true
+					state.values["window"] = tjs.VoidValue
+				} else {
+					state.values["window"] = args[0]
+				}
 			}
-			state.values["window"] = args[0]
 			for index, property := range []string{"width", "height", "centerX", "centerY"} {
 				value, err := args[index+1].Int()
 				if err != nil {
@@ -186,6 +209,9 @@ func (s *Services) motionValueObjectNative(vm *tjs.VM, context tjs.Value, class,
 			return tjs.VoidValue, nil
 		}
 		switch operation {
+		case "clear":
+			motionD3DAdaptorClear(state)
+			return tjs.VoidValue, nil
 		case "setPos", "removeAllTextures", "removeAllBg", "removeAllCaption", "registerBg", "registerCaption", "unloadUnusedTextures":
 			return tjs.VoidValue, nil
 		case "setSize":
@@ -338,6 +364,19 @@ func motionD3DAdaptorResize(state *motionValueObjectState) error {
 	}
 	state.buffer = make([]byte, int(width*height*4))
 	return nil
+}
+func motionD3DAdaptorClear(state *motionValueObjectState) {
+	if state == nil || !motionPlayerBool(state.values["clearEnabled"]) {
+		return
+	}
+	clearColor, _ := state.values["clearColor"].Int()
+	color := uint32(clearColor)
+	for index := 0; index+3 < len(state.buffer); index += 4 {
+		state.buffer[index] = byte(color >> 16)
+		state.buffer[index+1] = byte(color >> 8)
+		state.buffer[index+2] = byte(color)
+		state.buffer[index+3] = byte(color >> 24)
+	}
 }
 
 func (s *Services) motionSourceCacheKey(vm *tjs.VM, value tjs.Value) string {

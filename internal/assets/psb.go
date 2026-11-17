@@ -98,11 +98,13 @@ func psbArray(data []byte, offset int) ([]uint32, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	if et < 13 || et > 20 {
+	// Array element tags are NumberN8 (0x0c) plus the encoded width. Empty
+	// arrays in motion PSBs commonly use the zero-width NumberN8 tag.
+	if et < 12 || et > 20 {
 		return nil, 0, psbErr("invalid array element type %d", et)
 	}
 	elem := int(et - 12)
-	if count > (int(^uint(0)>>1)-offset-2-width)/elem {
+	if elem > 0 && count > (int(^uint(0)>>1)-offset-2-width)/elem {
 		return nil, 0, psbErr("array size overflows input range")
 	}
 	start := offset + 2 + width

@@ -157,7 +157,14 @@ func finishSession(session *runtime.Session, project string, gameArguments map[s
 	if session == nil {
 		return nil, fmt.Errorf("nil session")
 	}
-	session.Services.SetArguments(gameArguments)
+	arguments := make(map[string]string, len(gameArguments)+1)
+	for name, value := range gameArguments {
+		arguments[name] = value
+	}
+	if _, exists := arguments["-scanim"]; !exists {
+		arguments["-scanim"] = "no"
+	}
+	session.Services.SetArguments(arguments)
 
 	if project == "" {
 		// Keep an empty host scene for non-project launches. Project startup
