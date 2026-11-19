@@ -192,10 +192,14 @@ type Services struct {
 	preprocessor                 *tjs.Preprocessor
 	sessionPreprocessors         map[*tjs.VM]*tjs.Preprocessor
 	// appLocks stays scoped to this Services instance, not package-global state.
-	appLocks    map[string]struct{}
-	inputStates map[uint64]*keyInputState
-	mu          sync.RWMutex
-	initMu      sync.Mutex
+	appLocks     map[string]struct{}
+	inputStates  map[uint64]*keyInputState
+	cursorDevice CursorDevice
+	cursorX      int32
+	cursorY      int32
+	cursorKnown  bool
+	mu           sync.RWMutex
+	initMu       sync.Mutex
 	// audioMu serializes every access to AudioMixer and to the sound fields
 	// the mixer reads and writes. The host mixes from a feeder goroutine while
 	// the script thread keeps running, so both sides take this lock.

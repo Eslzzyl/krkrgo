@@ -351,6 +351,7 @@ func newGameWithRenderer(session *runtime.Session, mode rendererMode) *Game {
 	game.renderStats.stallTrace = runtime.StallTraceEnabled()
 	if session != nil && session.Services != nil {
 		game.windowID = session.Services.MainWindow
+		session.Services.SetCursorDevice(newCursorDevice())
 	}
 	game.initTextComposer()
 	return game

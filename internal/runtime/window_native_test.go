@@ -544,9 +544,6 @@ func TestNativeSystemDisplayQueries(t *testing.T) {
 	if err != nil || value.Text() != "main" {
 		t.Fatalf("monitor info=%q err=%v", value.Text(), err)
 	}
-	if _, err := session.Evaluate(`System.getCursorPos()`); !errors.Is(err, ErrUnsupportedDevice) {
-		t.Fatalf("cursor error = %v", err)
-	}
 }
 func TestWindowNotificationLookupAndHitTestConstants(t *testing.T) {
 	session := NewSession(DefaultServices(), 10_000)
@@ -596,11 +593,13 @@ func TestWindowExUnsupportedHostOperationsAreExplicit(t *testing.T) {
 		`window.setOverlayBitmap()`,
 		`window.bringTo()`,
 		`window.sendToBack()`,
-		`window.ncHitTest(1, 2)`,
 	} {
 		if _, err := session.Evaluate(source); !errors.Is(err, ErrUnsupportedDevice) {
 			t.Errorf("%s error = %v, want ErrUnsupportedDevice", source, err)
 		}
+	}
+	if _, err := session.Evaluate(`window.ncHitTest(1, 2)`); err != nil {
+		t.Fatalf("ncHitTest: %v", err)
 	}
 	if _, err := session.Evaluate(`window.ncHitTest(1)`); err == nil || !strings.Contains(err.Error(), "missing argument 1") {
 		t.Fatalf("ncHitTest missing argument error = %v", err)

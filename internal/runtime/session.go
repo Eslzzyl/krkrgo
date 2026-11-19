@@ -2271,6 +2271,7 @@ func (s *Session) Input(window any, event any) error {
 	if err != nil {
 		return err
 	}
+	s.Services.updateCursorPosition(id, ev)
 	switch ev.Kind {
 	case InputPointerMove, InputPointerDown, InputPointerUp, InputClick, InputDoubleClick, InputWheel:
 		for _, layer := range s.Services.Layers {

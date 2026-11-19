@@ -601,7 +601,9 @@ func (s *Services) windowNative(vm *tjs.VM, context tjs.Value, operation string,
 		if _, err := windowIntArg(args, 1, operation); err != nil {
 			return tjs.VoidValue, err
 		}
-		return tjs.VoidValue, UnsupportedDevice("native non-client hit testing")
+		// WindowEx's portable reference callback validates the coordinates and
+		// lets the native window manager handle actual non-client hit testing.
+		return tjs.VoidValue, nil
 	case "focusMenuByKey":
 		if _, err := windowIntArg(args, 0, operation); err != nil {
 			return tjs.VoidValue, err
@@ -889,8 +891,22 @@ func (s *Services) systemWindowNative(vm *tjs.VM, operation string, args []tjs.V
 			return tjs.VoidValue, nil
 		}
 		return monitorValue(vm, monitor, nil)
-	case "getCursorPos", "setCursorPos":
-		return tjs.VoidValue, UnsupportedDevice("cursor positioning")
+	case "getCursorPos":
+		x, y := s.cursorPosition()
+		return cursorPointValue(vm, x, y)
+	case "setCursorPos":
+		if len(args) < 2 {
+			return tjs.VoidValue, fmt.Errorf("System.setCursorPos requires x and y")
+		}
+		x, err := windowIntValue(args[0])
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		y, err := windowIntValue(args[1])
+		if err != nil {
+			return tjs.VoidValue, err
+		}
+		return tjs.VoidValue, s.setCursorPosition(x, y)
 	default:
 		return tjs.VoidValue, fmt.Errorf("%w: System.%s", ErrUnsupportedNative, operation)
 	}

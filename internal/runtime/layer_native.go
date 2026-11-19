@@ -279,10 +279,7 @@ func (s *Services) layerNative(vm *tjs.VM, context tjs.Value, operation string, 
 		if err != nil {
 			return tjs.VoidValue, err
 		}
-		s.mu.Lock()
-		l.CursorX, l.CursorY = x, y
-		s.mu.Unlock()
-		return tjs.VoidValue, nil
+		return tjs.VoidValue, s.setLayerCursorPosition(l, x, y)
 	case "releaseCapture":
 		if window := layerWindowState(s, l); window != nil {
 			window.mouseCapture = [5]LayerID{}
@@ -1012,9 +1009,11 @@ func (s *Services) layerGet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, b
 	case "hitThreshold":
 		return tjs.IntegerValue(int64(l.HitThreshold)), nil
 	case "cursorX":
-		return tjs.IntegerValue(int64(l.CursorX)), nil
+		x, _, _ := s.layerCursorPosition(l)
+		return tjs.IntegerValue(int64(x)), nil
 	case "cursorY":
-		return tjs.IntegerValue(int64(l.CursorY)), nil
+		_, y, _ := s.layerCursorPosition(l)
+		return tjs.IntegerValue(int64(y)), nil
 	case "hint":
 		return tjs.StringValue(l.Hint), nil
 	case "showParentHint":
@@ -1359,7 +1358,7 @@ func (s *Services) layerSet(vm *tjs.VM, l *Layer, id tjs.ObjectID, key string, a
 			return tjs.VoidValue, e
 		}
 		l.CursorY = n
-		return tjs.VoidValue, nil
+		return tjs.VoidValue, s.setLayerCursorPosition(l, l.CursorX, l.CursorY)
 	case "hint":
 		l.Hint = value.Text()
 		l.ShowParentHint = false
