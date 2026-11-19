@@ -49,50 +49,50 @@ type legacyProperty struct {
 }
 
 type vmObject struct {
-	category                ObjectCategory
-	native                  string
-	function                *Function
-	legacyFunction          LegacyFunction
-	legacyClassBody         LegacyFunction
-	legacyConstructor       ObjectID
-	legacyClassInitializer  func(Host, *uint64) error
-	callMissing             bool
-	processingMissing       bool
-	legacyClassInitializing bool
-	legacyClassInitialized  bool
-	legacySuperclassGetter  func(int, Host, *uint64) (Value, error)
-	superclassGetterOffsets []int
-	superclassBases         []ObjectID
-	superclassBasesResolved []bool
-	superclassBasesLoading  []bool
-	owner                   ObjectID
-	legacyProperty          *legacyProperty
-	class                   *Class
-	classObject             ObjectID
-	syntheticClassName      bool
-	instanceClassNames      []string
-	classBases              []ObjectID
-	nativeClass             bool
+	category                 ObjectCategory
+	native                   string
+	function                 *Function
+	legacyFunction           LegacyFunction
+	legacyClassBody          LegacyFunction
+	legacyConstructor        ObjectID
+	legacyClassInitializer   func(Host, *uint64) error
+	callMissing              bool
+	processingMissing        bool
+	legacyClassInitializing  bool
+	legacyClassInitialized   bool
+	legacySuperclassGetter   func(int, Host, *uint64) (Value, error)
+	superclassGetterOffsets  []int
+	superclassBases          []ObjectID
+	superclassBasesResolved  []bool
+	superclassBasesLoading   []bool
+	owner                    ObjectID
+	legacyProperty           *legacyProperty
+	class                    *Class
+	classObject              ObjectID
+	syntheticClassName       bool
+	instanceClassNames       []string
+	classBases               []ObjectID
+	nativeClass              bool
 	nativeClassesInitialized map[ObjectID]struct{}
-	nativeConstructor ObjectID
-	property                *Property
-	array                   []Value
-	arrayLength             int64
-	arrayMethods            map[string]Value
-	stringMethods           map[string]Value
-	randomGenerator         *RandomGenerator
-	methodContext           Value
-	methodContextSet        bool
-	superContext            ObjectID
-	superOwner              ObjectID
-	capturedScopes          []map[string]Value
-	capturedWiths           []Value
-	lexicalContext          ObjectID
-	nativeStatic            bool
-	finalizer               string
-	scriptFinalizer         ObjectID
-	finalizing              bool
-	variantProperty         *Value
+	nativeConstructor        ObjectID
+	property                 *Property
+	array                    []Value
+	arrayLength              int64
+	arrayMethods             map[string]Value
+	stringMethods            map[string]Value
+	randomGenerator          *RandomGenerator
+	methodContext            Value
+	methodContextSet         bool
+	superContext             ObjectID
+	superOwner               ObjectID
+	capturedScopes           []map[string]Value
+	capturedWiths            []Value
+	lexicalContext           ObjectID
+	nativeStatic             bool
+	finalizer                string
+	scriptFinalizer          ObjectID
+	finalizing               bool
+	variantProperty          *Value
 }
 
 // RegisterLegacyFunction creates a VM-owned callable backed by TJS2 intercode.
@@ -262,7 +262,7 @@ type vmFrameRoots struct {
 // explicit table; collection removes unreachable entries but IDs are allocated
 // from the process-wide monotonic counter and are never reused.
 type classInitializationState struct {
-	instance ObjectID
+	instance             ObjectID
 	explicitLegacyBodies map[ObjectID]struct{}
 }
 
@@ -1003,7 +1003,6 @@ func (v *VM) classHierarchyHasLegacyBody(classID ObjectID, depth int) bool {
 	return false
 }
 
-
 func (v *VM) lookupInitializedNativeClassMember(classID ObjectID, name string, depth int, initialized map[ObjectID]struct{}, host Host, budget *uint64) (Value, bool, error) {
 	if depth >= 128 {
 		return VoidValue, false, errors.New("class inheritance depth exceeded")
@@ -1074,7 +1073,6 @@ func (v *VM) lookupInitializedNativeClassMember(classID ObjectID, name string, d
 	}
 	return VoidValue, false, nil
 }
-
 
 func (v *VM) deleteMember(id ObjectID, key Value) (bool, error) {
 	o, e := v.obj(id)
@@ -4430,8 +4428,6 @@ func (v *VM) explicitLegacyBodyRan(instance, classID ObjectID) bool {
 	}
 	return false
 }
-
-
 
 func (v *VM) initializeCompiledClassBases(classID, instanceID ObjectID, h Host, b *uint64, initialized map[ObjectID]struct{}) error {
 	class := v.meta[classID]

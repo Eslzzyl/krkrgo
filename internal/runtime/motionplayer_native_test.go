@@ -42,7 +42,6 @@ func TestMotionPlayerLinkInstallsPortableResourceManagerSurface(t *testing.T) {
 	}
 }
 
-
 func TestMotionPlayerLinkExtendsExistingMotionNamespace(t *testing.T) {
 	session := NewSession(DefaultServices(), 100_000)
 	defer session.Close()
