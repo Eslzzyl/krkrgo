@@ -1564,6 +1564,7 @@ type compiler struct {
 	withDepth             int
 	forwardArgsFrom       int
 	hoisted               []Instruction
+	classDepth            int
 	functionBody          bool
 	localFunctions        []Function
 	localProperties       []Property
@@ -2385,17 +2386,20 @@ func (c *compiler) classStatement(loc core.SourceLocation) error {
 
 	outerProgram := c.program
 	outerControls := c.controls
+	outerClassDepth := c.classDepth
 	outerHandlerDepth, outerScopeDepth, outerWithDepth := c.handlerDepth, c.scopeDepth, c.withDepth
 	definition := &Class{Name: name}
 	var initializer Program
 	parseErr := func() error {
 		c.program = Program{Storage: outerProgram.Storage}
 		c.controls = nil
+		c.classDepth = outerClassDepth + 1
 		c.handlerDepth, c.scopeDepth, c.withDepth = 0, 0, 0
 		defer func() {
 			initializer = c.program
 			c.program = outerProgram
 			c.controls = outerControls
+			c.classDepth = outerClassDepth
 			c.handlerDepth, c.scopeDepth, c.withDepth = outerHandlerDepth, outerScopeDepth, outerWithDepth
 		}()
 		for !c.p.eat("}") {
@@ -2448,7 +2452,7 @@ func (c *compiler) classStatement(loc core.SourceLocation) error {
 	out := c.reg()
 	c.emit(loc, Op{Code: OpClass, Out: out, extra: &opExtra{class: definition}})
 	c.emit(loc, Op{Code: OpDeclare, Name: name, Input: out})
-	if !c.functionBody && c.scopeDepth == 0 && c.withDepth == 0 {
+	if !c.functionBody && c.classDepth == 0 && c.scopeDepth == 0 && c.withDepth == 0 {
 		c.hoisted = append(c.hoisted, c.program.Code[start:]...)
 		c.program.Code = c.program.Code[:start]
 	}

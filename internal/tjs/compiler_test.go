@@ -692,3 +692,18 @@ func TestCompileAndRunCStyleCasts(t *testing.T) {
 		})
 	}
 }
+func TestCompileNestedClassKeepsRegisterCounts(t *testing.T) {
+	source := `
+class Outer {
+	var seed = 1;
+	class Inner {}
+}
+`
+	program, err := Compile("nested-class.tjs", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := program.Validate(); err != nil {
+		t.Fatalf("nested class program validation: %v", err)
+	}
+}
