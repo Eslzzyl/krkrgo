@@ -7,8 +7,8 @@ permissions:
   contents: read
 
 env:
-  FFMPEG_VERSION: 9.0.2
-  FFMPEG_SOURCE_SHA256: 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
+  FFMPEG_VERSION: 9.1
+  FFMPEG_SOURCE_SHA256: 7482d44d320f96e3df36e9537011f39da6770307052ed5d7e2ca22d8d97f61f1
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_BASEDIR: ${{ github.workspace }}
   CCACHE_COMPILERCHECK: content

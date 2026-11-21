@@ -20,7 +20,7 @@ Non-AJPM sources are opened through the FFmpeg shared-library sidecar. `VideoOve
 
 The FFmpeg decoder drains pending frames and retries packets on `EAGAIN`, including during end-of-stream flushing, preserving delayed frames. When a decoded audio batch reaches 32 blocks, compatible native-rate PCM blocks are coalesced in sample order. Each merged block is capped at 1,000,000 sample frames to remain within the runtime audio bound.
 
-The runtime requires `avutil`, `avcodec`, `avformat`, and `swscale` from the deployed FFmpeg 9.0.2 ABI. The loader searches `KRKRGO_FFMPEG_DIR`, `lib/ffmpeg`, and the executable directory; the deployment workflow installs the libraries beside the application. On Windows, dependency lookup includes the directory containing each loaded FFmpeg DLL.
+The runtime requires `avutil`, `avcodec`, `avformat`, and `swscale` from the deployed FFmpeg 9.1 ABI. The loader searches `KRKRGO_FFMPEG_DIR`, `lib/ffmpeg`, and the executable directory; the deployment workflow installs the libraries beside the application. On Windows, dependency lookup includes the directory containing each loaded FFmpeg DLL.
 
 The current video model retains headless transport and frame/audio queue semantics. `Layer.openMovie`, `startMovie`, `stopMovie`, and `isPlayingMovie` reuse the same bounded `VideoOverlay` path and copy decoded frames into a Layer; `onStartMovie`, `onUpdateMovie`, and `onStopMovie` follow playback start, decoded frame updates, manual stop, and one-shot completion. Audio-stream selection beyond the first decodable stream, movie color/effect controls, and OS video-device parity remain outside this runtime contract.
 

@@ -61,7 +61,7 @@ FFmpeg 滤镜文档把 GPU 传输操作单列为 `hwupload`、`hwdownload` 与 `
 
 ## krkrgo 当前状态与 Ebitengine 关联
 
-当前项目文档记录的媒体路径仍采用软件解码构建方案：`internal/media/ffmpeg` 通过 purego 绑定 FFmpeg，视频帧转换为 RGBA 后进入有界队列；运行时要求 `avutil`、`avcodec`、`avformat` 与 `swscale` 的 FFmpeg 9.0.2 ABI。详见 [音视频移植状态](audio-video.md)。本文保持该构建方案与 GPU 代码现状。
+当前项目文档记录的媒体路径仍采用软件解码构建方案：`internal/media/ffmpeg` 通过 purego 绑定 FFmpeg，视频帧转换为 RGBA 后进入有界队列；运行时要求 `avutil`、`avcodec`、`avformat` 与 `swscale` 的 FFmpeg 9.1 ABI。详见 [音视频移植状态](audio-video.md)。本文保持该构建方案与 GPU 代码现状。
 
 当前图形路径由 CPU 合成 RGBA 快照，再通过 Ebitengine `WritePixels` 上传到 `ebiten.Image`，最后 `DrawImage` 呈现；详见 [图形合成：CPU 与 GPU](graphics-composition.md)。因此当前 GPU 主要承担最终图像呈现，视频解码和图层合成仍使用 CPU 帧模型。
 

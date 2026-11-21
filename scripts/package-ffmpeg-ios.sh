@@ -68,9 +68,9 @@ for library in "${libraries[@]}"; do
     <key>CFBundlePackageType</key>
     <string>FMWK</string>
     <key>CFBundleShortVersionString</key>
-    <string>9.0.2</string>
+    <string>9.1</string>
     <key>CFBundleVersion</key>
-    <string>9.0.2</string>
+    <string>9.1</string>
 </dict>
 </plist>
 EOF

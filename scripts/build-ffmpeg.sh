@@ -6,7 +6,7 @@ set -Eeuo pipefail
 # moving branch or downloads source.
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-FFMPEG_VERSION=${FFMPEG_VERSION:-9.0.2}
+FFMPEG_VERSION=${FFMPEG_VERSION:-9.1}
 FFMPEG_SOURCE_DIR=${FFMPEG_SOURCE_DIR:-"$ROOT_DIR/.build/ffmpeg-source"}
 OS_NAME=${OS:-$(uname -s)}
 ARCH_NAME=${ARCH:-$(uname -m)}

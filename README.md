@@ -16,7 +16,7 @@ The project brings the engine's scripting, storage, rendering, input, audio, and
 - Deterministic headless replay and XP3 extraction tools for development and verification.
 - Pure-Go desktop implementation with platform support centered on macOS, Linux, and Windows.
 
-The runtime loads ASF/WMV/WMA, WAV, Ogg/Vorbis, and MPEG media through the FFmpeg 9.0.2 shared-library sidecar. AlphaMovie (AJPM) remains a repository decoder. A missing or ABI-incompatible sidecar is logged once and media opens degrade to no-ops; the runtime keeps running instead of failing.
+The runtime loads ASF/WMV/WMA, WAV, Ogg/Vorbis, and MPEG media through the FFmpeg 9.1 shared-library sidecar. AlphaMovie (AJPM) remains a repository decoder. A missing or ABI-incompatible sidecar is logged once and media opens degrade to no-ops; the runtime keeps running instead of failing.
 
 ## Quick start
 
@@ -91,13 +91,13 @@ ignored by Git.
 
 ### Build the FFmpeg sidecar
 
-The workflow builds and uploads FFmpeg 9.0.2 shared libraries for six desktop targets plus Android `arm64-v8a` and `x86_64`. It enables Ogg/Vorbis, ASF, VC-1, WMV3, WMA2, and H.264 support. Hardware acceleration and FFmpeg command-line programs are disabled; runtime decoding uses the purego loader.
+The workflow builds and uploads FFmpeg 9.1 shared libraries for six desktop targets plus Android `arm64-v8a` and `x86_64`. It enables Ogg/Vorbis, ASF, VC-1, WMV3, WMA2, and H.264 support. Hardware acceleration and FFmpeg command-line programs are disabled; runtime decoding uses the purego loader.
 
-For a local build from the verified FFmpeg 9.0.2 source archive:
+For a local build from the verified FFmpeg 9.1 source archive:
 
 ```sh
-FFMPEG_VERSION=9.0.2 \
-FFMPEG_SOURCE_DIR=/path/to/ffmpeg-9.0.2 \
+FFMPEG_VERSION=9.1 \
+FFMPEG_SOURCE_DIR=/path/to/ffmpeg-9.1 \
 OS=macos ARCH=arm64 \
 PREFIX="$PWD/stage/krkrgo-macos-arm64" \
 scripts/build-ffmpeg.sh
@@ -138,7 +138,7 @@ below the selected folder's `savedata/` directory.
 
 The application version source is [`internal/version/version.xcconfig`](internal/version/version.xcconfig). `KRKRGO_VERSION` supplies the user-facing version and `KRKRGO_BUILD` supplies the platform build number. Go, Android, iOS, macOS, and Windows packaging consume these values.
 
-The packaging scripts build one archive per platform and architecture. They download the FFmpeg sidecar from the `ffmpeg-sidecar-v9.0.2-r3` release and do not build FFmpeg locally.
+The packaging scripts build one archive per platform and architecture. They download the FFmpeg sidecar from the `ffmpeg-sidecar-v9.1-r3` release and do not build FFmpeg locally.
 
 On a Linux build host, build every target:
 
